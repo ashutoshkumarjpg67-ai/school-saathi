@@ -140,7 +140,10 @@ function seedDB() {
     feeMonths: FEE_MONTHS,
     feeRecords: feeRecords,
     feeStructure: defaultFeeStructure(),
+    feeExtras: { admissionFee: 0, cautionMoney: 0, annualCharges: 0, transportFee: 0 },
     admCounter: 41,
+    receipts: [],
+    receiptCounter: 1,
     auditLog: [],
     attendanceAgg: { present: 1150, absent: 70, late: 30 },
     attendance: (function () { var a = {}; a[today + '|10th-A'] = attRecords; return a; })(),
@@ -251,6 +254,24 @@ function migrateV12(d) {
   if (!Array.isArray(d.admissionRequests)) d.admissionRequests = [];
   return d;
 }
+function defaultFeeExtras() { return { admissionFee: 0, cautionMoney: 0, annualCharges: 0, transportFee: 0 }; }
+function migrateV13(d) {
+  // Phase 5 (fee collection receipt) migration for existing v2 DBs: one-time /
+  // annual fee amounts, saved receipts, receipt counter. Idempotent; never
+  // changes existing values, amounts or statuses. All extra amounts default
+  // to 0 — the school sets its own amounts, nothing is invented.
+  if (!d.feeExtras || typeof d.feeExtras !== 'object') d.feeExtras = defaultFeeExtras();
+  ['admissionFee', 'cautionMoney', 'annualCharges', 'transportFee'].forEach(function (k) {
+    if (typeof d.feeExtras[k] !== 'number' || isNaN(d.feeExtras[k]) || d.feeExtras[k] < 0) d.feeExtras[k] = 0;
+  });
+  if (!Array.isArray(d.receipts)) d.receipts = [];
+  if (!d.receiptCounter) {
+    var max = 0;
+    d.receipts.forEach(function (r) { var m = /^RCP-\d{4}-(\d+)$/.exec(r.receiptNo || ''); if (m) max = Math.max(max, parseInt(m[1], 10)); });
+    d.receiptCounter = max + 1;
+  }
+  return d;
+}
 function storageKeys() {
   var out = [];
   try {
@@ -311,7 +332,7 @@ function loadDB(override) {
     var raw = localStorage.getItem(DB_KEY);
     if (raw) {
       var d = JSON.parse(raw);
-      if (d && d.v === 2) { var m = migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))); saveDB(m); return m; }
+      if (d && d.v === 2) { var m = migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))); saveDB(m); return m; }
       // Unknown version: keep a backup, never wipe silently.
       try { localStorage.setItem(DB_KEY + '.bak', raw); } catch (e2) { /* ignore */ }
     }
@@ -330,12 +351,13 @@ function saveDB(db) {
 var db = loadDB();
 
 /* ================= state ================= */
-var state = { role: null, user: null, view: 'dashboard', lang: 'en', parentStudentId: null, admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', attSnapKey: '', attSnap: {}, stuSel: {} };
+var state = { role: null, user: null, view: 'dashboard', lang: 'en', parentStudentId: null, admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', attSnapKey: '', attSnap: {}, stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null };
 
 /* Phase 2: bulk import + promotion state (in-memory only, never persisted). */
 var importState = { rows: null, fileName: '', result: null };
 var promoState = null;
 var pendingIdPrint = []; // student ids queued for the ID-card print flow (in-memory only).
+var collectDraft = null; // in-memory draft of the receipt being collected (never persisted until saved).
 
 /* ================= utils ================= */
 function $(id) { return document.getElementById(id); }
@@ -445,6 +467,50 @@ var toastTimer = null;
 function toast(msg) {
   var t = $('toast'); t.textContent = msg; t.classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2600);
+}
+/* ================= numbers in words (Indian numbering) ================= */
+var WORD_ONES = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+var WORD_TENS = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+function wordsUnder100(x) {
+  if (x < 20) return WORD_ONES[x];
+  var ten = WORD_TENS[Math.floor(x / 10)], one = WORD_ONES[x % 10];
+  return one ? ten + ' ' + one : ten;
+}
+function wordsUnder1000(x) {
+  var h = Math.floor(x / 100), r = x % 100, out = '';
+  if (h) out = WORD_ONES[h] + ' Hundred';
+  if (r) out += (out ? ' ' : '') + wordsUnder100(r);
+  return out;
+}
+// Indian numbering: crore / lakh / thousand. 177820 -> 'One Lakh Seventy Seven
+// Thousand Eight Hundred Twenty Only' (as on the DPS reference receipt).
+function numberToWords(n) {
+  n = Math.floor(Math.abs(+n || 0));
+  if (n === 0) return 'Zero Only';
+  var parts = [], crore = Math.floor(n / 10000000); n %= 10000000;
+  var lakh = Math.floor(n / 100000); n %= 100000;
+  var thou = Math.floor(n / 1000); n %= 1000;
+  if (crore) parts.push(wordsUnder1000(crore) + ' Crore');
+  if (lakh) parts.push(wordsUnder1000(lakh) + ' Lakh');
+  if (thou) parts.push(wordsUnder1000(thou) + ' Thousand');
+  if (n) parts.push(wordsUnder1000(n));
+  return parts.join(' ') + ' Only';
+}
+/* ================= fee extras + receipt numbers ================= */
+function feeExtras() {
+  if (!db.feeExtras || typeof db.feeExtras !== 'object') db.feeExtras = defaultFeeExtras();
+  var e = db.feeExtras;
+  ['admissionFee', 'cautionMoney', 'annualCharges', 'transportFee'].forEach(function (k) {
+    if (typeof e[k] !== 'number' || isNaN(e[k]) || e[k] < 0) e[k] = 0;
+  });
+  return e;
+}
+// peek=true previews the next number without consuming it (draft display only).
+function nextReceiptNo(peek) {
+  if (!db.receiptCounter) migrateV13(db);
+  var n = 'RCP-' + todayIST().slice(0, 4) + '-' + String(db.receiptCounter).padStart(3, '0');
+  if (!peek) db.receiptCounter++;
+  return n;
 }
 function countUp(el, target, opts) {
   opts = opts || {};
@@ -1176,7 +1242,8 @@ var I18N = {
     impTitle: 'Bulk Import Students', impImportBtn: 'Import Students', impTemplate: 'Download Sample Template', impTemplateSub: 'CSV format only — Excel (.xlsx) files cannot be read here. Use the template columns.', impChooseFile: 'Choose CSV File', impPreview: 'Import Preview', impSummary: 'Import Summary', impValid: 'Valid', impError: 'Error', impDuplicate: 'Duplicate', impReason: 'Reason', impConfirm: 'Import Valid Rows', impDone: 'Done', impNoRows: 'No rows found in this file. Please check the template.', impBadHeader: 'This file does not look like the student template — the Name column is missing.', impNoFile: 'Please choose a CSV file first.', impNoValid: 'No valid rows to import.', impImported: 'imported', impSkipped: 'skipped', impErrName: 'Name is required', impErrMobile: 'Mobile must be 10 digits', impErrMobile2: 'Secondary mobile must be 10 digits', impErrClass: 'Class is not valid', impErrSection: 'Section must be A, B or C', impErrPin: 'PIN must be 6 digits', impErrAadhaar: 'Aadhaar must be 12 digits', impErrDob: 'Date of birth is not a valid date', impErrAdmDate: 'Admission date is not a valid date', impErrSession: 'Session is not valid (e.g. 2025–26)', impErrGender: 'Gender must be Boy, Girl or Other', impErrBlood: 'Blood group is not valid', impErrCategory: 'Category must be General, OBC, SC, ST or Other', impErrEmail: 'Parent email is not valid', impErrRoll: 'Roll must be a positive number', impErrBool: 'Must be Yes or No', impErrDup: 'Duplicate of', impErrDupFile: 'Duplicate in this file', tImpDone: 'Bulk import complete.', tImpTemplate: 'Sample template downloaded.',
     promoTitle: 'Promote Students', promoBtn: 'Promote Students', promoSingle: 'Promote Student', promoFromSession: 'Current Session', promoFromClass: 'Current Class', promoToSession: 'Target Session', promoToClass: 'Target Class', promoToSection: 'Target Section', promoSelectAll: 'Select All', promoSelectNone: 'Select None', promoSelected: 'selected', promoPromote: 'Promote Selected', promoRetain: 'Retain Selected', promoNoStudents: 'No students in this class and session.', promoNoSelect: 'Please select at least one student.', promoNoop: 'Target class and session are the same as current — nothing to change.', promoNoopRetain: 'Target session is the same as the current session — nothing to change.', promoDone: 'Promotion complete.', promoPromoted: 'promoted', promoRetained: 'retained', promoNote: 'Attendance, fees, exam marks and homework history are preserved.', promoSingleNote: 'Single student promotion', promoSkipped: 'skipped (already moved)', promoNotEligible: 'Only Active or Inactive students can be promoted.',
     idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.',
-    authParent: 'Parent', parentAdmNo: 'Admission Number', parentPinLabel: 'Parent PIN', parentLoginBtn: 'Login as Parent', parentNote: 'Parent access on this device uses a PIN set by the school. Real password accounts arrive with the server version.', parentSub: 'Parent', parentDashboard: 'My Child', tInvalidParent: 'Invalid admission number or PIN.', tParentScope: 'You can only view your own child\'s profile.', parentAccess: 'Parent Access', parentPinNow: 'Current Parent PIN', parentPinNone: 'No PIN set — parent login unavailable for this student.', parentPinNew: 'New PIN (4–6 digits)', parentPinSetBtn: 'Set PIN', parentPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Parent PIN set.', tPinCleared: 'Parent PIN cleared.', tPinAuto: 'Default PIN is the last 4 digits of the parent\'s mobile.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.'
+    authParent: 'Parent', parentAdmNo: 'Admission Number', parentPinLabel: 'Parent PIN', parentLoginBtn: 'Login as Parent', parentNote: 'Parent access on this device uses a PIN set by the school. Real password accounts arrive with the server version.', parentSub: 'Parent', parentDashboard: 'My Child', tInvalidParent: 'Invalid admission number or PIN.', tParentScope: 'You can only view your own child\'s profile.', parentAccess: 'Parent Access', parentPinNow: 'Current Parent PIN', parentPinNone: 'No PIN set — parent login unavailable for this student.', parentPinNew: 'New PIN (4–6 digits)', parentPinSetBtn: 'Set PIN', parentPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Parent PIN set.', tPinCleared: 'Parent PIN cleared.', tPinAuto: 'Default PIN is the last 4 digits of the parent\'s mobile.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
+    collectFeeBtn: 'Collect Fee', rcptTitle: 'FEE RECEIPT', rcptReceiptNo: 'Receipt No', rcptDate: 'Date', rcptAdmNo: 'Adm No', rcptSession: 'Session', rcptName: 'Name', rcptClass: 'Class', rcptInstallment: 'Installment', rcptCounter: 'Counter No', rcptSlNo: 'Sl.No', rcptDesc: 'Description', rcptDue: 'Due', rcptCon: 'Con', rcptPaid: 'Paid', rcptAdmissionFee: 'Admission Fee', rcptTuitionFee: 'Tuition Fee', rcptCaution: 'Caution Money', rcptAnnual: 'Annual Charges', rcptBusFee: 'Bus Fee', rcptDues: 'Dues', rcptPayModeTitle: 'PAY MODE INFORMATION', rcptPayMode: 'Pay Mode', rcptBank: 'Bank', rcptNumber: 'Number', rcptTotal: 'Total', rcptTotalWords: 'Total in Words', rcptComputerGen: 'This is a computer generated Receipt. Does not required signature.', rcptParentCopy: 'PARENT COPY', rcptCollectorSign: 'Collector\'s Signature', rcptIncludeBus: 'Include Bus/Transport', rcptOtherFees: 'Other Fees', rcptAnnualHint: 'One-time and annual amounts used on the Collect Fee receipt. Set 0 to hide a row.', payModeCash: 'Cash', payModeCheque: 'Cheque', payModeUpi: 'UPI', payModeCard: 'Card', payModeBank: 'Bank Transfer', tFeeCollected: 'Fee collected.', tCollectZero: 'Nothing to collect — enter a Paid amount.', tCollectSaved: 'Fee collected — Receipt ', tCollectNotActive: 'This student is not active — fee cannot be collected.', rcptReceipts: 'Receipts', rcptView: 'View', rcptPrint: 'Print / Save PDF', rcptCollectAgain: 'Collect Again', rcptNoReceipts: 'No receipts yet for this student.', rcptDraft: 'Draft — not saved yet', rcptCollectSave: 'Collect & Save', rcptNoLines: 'Nothing to collect for this period — set the fee amounts in Fee Structure first.'
   },
   hi: {
     dashboard: 'डैशबोर्ड', schools: 'स्कूल', users: 'उपयोगकर्ता', subscriptions: 'सदस्यता', analytics: 'विश्लेषण', settings: 'सेटिंग्स', reports: 'रिपोर्ट', help: 'सहायता', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalSchools: 'कुल स्कूल', totalUsers: 'कुल उपयोगकर्ता', activeSchools: 'सक्रिय स्कूल', pendingApproval: 'स्वीकृति लंबित', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -1220,7 +1287,8 @@ var I18N = {
     impTitle: 'छात्रों का बल्क आयात', impImportBtn: 'छात्र आयात करें', impTemplate: 'नमूना टेम्पलेट डाउनलोड करें', impTemplateSub: 'सिर्फ CSV प्रारूप — Excel (.xlsx) फ़ाइल यहाँ पढ़ी नहीं जा सकती। टेम्पलेट के कॉलम इस्तेमाल करें।', impChooseFile: 'CSV फ़ाइल चुनें', impPreview: 'आयात पूर्वावलोकन', impSummary: 'आयात सारांश', impValid: 'सही', impError: 'त्रुटि', impDuplicate: 'दोहरा', impReason: 'कारण', impConfirm: 'सही पंक्तियाँ आयात करें', impDone: 'पूर्ण', impNoRows: 'इस फ़ाइल में कोई पंक्ति नहीं मिली। कृपया टेम्पलेट जाँचें।', impBadHeader: 'यह फ़ाइल छात्र टेम्पलेट जैसी नहीं लगती — नाम वाला कॉलम नहीं मिला।', impNoFile: 'कृपया पहले CSV फ़ाइल चुनें।', impNoValid: 'आयात के लिए कोई सही पंक्ति नहीं है।', impImported: 'आयात हुए', impSkipped: 'छोड़े गए', impErrName: 'नाम आवश्यक है', impErrMobile: 'मोबाइल 10 अंकों का होना चाहिए', impErrMobile2: 'दूसरा मोबाइल 10 अंकों का होना चाहिए', impErrClass: 'कक्षा सही नहीं है', impErrSection: 'अनुभाग A, B या C होना चाहिए', impErrPin: 'पिन 6 अंकों का होना चाहिए', impErrAadhaar: 'आधार 12 अंकों का होना चाहिए', impErrDob: 'जन्म तिथि सही तारीख नहीं है', impErrAdmDate: 'प्रवेश तिथि सही तारीख नहीं है', impErrSession: 'सत्र सही नहीं है (जैसे 2025–26)', impErrGender: 'लिंग Boy, Girl या Other होना चाहिए', impErrBlood: 'रक्त समूह सही नहीं है', impErrCategory: 'श्रेणी General, OBC, SC, ST या Other होनी चाहिए', impErrEmail: 'अभिभावक ईमेल सही नहीं है', impErrRoll: 'रोल धनात्मक संख्या होनी चाहिए', impErrBool: 'Yes या No होना चाहिए', impErrDup: 'इसकी प्रतिलिपि', impErrDupFile: 'इस फ़ाइल में दोहरा', tImpDone: 'बल्क आयात पूर्ण हुआ।', tImpTemplate: 'नमूना टेम्पलेट डाउनलोड हुआ।',
     promoTitle: 'छात्रों को प्रोन्नत करें', promoBtn: 'छात्र प्रोन्नत करें', promoSingle: 'छात्र प्रोन्नत करें', promoFromSession: 'वर्तमान सत्र', promoFromClass: 'वर्तमान कक्षा', promoToSession: 'लक्ष्य सत्र', promoToClass: 'लक्ष्य कक्षा', promoToSection: 'लक्ष्य अनुभाग', promoSelectAll: 'सभी चुनें', promoSelectNone: 'कोई नहीं', promoSelected: 'चयनित', promoPromote: 'चयनित को प्रोन्नत करें', promoRetain: 'चयनित को रोकें', promoNoStudents: 'इस कक्षा और सत्र में कोई छात्र नहीं है।', promoNoSelect: 'कृपया कम से कम एक छात्र चुनें।', promoNoop: 'लक्ष्य कक्षा और सत्र वर्तमान जैसे ही हैं — बदलने को कुछ नहीं।', promoNoopRetain: 'लक्ष्य सत्र वर्तमान सत्र जैसा ही है — बदलने को कुछ नहीं।', promoDone: 'प्रोन्नति पूर्ण हुई।', promoPromoted: 'प्रोन्नत हुए', promoRetained: 'रोके गए', promoNote: 'उपस्थिति, शुल्क, परीक्षा अंक और होमवर्क इतिहास सुरक्षित रहता है।', promoSingleNote: 'एक छात्र की प्रोन्नति', promoSkipped: 'छोड़े गए (पहले ही स्थानांतरित)', promoNotEligible: 'केवल सक्रिय या निष्क्रिय छात्र ही प्रोन्नत हो सकते हैं।',
     idcPreview: 'ID कार्ड पूर्वावलोकन', idcPrint: 'छापें', idcPrintCards: 'ID कार्ड छापें', idcSelectAll: 'सभी चुनें', idcClearSel: 'चयन हटाएँ', idcReady: 'ID कार्ड छपाई के लिए तैयार', idcEmergency: 'आपातकालीन संपर्क', idcReturn: 'मिले तो कृपया लौटाएँ', idcNoQr: 'QR कोड नहीं बन सका।',
-    authParent: 'अभिभावक', parentAdmNo: 'प्रवेश संख्या', parentPinLabel: 'अभिभावक PIN', parentLoginBtn: 'अभिभावक के रूप में लॉगिन करें', parentNote: 'इस डिवाइस पर अभिभावक लॉगिन स्कूल द्वारा दिए गए PIN से होता है। सर्वर संस्करण में असली पासवर्ड अकाउंट आएँगे।', parentSub: 'अभिभावक', parentDashboard: 'मेरा बच्चा', tInvalidParent: 'प्रवेश संख्या या PIN गलत है।', tParentScope: 'आप केवल अपने बच्चे की प्रोफ़ाइल देख सकते हैं।', parentAccess: 'अभिभावक पहुँच', parentPinNow: 'वर्तमान अभिभावक PIN', parentPinNone: 'कोई PIN नहीं है — इस छात्र के लिए अभिभावक लॉगिन उपलब्ध नहीं है।', parentPinNew: 'नया PIN (4–6 अंक)', parentPinSetBtn: 'PIN सेट करें', parentPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'अभिभावक PIN सेट हो गया।', tPinCleared: 'अभिभावक PIN हटा दिया गया।', tPinAuto: 'डिफ़ॉल्ट PIN अभिभावक के मोबाइल के आखिरी 4 अंक होते हैं।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।'
+    authParent: 'अभिभावक', parentAdmNo: 'प्रवेश संख्या', parentPinLabel: 'अभिभावक PIN', parentLoginBtn: 'अभिभावक के रूप में लॉगिन करें', parentNote: 'इस डिवाइस पर अभिभावक लॉगिन स्कूल द्वारा दिए गए PIN से होता है। सर्वर संस्करण में असली पासवर्ड अकाउंट आएँगे।', parentSub: 'अभिभावक', parentDashboard: 'मेरा बच्चा', tInvalidParent: 'प्रवेश संख्या या PIN गलत है।', tParentScope: 'आप केवल अपने बच्चे की प्रोफ़ाइल देख सकते हैं।', parentAccess: 'अभिभावक पहुँच', parentPinNow: 'वर्तमान अभिभावक PIN', parentPinNone: 'कोई PIN नहीं है — इस छात्र के लिए अभिभावक लॉगिन उपलब्ध नहीं है।', parentPinNew: 'नया PIN (4–6 अंक)', parentPinSetBtn: 'PIN सेट करें', parentPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'अभिभावक PIN सेट हो गया।', tPinCleared: 'अभिभावक PIN हटा दिया गया।', tPinAuto: 'डिफ़ॉल्ट PIN अभिभावक के मोबाइल के आखिरी 4 अंक होते हैं।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।',
+    collectFeeBtn: 'शुल्क वसूलें', rcptTitle: 'शुल्क रसीद', rcptReceiptNo: 'रसीद संख्या', rcptDate: 'तारीख', rcptAdmNo: 'प्रवेश संख्या', rcptSession: 'सत्र', rcptName: 'नाम', rcptClass: 'कक्षा', rcptInstallment: 'किस्त', rcptCounter: 'काउंटर संख्या', rcptSlNo: 'क्र.सं.', rcptDesc: 'विवरण', rcptDue: 'देय', rcptCon: 'छूट', rcptPaid: 'जमा', rcptAdmissionFee: 'प्रवेश शुल्क', rcptTuitionFee: 'शिक्षण शुल्क', rcptCaution: 'जमानत राशि', rcptAnnual: 'वार्षिक शुल्क', rcptBusFee: 'बस शुल्क', rcptDues: 'बकाया', rcptPayModeTitle: 'भुगतान जानकारी', rcptPayMode: 'भुगतान माध्यम', rcptBank: 'बैंक', rcptNumber: 'संख्या', rcptTotal: 'कुल', rcptTotalWords: 'कुल (शब्दों में)', rcptComputerGen: 'यह कंप्यूटर द्वारा बनाई गई रसीद है। हस्ताक्षर की आवश्यकता नहीं है।', rcptParentCopy: 'अभिभावक प्रति', rcptCollectorSign: 'वसूलकर्ता के हस्ताक्षर', rcptIncludeBus: 'बस/परिवहन शामिल करें', rcptOtherFees: 'अन्य शुल्क', rcptAnnualHint: 'शुल्क वसूली रसीद पर दिखने वाली एकमुश्त और वार्षिक राशि। छिपाने के लिए 0 रखें।', payModeCash: 'नकद', payModeCheque: 'चेक', payModeUpi: 'UPI', payModeCard: 'कार्ड', payModeBank: 'बैंक ट्रांसफर', tFeeCollected: 'शुल्क वसूल लिया गया।', tCollectZero: 'वसूलने के लिए कुछ नहीं है — जमा राशि डालें।', tCollectSaved: 'शुल्क वसूल लिया गया — रसीद ', tCollectNotActive: 'यह छात्र सक्रिय नहीं है — शुल्क नहीं वसूला जा सकता।', rcptReceipts: 'रसीदें', rcptView: 'देखें', rcptPrint: 'प्रिंट / PDF सहेजें', rcptCollectAgain: 'फिर से वसूलें', rcptNoReceipts: 'इस छात्र की अभी कोई रसीद नहीं है।', rcptDraft: 'मसौदा — अभी सहेजा नहीं गया', rcptCollectSave: 'वसूलें और सहेजें', rcptNoLines: 'इस अवधि के लिए वसूलने को कुछ नहीं है — पहले शुल्क संरचना में राशि डालें।'
   }
 };
 function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || I18N.en[k] || k; }
@@ -1421,7 +1489,7 @@ function go(view) {
   var nav = NAV[state.role] || [];
   var ok = nav.some(function (n) { return n[0] === view; });
   state.view = ok ? view : 'dashboard';
-  if (state.view !== 'fees') state.feeStudent = null;
+  if (state.view !== 'fees') { state.feeStudent = null; state.collectStudent = null; state.collectRecordId = null; state.savedReceiptId = null; collectDraft = null; }
   state.profileStudent = null;
   promoState = null; importState.rows = null; importState.result = null;
   persistSession();
@@ -2418,6 +2486,7 @@ function saveAttendance() {
   toast('✓ ' + t('tAttSaved') + ' — Class ' + state.attCls + ' (' + state.attDate + ').');
 }
 function feesPage() {
+  if (state.collectStudent) return collectFeePage(state.collectStudent);
   if (state.feeStudent) return studentFeeProfile(state.feeStudent);
   var ft = feeTotals(), f = state.feeFilter, ty = state.feeType;
   var list = feeFiltered();
@@ -2431,7 +2500,7 @@ function feesPage() {
   var rows = list.slice(0, 120).map(function (r) {
     return '<tr><td><button class="linklike" onclick="return openFeeProfile(\'' + r.studentId + '\', event)">' + esc(r.student) + '</button></td><td>' + esc(enrOf(r.studentId)) + '</td><td>' + esc(r.cls) + '</td><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td>' +
       '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
-      '<td>' + (r.status === 'Pending' ? '<button class="btn green sm" onclick="collectFee(\'' + r.id + '\')">' + t('collectBtn') + '</button>' : '<span class="muted">—</span>') + '</td></tr>';
+      '<td>' + (r.status === 'Pending' ? '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button>' : '<span class="muted">—</span>') + '</td></tr>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('fees') + '</h2><p>' + t('collectedW') + ' ' + inr(ft.collected) + ' • ' + t('pendingW') + ' ' + inr(ft.pending) + ' (' + feeRangeLabel() + ')</p></div>' +
     '<div class="toolbar"><div class="pill-tabs">' + ['All', 'Pending', 'Collected'].map(function (x) {
@@ -2455,7 +2524,7 @@ function feesPage() {
 /* ================= student fee profile ================= */
 function openFeeProfile(sid, e) {
   if (e) e.preventDefault();
-  state.feeStudent = sid;
+  state.feeStudent = sid; state.collectStudent = null; state.collectRecordId = null; state.savedReceiptId = null; collectDraft = null;
   renderPage();
   return false;
 }
@@ -2473,10 +2542,11 @@ function studentFeeProfile(sid) {
   var rows = recs.map(function (r) {
     return '<tr><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td>' +
       '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
-      '<td>' + (r.status === 'Pending' ? '<button class="btn green sm" onclick="collectFee(\'' + r.id + '\')">' + t('collectBtn') + '</button>' : '<span class="muted">—</span>') + '</td></tr>';
+      '<td>' + (r.status === 'Pending' ? '<button class="btn green sm" onclick="openCollectFee(\'' + s.id + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button>' : '<span class="muted">—</span>') + '</td></tr>';
   }).join('');
   return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • ' + t('thGuardian') + ' ' + esc(s.guardian) + ' • ' + t('thPhone') + ' ' + esc(s.phone) + '</p><p class="muted">' + t('feeProfileSub') + '</p></div></div>' +
     '<div class="toolbar"><button class="btn ghost" onclick="state.feeStudent=null;renderPage()">← ' + t('backFees') + '</button>' +
+    '<button class="btn green" onclick="openCollectFee(\'' + s.id + '\')">💰 ' + t('collectFeeBtn') + '</button>' +
     '<button class="btn" onclick="openAddFeeFor(\'' + s.id + '\')">+ ' + t('addFee') + '</button>' +
     '<button class="btn ghost" onclick="printStudentStatement(\'' + s.id + '\')">🖨 ' + t('printStmt') + '</button></div></div>' +
     '<div class="stats">' +
@@ -2485,7 +2555,17 @@ function studentFeeProfile(sid) {
     statCard('⏰', 'red', t('totalPending'), pend, '', 'down', { prefix: '₹' }) +
     '</div>' +
     '<div class="card"><h3>' + t('feeByType') + '</h3><p class="card-sub">' + t('feeByTypeSub') + '</p><div class="type-rows">' + (btRows || '<div class="empty">' + t('tNoFeeRecs') + '</div>') + '</div></div>' +
-    '<div class="card"><h3>' + t('feeRecsH') + '</h3><p class="card-sub">' + recs.length + ' ' + t('recordsWord') + '</p><div class="tbl-wrap"><table><thead><tr><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6"><div class="empty">' + t('tNoFeeRecs') + '</div></td></tr>') + '</tbody></table></div></div>';
+    '<div class="card"><h3>' + t('feeRecsH') + '</h3><p class="card-sub">' + recs.length + ' ' + t('recordsWord') + '</p><div class="tbl-wrap"><table><thead><tr><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6"><div class="empty">' + t('tNoFeeRecs') + '</div></td></tr>') + '</tbody></table></div></div>' +
+    receiptListCard(sid);
+}
+function receiptListCard(sid) {
+  var rcs = (db.receipts || []).filter(function (r) { return r.studentId === sid; }).slice().reverse();
+  var rcRows = rcs.map(function (r) {
+    return '<tr><td>' + esc(r.receiptNo) + '</td><td>' + esc(r.date) + '</td><td>' + esc(payModeLabel(r.payMode)) + '</td><td>' + inr(r.total) + '</td>' +
+      '<td><button class="btn sm" onclick="openSavedReceipt(\'' + esc(r.receiptNo) + '\')">' + t('rcptView') + '</button> ' +
+      '<button class="btn ghost sm" onclick="printReceipt(\'' + esc(r.receiptNo) + '\')">🖨 ' + t('rcptPrint') + '</button></td></tr>';
+  }).join('');
+  return '<div class="card"><h3>' + t('rcptReceipts') + '</h3><p class="card-sub">' + rcs.length + ' ' + t('recordsWord') + '</p><div class="tbl-wrap"><table><thead><tr><th>' + t('rcptReceiptNo') + '</th><th>' + t('rcptDate') + '</th><th>' + t('rcptPayMode') + '</th><th>' + t('rcptTotal') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody>' + (rcRows || '<tr><td colspan="5"><div class="empty">' + t('rcptNoReceipts') + '</div></td></tr>') + '</tbody></table></div></div>';
 }
 
 /* ================= manual fee + fee structure + generate ================= */
@@ -2547,8 +2627,15 @@ function feeStructureCard() {
   }).join('');
   var clsOpts = CLASSES.map(function (c) { return '<option>' + c + '</option>'; }).join('');
   var moOpts = MONTHS_ACAD.map(function (m) { return '<option ' + (m === state.feeGenMonth ? 'selected' : '') + '>' + m + '</option>'; }).join('');
+  var ex = feeExtras();
   return '<div class="card"><div class="head-row"><div><h3>' + t('feeStruct') + '</h3><p class="card-sub">' + t('feeStructSub') + '</p></div><button class="btn sm" onclick="saveFeeStructure()">' + t('saveStruct') + '</button></div>' +
     '<div class="tbl-wrap"><table><thead><tr><th>' + t('thClass') + '</th><th>' + t('thType') + '</th><th>' + t('fAmount') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div class="rcpt-ex"><h4>' + t('rcptOtherFees') + '</h4><p class="card-sub">' + t('rcptAnnualHint') + '</p><div class="form-grid">' +
+    '<div><label>' + t('rcptAdmissionFee') + ' (₹)</label><input type="number" min="0" step="50" id="fsEx-admissionFee" value="' + ex.admissionFee + '"></div>' +
+    '<div><label>' + t('rcptCaution') + ' (₹)</label><input type="number" min="0" step="50" id="fsEx-cautionMoney" value="' + ex.cautionMoney + '"></div>' +
+    '<div><label>' + t('rcptAnnual') + ' (₹)</label><input type="number" min="0" step="50" id="fsEx-annualCharges" value="' + ex.annualCharges + '"></div>' +
+    '<div><label>' + t('rcptBusFee') + ' / ' + t('fMonth') + ' (₹)</label><input type="number" min="0" step="50" id="fsEx-transportFee" value="' + ex.transportFee + '"></div>' +
+    '</div></div>' +
     '<div class="toolbar" style="margin-top:14px"><select id="fsNewCls">' + clsOpts + '</select>' +
     '<select id="fsNewType" onchange="toggleCustom(\'fsNewType\',\'fsNewCustomWrap\')">' + feeTypeSelectOpts() + '</select>' +
     '<input id="fsNewAmt" type="number" min="1" step="50" placeholder="e.g. 1500" style="max-width:130px">' +
@@ -2560,6 +2647,15 @@ function feeStructureCard() {
 }
 function saveFeeStructure() {
   var rows = db.feeStructure || [];
+  var exVals = {};
+  var exKeys = ['admissionFee', 'cautionMoney', 'annualCharges', 'transportFee'];
+  for (var k = 0; k < exKeys.length; k++) {
+    var exInp = $('fsEx-' + exKeys[k]);
+    if (!exInp || exInp.value === '' || exInp.value == null) continue; // empty input: keep the stored amount
+    var exV = parseFloat(exInp.value);
+    if (isNaN(exV) || exV < 0) { toast(t('tAmtPositive')); return; }
+    exVals[exKeys[k]] = exV;
+  }
   for (var i = 0; i < rows.length; i++) {
     var inp = $('fsAmt-' + i);
     if (!inp) continue;
@@ -2567,6 +2663,8 @@ function saveFeeStructure() {
     if (isNaN(v) || v < 0) { toast(t('tAmtPositive')); return; }
     rows[i].amount = v;
   }
+  var ex = feeExtras();
+  Object.keys(exVals).forEach(function (k) { ex[k] = exVals[k]; });
   saveDB(db); renderPage();
   toast('✓ ' + t('tStructSaved'));
 }
@@ -2744,6 +2842,320 @@ function collectFee(id) {
   addActivity('💰', 'green', 'New fee payment received', 'by ' + r.student + ' • ' + inr(r.amount));
   saveDB(db); renderApp();
   toast('✓ ' + inr(r.amount) + ' ' + t('tCollectedFrom') + ' ' + r.student + '.');
+}
+
+/* ================= Phase 5: fee collection receipt (v13) =================
+   Modelled on the DPS fee receipt the user sent: school header, FEE RECEIPT
+   title, Receipt No / Date / Adm No / Session / Name / Class / Installment /
+   CounterNo, lines table (Sl.No, Description, Due, Con, Paid), PAY MODE
+   INFORMATION, Total in Words, QR, computer-generated line, PARENT COPY —
+   plus the student's photo and a Collector's Signature block (user's ask).
+   Lines auto-fill from real data; every Due / Con / Paid cell is editable.
+   Aadhaar is NEVER on the receipt. */
+var PAY_MODES = ['Cash', 'Cheque', 'UPI', 'Card', 'Bank Transfer'];
+function payModeLabel(m) {
+  var k = { 'Cash': 'payModeCash', 'Cheque': 'payModeCheque', 'UPI': 'payModeUpi', 'Card': 'payModeCard', 'Bank Transfer': 'payModeBank' }[m];
+  return k ? t(k) : m;
+}
+function collectMonthDefault() {
+  var curM = new Date().toLocaleString('en', { month: 'short' });
+  return MONTHS_ACAD.indexOf(curM) === -1 ? 'Sep' : curM;
+}
+function tuitionForClass(cls) {
+  var row = (db.feeStructure || []).find(function (r) { return r.cls === cls && r.type === 'Tuition'; });
+  if (row) return row.amount;
+  var part = classPartOf(cls);
+  var row2 = (db.feeStructure || []).find(function (r) { return classPartOf(r.cls) === part && r.type === 'Tuition'; });
+  return row2 ? row2.amount : 0;
+}
+function hasCollectedType(sid, type, session) {
+  return db.feeRecords.some(function (r) {
+    if (r.studentId !== sid || feeTypeOf(r) !== type || r.status !== 'Collected') return false;
+    if (session) return sessionOfDate(r.date) === session;
+    return true;
+  });
+}
+function busDefault(sid) {
+  return db.feeRecords.some(function (r) { return r.studentId === sid && feeTypeOf(r) === 'Transport'; });
+}
+// Auto-fill the receipt lines for a student + month. includeBus (default:
+// a Transport record already exists for the student) controls the bus row.
+function buildCollectLines(sid, prefRecordId, month, includeBus) {
+  var s = db.students.find(function (x) { return x.id === sid; });
+  if (!s) return [];
+  var ex = feeExtras();
+  var lines = [], linked = {};
+  var pref = prefRecordId ? db.feeRecords.find(function (r) { return r.id === prefRecordId && r.studentId === sid; }) : null;
+  if (pref) month = pref.month;
+  var sess = s.session || currentSession();
+  if (includeBus === undefined) includeBus = busDefault(sid);
+  function addLine(key, desc, type, mo, due, recordId, kind) {
+    lines.push({ key: key, desc: desc, type: type, month: mo, due: due, con: 0, paid: due, recordId: recordId || '', kind: kind });
+    if (recordId) linked[recordId] = 1;
+  }
+  // Current-period tuition: pending record amount wins, else structure amount;
+  // already Collected for this month -> nothing to collect, row omitted.
+  var tuRec = db.feeRecords.find(function (r) { return r.studentId === sid && r.month === month && feeTypeOf(r) === 'Tuition' && r.status === 'Pending'; });
+  var tuCol = !tuRec && db.feeRecords.some(function (r) { return r.studentId === sid && r.month === month && feeTypeOf(r) === 'Tuition' && r.status === 'Collected'; });
+  var tuAmt = tuRec ? tuRec.amount : (tuCol ? 0 : tuitionForClass(s.cls));
+  if (tuAmt > 0) addLine('tuition', t('rcptTuitionFee') + ' (' + month + ')', 'Tuition', month, tuAmt, tuRec ? tuRec.id : '', 'tuition');
+  // One-time fees: only while the school charges them AND none collected yet.
+  if (ex.admissionFee > 0 && !hasCollectedType(sid, 'Admission')) {
+    var aRec = db.feeRecords.find(function (r) { return r.studentId === sid && feeTypeOf(r) === 'Admission' && r.status === 'Pending'; });
+    addLine('admission', t('rcptAdmissionFee'), 'Admission', month, aRec ? aRec.amount : ex.admissionFee, aRec ? aRec.id : '', 'onetime');
+  }
+  if (ex.cautionMoney > 0 && !hasCollectedType(sid, 'Caution Money')) {
+    var cRec = db.feeRecords.find(function (r) { return r.studentId === sid && feeTypeOf(r) === 'Caution Money' && r.status === 'Pending'; });
+    addLine('caution', t('rcptCaution'), 'Caution Money', month, cRec ? cRec.amount : ex.cautionMoney, cRec ? cRec.id : '', 'onetime');
+  }
+  if (ex.annualCharges > 0 && !hasCollectedType(sid, 'Annual Charges', sess)) {
+    var anRec = db.feeRecords.find(function (r) { return r.studentId === sid && feeTypeOf(r) === 'Annual Charges' && r.status === 'Pending' && sessionOfDate(r.date) === sess; });
+    addLine('annual', t('rcptAnnual'), 'Annual Charges', month, anRec ? anRec.amount : ex.annualCharges, anRec ? anRec.id : '', 'onetime');
+  }
+  // Bus / transport: only when the checkbox is on (default: a Transport
+  // record already exists for the student).
+  if (ex.transportFee > 0 && includeBus) {
+    var trRec = db.feeRecords.find(function (r) { return r.studentId === sid && r.month === month && feeTypeOf(r) === 'Transport' && r.status === 'Pending'; });
+    addLine('transport', t('rcptBusFee') + ' (' + month + ')', 'Transport', month, trRec ? trRec.amount : ex.transportFee, trRec ? trRec.id : '', 'transport');
+  }
+  // Previous dues: one row per Pending record not already linked above.
+  db.feeRecords.filter(function (r) { return r.studentId === sid && r.status === 'Pending' && !linked[r.id]; })
+    .sort(function (a, b) { return (MONTH_NUM[a.month] || 99) - (MONTH_NUM[b.month] || 99) || (a.date < b.date ? -1 : a.date > b.date ? 1 : 0); })
+    .forEach(function (r) {
+      addLine('dues-' + r.id, t('rcptDues') + ' — ' + r.month + ' ' + feeTypeLabel(feeTypeOf(r)), feeTypeOf(r), r.month, r.amount, r.id, 'dues');
+    });
+  return lines;
+}
+function reapplyLineEdits(oldLines, newLines) {
+  newLines.forEach(function (nl) {
+    var o = (oldLines || []).find(function (x) { return x.key === nl.key; });
+    if (o) { nl.due = o.due; nl.con = o.con; nl.paid = o.paid; }
+  });
+}
+function newCollectDraft(sid, recordId) {
+  var month = collectMonthDefault();
+  var pref = recordId ? db.feeRecords.find(function (r) { return r.id === recordId; }) : null;
+  if (pref) month = pref.month;
+  return { studentId: sid, month: month, counterNo: 'COUNTER-1', payMode: 'Cash', payDate: todayIST(), bank: '', number: '', lines: buildCollectLines(sid, recordId, month), busIncluded: busDefault(sid) };
+}
+function openCollectFee(sid, recordId) {
+  if (state.role !== 'school') return;
+  var s = db.students.find(function (x) { return x.id === sid; });
+  if (!s || !canViewStudent(sid)) return;
+  if (s.status === 'Cancelled' || s.status === 'Draft') { toast(t('tCollectNotActive')); return; }
+  state.collectStudent = sid; state.collectRecordId = recordId || null; state.savedReceiptId = null;
+  state.view = 'fees'; state.feeStudent = sid;
+  collectDraft = newCollectDraft(sid, recordId);
+  renderPage();
+}
+function cancelCollectFee() {
+  state.collectStudent = null; state.collectRecordId = null; state.savedReceiptId = null; collectDraft = null;
+  renderPage();
+}
+// Read the on-screen inputs back into the draft. Missing / empty inputs
+// (e.g. harness stubs) keep the draft value — never wipe it.
+function readCollectInputs() {
+  var d = collectDraft; if (!d) return;
+  var m = $('rcptMonth'); if (m && m.value) d.month = m.value;
+  var c = $('rcptCounter'); if (c && c.value.trim()) d.counterNo = c.value.trim();
+  var pm = $('rcptPayMode'); if (pm && pm.value) d.payMode = pm.value;
+  var pd = $('rcptPayDate'); if (pd && pd.value) d.payDate = pd.value;
+  var bk = $('rcptBank'); if (bk) d.bank = bk.value || '';
+  var nb = $('rcptNumber'); if (nb) d.number = nb.value || '';
+  d.lines.forEach(function (ln) {
+    var dv = $('rcptDue-' + ln.key), cv = $('rcptCon-' + ln.key), pv = $('rcptPaid-' + ln.key), v;
+    if (dv) { v = parseFloat(dv.value); if (!isNaN(v) && v >= 0) ln.due = v; }
+    if (cv) { v = parseFloat(cv.value); if (!isNaN(v) && v >= 0) ln.con = v; }
+    if (pv) { v = parseFloat(pv.value); if (!isNaN(v) && v >= 0) ln.paid = v; }
+  });
+}
+function collectDraftTotal(d) { var tot = 0; (d.lines || []).forEach(function (ln) { tot += +ln.paid || 0; }); return tot; }
+function collectTotalsUpdate() {
+  var d = collectDraft; if (!d) return;
+  var tot = collectDraftTotal(d);
+  var t1 = $('collectTotal'), t2 = $('payModeTotal'), t3 = $('totalWords');
+  if (t1) t1.textContent = inr(tot);
+  if (t2) t2.textContent = inr(tot);
+  if (t3) t3.textContent = numberToWords(tot);
+  var qr = $('rcptQr');
+  if (qr) {
+    var s = db.students.find(function (x) { return x.id === d.studentId; });
+    var svg = qrSvgFor(receiptPayload(nextReceiptNo(true), s, tot), 120);
+    if (svg) qr.innerHTML = svg;
+  }
+}
+// Paid defaults to Due - Con and re-computes live when Due or Con changes.
+function collectLineEdit(el) {
+  var d = collectDraft; if (!d) return;
+  var key = el.getAttribute('data-line'), field = el.getAttribute('data-field');
+  var ln = d.lines.find(function (x) { return x.key === key; });
+  if (!ln) return;
+  var v = parseFloat(el.value); if (isNaN(v) || v < 0) v = 0;
+  if (field === 'due' || field === 'con') {
+    if (field === 'due') ln.due = v; else ln.con = v;
+    ln.paid = Math.max(0, ln.due - ln.con);
+    var p = $('rcptPaid-' + key); if (p) p.value = ln.paid;
+  } else if (field === 'paid') {
+    ln.paid = Math.min(v, Math.max(0, ln.due - ln.con));
+    el.value = ln.paid;
+  }
+  collectTotalsUpdate();
+}
+function collectMonthChange(sel) {
+  var d = collectDraft; if (!d) return;
+  readCollectInputs();
+  var old = d.lines; d.month = sel.value;
+  d.lines = buildCollectLines(d.studentId, state.collectRecordId, d.month, d.busIncluded);
+  reapplyLineEdits(old, d.lines);
+  renderPage();
+}
+function collectBusToggle(cb) {
+  var d = collectDraft; if (!d) return;
+  readCollectInputs();
+  var old = d.lines; d.busIncluded = !!cb.checked;
+  d.lines = buildCollectLines(d.studentId, state.collectRecordId, d.month, d.busIncluded);
+  reapplyLineEdits(old, d.lines);
+  renderPage();
+}
+function collectPayModeChange(sel) {
+  var d = collectDraft; if (!d) return;
+  d.payMode = sel.value;
+  var show = sel.value === 'Cheque' || sel.value === 'Card' || sel.value === 'Bank Transfer';
+  var br = $('rcptBankRow'); if (br) br.classList.toggle('hidden', !show);
+}
+function receiptPayload(receiptNo, s, total) {
+  return ['SCHOOL-SAATHI', 'RECEIPT', receiptNo || '', (s && (s.admissionNo || s.enr)) || '', (s && s.name) || '', total || 0].join('|');
+}
+function receiptViewFromDraft(d, s) {
+  var tot = collectDraftTotal(d);
+  return { receiptNo: nextReceiptNo(true), date: todayIST(), month: d.month, session: s.session || currentSession(), counterNo: d.counterNo, lines: d.lines, payMode: d.payMode, payDate: d.payDate, bank: d.bank, number: d.number, total: tot, totalWords: numberToWords(tot), collector: state.user ? state.user.name : '' };
+}
+// One receipt renderer for the draft page, the saved view and print. Never
+// includes Aadhaar (the receipt has no field for it by design).
+function receiptHTML(rcpt, s, editable) {
+  var logoHtml = db.profile.logo ? '<img class="rcpt-logo" src="' + esc(db.profile.logo) + '" alt="">' : '<span class="rcpt-logo-cap">🎓</span>';
+  var moOpts = MONTHS_ACAD.map(function (m) { return '<option value="' + m + '" ' + (m === rcpt.month ? 'selected' : '') + '>' + m + '</option>'; }).join('');
+  var meta = '<div class="rcpt-meta"><div class="rcpt-meta-grid">' +
+    '<span><b>' + t('rcptReceiptNo') + '</b> : ' + esc(rcpt.receiptNo) + (editable ? ' <span class="muted">(' + t('rcptDraft') + ')</span>' : '') + '</span>' +
+    '<span><b>' + t('rcptDate') + '</b> : ' + esc(rcpt.date) + '</span>' +
+    '<span><b>' + t('rcptAdmNo') + '</b> : ' + esc(s.admissionNo || s.enr || '—') + '</span>' +
+    '<span><b>' + t('rcptSession') + '</b> : ' + esc(rcpt.session || '') + '</span>' +
+    '<span><b>' + t('rcptName') + '</b> : ' + esc(s.name) + '</span>' +
+    '<span><b>' + t('rcptClass') + '</b> : ' + esc(s.cls) + '</span>' +
+    '<span><b>' + t('rcptInstallment') + '</b> : ' + (editable ? '<select id="rcptMonth" onchange="collectMonthChange(this)">' + moOpts + '</select>' : esc(rcpt.month)) + '</span>' +
+    '<span><b>' + t('rcptCounter') + '</b> : ' + (editable ? '<input id="rcptCounter" value="' + esc(rcpt.counterNo) + '">' : esc(rcpt.counterNo)) + '</span></div>' +
+    avatarHTML(s.photo, s.name, 'rcpt-photo') + '</div>';
+  var rows = rcpt.lines.map(function (ln, i) {
+    if (editable) {
+      return '<tr><td>' + (i + 1) + '</td><td>' + esc(ln.desc) + '</td>' +
+        '<td><input type="number" min="0" step="1" id="rcptDue-' + ln.key + '" data-line="' + ln.key + '" data-field="due" value="' + ln.due + '" oninput="collectLineEdit(this)"></td>' +
+        '<td><input type="number" min="0" step="1" id="rcptCon-' + ln.key + '" data-line="' + ln.key + '" data-field="con" value="' + ln.con + '" oninput="collectLineEdit(this)"></td>' +
+        '<td><input type="number" min="0" step="1" id="rcptPaid-' + ln.key + '" data-line="' + ln.key + '" data-field="paid" value="' + ln.paid + '" oninput="collectLineEdit(this)"></td></tr>';
+    }
+    return '<tr><td>' + (i + 1) + '</td><td>' + esc(ln.desc) + '</td><td>' + ln.due + '</td><td>' + ln.con + '</td><td>' + ln.paid + '</td></tr>';
+  }).join('');
+  var busBox = '';
+  if (editable && feeExtras().transportFee > 0) {
+    busBox = '<label class="check rcpt-bus"><input type="checkbox" id="rcptBus" ' + (collectDraft && collectDraft.busIncluded ? 'checked' : '') + ' onchange="collectBusToggle(this)"> ' + t('rcptIncludeBus') + '</label>';
+  }
+  var showBank = rcpt.payMode === 'Cheque' || rcpt.payMode === 'Card' || rcpt.payMode === 'Bank Transfer';
+  var payOpts = PAY_MODES.map(function (m) { return '<option value="' + m + '" ' + (m === rcpt.payMode ? 'selected' : '') + '>' + payModeLabel(m) + '</option>'; }).join('');
+  var pay = '<div class="rcpt-band">' + t('rcptPayModeTitle') + '</div><div class="rcpt-pay-grid">' +
+    '<span><b>' + t('rcptPayMode') + '</b> ' + (editable ? '<select id="rcptPayMode" onchange="collectPayModeChange(this)">' + payOpts + '</select>' : esc(payModeLabel(rcpt.payMode))) + '</span>' +
+    '<span><b>' + t('rcptDate') + '</b> ' + (editable ? '<input type="date" id="rcptPayDate" value="' + esc(rcpt.payDate) + '">' : esc(rcpt.payDate)) + '</span>' +
+    '<span id="rcptBankRow" class="' + (showBank ? '' : 'hidden') + '"><b>' + t('rcptBank') + '</b> ' + (editable ? '<input id="rcptBank" value="' + esc(rcpt.bank || '') + '">' : esc(rcpt.bank || '—')) + '</span>' +
+    '<span><b>' + t('rcptNumber') + '</b> ' + (editable ? '<input id="rcptNumber" value="' + esc(rcpt.number || '') + '">' : esc(rcpt.number || '—')) + '</span>' +
+    '<span><b>' + t('rcptTotal') + '</b> <b id="payModeTotal">' + inr(rcpt.total) + '</b></span></div>';
+  var qr = qrSvgFor(receiptPayload(rcpt.receiptNo, s, rcpt.total), 120);
+  return '<div class="rcpt">' +
+    '<div class="rcpt-head">' + logoHtml + '<div><div class="rcpt-school">' + esc(db.profile.name) + '</div><div class="rcpt-addr">' + esc(db.profile.address || '') + '</div></div></div>' +
+    '<div class="rcpt-title">' + t('rcptTitle') + '</div>' +
+    meta +
+    '<div class="rcpt-lines"><div class="tbl-wrap rcpt-tbl"><table><thead><tr><th>' + t('rcptSlNo') + '</th><th>' + t('rcptDesc') + '</th><th>' + t('rcptDue') + '</th><th>' + t('rcptCon') + '</th><th>' + t('rcptPaid') + '</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5"><div class="empty">' + t('rcptNoLines') + '</div></td></tr>') + '</tbody></table></div></div>' +
+    busBox + pay +
+    '<div class="rcpt-total"><span><b>' + t('rcptTotal') + ' :</b></span><b id="collectTotal">' + inr(rcpt.total) + '</b></div>' +
+    '<div class="rcpt-words"><b>' + t('rcptTotalWords') + ':</b> <span id="totalWords">' + esc(rcpt.totalWords) + '</span></div>' +
+    '<div class="rcpt-foot"><div class="rcpt-qr" id="rcptQr">' + (qr || '<div class="id-qr-missing">' + t('idcNoQr') + '</div>') + '</div>' +
+    '<div class="rcpt-note">' + t('rcptComputerGen') + '</div>' +
+    '<div class="rcpt-sign"><div class="rcpt-sign-line"></div><div>' + t('rcptCollectorSign') + '</div><div><b>' + esc(rcpt.collector || '') + '</b></div></div></div>' +
+    '<div class="rcpt-copy">' + t('rcptParentCopy') + '</div></div>';
+}
+function collectFeePage(sid) {
+  var s = db.students.find(function (x) { return x.id === sid; });
+  if (!s) { state.collectStudent = null; return feesPage(); }
+  if (state.savedReceiptId) {
+    var rc = (db.receipts || []).find(function (r) { return r.receiptNo === state.savedReceiptId; });
+    if (rc) {
+      return '<div class="page-head"><div><h2>' + t('rcptTitle') + '</h2><p>' + esc(s.name) + ' • ' + esc(s.cls) + ' • ' + esc(s.admissionNo || '') + '</p></div>' +
+        '<div class="toolbar"><button class="btn ghost" onclick="state.savedReceiptId=null;state.collectStudent=null;renderPage()">← ' + t('backFees') + '</button></div></div>' +
+        receiptHTML(rc, s, false) +
+        '<div class="actions"><button class="btn" onclick="printReceipt(\'' + esc(rc.receiptNo) + '\')">🖨 ' + t('rcptPrint') + '</button>' +
+        '<button class="btn green" onclick="openCollectFee(\'' + s.id + '\')">' + t('rcptCollectAgain') + '</button></div>';
+    }
+    state.savedReceiptId = null;
+  }
+  var d = collectDraft;
+  if (!d || d.studentId !== sid) { d = collectDraft = newCollectDraft(sid, state.collectRecordId); }
+  var view = receiptViewFromDraft(d, s);
+  return '<div class="page-head"><div><h2>' + t('collectFeeBtn') + '</h2><p>' + esc(s.name) + ' • ' + esc(s.cls) + ' • ' + esc(s.admissionNo || '') + '</p></div>' +
+    '<div class="toolbar"><button class="btn ghost" onclick="cancelCollectFee()">← ' + t('backFees') + '</button></div></div>' +
+    receiptHTML(view, s, true) +
+    '<div class="actions"><button class="btn green" onclick="saveCollectFee(event)">💰 ' + t('rcptCollectSave') + '</button>' +
+    '<button class="btn ghost" onclick="cancelCollectFee()">' + t('cancel') + '</button></div>';
+}
+function saveCollectFee(e) {
+  if (e) e.preventDefault();
+  var d = collectDraft; if (!d) return false;
+  readCollectInputs();
+  var s = db.students.find(function (x) { return x.id === d.studentId; });
+  if (!s) return false;
+  var total = collectDraftTotal(d);
+  if (total <= 0) { toast(t('tCollectZero')); return false; }
+  var receiptNo = nextReceiptNo(false);
+  var today = d.payDate || todayIST();
+  var savedLines = [];
+  d.lines.forEach(function (ln, i) {
+    var paid = +ln.paid || 0, due = +ln.due || 0, con = +ln.con || 0;
+    var net = Math.max(0, due - con);
+    savedLines.push({ desc: ln.desc, type: ln.type, month: ln.month, due: due, con: con, paid: paid });
+    if (paid <= 0) return;
+    var rec = ln.recordId ? db.feeRecords.find(function (r) { return r.id === ln.recordId; }) : null;
+    if (rec) {
+      if (paid >= net) { rec.status = 'Collected'; rec.amount = net; rec.date = today; }
+      else {
+        rec.amount = net - paid; // remainder stays Pending
+        db.feeRecords.push({ id: 'fee' + Date.now() + '_' + i, studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: paid, status: 'Collected', date: today });
+      }
+    } else {
+      db.feeRecords.push({ id: 'fee' + Date.now() + '_' + i, studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: paid, status: 'Collected', date: today });
+      if (paid < net) db.feeRecords.push({ id: 'fee' + Date.now() + '_p' + i, studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: net - paid, status: 'Pending', date: today });
+    }
+  });
+  var rc = { receiptNo: receiptNo, studentId: s.id, admissionNo: s.admissionNo || s.enr || '', name: s.name, cls: s.cls, session: s.session || currentSession(), date: today, month: d.month, counterNo: d.counterNo, lines: savedLines, payMode: d.payMode, payDate: d.payDate, bank: d.bank, number: d.number, total: total, totalWords: numberToWords(total), collector: state.user ? state.user.name : '' };
+  if (!Array.isArray(db.receipts)) db.receipts = [];
+  db.receipts.push(rc);
+  refreshStudentFee(s.id);
+  logAudit('Fee collected', s.name + ' • ' + receiptNo + ' • ₹' + total);
+  addActivity('💰', 'green', 'Fee collected', s.name + ' • ' + receiptNo + ' • ' + inr(total));
+  saveDB(db);
+  state.savedReceiptId = receiptNo; collectDraft = null;
+  renderApp();
+  toast('✓ ' + t('tCollectSaved') + receiptNo + ' • ' + inr(total));
+  return false;
+}
+function openSavedReceipt(receiptNo) {
+  var rc = (db.receipts || []).find(function (r) { return r.receiptNo === receiptNo; });
+  if (!rc) return;
+  state.collectStudent = rc.studentId; state.savedReceiptId = receiptNo; state.feeStudent = rc.studentId; state.view = 'fees';
+  renderPage();
+}
+function printReceipt(receiptNo) {
+  var rc = (db.receipts || []).find(function (r) { return r.receiptNo === receiptNo; });
+  if (!rc) return;
+  var s = db.students.find(function (x) { return x.id === rc.studentId; });
+  if (!s) return;
+  $('printArea').innerHTML = '<div class="print-rcpt">' + receiptHTML(rc, s, false) + '</div>';
+  if (window.print) window.print();
 }
 var PAGE_SCHOOL = { dashboard: schoolDashboard, students: studentsPage, attendance: attendancePage, fees: feesPage, exams: null, homework: null, notices: null, reports: null, settings: null };
 
