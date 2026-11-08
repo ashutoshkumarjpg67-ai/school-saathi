@@ -349,3 +349,38 @@ tbody tr:hover{background:#F8FAFC}
 @media (max-width:760px){
   .promo-row{flex-wrap:wrap}
 }
+
+/* ---- Phase 3: ID cards (v11) ---- */
+.sel-col{width:40px;text-align:center}
+.sel-col input[type=checkbox]{width:18px!important;height:18px;accent-color:var(--blue);cursor:pointer;vertical-align:middle}
+.id-bulk-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:16px}
+.id-sheet{display:flex;gap:14px;flex-wrap:wrap;justify-content:flex-start}
+.id-card{width:85.6mm;height:54mm;border-radius:3mm;overflow:hidden;flex:none;display:flex;flex-direction:column;background:#fff;border:1px solid #CBD5E1;box-shadow:0 2px 8px rgba(15,23,42,.12);-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.id-front .id-head{background:var(--navy);color:#F5B731;display:flex;align-items:center;gap:8px;padding:6px 10px}
+.id-logo-img{width:22px;height:22px;object-fit:contain;background:#fff;border-radius:5px;flex:none}
+.id-logo-cap{font-size:18px;line-height:1}
+.id-school{font-weight:800;font-size:13px;letter-spacing:.2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.id-body{flex:1;display:flex;gap:10px;align-items:center;padding:8px 10px;min-height:0}
+.id-photo{width:52px;height:52px;border-radius:50%;background:var(--navy);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:19px;flex:none;overflow:hidden}
+.id-photo img{width:100%;height:100%;object-fit:cover;display:block}
+.id-info{display:flex;flex-direction:column;gap:1px;min-width:0;font-size:11.5px;color:#334155}
+.id-name{font-size:15px;color:var(--navy);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.id-foot{background:#F5B731;color:var(--navy);font-size:10.5px;font-weight:700;padding:4px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.id-back{flex-direction:row;align-items:center;gap:10px;padding:8px 10px}
+.id-qr-wrap{flex:none;line-height:0}
+.id-qr{width:150px;height:150px;display:block}
+.id-qr-missing{width:150px;height:150px;display:flex;align-items:center;justify-content:center;text-align:center;font-size:11px;color:var(--muted);border:1px dashed var(--border);border-radius:6px;padding:6px}
+.id-back-info{flex:1;display:flex;flex-direction:column;gap:3px;font-size:10.5px;color:#334155;min-width:0}
+.id-back-info span{overflow:hidden;overflow-wrap:anywhere}
+.id-return{font-size:10px;font-style:italic;color:var(--muted)}
+.id-preview{display:flex;flex-direction:column;gap:14px;margin:12px 0}
+@media print{
+  #printArea .id-sheet{page-break-after:always}
+  #printArea .id-sheet:last-child{page-break-after:auto}
+  #printArea .id-card{box-shadow:none}
+}
+@media (max-width:760px){
+  .id-sheet{justify-content:center}
+  .id-qr{width:120px;height:120px}
+  .id-qr-missing{width:120px;height:120px}
+}

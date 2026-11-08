@@ -259,11 +259,12 @@ function saveDB(db) {
 var db = loadDB();
 
 /* ================= state ================= */
-var state = { role: null, user: null, view: 'dashboard', lang: 'en', feeFilter: 'All', feeType: 'All', feeSearch: '', feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', attSnapKey: '', attSnap: {} };
+var state = { role: null, user: null, view: 'dashboard', lang: 'en', feeFilter: 'All', feeType: 'All', feeSearch: '', feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', attSnapKey: '', attSnap: {}, stuSel: {} };
 
 /* Phase 2: bulk import + promotion state (in-memory only, never persisted). */
 var importState = { rows: null, fileName: '', result: null };
 var promoState = null;
+var pendingIdPrint = []; // student ids queued for the ID-card print flow (in-memory only).
 
 /* ================= utils ================= */
 function $(id) { return document.getElementById(id); }
@@ -1101,7 +1102,8 @@ var I18N = {
     contactPhone: 'Phone', contactHours: 'Hours', hoursV: 'Mon–Sat, 9 AM – 6 PM', raiseSupport: 'Raise a Support Request', supportNoted: 'Support request noted — we will call you back.',
     sampleList: 'sample list below', plansSub: 'Per-student monthly pricing', collectedW: 'Collected', pendingW: 'Pending', allW: 'All', editStudent: 'Edit Student', thePlatform: 'the platform', repSchoolsSub: 'city, students, plan, status', subActive: 'Active', subExpired: 'Expired', subTrial: 'Trial', feeTypeTuition: 'Tuition', feeTypeAdmission: 'Admission', feeTypeTransport: 'Transport', feeTypeExam: 'Exam', feeTypeLibrary: 'Library', feeTypeActivity: 'Activity', feeTypeComputer: 'Computer Lab', feeTypeOther: 'Other', allTypes: 'All Types', searchFee: 'Search name, enrollment no. or class…', thEnr: 'Enr. No.', thType: 'Type', feeByType: 'Fee by Type', feeByTypeSub: 'Collected and pending per fee type, computed live.', addFee: 'Add Fee', addFeeSub: 'Add one fee record manually for any student.', feeStruct: 'Fee Structure', feeStructSub: 'Monthly amount per class. Generate uses this to create fee records.', genFees: 'Generate Fees', saveStruct: 'Save Structure', addRow: 'Add Row', customType: 'Custom…', typeCustomPh: 'Type a custom fee type', fStudent: 'Student', fMonth: 'Month', fType: 'Fee Type', fAmount: 'Amount (₹)', fStatus: 'Status', fDate: 'Date', printList: 'Print List', printStmt: 'Print Statement', backFees: 'Back to All Fees', totalBilled: 'Total Billed', totalPaid: 'Paid', totalPending: 'Pending', feeRecsH: 'Fee Records', feeProfileSub: 'All fee records for this student in one place.', tFeeAdded: 'Fee record added.', tPickStudent: 'Please choose a student.', tAmtPositive: 'Amount must be more than 0.', tTypeRequired: 'Please type the custom fee type.', tStructSaved: 'Fee structure saved.', tStructAdded: 'Structure row added.', tStructRemoved: 'Structure row removed.', tGenRecords: 'fee records generated for', tGenSkipped: 'already existed', tNoFeeRecs: 'No fee records yet for this student.', printTitle: 'Fee Statement', printListTitle: 'Fee List', printGenOn: 'Generated on', closeW: 'Close', saveFeeBtn: 'Save Fee', photoLabel: 'Student Photo', photoHint: 'Photo is compressed automatically (max 512px, ~120KB).', removePhoto: 'Remove photo', logoLabel: 'School Logo', logoHint: 'Logo is compressed automatically (max 256px, PNG keeps transparency).', removeLogo: 'Remove logo', tPhotoTooBig: 'That photo is too large even after compression. Please choose a smaller photo.', tLogoTooBig: 'That logo is too large even after compression. Please choose a smaller logo.', tPhotoError: 'Could not read that image. Please choose another file.', aadhaarHint: 'Optional. Stored securely and never shown in full.', actActivate: 'Activate Student', actAtt: 'View Attendance', actDeactivate: 'Deactivate Student', actDownload: 'Download Details', actEdit: 'Edit Student', actFees: 'View Fees', actIdCard: 'Print ID Card', actResults: 'View Results', actTransfer: 'Transfer Student', actView: 'View Profile', actionsW: 'Actions', admNoAuto: 'Auto-generated', allClasses: 'All Classes', allFeeSt: 'All Fee Status', allGenders: 'All Genders', allSections: 'All Sections', allSessions: 'All Sessions', allStatus: 'All Statuses', attPct: 'Attendance', backDir: 'Back to Directory', cancelAdm: 'Cancel Admission', cancelAdmMsg: 'Cancel this admission? The student record will be kept with status Cancelled.', docMissing: 'Not received', docStatus: 'Received', docsNote: 'Document files will be uploaded in the server phase. This checklist records what has been received.', exportCsv: 'Export CSV', fAadhaar: 'Aadhaar Number (optional)', fAdmDate: 'Admission Date', fAdmNo: 'Admission Number', fBirthCert: 'Birth Certificate', fBlood: 'Blood Group', fCategory: 'Category', fDistrict: 'District', fDob: 'Date of Birth', fDocsOther: 'Other Documents (notes)', fFather: 'Father\'s Name', fGender: 'Gender', fMother: 'Mother\'s Name', fOccupation: 'Occupation', fParentEmail: 'Parent Email', fPhone2: 'Secondary Mobile', fPin: 'PIN Code', fPrevClass: 'Previous Class', fPrevSchool: 'Previous School', fSection: 'Section', fState: 'State', fTc: 'Transfer Certificate (TC)', fTcNo: 'Transfer Certificate No.', feeSt: 'Fee Status', hwDone: 'Done', hwPend: 'Pending', hwPending: 'Homework Pending', latestExam: 'Latest Exam', nextW: 'Next', noActivity: 'No activity recorded yet.', noAttRecs: 'No attendance records yet for this student.', noExamRecs: 'No examination results yet.', noHwRecs: 'No homework records for this class.', openFees: 'Open Fee Page', pgOf: 'of', pgPage: 'Page', phase3W: 'Phase 3', prevW: 'Previous', saveAddAnother: 'Save & Add Another', saveDraft: 'Save as Draft', secAcademic: 'Academic Details', secDocs: 'Documents', secParent: 'Parent / Guardian Details', secPersonal: 'Personal Details', stActive: 'Active Students', stAvgAtt: 'Average Attendance', stBoys: 'Boys', stByClass: 'Students by Class', stByClassSub: 'Number of students in each class-section.', stGenderDist: 'Boys & Girls', stGenderSub: 'Gender distribution across the school.', stGirls: 'Girls', stInactive: 'Inactive Students', stNewAdm: 'New Admissions', stNotSpec: 'Not specified', stPendFee: 'Students with Pending Fees', stTotal: 'Total Students', stuSearchPh: 'Search name, admission no. or mobile…', tActMsg: 'Activate student', tActivated: 'Student activated.', tAdmCancelled: 'Admission cancelled. The record is kept.', tAdmCreated: 'Admission saved. Admission No. ', tCsvExported: 'Student list exported.', tDeactMsg: 'Deactivate student', tDeactivated: 'Student deactivated.', tDraftSaved: 'Draft saved.', tDupFound: 'A matching student already exists: ', tInvalidAadhaar: 'Aadhaar must be 12 digits (optional).', tInvalidMobile: 'Enter a valid 10-digit mobile number.', tInvalidPin: 'PIN code must be 6 digits.', tPickClass: 'Please choose a class.', tReqFields: 'Please fill Student Name, Primary Mobile, Class and Section.', tStuCsvOne: 'Student details downloaded.', tTransferred: 'Student transferred.', tabAcademic: 'Academic Records', tabActivity: 'Activity History', tabAttendance: 'Attendance History', tabDocs: 'Documents', tabFees: 'Fee History', tabHomework: 'Homework Records', tabOverview: 'Overview', tabParent: 'Parent Information', tabPersonal: 'Personal Information', tabResults: 'Examination Results', thAdmNo: 'Admission No.', thExam: 'Exam', thFather: 'Father\'s Name', transferTitle: 'Transfer Student', transferTo: 'New Class & Section', idCardSoon: 'ID Card generator comes in Phase 3.',
     impTitle: 'Bulk Import Students', impImportBtn: 'Import Students', impTemplate: 'Download Sample Template', impTemplateSub: 'CSV format only — Excel (.xlsx) files cannot be read here. Use the template columns.', impChooseFile: 'Choose CSV File', impPreview: 'Import Preview', impSummary: 'Import Summary', impValid: 'Valid', impError: 'Error', impDuplicate: 'Duplicate', impReason: 'Reason', impConfirm: 'Import Valid Rows', impDone: 'Done', impNoRows: 'No rows found in this file. Please check the template.', impBadHeader: 'This file does not look like the student template — the Name column is missing.', impNoFile: 'Please choose a CSV file first.', impNoValid: 'No valid rows to import.', impImported: 'imported', impSkipped: 'skipped', impErrName: 'Name is required', impErrMobile: 'Mobile must be 10 digits', impErrMobile2: 'Secondary mobile must be 10 digits', impErrClass: 'Class is not valid', impErrSection: 'Section must be A, B or C', impErrPin: 'PIN must be 6 digits', impErrAadhaar: 'Aadhaar must be 12 digits', impErrDob: 'Date of birth is not a valid date', impErrAdmDate: 'Admission date is not a valid date', impErrSession: 'Session is not valid (e.g. 2025–26)', impErrGender: 'Gender must be Boy, Girl or Other', impErrBlood: 'Blood group is not valid', impErrCategory: 'Category must be General, OBC, SC, ST or Other', impErrEmail: 'Parent email is not valid', impErrRoll: 'Roll must be a positive number', impErrBool: 'Must be Yes or No', impErrDup: 'Duplicate of', impErrDupFile: 'Duplicate in this file', tImpDone: 'Bulk import complete.', tImpTemplate: 'Sample template downloaded.',
-    promoTitle: 'Promote Students', promoBtn: 'Promote Students', promoSingle: 'Promote Student', promoFromSession: 'Current Session', promoFromClass: 'Current Class', promoToSession: 'Target Session', promoToClass: 'Target Class', promoToSection: 'Target Section', promoSelectAll: 'Select All', promoSelectNone: 'Select None', promoSelected: 'selected', promoPromote: 'Promote Selected', promoRetain: 'Retain Selected', promoNoStudents: 'No students in this class and session.', promoNoSelect: 'Please select at least one student.', promoNoop: 'Target class and session are the same as current — nothing to change.', promoNoopRetain: 'Target session is the same as the current session — nothing to change.', promoDone: 'Promotion complete.', promoPromoted: 'promoted', promoRetained: 'retained', promoNote: 'Attendance, fees, exam marks and homework history are preserved.', promoSingleNote: 'Single student promotion', promoSkipped: 'skipped (already moved)', promoNotEligible: 'Only Active or Inactive students can be promoted.'
+    promoTitle: 'Promote Students', promoBtn: 'Promote Students', promoSingle: 'Promote Student', promoFromSession: 'Current Session', promoFromClass: 'Current Class', promoToSession: 'Target Session', promoToClass: 'Target Class', promoToSection: 'Target Section', promoSelectAll: 'Select All', promoSelectNone: 'Select None', promoSelected: 'selected', promoPromote: 'Promote Selected', promoRetain: 'Retain Selected', promoNoStudents: 'No students in this class and session.', promoNoSelect: 'Please select at least one student.', promoNoop: 'Target class and session are the same as current — nothing to change.', promoNoopRetain: 'Target session is the same as the current session — nothing to change.', promoDone: 'Promotion complete.', promoPromoted: 'promoted', promoRetained: 'retained', promoNote: 'Attendance, fees, exam marks and homework history are preserved.', promoSingleNote: 'Single student promotion', promoSkipped: 'skipped (already moved)', promoNotEligible: 'Only Active or Inactive students can be promoted.',
+    idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.'
   },
   hi: {
     dashboard: 'डैशबोर्ड', schools: 'स्कूल', users: 'उपयोगकर्ता', subscriptions: 'सदस्यता', analytics: 'विश्लेषण', settings: 'सेटिंग्स', reports: 'रिपोर्ट', help: 'सहायता', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalSchools: 'कुल स्कूल', totalUsers: 'कुल उपयोगकर्ता', activeSchools: 'सक्रिय स्कूल', pendingApproval: 'स्वीकृति लंबित', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -1143,7 +1145,8 @@ var I18N = {
     contactPhone: 'फ़ोन', contactHours: 'समय', hoursV: 'सोम–शनि, सुबह 9 – शाम 6', raiseSupport: 'सहायता अनुरोध भेजें', supportNoted: 'सहायता अनुरोध दर्ज हुआ — हम आपको कॉल करेंगे।',
     sampleList: 'नमूना सूची नीचे', plansSub: 'प्रति छात्र मासिक मूल्य', collectedW: 'संग्रह', pendingW: 'बकाया', allW: 'सभी', editStudent: 'छात्र बदलें', thePlatform: 'पूरे प्लेटफ़ॉर्म', repSchoolsSub: 'शहर, छात्र, योजना, स्थिति', subActive: 'सक्रिय', subExpired: 'समाप्त', subTrial: 'परीक्षण', feeTypeTuition: 'ट्यूशन', feeTypeAdmission: 'प्रवेश', feeTypeTransport: 'परिवहन', feeTypeExam: 'परीक्षा', feeTypeLibrary: 'पुस्तकालय', feeTypeActivity: 'गतिविधि', feeTypeComputer: 'कंप्यूटर लैब', feeTypeOther: 'अन्य', allTypes: 'सभी प्रकार', searchFee: 'नाम, नामांकन संख्या या कक्षा खोजें…', thEnr: 'नामांकन सं.', thType: 'प्रकार', feeByType: 'प्रकार के अनुसार शुल्क', feeByTypeSub: 'प्रति प्रकार संग्रह और बकाया, लाइव गणना।', addFee: 'शुल्क जोड़ें', addFeeSub: 'किसी भी छात्र के लिए एक शुल्क रिकॉर्ड जोड़ें।', feeStruct: 'शुल्क संरचना', feeStructSub: 'प्रति कक्षा मासिक राशि। Generate इसी से रिकॉर्ड बनाता है।', genFees: 'शुल्क बनाएँ', saveStruct: 'संरचना सहेजें', addRow: 'पंक्ति जोड़ें', customType: 'कस्टम…', typeCustomPh: 'शुल्क का प्रकार लिखें', fStudent: 'छात्र', fMonth: 'महीना', fType: 'शुल्क प्रकार', fAmount: 'राशि (₹)', fStatus: 'स्थिति', fDate: 'तारीख', printList: 'सूची छापें', printStmt: 'विवरण छापें', backFees: 'सभी शुल्क पर वापस', totalBilled: 'कुल बिल', totalPaid: 'जमा', totalPending: 'बकाया', feeRecsH: 'शुल्क रिकॉर्ड', feeProfileSub: 'इस छात्र के सभी शुल्क रिकॉर्ड एक ही जगह।', tFeeAdded: 'शुल्क रिकॉर्ड जुड़ गया।', tPickStudent: 'कृपया छात्र चुनें।', tAmtPositive: 'राशि 0 से अधिक होनी चाहिए।', tTypeRequired: 'कृपया शुल्क का प्रकार लिखें।', tStructSaved: 'शुल्क संरचना सहेजी गई।', tStructAdded: 'संरचना पंक्ति जुड़ी।', tStructRemoved: 'संरचना पंक्ति हटाई गई।', tGenRecords: 'शुल्क रिकॉर्ड बने', tGenSkipped: 'पहले से थे', tNoFeeRecs: 'इस छात्र के लिए अभी कोई शुल्क रिकॉर्ड नहीं है।', printTitle: 'शुल्क विवरण', printListTitle: 'शुल्क सूची', printGenOn: 'बनाया गया', closeW: 'बंद करें', saveFeeBtn: 'शुल्क सहेजें', photoLabel: 'छात्र की फ़ोटो', photoHint: 'फ़ोटो अपने आप छोटी हो जाती है (अधिकतम 512px, ~120KB)।', removePhoto: 'फ़ोटो हटाएँ', logoLabel: 'स्कूल का लोगो', logoHint: 'लोगो अपने आप छोटा हो जाता है (अधिकतम 256px, PNG में पारदर्शिता रहती है)।', removeLogo: 'लोगो हटाएँ', tPhotoTooBig: 'यह फ़ोटो छोटी करने के बाद भी बड़ी है। कृपया छोटी फ़ोटो चुनें।', tLogoTooBig: 'यह लोगो छोटा करने के बाद भी बड़ा है। कृपया छोटा लोगो चुनें।', tPhotoError: 'यह तस्वीर पढ़ी नहीं जा सकी। कृपया दूसरी फ़ाइल चुनें।', aadhaarHint: 'वैकल्पिक। सुरक्षित रूप से सहेजा जाता है, पूरा कभी नहीं दिखाया जाता।', actActivate: 'छात्र सक्रिय करें', actAtt: 'उपस्थिति देखें', actDeactivate: 'छात्र निष्क्रिय करें', actDownload: 'विवरण डाउनलोड करें', actEdit: 'छात्र बदलें', actFees: 'शुल्क देखें', actIdCard: 'ID कार्ड छापें', actResults: 'परिणाम देखें', actTransfer: 'छात्र स्थानांतरित करें', actView: 'प्रोफ़ाइल देखें', actionsW: 'कार्रवाई', admNoAuto: 'स्वतः निर्मित', allClasses: 'सभी कक्षाएँ', allFeeSt: 'सभी शुल्क स्थितियाँ', allGenders: 'सभी लिंग', allSections: 'सभी अनुभाग', allSessions: 'सभी सत्र', allStatus: 'सभी स्थितियाँ', attPct: 'उपस्थिति', backDir: 'सूची पर वापस', cancelAdm: 'प्रवेश रद्द करें', cancelAdmMsg: 'यह प्रवेश रद्द करें? छात्र का रिकॉर्ड Cancelled स्थिति के साथ रखा जाएगा।', docMissing: 'प्राप्त नहीं', docStatus: 'प्राप्त', docsNote: 'दस्तावेज़ फ़ाइलें सर्वर चरण में अपलोड होंगी। यह सूची बताती है कि क्या प्राप्त हुआ है।', exportCsv: 'CSV निर्यात करें', fAadhaar: 'आधार संख्या (वैकल्पिक)', fAdmDate: 'प्रवेश तिथि', fAdmNo: 'प्रवेश संख्या', fBirthCert: 'जन्म प्रमाण पत्र', fBlood: 'रक्त समूह', fCategory: 'श्रेणी', fDistrict: 'जिला', fDob: 'जन्म तिथि', fDocsOther: 'अन्य दस्तावेज़ (नोट)', fFather: 'पिता का नाम', fGender: 'लिंग', fMother: 'माता का नाम', fOccupation: 'व्यवसाय', fParentEmail: 'अभिभावक ईमेल', fPhone2: 'दूसरा मोबाइल', fPin: 'पिन कोड', fPrevClass: 'पिछली कक्षा', fPrevSchool: 'पिछला स्कूल', fSection: 'अनुभाग', fState: 'राज्य', fTc: 'स्थानांतरण प्रमाण पत्र (TC)', fTcNo: 'TC संख्या', feeSt: 'शुल्क स्थिति', hwDone: 'पूर्ण', hwPend: 'बाकी', hwPending: 'होमवर्क बाकी', latestExam: 'हाल की परीक्षा', nextW: 'अगला', noActivity: 'अभी कोई गतिविधि दर्ज नहीं है।', noAttRecs: 'इस छात्र के लिए अभी कोई उपस्थिति रिकॉर्ड नहीं है।', noExamRecs: 'अभी कोई परीक्षा परिणाम नहीं है।', noHwRecs: 'इस कक्षा के लिए कोई होमवर्क रिकॉर्ड नहीं है।', openFees: 'शुल्क पेज खोलें', pgOf: 'का', pgPage: 'पृष्ठ', phase3W: 'Phase 3', prevW: 'पिछला', saveAddAnother: 'सहेजें और नया जोड़ें', saveDraft: 'ड्राफ़्ट सहेजें', secAcademic: 'शैक्षणिक विवरण', secDocs: 'दस्तावेज़', secParent: 'माता-पिता / अभिभावक विवरण', secPersonal: 'व्यक्तिगत विवरण', stActive: 'सक्रिय छात्र', stAvgAtt: 'औसत उपस्थिति', stBoys: 'लड़के', stByClass: 'कक्षा अनुसार छात्र', stByClassSub: 'प्रत्येक कक्षा-अनुभाग में छात्रों की संख्या।', stGenderDist: 'लड़के और लड़कियाँ', stGenderSub: 'पूरे स्कूल में लिंग वितरण।', stGirls: 'लड़कियाँ', stInactive: 'निष्क्रिय छात्र', stNewAdm: 'नए प्रवेश', stNotSpec: 'निर्दिष्ट नहीं', stPendFee: 'बकाया शुल्क वाले छात्र', stTotal: 'कुल छात्र', stuSearchPh: 'नाम, प्रवेश संख्या या मोबाइल खोजें…', tActMsg: 'छात्र सक्रिय करें', tActivated: 'छात्र सक्रिय हुआ।', tAdmCancelled: 'प्रवेश रद्द हुआ। रिकॉर्ड रखा गया है।', tAdmCreated: 'प्रवेश सहेजा गया। प्रवेश संख्या ', tCsvExported: 'छात्र सूची निर्यात हुई।', tDeactMsg: 'छात्र निष्क्रिय करें', tDeactivated: 'छात्र निष्क्रिय हुआ।', tDraftSaved: 'ड्राफ़्ट सहेजा गया।', tDupFound: 'मेल खाता छात्र पहले से मौजूद है: ', tInvalidAadhaar: 'आधार 12 अंकों का होना चाहिए (वैकल्पिक)।', tInvalidMobile: 'सही 10 अंकों का मोबाइल नंबर डालें।', tInvalidPin: 'पिन कोड 6 अंकों का होना चाहिए।', tPickClass: 'कृपया कक्षा चुनें।', tReqFields: 'कृपया छात्र का नाम, मुख्य मोबाइल, कक्षा और अनुभाग भरें।', tStuCsvOne: 'छात्र का विवरण डाउनलोड हुआ।', tTransferred: 'छात्र स्थानांतरित हुआ।', tabAcademic: 'शैक्षणिक रिकॉर्ड', tabActivity: 'गतिविधि इतिहास', tabAttendance: 'उपस्थिति इतिहास', tabDocs: 'दस्तावेज़', tabFees: 'शुल्क इतिहास', tabHomework: 'होमवर्क रिकॉर्ड', tabOverview: 'सारांश', tabParent: 'अभिभावक जानकारी', tabPersonal: 'व्यक्तिगत जानकारी', tabResults: 'परीक्षा परिणाम', thAdmNo: 'प्रवेश सं.', thExam: 'परीक्षा', thFather: 'पिता का नाम', transferTitle: 'छात्र स्थानांतरण', transferTo: 'नई कक्षा और अनुभाग', idCardSoon: 'ID कार्ड जनरेटर Phase 3 में आएगा।',
     impTitle: 'छात्रों का बल्क आयात', impImportBtn: 'छात्र आयात करें', impTemplate: 'नमूना टेम्पलेट डाउनलोड करें', impTemplateSub: 'सिर्फ CSV प्रारूप — Excel (.xlsx) फ़ाइल यहाँ पढ़ी नहीं जा सकती। टेम्पलेट के कॉलम इस्तेमाल करें।', impChooseFile: 'CSV फ़ाइल चुनें', impPreview: 'आयात पूर्वावलोकन', impSummary: 'आयात सारांश', impValid: 'सही', impError: 'त्रुटि', impDuplicate: 'दोहरा', impReason: 'कारण', impConfirm: 'सही पंक्तियाँ आयात करें', impDone: 'पूर्ण', impNoRows: 'इस फ़ाइल में कोई पंक्ति नहीं मिली। कृपया टेम्पलेट जाँचें।', impBadHeader: 'यह फ़ाइल छात्र टेम्पलेट जैसी नहीं लगती — नाम वाला कॉलम नहीं मिला।', impNoFile: 'कृपया पहले CSV फ़ाइल चुनें।', impNoValid: 'आयात के लिए कोई सही पंक्ति नहीं है।', impImported: 'आयात हुए', impSkipped: 'छोड़े गए', impErrName: 'नाम आवश्यक है', impErrMobile: 'मोबाइल 10 अंकों का होना चाहिए', impErrMobile2: 'दूसरा मोबाइल 10 अंकों का होना चाहिए', impErrClass: 'कक्षा सही नहीं है', impErrSection: 'अनुभाग A, B या C होना चाहिए', impErrPin: 'पिन 6 अंकों का होना चाहिए', impErrAadhaar: 'आधार 12 अंकों का होना चाहिए', impErrDob: 'जन्म तिथि सही तारीख नहीं है', impErrAdmDate: 'प्रवेश तिथि सही तारीख नहीं है', impErrSession: 'सत्र सही नहीं है (जैसे 2025–26)', impErrGender: 'लिंग Boy, Girl या Other होना चाहिए', impErrBlood: 'रक्त समूह सही नहीं है', impErrCategory: 'श्रेणी General, OBC, SC, ST या Other होनी चाहिए', impErrEmail: 'अभिभावक ईमेल सही नहीं है', impErrRoll: 'रोल धनात्मक संख्या होनी चाहिए', impErrBool: 'Yes या No होना चाहिए', impErrDup: 'इसकी प्रतिलिपि', impErrDupFile: 'इस फ़ाइल में दोहरा', tImpDone: 'बल्क आयात पूर्ण हुआ।', tImpTemplate: 'नमूना टेम्पलेट डाउनलोड हुआ।',
-    promoTitle: 'छात्रों को प्रोन्नत करें', promoBtn: 'छात्र प्रोन्नत करें', promoSingle: 'छात्र प्रोन्नत करें', promoFromSession: 'वर्तमान सत्र', promoFromClass: 'वर्तमान कक्षा', promoToSession: 'लक्ष्य सत्र', promoToClass: 'लक्ष्य कक्षा', promoToSection: 'लक्ष्य अनुभाग', promoSelectAll: 'सभी चुनें', promoSelectNone: 'कोई नहीं', promoSelected: 'चयनित', promoPromote: 'चयनित को प्रोन्नत करें', promoRetain: 'चयनित को रोकें', promoNoStudents: 'इस कक्षा और सत्र में कोई छात्र नहीं है।', promoNoSelect: 'कृपया कम से कम एक छात्र चुनें।', promoNoop: 'लक्ष्य कक्षा और सत्र वर्तमान जैसे ही हैं — बदलने को कुछ नहीं।', promoNoopRetain: 'लक्ष्य सत्र वर्तमान सत्र जैसा ही है — बदलने को कुछ नहीं।', promoDone: 'प्रोन्नति पूर्ण हुई।', promoPromoted: 'प्रोन्नत हुए', promoRetained: 'रोके गए', promoNote: 'उपस्थिति, शुल्क, परीक्षा अंक और होमवर्क इतिहास सुरक्षित रहता है।', promoSingleNote: 'एक छात्र की प्रोन्नति', promoSkipped: 'छोड़े गए (पहले ही स्थानांतरित)', promoNotEligible: 'केवल सक्रिय या निष्क्रिय छात्र ही प्रोन्नत हो सकते हैं।'
+    promoTitle: 'छात्रों को प्रोन्नत करें', promoBtn: 'छात्र प्रोन्नत करें', promoSingle: 'छात्र प्रोन्नत करें', promoFromSession: 'वर्तमान सत्र', promoFromClass: 'वर्तमान कक्षा', promoToSession: 'लक्ष्य सत्र', promoToClass: 'लक्ष्य कक्षा', promoToSection: 'लक्ष्य अनुभाग', promoSelectAll: 'सभी चुनें', promoSelectNone: 'कोई नहीं', promoSelected: 'चयनित', promoPromote: 'चयनित को प्रोन्नत करें', promoRetain: 'चयनित को रोकें', promoNoStudents: 'इस कक्षा और सत्र में कोई छात्र नहीं है।', promoNoSelect: 'कृपया कम से कम एक छात्र चुनें।', promoNoop: 'लक्ष्य कक्षा और सत्र वर्तमान जैसे ही हैं — बदलने को कुछ नहीं।', promoNoopRetain: 'लक्ष्य सत्र वर्तमान सत्र जैसा ही है — बदलने को कुछ नहीं।', promoDone: 'प्रोन्नति पूर्ण हुई।', promoPromoted: 'प्रोन्नत हुए', promoRetained: 'रोके गए', promoNote: 'उपस्थिति, शुल्क, परीक्षा अंक और होमवर्क इतिहास सुरक्षित रहता है।', promoSingleNote: 'एक छात्र की प्रोन्नति', promoSkipped: 'छोड़े गए (पहले ही स्थानांतरित)', promoNotEligible: 'केवल सक्रिय या निष्क्रिय छात्र ही प्रोन्नत हो सकते हैं।',
+    idcPreview: 'ID कार्ड पूर्वावलोकन', idcPrint: 'छापें', idcPrintCards: 'ID कार्ड छापें', idcSelectAll: 'सभी चुनें', idcClearSel: 'चयन हटाएँ', idcReady: 'ID कार्ड छपाई के लिए तैयार', idcEmergency: 'आपातकालीन संपर्क', idcReturn: 'मिले तो कृपया लौटाएँ', idcNoQr: 'QR कोड नहीं बन सका।'
   }
 };
 function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || I18N.en[k] || k; }
@@ -1597,7 +1600,7 @@ function studentsPage() {
     var fs = studentFeeStatus(s.id);
     var stt = s.status || 'Active';
     var badgeCls = stt === 'Active' ? 'green' : stt === 'Inactive' ? 'grey' : stt === 'Draft' ? 'blue' : 'red';
-    return '<tr><td>' + avatarHTML(s.photo, s.name, 'mini-avatar') + '<button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td>' +
+    return '<tr><td class="sel-col"><input type="checkbox" ' + ((state.stuSel || {})[s.id] ? 'checked' : '') + ' onchange="toggleStuSel(\'' + s.id + '\', this.checked)" aria-label="' + esc(s.name) + '"></td><td>' + avatarHTML(s.photo, s.name, 'mini-avatar') + '<button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td>' +
       '<td>' + esc(s.admissionNo || '—') + '</td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.fatherName || s.guardian) + '</td><td>' + esc(s.phone) + '</td><td>' + s.att + '%</td>' +
       '<td><span class="badge ' + (fs === 'Paid' ? 'green' : fs === 'Pending' ? 'orange' : 'grey') + '">' + fs + '</span></td>' +
       '<td><span class="badge ' + badgeCls + '">' + stt + '</span></td>' +
@@ -1609,6 +1612,8 @@ function studentsPage() {
     }).join('');
   };
   var from = list.length ? (state.stuPage - 1) * STU_PAGE_SIZE + 1 : 0;
+  var selCount = stuSelCount();
+  var allPageSel = rows.length > 0 && rows.every(function (s) { return !!(state.stuSel || {})[s.id]; });
   var to = Math.min(list.length, state.stuPage * STU_PAGE_SIZE);
   return '<div class="page-head"><div><h2>' + t('students') + '</h2><p>' + list.length + ' ' + t('ofWord') + ' ' + db.students.length + ' ' + t('studentsW') + '</p></div>' +
     '<div class="toolbar"><input id="stuSearchInput" placeholder="' + t('stuSearchPh') + '" value="' + esc(state.stuSearch) + '" oninput="onStuSearch(this)" style="min-width:200px">' +
@@ -1636,14 +1641,16 @@ function studentsPage() {
     '<div><div class="type-row"><b>' + t('stBoys') + '</b><span>' + st.boys + '</span></div>' +
     '<div class="type-row"><b>' + t('stGirls') + '</b><span>' + st.girls + '</span></div>' +
     '<div class="type-row"><b>' + t('stNotSpec') + '</b><span>' + st.unspec + '</span></div></div></div></div></div>' +
+    (selCount ? '<div class="card id-bulk-bar"><span><b>' + selCount + '</b> ' + t('promoSelected') + '</span><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" onclick="printIdCardsBulk()">🪪 ' + t('idcPrintCards') + ' (' + selCount + ')</button><button class="btn ghost sm" onclick="clearStuSel()">' + t('idcClearSel') + '</button></span></div>' : '') +
     '<div class="card" style="margin-top:16px"><div class="tbl-wrap"><table><thead><tr>' +
+    '<th class="sel-col"><input type="checkbox" ' + (allPageSel ? 'checked' : '') + ' onchange="toggleStuSelAll(this.checked)" aria-label="' + t('idcSelectAll') + '"></th>' +
     '<th onclick="sortStu(\'name\')" style="cursor:pointer">' + t('thName') + sortArrow('name') + '</th>' +
     '<th>' + t('thAdmNo') + '</th>' +
     '<th onclick="sortStu(\'class\')" style="cursor:pointer">' + t('thClass') + sortArrow('class') + '</th>' +
     '<th>' + t('thRoll') + '</th><th>' + t('thFather') + '</th><th>' + t('thPhone') + '</th>' +
     '<th onclick="sortStu(\'att\')" style="cursor:pointer">' + t('thAtt') + sortArrow('att') + '</th>' +
     '<th>' + t('thFee') + '</th><th>' + t('thStatus') + '</th><th>' + t('actionsW') + '</th></tr></thead><tbody>' +
-    (trs || '<tr><td colspan="10"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '</tbody></table></div>' +
+    (trs || '<tr><td colspan="11"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '</tbody></table></div>' +
     '<div class="toolbar" style="margin-top:12px;justify-content:space-between"><span class="muted">' + t('showingRec') + ' ' + from + '–' + to + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('studentsW') + '</span>' +
     '<span><button class="btn ghost sm" ' + (state.stuPage <= 1 ? 'disabled' : '') + ' onclick="state.stuPage--;renderPage()">← ' + t('prevW') + '</button> ' +
     '<span class="muted">' + t('pgPage') + ' ' + state.stuPage + ' ' + t('pgOf') + ' ' + pages + '</span> ' +
@@ -1802,7 +1809,7 @@ function stuActions(id) {
     '<button class="btn ghost" onclick="closeModal();viewStudentAttendance(\'' + s.id + '\')">' + t('actAtt') + '</button>' +
     '<button class="btn ghost" onclick="closeModal();viewStudentFees(\'' + s.id + '\')">' + t('actFees') + '</button>' +
     '<button class="btn ghost" onclick="closeModal();viewStudentResults(\'' + s.id + '\')">' + t('actResults') + '</button>' +
-    '<button class="btn ghost" onclick="closeModal();toast(t(\'idCardSoon\'))">🪪 ' + t('actIdCard') + ' <span class="muted">(' + t('phase3W') + ')</span></button>' +
+    '<button class="btn ghost" onclick="closeModal();printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button>' +
     '<button class="btn ghost" onclick="closeModal();downloadStudentCSV(\'' + s.id + '\')">' + t('actDownload') + '</button>' +
     '<button class="btn ghost" onclick="closeModal();transferStudent(\'' + s.id + '\')">' + t('actTransfer') + '</button>' +
     ((stt === 'Active' || stt === 'Inactive') ? '<button class="btn ghost" onclick="closeModal();promoteSingle(\'' + s.id + '\')">⬆️ ' + t('promoSingle') + '</button>' : '') +
@@ -1899,6 +1906,7 @@ function runPromotion(sel) {
       out.retained++;
     } else {
       if (fromCls === sel.toCls && fromSess === sel.toSession) { out.skipped.push({ id: id, reason: t('promoNoop') }); return; }
+      s.previousClass = fromCls; // v11: record the class promoted FROM (shown on the profile Academic tab)
       s.cls = sel.toCls;
       s.roll = nextRoll(sel.toCls); // next free roll in the TARGET class, in order
       s.session = sel.toSession;
@@ -2060,6 +2068,7 @@ function studentProfilePage(id) {
   return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + esc(s.cls) + ' • ' + t('thAdmNo') + ' ' + esc(s.admissionNo || '—') + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • <span class="badge ' + badgeCls + '">' + stt + '</span></p></div></div>' +
     '<div class="toolbar"><button class="btn ghost" onclick="state.profileStudent=null;renderPage()">← ' + t('backDir') + '</button>' +
     '<button class="btn" onclick="studentForm(\'' + s.id + '\')">' + t('editStudent') + '</button>' +
+    '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button>' +
     ((stt === 'Active' || stt === 'Inactive') ? '<button class="btn ghost" onclick="promoteSingle(\'' + s.id + '\')">⬆️ ' + t('promoSingle') + '</button>' : '') + '</div></div>' +
     tabBar + '<div style="margin-top:16px">' + profileTabBody(s, state.profileTab || 'overview') + '</div>';
 }
@@ -2448,6 +2457,92 @@ function printFeeList() {
     body,
     '<div class="tot"><span>' + t('collectedW') + ': ' + inr(c) + '</span><span>' + t('pendingW') + ': ' + inr(p) + '</span><span>' + list.length + ' ' + t('recordsWord') + '</span></div>');
 }
+
+/* ================= Phase 3: ID cards + QR (v11) =================
+   QR: Nayuki qrcodegen (MIT), vendored as qrgen.js and loaded before app.js.
+   Payload: SCHOOL-SAATHI|<admissionNo>|<name>|<class>|<school>|<phone>.
+   Aadhaar is NEVER in the payload, the card, or any print output. */
+function idCardPayload(s) {
+  return ['SCHOOL-SAATHI', (s.admissionNo || s.enr || ''), (s.name || ''), (s.cls || ''), (db.profile.name || ''), (s.phone || '')].join('|');
+}
+// Pure SVG render of the QR matrix (crisp at print size). Returns '' when the
+// encoder is unavailable or the text cannot be encoded — never a fake image.
+function qrSvgFor(text, px) {
+  if (!String(text || '').trim()) return ''; // never render a QR for empty data
+  if (typeof qrcodegen === 'undefined' || !qrcodegen.QrCode) return '';
+  var qr;
+  try { qr = qrcodegen.QrCode.encodeText(String(text || ''), qrcodegen.QrCode.Ecc.MEDIUM); }
+  catch (e) { return ''; }
+  var n = qr.size, border = 4, total = n + border * 2, cell = px / total;
+  var rects = '';
+  for (var y = 0; y < n; y++) for (var x = 0; x < n; x++) {
+    if (qr.getModule(x, y)) rects += '<rect x="' + ((x + border) * cell).toFixed(2) + '" y="' + ((y + border) * cell).toFixed(2) + '" width="' + cell.toFixed(2) + '" height="' + cell.toFixed(2) + '"/>';
+  }
+  return '<svg class="id-qr" viewBox="0 0 ' + px + ' ' + px + '" width="' + px + '" height="' + px + '" role="img" aria-label="QR code"><rect width="' + px + '" height="' + px + '" fill="#ffffff"/>' + rects + '</svg>';
+}
+// One student's front + back, credit-card size (85.6 x 54 mm), navy + gold.
+function idCardHTML(s) {
+  var logoHtml = db.profile.logo ? '<img class="id-logo-img" src="' + esc(db.profile.logo) + '" alt="">' : '<span class="id-logo-cap">🎓</span>';
+  var qr = qrSvgFor(idCardPayload(s), 150);
+  var qrHtml = qr || '<div class="id-qr-missing">' + t('idcNoQr') + '</div>';
+  var backLines = '';
+  if (s.address) backLines += '<span><b>' + t('fAddress') + ':</b> ' + esc(s.address) + '</span>';
+  if (s.bloodGroup) backLines += '<span><b>' + t('fBlood') + ':</b> ' + esc(s.bloodGroup) + '</span>';
+  backLines += '<span><b>' + t('idcEmergency') + ':</b> ' + esc(s.guardian || '') + ' • ' + esc(s.phone || '') + '</span>';
+  return '<div class="id-sheet">' +
+    '<div class="id-card id-front"><div class="id-head">' + logoHtml + '<span class="id-school">' + esc(db.profile.name) + '</span></div>' +
+    '<div class="id-body">' + avatarHTML(s.photo, s.name, 'id-photo') + '<div class="id-info"><b class="id-name">' + esc(s.name) + '</b>' +
+    '<span>' + t('thAdmNo') + ' ' + esc(s.admissionNo || '—') + '</span>' +
+    '<span>' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('fRoll') + ' ' + s.roll + '</span>' +
+    '<span>' + t('fSession') + ' ' + esc(s.session || '—') + '</span></div></div>' +
+    '<div class="id-foot">' + t('fGuardian') + ': ' + esc(s.guardian || '') + ' • ' + esc(s.phone || '') + '</div></div>' +
+    '<div class="id-card id-back"><div class="id-qr-wrap">' + qrHtml + '</div><div class="id-back-info">' + backLines +
+    '<span class="id-return">' + t('idcReturn') + ' ' + esc(db.profile.name) + '</span></div></div></div>';
+}
+function idCardsPrintHTML(ids) {
+  return (ids || []).map(function (id) {
+    var s = db.students.find(function (x) { return x.id === id; });
+    return s ? idCardHTML(s) : '';
+  }).join('');
+}
+// Print preview modal: shows the count + the exact cards, then prints via #printArea.
+function openIdCardPreview(ids) {
+  var list = (ids || []).map(function (id) { return db.students.find(function (x) { return x.id === id; }); }).filter(function (s) { return !!s; });
+  if (!list.length) { toast(t('promoNoSelect')); return; }
+  pendingIdPrint = list.map(function (s) { return s.id; });
+  openModal('<h3>' + t('idcPreview') + '</h3><p class="muted">' + list.length + ' ' + t('idcReady') + '</p>' +
+    '<div class="id-preview">' + list.map(function (s) { return idCardHTML(s); }).join('') + '</div>' +
+    '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    '<button type="button" class="btn" onclick="printIdCardsNow()">🖨 ' + t('idcPrint') + '</button></div>', true);
+}
+function printIdCardsNow() {
+  if (!pendingIdPrint.length) { closeModal(); return; }
+  var n = pendingIdPrint.length;
+  closeModal();
+  $('printArea').innerHTML = '<div class="id-print">' + idCardsPrintHTML(pendingIdPrint) + '</div>';
+  if (window.print) window.print();
+  toast(n + ' ' + t('idcReady'));
+}
+function printIdCard(id) { openIdCardPreview([id]); }
+function printIdCardsBulk() {
+  var ids = Object.keys(state.stuSel || {});
+  if (!ids.length) { toast(t('promoNoSelect')); return; }
+  openIdCardPreview(ids);
+}
+function toggleStuSel(id, checked) {
+  if (!state.stuSel) state.stuSel = {};
+  if (checked) state.stuSel[id] = true; else delete state.stuSel[id];
+  renderPage();
+}
+function toggleStuSelAll(checked) {
+  if (!state.stuSel) state.stuSel = {};
+  stuPageRows(stuSorted(stuFiltered())).forEach(function (s) {
+    if (checked) state.stuSel[s.id] = true; else delete state.stuSel[s.id];
+  });
+  renderPage();
+}
+function clearStuSel() { state.stuSel = {}; renderPage(); }
+function stuSelCount() { return Object.keys(state.stuSel || {}).length; }
 function collectFee(id) {
   var r = db.feeRecords.find(function (x) { return x.id === id; });
   if (!r || r.status !== 'Pending') return;
