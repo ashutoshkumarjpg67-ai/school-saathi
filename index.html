@@ -13,8 +13,8 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css">
-<script src="app.js" defer></script>
+<link rel="stylesheet" href="styles.css?v=2">
+<script src="app.js?v=2" defer></script>
 </head>
 <body>
 
@@ -23,70 +23,70 @@
   <nav class="land-nav">
     <div class="brand"><span class="cap">🎓</span><span>School Saathi<small>Smart Education. Better Tomorrow.</small></span></div>
     <div class="links">
-      <a href="#features">Features</a>
-      <a href="#roles">Dashboards</a>
-      <a href="#stats">Schools</a>
-      <button class="btn sm" onclick="showLogin()">Login</button>
+      <a href="#features" data-i18n="navFeatures">Features</a>
+      <a href="#roles" data-i18n="navDashboards">Dashboards</a>
+      <a href="#stats" data-i18n="navSchools">Schools</a>
+      <button class="btn sm" onclick="showLogin()" data-i18n="navLogin">Login</button>
     </div>
   </nav>
 
   <header class="hero">
-    <h1>Next-Generation<br>School Management System</h1>
-    <p>For a Smarter &amp; Brighter Education Future — one app for the whole school: students, teachers, fees, attendance, exams and notices.</p>
+    <h1 data-i18n="heroTitle">Next-Generation<br>School Management System</h1>
+    <p data-i18n="heroSub">For a Smarter &amp; Brighter Education Future — one app for the whole school: students, teachers, fees, attendance, exams and notices.</p>
     <div class="cta-row">
-      <button class="btn white" onclick="showLogin()">Get Started →</button>
-      <button class="btn ghost" style="border-color:#fff;color:#fff;background:transparent" onclick="showLogin()">Explore Demo</button>
+      <button class="btn white" onclick="showLogin()" data-i18n="heroGetStarted">Get Started →</button>
+      <button class="btn ghost" style="border-color:#fff;color:#fff;background:transparent" onclick="showLogin()" data-i18n="heroExplore">Explore Demo</button>
     </div>
     <div class="badges"><b>Built for Bihar</b> &nbsp;•&nbsp; <b>Free for Schools</b> &nbsp;•&nbsp; Web + Android App</div>
   </header>
 
   <section class="section" id="stats">
-    <h2>Trusted by schools across Bihar</h2>
-    <p class="sub">Live platform figures from the School Saathi network.</p>
+    <h2 data-i18n="statsTitle">Trusted by schools across Bihar</h2>
+    <p class="sub" data-i18n="statsSub">Live platform figures from the School Saathi network.</p>
     <div class="dash-strip">
-      <div class="mini-stat"><div class="n" data-count="24">0</div><div class="l">Total Schools</div><div class="t">↑ 12% this month</div></div>
-      <div class="mini-stat"><div class="n" data-count="12450">0</div><div class="l">Total Users</div><div class="t">↑ 18% this month</div></div>
-      <div class="mini-stat"><div class="n" data-count="92" data-suffix="%">0</div><div class="l">Today's Attendance</div><div class="t">1,150 present of 1,250</div></div>
-      <div class="mini-stat"><div class="n" data-count="845000" data-prefix="₹">0</div><div class="l">Fee Collected (Apr–Aug)</div><div class="t">₹1,20,000 pending</div></div>
+      <div class="mini-stat"><div class="n" data-count="24">0</div><div class="l" data-i18n="totalSchools">Total Schools</div><div class="t" data-i18n="up12">↑ 12% this month</div></div>
+      <div class="mini-stat"><div class="n" data-count="12450">0</div><div class="l" data-i18n="totalUsers">Total Users</div><div class="t" data-i18n="up18">↑ 18% this month</div></div>
+      <div class="mini-stat"><div class="n" data-count="92" data-suffix="%">0</div><div class="l" data-i18n="todayAttendance">Today's Attendance</div><div class="t" data-i18n="presentOf">1,150 present of 1,250</div></div>
+      <div class="mini-stat"><div class="n" data-count="845000" data-prefix="₹">0</div><div class="l" data-i18n="feeCollectedRange">Fee Collected (Apr–Aug)</div><div class="t" data-i18n="pendingAmt">₹1,20,000 pending</div></div>
     </div>
   </section>
 
   <section class="section" id="features" style="padding-top:10px">
-    <h2>Key Features Highlights</h2>
-    <p class="sub">Everything a school needs, in one place.</p>
+    <h2 data-i18n="featTitle">Key Features Highlights</h2>
+    <p class="sub" data-i18n="featSub">Everything a school needs, in one place.</p>
     <div class="feat-grid">
-      <div class="feat"><div class="ic">🏫</div><h3>Multi-School Management</h3><p>One platform, every school gets its own login, workspace, name and data — fully separate.</p></div>
-      <div class="feat"><div class="ic">👥</div><h3>Role-Based Access</h3><p>Super Admin, School Admin, Teacher and Student — each role sees only what it should.</p></div>
-      <div class="feat"><div class="ic">📊</div><h3>Real-time Analytics</h3><p>Attendance, fee collection and growth — live charts and counts on every dashboard.</p></div>
-      <div class="feat"><div class="ic">🔒</div><h3>Secure &amp; Scalable</h3><p>Your school's data stays in your school's account. Works for 100 or 10,000 students.</p></div>
-      <div class="feat"><div class="ic">🌐</div><h3>Hindi + English Support</h3><p>Switch the whole interface between Hindi and English with one tap.</p></div>
-      <div class="feat"><div class="ic">📱</div><h3>Web + Android App</h3><p>Runs on PC and phone. Installable as an app — works offline after the first load.</p></div>
+      <div class="feat"><div class="ic">🏫</div><h3 data-i18n="feat1t">Multi-School Management</h3><p data-i18n="feat1d">One platform, every school gets its own login, workspace, name and data — fully separate.</p></div>
+      <div class="feat"><div class="ic">👥</div><h3 data-i18n="feat2t">Role-Based Access</h3><p data-i18n="feat2d">Super Admin, School Admin, Teacher and Student — each role sees only what it should.</p></div>
+      <div class="feat"><div class="ic">📊</div><h3 data-i18n="feat3t">Real-time Analytics</h3><p data-i18n="feat3d">Attendance, fee collection and growth — live charts and counts on every dashboard.</p></div>
+      <div class="feat"><div class="ic">🔒</div><h3 data-i18n="feat4t">Secure &amp; Scalable</h3><p data-i18n="feat4d">Your school's data stays in your school's account. Works for 100 or 10,000 students.</p></div>
+      <div class="feat"><div class="ic">🌐</div><h3 data-i18n="feat5t">Hindi + English Support</h3><p data-i18n="feat5d">Switch the whole interface between Hindi and English with one tap.</p></div>
+      <div class="feat"><div class="ic">📱</div><h3 data-i18n="feat6t">Web + Android App</h3><p data-i18n="feat6d">Runs on PC and phone. Installable as an app — works offline after the first load.</p></div>
     </div>
   </section>
 
   <section class="section" id="roles" style="padding-top:10px">
-    <h2>Three dashboards, one system</h2>
-    <p class="sub">Tap a role to open its demo dashboard — no password needed.</p>
+    <h2 data-i18n="rolesTitle">Three dashboards, one system</h2>
+    <p class="sub" data-i18n="rolesSub">Tap a role to open its demo dashboard — no password needed.</p>
     <div class="roles">
       <div class="role-card" onclick="demoLogin('super')">
         <div class="avatar" style="background:#0A1E4B">👑</div>
-        <h3>Super Admin</h3><p>Platform Owner — all 24 schools, users, subscriptions and growth at a glance.</p>
-        <span class="go">Open Super Admin →</span>
+        <h3 data-i18n="roleSuper">Super Admin</h3><p data-i18n="roleSuperD">Platform Owner — all 24 schools, users, subscriptions and growth at a glance.</p>
+        <span class="go" data-i18n="goSuper">Open Super Admin →</span>
       </div>
       <div class="role-card" onclick="demoLogin('school')">
         <div class="avatar" style="background:#2563EB">🏫</div>
-        <h3>School Admin — Rahul Kumar</h3><p>St. Xavier School, Patna — students, attendance, fees, exams, homework and notices.</p>
-        <span class="go">Open School Admin →</span>
+        <h3 data-i18n="roleSchool">School Admin — Rahul Kumar</h3><p data-i18n="roleSchoolD">St. Xavier School, Patna — students, attendance, fees, exams, homework and notices.</p>
+        <span class="go" data-i18n="goSchool">Open School Admin →</span>
       </div>
       <div class="role-card" onclick="demoLogin('student')">
         <div class="avatar" style="background:#16A34A">🎒</div>
-        <h3>Student — Riya Kumari</h3><p>Class 10th-A — attendance, fees, results and homework on a mobile-style view.</p>
-        <span class="go">Open Student View →</span>
+        <h3 data-i18n="roleStudent">Student — Riya Kumari</h3><p data-i18n="roleStudentD">Class 10th-A — attendance, fees, results and homework on a mobile-style view.</p>
+        <span class="go" data-i18n="goStudent">Open Student View →</span>
       </div>
     </div>
   </section>
 
-  <footer class="land-footer">
+  <footer class="land-footer" data-i18n-html="landFooter">
     <b>School Saathi</b> — Smart Education. Better Tomorrow.<br>
     Built for Bihar • Free for Schools • Made with ❤️ in Gopalganj, Bihar
   </footer>
@@ -98,23 +98,23 @@
     <div class="login-card">
       <div class="logo"><span class="cap">🎓</span></div>
       <h1>School Saathi</h1>
-      <p class="sub2">Welcome Back!<br>Login to continue</p>
+      <p class="sub2" data-i18n-html="loginWelcome">Welcome Back!<br>Login to continue</p>
       <div id="loginErr" class="err hidden"></div>
       <form id="loginForm" onsubmit="return doLogin(event)">
-        <div class="field"><label>Email or Mobile Number</label><input id="loginId" type="text" placeholder="e.g. rahul@stxavier.in" autocomplete="username"></div>
-        <div class="field"><label>Password</label><input id="loginPw" type="password" placeholder="••••••••" autocomplete="current-password"></div>
-        <div class="link-row"><a href="#" onclick="return forgotPw(event)">Forgot Password?</a></div>
-        <button class="btn" type="submit" style="width:100%">Login</button>
+        <div class="field"><label data-i18n="loginEmail">Email or Mobile Number</label><input id="loginId" type="text" placeholder="e.g. rahul@stxavier.in" data-i18n-ph="loginEmailPh" autocomplete="username"></div>
+        <div class="field"><label data-i18n="loginPassword">Password</label><input id="loginPw" type="password" placeholder="••••••••" data-i18n-ph="loginPwPh" autocomplete="current-password"></div>
+        <div class="link-row"><a href="#" onclick="return forgotPw(event)" data-i18n="loginForgot">Forgot Password?</a></div>
+        <button class="btn" type="submit" style="width:100%" data-i18n="loginBtn">Login</button>
       </form>
-      <div style="text-align:center;color:var(--muted);font-size:12.5px;margin:14px 0 0">Or continue with</div>
-      <button class="btn ghost" style="width:100%;margin-top:10px" onclick="googleLogin()">G &nbsp;Continue with Google</button>
+      <div style="text-align:center;color:var(--muted);font-size:12.5px;margin:14px 0 0" data-i18n="loginOr">Or continue with</div>
+      <button class="btn ghost" style="width:100%;margin-top:10px" disabled>G &nbsp;Continue with Google — Demo me available nahi</button>
       <div class="demo-box">
-        <h4>— One-tap demo login —</h4>
+        <h4 data-i18n="demoTitle">— One-tap demo login —</h4>
         <button class="demo-btn" onclick="demoLogin('super')"><span class="avatar" style="background:#0A1E4B">👑</span><span><b>Super Admin</b><span>Platform Owner • super@school-saathi.in</span></span><span class="tag">DEMO</span></button>
         <button class="demo-btn" onclick="demoLogin('school')"><span class="avatar" style="background:#2563EB">RK</span><span><b>Rahul Kumar — School Admin</b><span>St. Xavier School, Patna</span></span><span class="tag">DEMO</span></button>
         <button class="demo-btn" onclick="demoLogin('student')"><span class="avatar" style="background:#16A34A">RK</span><span><b>Riya Kumari — Student</b><span>Class 10th-A • St. Xavier School</span></span><span class="tag">DEMO</span></button>
       </div>
-      <p style="text-align:center;margin-top:16px;font-size:12.5px"><a href="#" onclick="return backToLanding(event)">← Back to website</a></p>
+      <p style="text-align:center;margin-top:16px;font-size:12.5px"><a href="#" onclick="return backToLanding(event)" data-i18n="loginBack">← Back to website</a></p>
     </div>
   </div>
 </div>
@@ -146,7 +146,7 @@
           <span class="avatar" id="whoAvatar">S</span>
           <span><b id="whoName">—</b><span id="whoRole">—</span></span>
         </div>
-        <button class="btn ghost sm" onclick="logout()">Logout</button>
+        <button class="btn ghost sm" onclick="logout()" data-i18n="logout">Logout</button>
       </header>
       <main class="page" id="page"></main>
     </div>

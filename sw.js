@@ -2,13 +2,14 @@
    Versioned cache: bump CACHE_NAME on every deploy so old builds never stick.
    Lesson learned (VidyaSetu / gym app, Nov 2026): cache-first navigation served stale
    builds after deploys. Navigation is network-first here; static assets are
-   cache-first with background refresh. */
-var CACHE_NAME = 'school-saathi-v1';
+   cache-first with background refresh. Per-file precache: one missing file (e.g.
+   an icon not yet uploaded) must not fail the whole app shell. */
+var CACHE_NAME = 'school-saathi-v2';
 var APP_SHELL = [
   './',
   'index.html',
-  'styles.css',
-  'app.js',
+  'styles.css?v=2',
+  'app.js?v=2',
   'manifest.json',
   'icons/icon-192.png',
   'icons/icon-512.png',
@@ -18,9 +19,12 @@ var APP_SHELL = [
 
 self.addEventListener('install', function (event) {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(function (cache) { return cache.addAll(APP_SHELL); })
-      .then(function () { return self.skipWaiting(); })
-      .catch(function () { /* shell caching is best-effort; app still loads online */ })
+    caches.open(CACHE_NAME).then(function (cache) {
+      // Cache each file separately — a single 404 must not fail the whole shell.
+      return Promise.all(APP_SHELL.map(function (u) {
+        return cache.add(u).catch(function () { /* single-file miss: ignore */ });
+      }));
+    }).then(function () { return self.skipWaiting(); })
   );
 });
 
@@ -42,8 +46,10 @@ self.addEventListener('fetch', function (event) {
     // NETWORK-FIRST for navigations (incl. "/" with no .html) — always try live first.
     event.respondWith(
       fetch(req).then(function (res) {
-        var copy = res.clone();
-        caches.open(CACHE_NAME).then(function (cache) { cache.put(req, copy); }).catch(function () {});
+        if (res && res.ok) {
+          var copy = res.clone();
+          caches.open(CACHE_NAME).then(function (cache) { cache.put(req, copy); }).catch(function () {});
+        }
         return res;
       }).catch(function () {
         return caches.match(req).then(function (hit) { return hit || caches.match('index.html'); });

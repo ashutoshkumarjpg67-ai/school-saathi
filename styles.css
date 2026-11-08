@@ -210,7 +210,7 @@ tbody tr:hover{background:#F8FAFC}
 .grid-ln{stroke:#E2E8F0;stroke-width:1}
 
 /* toast */
-#toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,80px);background:var(--navy);color:#fff;padding:12px 20px;border-radius:11px;font-size:14px;font-weight:600;box-shadow:0 10px 30px rgba(0,0,0,.3);opacity:0;transition:transform .3s ease,opacity .3s ease;z-index:300;max-width:90vw;text-align:center}
+#toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,80px);pointer-events:none;background:var(--navy);color:#fff;padding:12px 20px;border-radius:11px;font-size:14px;font-weight:600;box-shadow:0 10px 30px rgba(0,0,0,.3);opacity:0;transition:transform .3s ease,opacity .3s ease;z-index:300;max-width:90vw;text-align:center}
 #toast.show{transform:translate(-50%,0);opacity:1}
 
 /* student mobile-style view */
@@ -241,7 +241,7 @@ tbody tr:hover{background:#F8FAFC}
 .notice{border-left:4px solid var(--blue);background:#F8FAFC;border-radius:9px;padding:13px 15px;margin-bottom:11px}
 .notice b{font-size:14px;display:block}
 .notice span{font-size:12.5px;color:var(--muted)}
-.notice p{font-size:13.5px;margin-top:5px}
+.notice p{font-size:13.5px;margin-top:5px;white-space:normal;overflow:visible}
 .pill-tabs{display:flex;gap:8px;flex-wrap:wrap}
 .pill-tabs button{border:1px solid var(--border);background:#fff;border-radius:20px;padding:7px 15px;font-size:13px;font-weight:600;color:var(--muted)}
 .pill-tabs button.on{background:var(--navy);color:#fff;border-color:var(--navy)}
@@ -268,7 +268,8 @@ tbody tr:hover{background:#F8FAFC}
   .topbar .who span{display:none}
   .feat-grid,.roles,.dash-strip{grid-template-columns:1fr}
   .form-grid{grid-template-columns:1fr}
-  .land-nav .links{display:none}
+  .land-nav .links{display:flex}
+  .land-nav .links a{display:none}
   .hero{padding:52px 5% 60px}
   .section{padding:40px 5%}
   .qa-grid{grid-template-columns:repeat(2,1fr)}
