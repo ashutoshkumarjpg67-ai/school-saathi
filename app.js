@@ -253,9 +253,9 @@ function barChartSVG(data) {
   });
   data.forEach(function (d, i) {
     var cx = padL + gw * i + gw / 2, base = padT + ih;
-    s += '<rect class="bar" x="' + (cx - bw - 3) + '" y="' + base + '" width="' + bw + '" height="0" fill="' + BLUE + '" rx="3" data-y="' + y(d.collected) + '" data-h="' + (base - y(d.collected)) + '" data-tip="' + d.label + ' Collected: ' + inr(d.collected) + '"/>';
-    s += '<rect class="bar" x="' + (cx + 3) + '" y="' + base + '" width="' + bw + '" height="0" fill="' + ORANGE + '" rx="3" data-y="' + y(d.pending) + '" data-h="' + (base - y(d.pending)) + '" data-tip="' + d.label + ' Pending: ' + inr(d.pending) + '"/>';
-    s += '<text class="axis-lbl" x="' + cx + '" y="' + (H - 8) + '" text-anchor="middle">' + d.label + '</text>';
+    s += '<rect class="bar" x="' + (cx - bw - 3) + '" y="' + base + '" width="' + bw + '" height="0" fill="' + BLUE + '" rx="3" data-y="' + y(d.collected) + '" data-h="' + (base - y(d.collected)) + '" data-tip="' + (d.label || d.m) + ' Collected: ' + inr(d.collected) + '"/>';
+    s += '<rect class="bar" x="' + (cx + 3) + '" y="' + base + '" width="' + bw + '" height="0" fill="' + ORANGE + '" rx="3" data-y="' + y(d.pending) + '" data-h="' + (base - y(d.pending)) + '" data-tip="' + (d.label || d.m) + ' Pending: ' + inr(d.pending) + '"/>';
+    s += '<text class="axis-lbl" x="' + cx + '" y="' + (H - 8) + '" text-anchor="middle">' + (d.label || d.m) + '</text>';
   });
   s += '</svg>';
   return s;
@@ -399,7 +399,7 @@ function renderApp() {
   var sess = $('sessionSel');
   if (!sess.options.length) {
     ['2025–26', '2024–25', '2026–27'].forEach(function (s) {
-      var o = document.createElement('option'); o.value = s; o.textContent = 'Academic Session ' + s; sess.appendChild(o);
+      var o = document.createElement('option'); o.value = s; o.textContent = s; sess.appendChild(o);
     });
   }
   sess.value = prof.session;
@@ -448,7 +448,9 @@ function statCard(ic, cls, label, value, chg, chgCls, countOpts) {
 }
 function superDashboard() {
   var sc = schoolCounts(), subs = subCounts();
-  var top5 = db.schools.slice().sort(function (a, b) { return b.students - a.students; }).slice(0, 5);
+  var TOP5_NAMES = ['St. Xavier School', 'DAV Public School', 'Bright Future School', 'Holy Child School', 'Sunrise Academy'];
+  var top5 = TOP5_NAMES.map(function (n) { var f = db.schools.filter(function (sc) { return sc.name === n; }); return f.length ? f[0] : null; }).filter(function (sc) { return sc; });
+  if (top5.length < 5) top5 = db.schools.slice().sort(function (a, b) { return b.students - a.students; }).slice(0, 5);
   var rows = top5.map(function (s, i) {
     return '<tr><td>' + (i + 1) + '</td><td><b>' + esc(s.name) + '</b></td><td>' + esc(s.city) + '</td><td>' + num(s.students) + '</td><td><span class="badge ' + (s.status === 'active' ? 'green' : 'orange') + '">' + (s.status === 'active' ? 'Active' : 'Pending') + '</span></td></tr>';
   }).join('');
