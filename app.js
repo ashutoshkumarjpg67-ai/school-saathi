@@ -1220,7 +1220,7 @@ var I18N = {
     loginWelcome: 'Log in or sign up<br>to continue', loginEmail: 'Email', loginPassword: 'Password', loginEmailPh: 'you@school.edu.in', loginPwPh: '••••••••', loginBtn: 'Login', authLogin: 'Log In', authSignup: 'Sign Up', authNote: 'One account per school. Your school’s data stays on this device until the server version arrives.', suSchool: 'School Name', suYourName: 'Your Name', suEmail: 'Email', suPw: 'Password', suPw2: 'Confirm Password', suBtn: 'Create Account', loginOr: 'Or continue with', demoTitle: '— One-tap demo login —', loginBack: '← Back to website',
     superDashboard: 'Super Admin Dashboard', schoolDashboard: 'School Admin Dashboard', studentDashboard: 'Student Dashboard',
     confirmTitle: 'Confirm', cancel: 'Cancel', confirmYes: 'Yes, continue', saveBtn: 'Save',
-    addSchool: 'Add School', addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', approve: 'Approve', remove: 'Remove', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetDemo: 'Reset Demo Data', publishBtn: 'Publish', assignHw: 'Assign Homework', saveSchoolBtn: 'Save School', saveStudentBtn: 'Save Student',
+    addSchool: 'Add School', addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', approve: 'Approve', remove: 'Remove', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetDemo: 'Reset Demo Data', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting deletes all your changes and restores the original demo data.', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', publishBtn: 'Publish', assignHw: 'Assign Homework', saveSchoolBtn: 'Save School', saveStudentBtn: 'Save Student',
     attOverview: 'Attendance Overview', todayAtt: 'Today\'s Attendance', feeTrend: 'Fee Collection Trend', feeTrendSub: 'Apr – Aug (Collected vs Pending)', feeTrendSub2: 'Apr to Aug (Collected vs Pending)', recentAct: 'Recent Activities', quickLinks: 'Quick Links', jumpTask: 'Jump to a task', top5: 'Top 5 Schools', byStrength: 'By student strength', schoolGrowth: 'School Growth', growthSub: 'New schools onboarded this week', growthWeek: 'This week (Mon–Sun)', subsStatus: 'Subscription Status', subsSub: 'Share of schools by plan status', quickActions: 'Quick Actions', qaSub: 'Common admin tasks', enterMarks: 'Enter Marks', myHomework: 'My Homework', noticesH: 'Notices', latestNotices: 'Latest from school', plansH: 'Plans', guidesH: 'Quick Guides', guidesSub: 'Most common tasks', contactH: 'Contact', contactSub: 'We reply within one working day', studentsReport: 'Students Report', feesReport: 'Fees Report', attReport: 'Attendance Report', schoolsReport: 'Schools Report',
     thName: 'Name', thClass: 'Class', thRoll: 'Roll', thGuardian: 'Guardian', thPhone: 'Phone', thAtt: 'Att.', thFee: 'Fee', thAction: 'Action', thStudent: 'Student', thMonth: 'Month', thAmount: 'Amount', thDate: 'Date', thStatus: 'Status', thSchool: 'School', thCity: 'City', thStudents: 'Students', thUsers: 'Users', thPlan: 'Plan', thMarks: 'Marks', thResult: 'Result', thSince: 'Since', thRole: 'Role',
     subSuperDash: 'Platform Overview & Management', subSchools: 'All schools on the platform', subUsers: 'Teachers, staff & students', subSubs: 'Plans & billing status', subAnalytics: 'Growth, attendance & fees', subAnalyticsFull: 'Growth, attendance & fees across the platform', subReports: 'Download CSV reports', subHelp: 'Guides & contact', subStudents: 'St. Xavier School, Patna', subAttendance: 'Mark & view attendance', subFees: 'Fee collection & pending dues', subExams: 'Exams & marks entry', subHomework: 'Assign & track homework', subNotices: 'Notice board',
@@ -1265,7 +1265,7 @@ var I18N = {
     loginWelcome: 'लॉग इन करें या साइन अप करें<br>जारी रखने के लिए', loginEmail: 'ईमेल', loginPassword: 'पासवर्ड', loginEmailPh: 'आप@school.edu.in', loginPwPh: '••••••••', loginBtn: 'लॉगिन', authLogin: 'लॉग इन', authSignup: 'साइन अप', authNote: 'एक स्कूल, एक अकाउंट। सर्वर वर्शन आने तक आपके स्कूल का डेटा इसी डिवाइस पर रहेगा।', suSchool: 'स्कूल का नाम', suYourName: 'आपका नाम', suEmail: 'ईमेल', suPw: 'पासवर्ड', suPw2: 'पासवर्ड दोबारा डालें', suBtn: 'अकाउंट बनाएँ', loginOr: 'या जारी रखें', demoTitle: '— एक टैप में डेमो लॉगिन —', loginBack: '← वेबसाइट पर वापस',
     superDashboard: 'सुपर एडमिन डैशबोर्ड', schoolDashboard: 'स्कूल एडमिन डैशबोर्ड', studentDashboard: 'छात्र डैशबोर्ड',
     confirmTitle: 'पुष्टि करें', cancel: 'रद्द करें', confirmYes: 'हाँ, जारी रखें', saveBtn: 'सहेजें',
-    addSchool: 'स्कूल जोड़ें', addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', approve: 'स्वीकृत करें', remove: 'हटाएँ', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetDemo: 'डेमो डेटा रीसेट करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveSchoolBtn: 'स्कूल सहेजें', saveStudentBtn: 'छात्र सहेजें',
+    addSchool: 'स्कूल जोड़ें', addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', approve: 'स्वीकृत करें', remove: 'हटाएँ', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetDemo: 'डेमो डेटा रीसेट करें', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से आपके सारे बदलाव हट जाएँगे और मूल डेमो डेटा वापस आ जाएगा।', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveSchoolBtn: 'स्कूल सहेजें', saveStudentBtn: 'छात्र सहेजें',
     attOverview: 'उपस्थिति अवलोकन', todayAtt: 'आज की उपस्थिति', feeTrend: 'शुल्क संग्रह प्रवृत्ति', feeTrendSub: 'अप्रैल – अगस्त (संग्रह बनाम बकाया)', feeTrendSub2: 'अप्रैल से अगस्त (संग्रह बनाम बकाया)', recentAct: 'हाल की गतिविधियाँ', quickLinks: 'त्वरित लिंक', jumpTask: 'किसी कार्य पर जाएँ', top5: 'शीर्ष 5 स्कूल', byStrength: 'छात्र संख्या के अनुसार', schoolGrowth: 'स्कूल वृद्धि', growthSub: 'इस सप्ताह जुड़े नए स्कूल', growthWeek: 'इस सप्ताह (सोम–रवि)', subsStatus: 'सदस्यता स्थिति', subsSub: 'योजना स्थिति के अनुसार स्कूलों का हिस्सा', quickActions: 'त्वरित कार्य', qaSub: 'आम व्यवस्थापक कार्य', enterMarks: 'अंक भरें', myHomework: 'मेरा होमवर्क', noticesH: 'नोटिस', latestNotices: 'स्कूल से नवीनतम', plansH: 'योजनाएँ', guidesH: 'त्वरित मार्गदर्शिकाएँ', guidesSub: 'सबसे आम कार्य', contactH: 'संपर्क', contactSub: 'हम एक कार्य दिवस के भीतर जवाब देते हैं', studentsReport: 'छात्र रिपोर्ट', feesReport: 'शुल्क रिपोर्ट', attReport: 'उपस्थिति रिपोर्ट', schoolsReport: 'स्कूल रिपोर्ट',
     thName: 'नाम', thClass: 'कक्षा', thRoll: 'रोल', thGuardian: 'अभिभावक', thPhone: 'फ़ोन', thAtt: 'उप.', thFee: 'शुल्क', thAction: 'कार्रवाई', thStudent: 'छात्र', thMonth: 'महीना', thAmount: 'राशि', thDate: 'तारीख', thStatus: 'स्थिति', thSchool: 'स्कूल', thCity: 'शहर', thStudents: 'छात्र', thUsers: 'उपयोगकर्ता', thPlan: 'योजना', thMarks: 'अंक', thResult: 'परिणाम', thSince: 'से', thRole: 'भूमिका',
     subSuperDash: 'प्लेटफ़ॉर्म अवलोकन और प्रबंधन', subSchools: 'प्लेटफ़ॉर्म के सभी स्कूल', subUsers: 'शिक्षक, कर्मचारी और छात्र', subSubs: 'योजनाएँ और बिलिंग स्थिति', subAnalytics: 'वृद्धि, उपस्थिति और शुल्क', subAnalyticsFull: 'पूरे प्लेटफ़ॉर्म पर वृद्धि, उपस्थिति और शुल्क', subReports: 'CSV रिपोर्ट डाउनलोड करें', subHelp: 'मार्गदर्शिकाएँ और संपर्क', subStudents: 'सेंट ज़ेवियर स्कूल, पटना', subAttendance: 'उपस्थिति दर्ज करें और देखें', subFees: 'शुल्क संग्रह और बकाया', subExams: 'परीक्षा और अंक प्रविष्टि', subHomework: 'होमवर्क सौंपें और देखें', subNotices: 'नोटिस बोर्ड',
@@ -1336,7 +1336,8 @@ function loginAs(a, opts) {
   db = loadDB(a.role === 'school' ? a : null);
   showView('app'); renderApp();
   persistSession();
-  histReset('dashboard'); // fresh history for this account: back from the dashboard exits, it never re-enters another account
+  lastBackAt = 0; histExiting = false;
+  histArmGuard(); // fresh history for this account: [dashboard, guard] — back from the dashboard warns first, it never re-enters another account
   if (!opts || !opts.silent) toast(t('tLoggedIn') + ' ' + a.name);
 }
 function restoreSession() {
@@ -1375,7 +1376,9 @@ function restoreSession() {
     if (!a || a.role !== sv.role) return false;
     loginAs(a, { silent: true });
     state.view = (NAV[a.role] || []).some(function (n) { return n[0] === sv.view; }) ? sv.view : 'dashboard';
+    if (state.view !== 'dashboard') histReplaceTop({ view: state.view }); // drop the guard: the restored view sits on top
     renderApp();
+    persistSession(); // re-persist AFTER applying the view — the stored view must match what the user sees
     return true;
   } catch (e) { return false; }
 }
@@ -1467,6 +1470,7 @@ function logout() {
   promoState = null; importState.rows = null; importState.result = null;
   try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
+  lastBackAt = 0; histExiting = false;
   histReset('login'); // back after logout cannot re-enter the app
   $('loginId').value = ''; $('loginPw').value = '';
   $('parentAdmNo').value = ''; $('parentPin').value = '';
@@ -1505,55 +1509,166 @@ var VIEW_TITLES = {
 };
 /* ================= in-app history (Android back button) =================
    Views are swapped in place, so without history entries the Android back
-   button exits the PWA at once. Every go() pushes one entry (never two in a
-   row for the same view); popstate navigates inside the app instead. At the
-   dashboard the first back press only warns — a second press within 2s exits. */
+   button exits the PWA at once. Every screen — top-level views AND sub-views
+   (student profile, fee profile, collect page, saved receipt, promotion) —
+   gets its own entry, so Back walks back through the screens actually seen.
+   Entries are full states {view, sub?, guard?}; dedupe compares the whole
+   state, never the view alone.
+   Dashboard guard: after login the stack is [dashboard, guard]. Popping the
+   guard only warns ("Press back again to exit") and re-pushes the guard; a
+   second Back within 2s lets the press through, so the app exits. */
 var lastBackAt = 0;
+var histCur = null; // last known top history entry (full state), or null
+var histExiting = false; // set while a programmatic exit-back is in flight
 function histSupported() {
   try {
     return (typeof window !== 'undefined' && !!window.history && typeof window.history.pushState === 'function' && typeof window.history.replaceState === 'function');
   } catch (e) { return false; }
 }
-function histPush(view) {
+function histTopState() {
+  try { if (window.history && window.history.state) return window.history.state; } catch (e) {}
+  return histCur;
+}
+function histSameState(a, b) {
+  if (!a || !b) return a === b;
+  return a.view === b.view && (a.sub || null) === (b.sub || null) && !!a.guard === !!b.guard;
+}
+function histPush(st) {
   try {
     if (!histSupported()) return;
-    var cur = null;
-    try { cur = window.history.state && window.history.state.view; } catch (e) {}
-    if (cur === view) return; // never push duplicate consecutive entries
-    window.history.pushState({ view: view }, '');
+    var cur = histTopState();
+    if (cur && cur.guard) { // navigation consumes the dashboard guard: replace it
+      window.history.replaceState(st, '');
+      histCur = st;
+      return;
+    }
+    if (histSameState(cur, st)) return; // never push duplicate consecutive entries
+    if (cur && cur.sub && cur.view === st.view && !st.sub) { // a list replaces its own sub-view
+      window.history.replaceState(st, '');
+      histCur = st;
+      return;
+    }
+    window.history.pushState(st, '');
+    histCur = st;
+  } catch (e) {}
+}
+function histReplaceTop(st) {
+  try {
+    if (!histSupported()) return;
+    window.history.replaceState(st, '');
+    histCur = st;
   } catch (e) {}
 }
 function histReset(view) {
   try {
     if (!histSupported()) return;
-    window.history.replaceState({ view: view || 'dashboard' }, '');
+    var st = { view: view || 'dashboard' };
+    window.history.replaceState(st, '');
+    histCur = st;
   } catch (e) {}
 }
-function onPopState(ev) {
-  if (!state.role || !state.user) return; // logged out: back cannot re-enter
-  var v = ev && ev.state && ev.state.view;
-  var nav = NAV[state.role] || [];
-  if (v && !nav.some(function (n) { return n[0] === v; })) v = 'dashboard';
-  if (!v) {
-    // Popped past the root entry — a back press while on the dashboard.
-    if (state.view !== 'dashboard') { v = 'dashboard'; }
-    else {
-      var now = Date.now();
-      if (now - lastBackAt < 2000) { lastBackAt = 0; return; } // second press: exit
-      lastBackAt = now;
-      toast(t('tBackExit'));
-      histPush('dashboard'); // guard entry back, so the next press can exit
+function histArmGuard() {
+  // Stack becomes [dashboard, guard]: Back from the dashboard warns first.
+  try {
+    if (!histSupported()) return;
+    window.history.replaceState({ view: 'dashboard' }, '');
+    window.history.pushState({ view: 'dashboard', guard: 1 }, '');
+    histCur = { view: 'dashboard', guard: 1 };
+  } catch (e) {}
+}
+function histPushGuard() {
+  try {
+    if (!histSupported()) return;
+    var st = { view: 'dashboard', guard: 1 };
+    window.history.pushState(st, '');
+    histCur = st;
+  } catch (e) {}
+}
+function histExitBack() {
+  // Second Back within 2s: let the press exit the app for real.
+  histExiting = true;
+  try { window.history.back(); } catch (e) {}
+  setTimeout(function () { histExiting = false; }, 1000);
+}
+function clearHistSubState() {
+  state.feeStudent = null; state.collectStudent = null; state.collectRecordId = null; state.savedReceiptId = null; collectDraft = null;
+  state.profileStudent = null; promoState = null;
+  state.feeFormOpen = false; state.feePreselect = null;
+}
+function applyHistState(v, sub) {
+  // Restore a view (and optional sub-view) reached via Back/Forward.
+  state.view = v;
+  clearHistSubState();
+  toggleSidebar(false);
+  if (sub) {
+    var parts = String(sub).split(':');
+    if (parts[0] === 'profile') {
+      if (v === 'fees') state.feeStudent = parts[1];
+      else if (v === 'students') { state.profileStudent = parts[1]; state.profileTab = 'overview'; }
+    } else if (parts[0] === 'collect' && v === 'fees') {
+      var cs = db.students.find(function (x) { return x.id === parts[1]; });
+      if (cs) { state.collectStudent = parts[1]; state.collectRecordId = parts[2] || null; state.feeStudent = parts[1]; collectDraft = newCollectDraft(parts[1], state.collectRecordId); }
+    } else if (parts[0] === 'receipt' && v === 'fees') {
+      var rc = (db.receipts || []).find(function (r) { return r.receiptNo === parts[1]; });
+      if (rc) { state.collectStudent = rc.studentId; state.savedReceiptId = rc.receiptNo; state.feeStudent = rc.studentId; }
+    } else if (parts[0] === 'promo' && v === 'students') {
+      openPromotion(parts[1] || null, { noHist: true });
+      persistSession();
       return;
     }
   }
-  if (v === state.view) { renderApp(); return; }
-  state.view = v;
-  if (v !== 'fees') { state.feeStudent = null; state.collectStudent = null; state.collectRecordId = null; state.savedReceiptId = null; collectDraft = null; }
-  state.profileStudent = null;
   persistSession();
-  toggleSidebar(false);
   renderApp();
 }
+function onPopState(ev) {
+  if (!state.role || !state.user) return; // logged out: back cannot re-enter
+  if (histExiting) return; // programmatic exit-back already in flight
+  var prev = histCur;
+  var st = ev && ev.state;
+  histCur = st || null;
+  var v = st && st.view;
+  var sub = st && st.sub;
+  if (prev && prev.guard) {
+    // The guard entry was popped: a Back press while on the dashboard.
+    if (state.view !== 'dashboard') { state.view = 'dashboard'; clearHistSubState(); persistSession(); toggleSidebar(false); renderApp(); }
+    var now = Date.now();
+    if (now - lastBackAt < 2000) { lastBackAt = 0; histExitBack(); return; } // second press: exit
+    lastBackAt = now;
+    toast(t('tBackExit'));
+    histPushGuard(); // guard back on top, so the next press can exit
+    return;
+  }
+  if (st && st.guard) {
+    // Landed ON the guard entry (popped a view above it): we are on the dashboard.
+    applyHistState('dashboard', null);
+    return;
+  }
+  if (!v) {
+    // Popped past the root entry.
+    if (state.view !== 'dashboard') { applyHistState('dashboard', null); histArmGuard(); return; }
+    var now2 = Date.now();
+    if (now2 - lastBackAt < 2000) { lastBackAt = 0; histExitBack(); return; }
+    lastBackAt = now2;
+    toast(t('tBackExit'));
+    histArmGuard();
+    return;
+  }
+  var nav = NAV[state.role] || [];
+  if (!nav.some(function (n) { return n[0] === v; })) { v = 'dashboard'; sub = null; }
+  applyHistState(v, sub);
+}
+function histBack() {
+  // In-page "← back" button: follow the history entry if this screen has
+  // one, so Android Back and the on-screen back never disagree afterwards.
+  // Returns true when a history back was triggered.
+  if (histSupported() && histCur && histCur.sub) {
+    try { window.history.back(); return true; } catch (e) {}
+  }
+  return false;
+}
+function backFromProfile() { if (histBack()) return; state.profileStudent = null; renderPage(); }
+function backFromFeeProfile() { if (histBack()) return; state.feeStudent = null; renderPage(); }
+function backFromReceipt() { if (histBack()) return; state.savedReceiptId = null; state.collectStudent = null; renderPage(); }
 function go(view) {
   var nav = NAV[state.role] || [];
   var ok = nav.some(function (n) { return n[0] === view; });
@@ -1564,7 +1679,7 @@ function go(view) {
   persistSession();
   toggleSidebar(false);
   renderApp();
-  histPush(state.view);
+  histPush({ view: state.view });
 }
 function toggleSidebar(open) {
   var sb = $('sidebar'), sc = $('scrim');
@@ -1804,16 +1919,46 @@ function superSettings() {
   '<div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap"><button class="btn" onclick="toast(t(\'tSettingsSaved\'))">' + t('saveSettingsBtn') + '</button>' +
   '<button class="btn danger" onclick="resetDemo()">' + t('resetDemo') + '</button></div></div>';
 }
+function resetPwCheck(pw) {
+  // Password gate for Reset Demo Data: the signed-in account's own password.
+  if (!state.role || !state.user) return false;
+  if (state.role === 'super') return pw === OWNER.pw;
+  if (state.role === 'school') {
+    var a = findAccount(state.user.email);
+    return !!a && !!a.pwHash && hashPw(pw) === a.pwHash;
+  }
+  return false; // parent / student roles never reset
+}
 function resetDemo() {
-  confirmModal('Reset all demo data to the original seed? Your changes will be lost.', function () {
-    try { localStorage.removeItem(DB_KEY); } catch (e) {}
-    db = seedDB();
-    if (state.user && state.user.role === 'school') applySchoolProfile(db, state.user);
-    saveDB(db);
-    state.attSnapKey = ''; state.attSnap = {};
-    renderApp();
-    toast(t('tDemoReset'));
-  });
+  if (!state.role || !state.user || (state.role !== 'school' && state.role !== 'super')) return;
+  openModal('<h3>' + t('resetPwTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('resetPwHint') + '</p>' +
+    '<form onsubmit="return submitResetPw(event)"><div class="form-grid"><div class="full"><label>' + t('resetPwLabel') + '</label>' +
+    '<input id="resetPwInput" type="password" autocomplete="current-password" placeholder="••••••••"></div></div>' +
+    '<div id="resetPwErr" class="err hidden"></div>' +
+    '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    '<button class="btn danger" type="submit">' + t('resetPwGo') + '</button></div></form>');
+  setTimeout(function () { var el = $('resetPwInput'); if (el) el.focus(); }, 50);
+}
+function submitResetPw(e) {
+  if (e) e.preventDefault();
+  var pw = $('resetPwInput') ? $('resetPwInput').value : '';
+  if (!resetPwCheck(pw)) {
+    var err = $('resetPwErr');
+    if (err) { err.textContent = t('resetPwWrong'); err.classList.remove('hidden'); }
+    return false;
+  }
+  closeModal();
+  confirmModal('Reset all demo data to the original seed? Your changes will be lost.', resetDemoConfirmed);
+  return false;
+}
+function resetDemoConfirmed() {
+  try { localStorage.removeItem(DB_KEY); } catch (e) {}
+  db = seedDB();
+  if (state.user && state.user.role === 'school') applySchoolProfile(db, state.user);
+  saveDB(db);
+  state.attSnapKey = ''; state.attSnap = {};
+  renderApp();
+  toast(t('tDemoReset'));
 }
 function superReports() { return reportsPage('super'); }
 function superHelp() {
@@ -1838,8 +1983,8 @@ function schoolDashboard() {
   return '<div class="page-head"><div class="prof-head">' + logoHtml + '<div><h2>' + t('schoolDashboard') + '</h2><p>' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div></div>' +
     '<div class="toolbar"><button class="btn sm" onclick="downloadReportCSV(\'fees\')">⬇ ' + t('downloadReport') + '</button></div></div>' +
   '<div class="stats">' +
-    statCard('🎒', 'blue', t('totalStudents'), 1250, '↑ 5%', 'up') +
-    statCard('👩‍🏫', 'green', t('totalTeachers'), 85, '↑ 2%', 'up') +
+    statCard('🎒', 'blue', t('totalStudents'), db.students.length, '↑ 5%', 'up') +
+    statCard('👩‍🏫', 'green', t('totalTeachers'), db.teachers.length, '↑ 2%', 'up') +
     statCard('💰', 'orange', t('feeCollected'), ft.collected, '↑ 78%', 'up', { prefix: '₹' }) +
     statCard('⏰', 'red', t('pendingFee'), ft.pending, '', 'down', { prefix: '₹' }) +
   '</div>' +
@@ -2120,6 +2265,8 @@ function viewStudentAttendance(id) {
 function viewStudentFees(id) {
   if (state.role === 'parent' || !canViewStudent(id)) { toast(t('tParentScope')); return; }
   state.view = 'fees'; state.feeStudent = id;
+  persistSession();
+  histPush({ view: 'fees', sub: 'profile:' + id });
   renderApp();
 }
 function viewStudentResults(id) {
@@ -2222,7 +2369,7 @@ function promoList() {
   }
   return promoEligible(promoState.fromSession, promoState.fromCls);
 }
-function openPromotion(singleId) {
+function openPromotion(singleId, opts) {
   if (state.role !== 'school') { toast(t('tParentScope')); return; }
   state.profileStudent = null; // never show profile + promotion at once
   var s = singleId ? db.students.find(function (x) { return x.id === singleId; }) : null;
@@ -2238,6 +2385,8 @@ function openPromotion(singleId) {
     toCls: nextClassPart(classPartOf(fromCls)), toSec: sectionOf(fromCls) || 'A',
     selected: sel, result: null
   };
+  persistSession();
+  if (!opts || !opts.noHist) histPush({ view: 'students', sub: singleId ? 'promo:' + singleId : 'promo' });
   renderPage();
 }
 function promoteSingle(id) { openPromotion(id); }
@@ -2353,6 +2502,8 @@ function openStudentProfile(id) {
   if (!canViewStudent(id)) { toast(t('tParentScope')); return; }
   promoState = null;
   state.profileStudent = id; state.profileTab = 'overview';
+  persistSession();
+  histPush({ view: 'students', sub: 'profile:' + id });
   renderPage();
 }
 function setProfileTab(tab) { state.profileTab = tab; renderPage(); }
@@ -2368,7 +2519,7 @@ function studentProfilePage(id) {
   var isParent = state.role === 'parent';
   var toolbar = isParent
     ? '<div class="toolbar"><button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button></div>'
-    : '<div class="toolbar"><button class="btn ghost" onclick="state.profileStudent=null;renderPage()">← ' + t('backDir') + '</button>' +
+    : '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">← ' + t('backDir') + '</button>' +
     '<button class="btn" onclick="studentForm(\'' + s.id + '\')">' + t('editStudent') + '</button>' +
     '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button>' +
     ((stt === 'Active' || stt === 'Inactive') ? '<button class="btn ghost" onclick="promoteSingle(\'' + s.id + '\')">⬆️ ' + t('promoSingle') + '</button>' : '') + '</div>';
@@ -2595,6 +2746,8 @@ function feesPage() {
 function openFeeProfile(sid, e) {
   if (e) e.preventDefault();
   state.feeStudent = sid; state.collectStudent = null; state.collectRecordId = null; state.savedReceiptId = null; collectDraft = null;
+  persistSession();
+  histPush({ view: 'fees', sub: 'profile:' + sid });
   renderPage();
   return false;
 }
@@ -2615,7 +2768,7 @@ function studentFeeProfile(sid) {
       '<td>' + (r.status === 'Pending' ? '<button class="btn green sm" onclick="openCollectFee(\'' + s.id + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button>' : '<span class="muted">—</span>') + '</td></tr>';
   }).join('');
   return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • ' + t('thGuardian') + ' ' + esc(s.guardian) + ' • ' + t('thPhone') + ' ' + esc(s.phone) + '</p><p class="muted">' + t('feeProfileSub') + '</p></div></div>' +
-    '<div class="toolbar"><button class="btn ghost" onclick="state.feeStudent=null;renderPage()">← ' + t('backFees') + '</button>' +
+    '<div class="toolbar"><button class="btn ghost" onclick="backFromFeeProfile()">← ' + t('backFees') + '</button>' +
     '<button class="btn green" onclick="openCollectFee(\'' + s.id + '\')">💰 ' + t('collectFeeBtn') + '</button>' +
     '<button class="btn" onclick="openAddFeeFor(\'' + s.id + '\')">+ ' + t('addFee') + '</button>' +
     '<button class="btn ghost" onclick="printStudentStatement(\'' + s.id + '\')">🖨 ' + t('printStmt') + '</button></div></div>' +
@@ -3016,9 +3169,12 @@ function openCollectFee(sid, recordId) {
   state.collectStudent = sid; state.collectRecordId = recordId || null; state.savedReceiptId = null;
   state.view = 'fees'; state.feeStudent = sid;
   collectDraft = newCollectDraft(sid, recordId);
+  persistSession();
+  histPush({ view: 'fees', sub: 'collect:' + sid + (recordId ? ':' + recordId : '') });
   renderPage();
 }
 function cancelCollectFee() {
+  if (histBack()) return; // the collect entry pops, landing back where it was opened from
   state.collectStudent = null; state.collectRecordId = null; state.savedReceiptId = null; collectDraft = null;
   renderPage();
 }
@@ -3157,7 +3313,7 @@ function collectFeePage(sid) {
     var rc = (db.receipts || []).find(function (r) { return r.receiptNo === state.savedReceiptId; });
     if (rc) {
       return '<div class="page-head"><div><h2>' + t('rcptTitle') + '</h2><p>' + esc(s.name) + ' • ' + esc(s.cls) + ' • ' + esc(s.admissionNo || '') + '</p></div>' +
-        '<div class="toolbar"><button class="btn ghost" onclick="state.savedReceiptId=null;state.collectStudent=null;renderPage()">← ' + t('backFees') + '</button></div></div>' +
+        '<div class="toolbar"><button class="btn ghost" onclick="backFromReceipt()">← ' + t('backFees') + '</button></div></div>' +
         receiptHTML(rc, s, false) +
         '<div class="actions"><button class="btn" onclick="printReceipt(\'' + esc(rc.receiptNo) + '\')">🖨 ' + t('rcptPrint') + '</button>' +
         '<button class="btn green" onclick="openCollectFee(\'' + s.id + '\')">' + t('rcptCollectAgain') + '</button></div>';
@@ -3209,6 +3365,7 @@ function saveCollectFee(e) {
   addActivity('💰', 'green', 'Fee collected', s.name + ' • ' + receiptNo + ' • ' + inr(total));
   saveDB(db);
   state.savedReceiptId = receiptNo; collectDraft = null;
+  histReplaceTop({ view: 'fees', sub: 'receipt:' + receiptNo }); // Back from the saved receipt goes to the fee profile, not the spent collect form
   renderApp();
   toast('✓ ' + t('tCollectSaved') + receiptNo + ' • ' + inr(total));
   return false;
@@ -3217,6 +3374,8 @@ function openSavedReceipt(receiptNo) {
   var rc = (db.receipts || []).find(function (r) { return r.receiptNo === receiptNo; });
   if (!rc) return;
   state.collectStudent = rc.studentId; state.savedReceiptId = receiptNo; state.feeStudent = rc.studentId; state.view = 'fees';
+  persistSession();
+  histPush({ view: 'fees', sub: 'receipt:' + receiptNo });
   renderPage();
 }
 function printReceipt(receiptNo) {
