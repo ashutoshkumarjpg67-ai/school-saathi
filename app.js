@@ -2266,10 +2266,6 @@ function saveStudent(e, id, mode) {
     var newStu = Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: nextEnr(), admissionNo: admNo, status: mode === 'draft' ? 'Draft' : 'Active', parentPin: parentPinFromPhone(phone) }, data);
     if (pendingPhoto) newStu.photo = pendingPhoto;
     db.students.push(newStu);
-    if (mode !== 'draft') {
-      db.feeRecords.push({ id: 'fee' + Date.now(), studentId: nid, student: name, cls: cls,
-        month: new Date().toLocaleString('en', { month: 'short' }), type: 'Tuition', amount: 6000, status: 'Pending', date: todayIST() });
-    }
     var reqId = fval('fStAdmReq');
     if (reqId) {
       var rq = (db.admissionRequests || []).find(function (x) { return x.id === reqId; });
@@ -2626,7 +2622,7 @@ function profileTabBody(s, tab) {
     }).join('');
     return '<div class="stats">' + statCard('🧾', 'blue', t('totalBilled'), sum.billed, '', 'up', { prefix: '₹' }) + statCard('✅', 'green', t('totalPaid'), sum.paid, '', 'up', { prefix: '₹' }) + statCard('⏰', 'red', t('totalPending'), sum.pend, '', 'down', { prefix: '₹' }) + '</div>' +
       '<div class="card"><h3>' + t('feeByType') + '</h3>' + (btRows || '<p class="muted">' + t('tNoFeeRecs') + '</p>') + '</div>' +
-      '<div class="card" style="margin-top:16px"><h3>' + t('feeRecsH') + '</h3><div class="tbl-wrap"><table><thead><tr><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th></tr></thead><tbody>' + (frs || '<tr><td colspan="5"><div class="empty">' + t('tNoFeeRecs') + '</div></td></tr>') + '</tbody></table></div>' +
+      '<div class="card" style="margin-top:16px"><h3>' + t('feeRecsH') + '</h3><div class="tbl-wrap fee-hist-tbl"><table><thead><tr><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th></tr></thead><tbody>' + (frs || '<tr><td colspan="5"><div class="empty">' + t('tNoFeeRecs') + '</div></td></tr>') + '</tbody></table></div>' +
       (state.role === 'parent' ? '' : '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="viewStudentFees(\'' + s.id + '\')">' + t('openFees') + '</button></div>') + '</div>';
   }
   if (tab === 'results') {

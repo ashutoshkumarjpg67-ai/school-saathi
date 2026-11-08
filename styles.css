@@ -278,6 +278,17 @@ tbody tr:hover{background:#F8FAFC}
   .hero{padding:52px 5% 60px}
   .section{padding:40px 5%}
   .qa-grid{grid-template-columns:repeat(2,1fr)}
+  /* v21: compact tables on phones (shared) + fixed-layout fee-history table */
+  .tbl-wrap th,.tbl-wrap td{padding:6px 8px;font-size:12.5px}
+  .fee-hist-tbl table{table-layout:fixed;min-width:0}
+  .fee-hist-tbl th,.fee-hist-tbl td{padding:4px;font-size:12px}
+  .fee-hist-tbl th{font-size:11px}
+  .fee-hist-tbl th:nth-child(1),.fee-hist-tbl td:nth-child(1){width:48px}
+  .fee-hist-tbl th:nth-child(3),.fee-hist-tbl td:nth-child(3){width:56px;text-align:right}
+  .fee-hist-tbl th:nth-child(4),.fee-hist-tbl td:nth-child(4){width:74px;white-space:nowrap;font-size:11px}
+  .fee-hist-tbl th:nth-child(5),.fee-hist-tbl td:nth-child(5){width:72px}
+  .fee-hist-tbl .badge{padding:2px 5px;font-size:10.5px}
+  .fee-hist-tbl td:nth-child(2){overflow-wrap:break-word}
 }
 
 .auth-tabs{display:flex;gap:8px;margin:2px 0 18px}
