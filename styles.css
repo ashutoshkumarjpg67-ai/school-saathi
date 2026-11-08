@@ -430,14 +430,12 @@ tbody tr:hover{background:#F8FAFC}
   .rcpt-pay-grid{grid-template-columns:1fr}
   .rcpt-foot{flex-wrap:wrap}
   .rcpt-sign{width:100%}
-  .rcpt-tbl table{min-width:0}
-  .rcpt-tbl input{width:76px}
-}
-@media (max-width:480px){
-  .rcpt-lines{padding:0 10px}
   .rcpt-tbl table{min-width:0;table-layout:fixed}
   .rcpt-tbl th,.rcpt-tbl td{padding:4px 5px;font-size:12px}
   .rcpt-tbl th:nth-child(1),.rcpt-tbl td:nth-child(1){width:26px}
   .rcpt-tbl td:nth-child(2){overflow-wrap:break-word}
   .rcpt-tbl input{width:60px;padding:4px 5px;font-size:12px}
+}
+@media (max-width:480px){
+  .rcpt-lines{padding:0 10px}
 }
