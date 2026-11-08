@@ -90,13 +90,19 @@ function seedDB() {
     split(mo.collected, 10, 'Collected');
     split(mo.pending, 4, 'Pending');
   });
+  // Riya Kumari (demo student) gets one Collected record so her "Paid" status is evidence-based (totals unchanged).
+  var riyaStu = students.find(function (s) { return s.name === 'Riya Kumari'; });
+  if (riyaStu) {
+    var donorRec = feeRecords.find(function (r) { return r.month === 'Apr' && r.status === 'Collected' && r.studentId === students[27].id; });
+    if (donorRec) { donorRec.studentId = riyaStu.id; donorRec.student = riyaStu.name; }
+  }
   var today = todayIST();
   var attRecords = {};
   students.filter(function (s) { return s.cls === '10th-A'; }).forEach(function (s, i) {
     attRecords[s.id] = (i === 2) ? 'Absent' : (i === 3) ? 'Late' : 'Present';
   });
   return {
-    v: 1,
+    v: 2,
     schools: schools,
     students: students,
     teachers: teachers,
@@ -153,7 +159,7 @@ function loadDB() {
     var raw = localStorage.getItem(DB_KEY);
     if (raw) {
       var d = JSON.parse(raw);
-      if (d && d.v === 1) return migrateAttendance(d);
+      if (d && d.v === 2) return migrateAttendance(d);
       // Unknown version: keep a backup, never wipe silently.
       try { localStorage.setItem(DB_KEY + '.bak', raw); } catch (e2) { /* ignore */ }
     }
@@ -219,11 +225,15 @@ function feeChartData() {
   });
 }
 function studentFeeStatus(id) {
-  // Derived from fee records: Pending if ANY Pending record exists, else Paid.
+  // Derived from fee records: Pending if ANY Pending record exists, Paid if ANY Collected record exists, else no dues.
+  var hasCol = false;
   for (var i = 0; i < db.feeRecords.length; i++) {
-    if (db.feeRecords[i].studentId === id && db.feeRecords[i].status === 'Pending') return 'Pending';
+    var r = db.feeRecords[i];
+    if (r.studentId !== id) continue;
+    if (r.status === 'Pending') return 'Pending';
+    if (r.status === 'Collected') hasCol = true;
   }
-  return 'Paid';
+  return hasCol ? 'Paid' : '\u2014';
 }
 function donutPct(v, total) { return total ? Math.round(v / total * 100) : 0; }
 function attTotal() { var a = db.attendanceAgg; return a.present + a.absent + a.late; }
@@ -456,11 +466,14 @@ function setLang(l) {
   $('langEn').classList.toggle('on', l === 'en');
   $('langHi').classList.toggle('on', l === 'hi');
   applyI18n();
+  refreshLandingStats();
   if (state.role) renderApp();
 }
 
 /* ================= auth & shell ================= */
 function showView(which) {
+  hideTip();
+  if (which === 'landing') refreshLandingStats();
   ['landing', 'login', 'app'].forEach(function (id) { $(id).classList.toggle('hidden', id !== which); });
   window.scrollTo(0, 0);
 }
@@ -590,10 +603,30 @@ function changeSession(v) {
 }
 function renderPage() {
   var p = $('page');
+  hideTip();
   var pages = state.role === 'super' ? PAGE_SUPER : state.role === 'school' ? PAGE_SCHOOL : PAGE_STUDENT;
   var fn = pages[state.view] || pages.dashboard;
   p.innerHTML = fn();
   runCountUps(p); animateDonuts(p); animateBars(p); animateLine(p);
+}
+
+function hideTip() { var tip = $('chartTip'); if (tip) tip.style.opacity = '0'; }
+function refreshLandingStats() {
+  if (typeof db === 'undefined' || !db) return;
+  var sc = schoolCounts(), ft = feeTotals(), agg = db.attendanceAgg || { present: 1150, absent: 70, late: 30 };
+  var total = agg.present + agg.absent + agg.late;
+  var pct = total ? Math.round(agg.present / total * 100) : 0;
+  var vals = [sc.total, 12450, pct, ft.collected];
+  var nums = document.querySelectorAll('#stats .mini-stat .n');
+  nums.forEach(function (el, i) {
+    if (vals[i] == null) return;
+    el.setAttribute('data-count', vals[i]);
+    var pre = el.getAttribute('data-prefix') || '', suf = el.getAttribute('data-suffix') || '';
+    el.textContent = pre + num(vals[i]) + suf;
+  });
+  var pr = $('landPresent'), pe = $('landPending');
+  if (pr) pr.textContent = state.lang === 'hi' ? num(total) + ' \u092e\u0947\u0902 \u0938\u0947 ' + num(agg.present) + ' \u0909\u092a\u0938\u094d\u0925\u093f\u0924' : num(agg.present) + ' present of ' + num(total);
+  if (pe) pe.textContent = inr(ft.pending) + (state.lang === 'hi' ? ' \u092c\u0915\u093e\u092f\u093e' : ' pending');
 }
 
 /* ================= chart tooltip (mouse + touch) ================= */
@@ -850,7 +883,7 @@ function studentsPage() {
   var rows = list.map(function (s) {
     var fs = studentFeeStatus(s.id);
     return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.guardian) + '</td><td>' + esc(s.phone) + '</td><td>' + s.att + '%</td>' +
-      '<td><span class="badge ' + (fs === 'Paid' ? 'green' : 'orange') + '">' + fs + '</span></td>' +
+      '<td><span class="badge ' + (fs === 'Paid' ? 'green' : fs === 'Pending' ? 'orange' : 'grey') + '">' + fs + '</span></td>' +
       '<td><div class="row-actions"><button class="btn ghost sm" onclick="studentForm(\'' + s.id + '\')">' + t('editBtn') + '</button><button class="btn danger sm" onclick="deleteStudent(\'' + s.id + '\')">' + t('deleteBtn') + '</button></div></td></tr>';
   }).join('');
   var clsOpts = ['All'].concat(CLASSES).map(function (c) { return '<option ' + (cls === c ? 'selected' : '') + '>' + c + '</option>'; }).join('');
@@ -1206,6 +1239,7 @@ var PAGE_STUDENT = { dashboard: studentDashboard, homework: homeworkPage, notice
 /* ================= init ================= */
 document.addEventListener('DOMContentLoaded', function () {
   applyI18n();
+  refreshLandingStats();
   if (!restoreSession()) runCountUps(document);
   if ('serviceWorker' in navigator && window.location.protocol.indexOf('http') === 0) {
     try {
