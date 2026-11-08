@@ -276,3 +276,7 @@ tbody tr:hover{background:#F8FAFC}
   .section{padding:40px 5%}
   .qa-grid{grid-template-columns:repeat(2,1fr)}
 }
+
+.auth-tabs{display:flex;gap:8px;margin:2px 0 18px}
+.auth-tab{flex:1;padding:11px 8px;border-radius:10px;border:1px solid var(--border);background:#F1F5F9;font-weight:700;font-size:14.5px;color:var(--muted);cursor:pointer;font-family:inherit}
+.auth-tab.on{background:var(--navy);color:#fff;border-color:var(--navy)}

@@ -16,11 +16,23 @@ var GROWTH = [ // School Growth Mon–Sun
   { d: 'Mon', v: 10 }, { d: 'Tue', v: 12 }, { d: 'Wed', v: 11 },
   { d: 'Thu', v: 14 }, { d: 'Fri', v: 13 }, { d: 'Sat', v: 18 }, { d: 'Sun', v: 24 }
 ];
-var DEMO_ACCOUNTS = {
-  super:  { id: 'super@school-saathi.in', pw: 'admin123', role: 'super',  name: 'Super Admin', sub: 'Platform Owner' },
-  school: { id: 'rahul@stxavier.in',      pw: 'admin123', role: 'school', name: 'Rahul Kumar',  sub: 'School Admin • St. Xavier School' },
-  student:{ id: 'riya@student.in',        pw: 'student123', role: 'student', name: 'Riya Kumari', sub: 'Student • Class 10th-A' }
-};
+/* Accounts live in localStorage on this device (server auth is Phase 2).
+   OWNER is the platform-owner login. School accounts are created via Sign Up;
+   each school gets its own workspace copy under its own DB key. */
+var OWNER = { id: 'super@school-saathi.in', pw: 'admin123', role: 'super', name: 'Super Admin', sub: 'Platform Owner', email: 'super@school-saathi.in', uid: 'owner' };
+var ACC_KEY = 'schoolSaathiAccounts';
+function hashPw(s) { var h = 5381, i; for (i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0; return 'h' + h.toString(36); }
+function loadAccounts() { try { var r = localStorage.getItem(ACC_KEY); if (r) { var a = JSON.parse(r); if (Array.isArray(a)) return a; } } catch (e) {} return []; }
+function saveAccounts(list) { try { localStorage.setItem(ACC_KEY, JSON.stringify(list)); } catch (e) {} }
+function findAccount(email) {
+  email = (email || '').trim().toLowerCase();
+  if (email === OWNER.id) return OWNER;
+  var list = loadAccounts();
+  for (var i = 0; i < list.length; i++) if (list[i].email === email) return list[i];
+  return null;
+}
+function dbKeyFor(a) { return a.role === 'super' ? 'schoolSaathiDBv1' : 'schoolSaathiDB_' + a.uid; }
+function applySchoolProfile(d, a) { d.profile.name = a.school; d.profile.principal = a.name; d.profile.email = a.email; return d; }
 
 /* ================= seed data ================= */
 var SCHOOL_NAMES = [
@@ -154,7 +166,7 @@ function migrateAttendance(d) {
   if (!d.attendance || typeof d.attendance !== 'object') d.attendance = {};
   return d;
 }
-function loadDB() {
+function loadDB(override) {
   try {
     var raw = localStorage.getItem(DB_KEY);
     if (raw) {
@@ -165,6 +177,7 @@ function loadDB() {
     }
   } catch (e) { /* storage unavailable — fall back to memory */ }
   var fresh = seedDB();
+  if (override) applySchoolProfile(fresh, override);
   saveDB(fresh);
   return fresh;
 }
@@ -383,7 +396,7 @@ var I18N = {
     roleSchool: 'School Admin — Rahul Kumar', roleSchoolD: 'St. Xavier School, Patna — students, attendance, fees, exams, homework and notices.', goSchool: 'Open School Admin →',
     roleStudent: 'Student — Riya Kumari', roleStudentD: 'Class 10th-A — attendance, fees, results and homework on a mobile-style view.', goStudent: 'Open Student View →',
     landFooter: '<b>School Saathi</b> — Smart Education. Better Tomorrow.<br>Built for Bihar • Free for Schools • Made with ❤️ in Gopalganj, Bihar',
-    loginWelcome: 'Welcome Back!<br>Login to continue', loginEmail: 'Email or Mobile Number', loginPassword: 'Password', loginEmailPh: 'e.g. rahul@stxavier.in', loginPwPh: '••••••••', loginForgot: 'Forgot Password?', loginBtn: 'Login', loginOr: 'Or continue with', demoTitle: '— One-tap demo login —', loginBack: '← Back to website',
+    loginWelcome: 'Log in or sign up<br>to continue', loginEmail: 'Email', loginPassword: 'Password', loginEmailPh: 'you@school.edu.in', loginPwPh: '••••••••', loginBtn: 'Login', authLogin: 'Log In', authSignup: 'Sign Up', authNote: 'One account per school. Your school’s data stays on this device until the server version arrives.', suSchool: 'School Name', suYourName: 'Your Name', suEmail: 'Email', suPw: 'Password', suPw2: 'Confirm Password', suBtn: 'Create Account', loginOr: 'Or continue with', demoTitle: '— One-tap demo login —', loginBack: '← Back to website',
     superDashboard: 'Super Admin Dashboard', schoolDashboard: 'School Admin Dashboard', studentDashboard: 'Student Dashboard',
     confirmTitle: 'Confirm', cancel: 'Cancel', confirmYes: 'Yes, continue', saveBtn: 'Save',
     addSchool: 'Add School', addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', approve: 'Approve', remove: 'Remove', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetDemo: 'Reset Demo Data', publishBtn: 'Publish', assignHw: 'Assign Homework', saveSchoolBtn: 'Save School', saveStudentBtn: 'Save Student',
@@ -391,7 +404,7 @@ var I18N = {
     thName: 'Name', thClass: 'Class', thRoll: 'Roll', thGuardian: 'Guardian', thPhone: 'Phone', thAtt: 'Att.', thFee: 'Fee', thAction: 'Action', thStudent: 'Student', thMonth: 'Month', thAmount: 'Amount', thDate: 'Date', thStatus: 'Status', thSchool: 'School', thCity: 'City', thStudents: 'Students', thUsers: 'Users', thPlan: 'Plan', thMarks: 'Marks', thResult: 'Result', thSince: 'Since', thRole: 'Role',
     subSuperDash: 'Platform Overview & Management', subSchools: 'All schools on the platform', subUsers: 'Teachers, staff & students', subSubs: 'Plans & billing status', subAnalytics: 'Growth, attendance & fees', subAnalyticsFull: 'Growth, attendance & fees across the platform', subReports: 'Download CSV reports', subHelp: 'Guides & contact', subStudents: 'St. Xavier School, Patna', subAttendance: 'Mark & view attendance', subFees: 'Fee collection & pending dues', subExams: 'Exams & marks entry', subHomework: 'Assign & track homework', subNotices: 'Notice board',
     fSchoolName: 'School Name', fCity: 'City', fStudents: 'Students', fPlan: 'Plan', fStudentName: 'Student Name', fClass: 'Class', fRoll: 'Roll No', fGuardian: 'Guardian', fPhone: 'Phone', fTitle: 'Title', fSubject: 'Subject', fDue: 'Due Date', fMessage: 'Message', fPrincipal: 'Principal / Admin', fEmail: 'Email', fAddress: 'Address', fSession: 'Academic Session',
-    tLoggedIn: 'Logged in as', tLoggedOut: 'Logged out. See you soon!', tSchoolAdded: 'School added — pending approval.', tSchoolRemoved: 'School removed.', tStudentAdded: 'Student added.', tStudentUpdated: 'Student updated.', tStudentDeleted: 'Student deleted.', tAttSaved: 'Attendance saved', tMarksSaved: 'Marks saved for', tHwDone: 'Homework marked done.', tHwNotDone: 'Homework marked not done.', tHwAssigned: 'Homework assigned.', tNoticePub: 'Notice published.', tReportDl: 'Report downloaded.', tSettingsSaved: 'Settings saved.', tDemoReset: 'Demo data reset.', tSessionChanged: 'Academic session changed to', tApproved: 'approved. Pending approvals:', tNoChanges: 'No changes.', tStudentsRange: 'Students must be between 1 and 100,000.', tFutureDate: 'Future date not allowed — showing today.', tDueFuture: 'Due date must be today or later.', tDemoLogin: 'Demo account — use one-tap login below.', tGoogleDemo: 'Demo build — please use a one-tap demo login.', tNoStudentData: 'No student data — ask your school admin to add students.', tNoExams: 'No exams yet.', tNoHw: 'No homework yet.', tNoMarks: 'No marks entered yet for this exam.', tNoMatch: 'No students match.', tNoSchoolsMatch: 'No schools match.', tNotEntered: 'Not entered', tCollectedFrom: 'collected from', tDupSchool: 'already exists.', tDupStudent: 'already exists in', tNotSaved: 'Not saved', tCheckMarks: 'check marks', tStudentsWord: 'students', tNoFeeData: 'No fee data yet.', tNoGrowthData: 'No growth data yet.',
+    tLoggedIn: 'Logged in as', tAccountCreated: 'Account created. Welcome, ', tInvalidCreds: 'Invalid email or password.', tFillAll: 'Please fill in all fields.', tInvalidEmail: 'Please enter a valid email address.', tPwShort: 'Password must be at least 6 characters.', tPwMismatch: 'Passwords do not match.', tEmailTaken: 'An account with this email already exists. Please log in.', tLoggedOut: 'Logged out. See you soon!', tSchoolAdded: 'School added — pending approval.', tSchoolRemoved: 'School removed.', tStudentAdded: 'Student added.', tStudentUpdated: 'Student updated.', tStudentDeleted: 'Student deleted.', tAttSaved: 'Attendance saved', tMarksSaved: 'Marks saved for', tHwDone: 'Homework marked done.', tHwNotDone: 'Homework marked not done.', tHwAssigned: 'Homework assigned.', tNoticePub: 'Notice published.', tReportDl: 'Report downloaded.', tSettingsSaved: 'Settings saved.', tDemoReset: 'Demo data reset.', tSessionChanged: 'Academic session changed to', tApproved: 'approved. Pending approvals:', tNoChanges: 'No changes.', tStudentsRange: 'Students must be between 1 and 100,000.', tFutureDate: 'Future date not allowed — showing today.', tDueFuture: 'Due date must be today or later.', tDemoLogin: 'Demo account — use one-tap login below.', tGoogleDemo: 'Demo build — please use a one-tap demo login.', tNoStudentData: 'No student data — ask your school admin to add students.', tNoExams: 'No exams yet.', tNoHw: 'No homework yet.', tNoMarks: 'No marks entered yet for this exam.', tNoMatch: 'No students match.', tNoSchoolsMatch: 'No schools match.', tNotEntered: 'Not entered', tCollectedFrom: 'collected from', tDupSchool: 'already exists.', tDupStudent: 'already exists in', tNotSaved: 'Not saved', tCheckMarks: 'check marks', tStudentsWord: 'students', tNoFeeData: 'No fee data yet.', tNoGrowthData: 'No growth data yet.',
     searchStudent: 'Search student…', searchSchool: 'Search school or city…', viewAll: 'View All →', classAvg: 'Class average', studentsMarked: 'students marked', ofWord: 'of', demoRecords: 'demo records shown (school total 1,250)', showingRec: 'Showing', ofRec: 'of', recordsWord: 'records.', tapDone: 'tap the box when done', myHwSub: 'Tap the box when you finish', tileAtt: 'Attendance', tileFees: 'Fees', tileResults: 'Results', tileHw: 'Homework', doneSuffix: 'done', presBtn: 'Present', absBtn: 'Absent', lateBtn: 'Late',
     qaAddSchool: 'Add School', qaAddSchoolD: 'Onboard a new school', qaManageUsers: 'Manage Users', qaManageUsersD: 'Roles & accounts', qaViewReports: 'View Reports', qaViewReportsD: 'Download CSV', qaSysSettings: 'System Settings', qaSysSettingsD: 'Platform config',
     qaAddStudent: 'Add Student', qaAddStudentD: 'New admission', qaMarkAtt: 'Mark Attendance', qaMarkAttD: 'Today\'s register', qaEnterMarks: 'Enter Marks', qaEnterMarksD: 'Exam results', qaGenReport: 'Generate Report', qaGenReportD: 'CSV download',
@@ -423,7 +436,7 @@ var I18N = {
     roleSchool: 'स्कूल एडमिन — राहुल कुमार', roleSchoolD: 'सेंट ज़ेवियर स्कूल, पटना — छात्र, उपस्थिति, शुल्क, परीक्षा, होमवर्क और नोटिस।', goSchool: 'स्कूल एडमिन खोलें →',
     roleStudent: 'छात्र — रिया कुमारी', roleStudentD: 'कक्षा 10th-A — उपस्थिति, शुल्क, परिणाम और होमवर्क, मोबाइल जैसी स्क्रीन पर।', goStudent: 'छात्र दृश्य खोलें →',
     landFooter: '<b>School Saathi</b> — Smart Education. Better Tomorrow.<br>बिहार के लिए बना • स्कूलों के लिए मुफ़्त • गोपालगंज, बिहार में बना ❤️',
-    loginWelcome: 'वापस स्वागत है!<br>जारी रखने के लिए लॉगिन करें', loginEmail: 'ईमेल या मोबाइल नंबर', loginPassword: 'पासवर्ड', loginEmailPh: 'जैसे rahul@stxavier.in', loginPwPh: '••••••••', loginForgot: 'पासवर्ड भूल गए?', loginBtn: 'लॉगिन', loginOr: 'या जारी रखें', demoTitle: '— एक टैप में डेमो लॉगिन —', loginBack: '← वेबसाइट पर वापस',
+    loginWelcome: 'लॉग इन करें या साइन अप करें<br>जारी रखने के लिए', loginEmail: 'ईमेल', loginPassword: 'पासवर्ड', loginEmailPh: 'आप@school.edu.in', loginPwPh: '••••••••', loginBtn: 'लॉगिन', authLogin: 'लॉग इन', authSignup: 'साइन अप', authNote: 'एक स्कूल, एक अकाउंट। सर्वर वर्शन आने तक आपके स्कूल का डेटा इसी डिवाइस पर रहेगा।', suSchool: 'स्कूल का नाम', suYourName: 'आपका नाम', suEmail: 'ईमेल', suPw: 'पासवर्ड', suPw2: 'पासवर्ड दोबारा डालें', suBtn: 'अकाउंट बनाएँ', loginOr: 'या जारी रखें', demoTitle: '— एक टैप में डेमो लॉगिन —', loginBack: '← वेबसाइट पर वापस',
     superDashboard: 'सुपर एडमिन डैशबोर्ड', schoolDashboard: 'स्कूल एडमिन डैशबोर्ड', studentDashboard: 'छात्र डैशबोर्ड',
     confirmTitle: 'पुष्टि करें', cancel: 'रद्द करें', confirmYes: 'हाँ, जारी रखें', saveBtn: 'सहेजें',
     addSchool: 'स्कूल जोड़ें', addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', approve: 'स्वीकृत करें', remove: 'हटाएँ', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetDemo: 'डेमो डेटा रीसेट करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveSchoolBtn: 'स्कूल सहेजें', saveStudentBtn: 'छात्र सहेजें',
@@ -431,7 +444,7 @@ var I18N = {
     thName: 'नाम', thClass: 'कक्षा', thRoll: 'रोल', thGuardian: 'अभिभावक', thPhone: 'फ़ोन', thAtt: 'उप.', thFee: 'शुल्क', thAction: 'कार्रवाई', thStudent: 'छात्र', thMonth: 'महीना', thAmount: 'राशि', thDate: 'तारीख', thStatus: 'स्थिति', thSchool: 'स्कूल', thCity: 'शहर', thStudents: 'छात्र', thUsers: 'उपयोगकर्ता', thPlan: 'योजना', thMarks: 'अंक', thResult: 'परिणाम', thSince: 'से', thRole: 'भूमिका',
     subSuperDash: 'प्लेटफ़ॉर्म अवलोकन और प्रबंधन', subSchools: 'प्लेटफ़ॉर्म के सभी स्कूल', subUsers: 'शिक्षक, कर्मचारी और छात्र', subSubs: 'योजनाएँ और बिलिंग स्थिति', subAnalytics: 'वृद्धि, उपस्थिति और शुल्क', subAnalyticsFull: 'पूरे प्लेटफ़ॉर्म पर वृद्धि, उपस्थिति और शुल्क', subReports: 'CSV रिपोर्ट डाउनलोड करें', subHelp: 'मार्गदर्शिकाएँ और संपर्क', subStudents: 'सेंट ज़ेवियर स्कूल, पटना', subAttendance: 'उपस्थिति दर्ज करें और देखें', subFees: 'शुल्क संग्रह और बकाया', subExams: 'परीक्षा और अंक प्रविष्टि', subHomework: 'होमवर्क सौंपें और देखें', subNotices: 'नोटिस बोर्ड',
     fSchoolName: 'स्कूल का नाम', fCity: 'शहर', fStudents: 'छात्र', fPlan: 'योजना', fStudentName: 'छात्र का नाम', fClass: 'कक्षा', fRoll: 'रोल नंबर', fGuardian: 'अभिभावक', fPhone: 'फ़ोन', fTitle: 'शीर्षक', fSubject: 'विषय', fDue: 'देय तारीख', fMessage: 'संदेश', fPrincipal: 'प्रधानाचार्य / एडमिन', fEmail: 'ईमेल', fAddress: 'पता', fSession: 'शैक्षणिक सत्र',
-    tLoggedIn: 'के रूप में लॉगिन हुआ', tLoggedOut: 'लॉगआउट हो गया। फिर मिलते हैं!', tSchoolAdded: 'स्कूल जोड़ा गया — स्वीकृति लंबित।', tSchoolRemoved: 'स्कूल हटाया गया।', tStudentAdded: 'छात्र जोड़ा गया।', tStudentUpdated: 'छात्र अपडेट हुआ।', tStudentDeleted: 'छात्र हटाया गया।', tAttSaved: 'उपस्थिति सहेजी गई', tMarksSaved: 'अंक सहेजे गए', tHwDone: 'होमवर्क पूर्ण के रूप में चिह्नित।', tHwNotDone: 'होमवर्क अपूर्ण के रूप में चिह्नित।', tHwAssigned: 'होमवर्क सौंपा गया।', tNoticePub: 'नोटिस प्रकाशित हुआ।', tReportDl: 'रिपोर्ट डाउनलोड हुई।', tSettingsSaved: 'सेटिंग्स सहेजी गईं।', tDemoReset: 'डेमो डेटा रीसेट हुआ।', tSessionChanged: 'शैक्षणिक सत्र बदला गया', tApproved: 'स्वीकृत। लंबित स्वीकृतियाँ:', tNoChanges: 'कोई बदलाव नहीं।', tStudentsRange: 'छात्रों की संख्या 1 से 100,000 के बीच होनी चाहिए।', tFutureDate: 'भविष्य की तारीख नहीं चुन सकते — आज की तारीख दिखा रहे हैं।', tDueFuture: 'देय तारीख आज या आगे की होनी चाहिए।', tDemoLogin: 'डेमो खाता — नीचे एक-टैप लॉगिन इस्तेमाल करें।', tGoogleDemo: 'डेमो बिल्ड — कृपया एक-टैप डेमो लॉगिन इस्तेमाल करें।', tNoStudentData: 'कोई छात्र डेटा नहीं — अपने स्कूल एडमिन से छात्र जोड़ने को कहें।', tNoExams: 'अभी कोई परीक्षा नहीं है।', tNoHw: 'अभी कोई होमवर्क नहीं है।', tNoMarks: 'इस परीक्षा के लिए अभी कोई अंक नहीं भरे गए।', tNoMatch: 'कोई छात्र नहीं मिला।', tNoSchoolsMatch: 'कोई स्कूल नहीं मिला।', tNotEntered: 'नहीं भरा गया', tCollectedFrom: 'से वसूला गया', tDupSchool: 'पहले से मौजूद है।', tDupStudent: 'में पहले से मौजूद है', tNotSaved: 'सहेजा नहीं गया', tCheckMarks: 'अंक जाँचें', tStudentsWord: 'छात्र', tNoFeeData: 'अभी कोई शुल्क डेटा नहीं है।', tNoGrowthData: 'अभी कोई वृद्धि डेटा नहीं है।',
+    tLoggedIn: 'के रूप में लॉगिन हुआ', tAccountCreated: 'अकाउंट बन गया। स्वागत है, ', tInvalidCreds: 'ईमेल या पासवर्ड गलत है।', tFillAll: 'कृपया सभी फ़ील्ड भरें।', tInvalidEmail: 'कृपया सही ईमेल पता डालें।', tPwShort: 'पासवर्ड कम से कम 6 अक्षर का हो।', tPwMismatch: 'पासवर्ड मेल नहीं खाते।', tEmailTaken: 'इस ईमेल से अकाउंट पहले से बना है। कृपया लॉग इन करें।', tLoggedOut: 'लॉगआउट हो गया। फिर मिलते हैं!', tSchoolAdded: 'स्कूल जोड़ा गया — स्वीकृति लंबित।', tSchoolRemoved: 'स्कूल हटाया गया।', tStudentAdded: 'छात्र जोड़ा गया।', tStudentUpdated: 'छात्र अपडेट हुआ।', tStudentDeleted: 'छात्र हटाया गया।', tAttSaved: 'उपस्थिति सहेजी गई', tMarksSaved: 'अंक सहेजे गए', tHwDone: 'होमवर्क पूर्ण के रूप में चिह्नित।', tHwNotDone: 'होमवर्क अपूर्ण के रूप में चिह्नित।', tHwAssigned: 'होमवर्क सौंपा गया।', tNoticePub: 'नोटिस प्रकाशित हुआ।', tReportDl: 'रिपोर्ट डाउनलोड हुई।', tSettingsSaved: 'सेटिंग्स सहेजी गईं।', tDemoReset: 'डेमो डेटा रीसेट हुआ।', tSessionChanged: 'शैक्षणिक सत्र बदला गया', tApproved: 'स्वीकृत। लंबित स्वीकृतियाँ:', tNoChanges: 'कोई बदलाव नहीं।', tStudentsRange: 'छात्रों की संख्या 1 से 100,000 के बीच होनी चाहिए।', tFutureDate: 'भविष्य की तारीख नहीं चुन सकते — आज की तारीख दिखा रहे हैं।', tDueFuture: 'देय तारीख आज या आगे की होनी चाहिए।', tDemoLogin: 'डेमो खाता — नीचे एक-टैप लॉगिन इस्तेमाल करें।', tGoogleDemo: 'डेमो बिल्ड — कृपया एक-टैप डेमो लॉगिन इस्तेमाल करें।', tNoStudentData: 'कोई छात्र डेटा नहीं — अपने स्कूल एडमिन से छात्र जोड़ने को कहें।', tNoExams: 'अभी कोई परीक्षा नहीं है।', tNoHw: 'अभी कोई होमवर्क नहीं है।', tNoMarks: 'इस परीक्षा के लिए अभी कोई अंक नहीं भरे गए।', tNoMatch: 'कोई छात्र नहीं मिला।', tNoSchoolsMatch: 'कोई स्कूल नहीं मिला।', tNotEntered: 'नहीं भरा गया', tCollectedFrom: 'से वसूला गया', tDupSchool: 'पहले से मौजूद है।', tDupStudent: 'में पहले से मौजूद है', tNotSaved: 'सहेजा नहीं गया', tCheckMarks: 'अंक जाँचें', tStudentsWord: 'छात्र', tNoFeeData: 'अभी कोई शुल्क डेटा नहीं है।', tNoGrowthData: 'अभी कोई वृद्धि डेटा नहीं है।',
     searchStudent: 'छात्र खोजें…', searchSchool: 'स्कूल या शहर खोजें…', viewAll: 'सभी देखें →', classAvg: 'कक्षा औसत', studentsMarked: 'छात्रों के अंक भरे गए', ofWord: 'में से', demoRecords: 'डेमो रिकॉर्ड दिखाए गए (स्कूल कुल 1,250)', showingRec: 'दिखाए जा रहे हैं', ofRec: 'में से', recordsWord: 'रिकॉर्ड।', tapDone: 'पूरा होने पर बॉक्स पर टैप करें', myHwSub: 'पूरा होने पर बॉक्स पर टैप करें', tileAtt: 'उपस्थिति', tileFees: 'शुल्क', tileResults: 'परिणाम', tileHw: 'होमवर्क', doneSuffix: 'पूर्ण', presBtn: 'उपस्थित', absBtn: 'अनुपस्थित', lateBtn: 'देर से',
     qaAddSchool: 'स्कूल जोड़ें', qaAddSchoolD: 'नया स्कूल जोड़ें', qaManageUsers: 'उपयोगकर्ता प्रबंधित करें', qaManageUsersD: 'भूमिकाएँ और खाते', qaViewReports: 'रिपोर्ट देखें', qaViewReportsD: 'CSV डाउनलोड करें', qaSysSettings: 'सिस्टम सेटिंग्स', qaSysSettingsD: 'प्लेटफ़ॉर्म कॉन्फ़िग',
     qaAddStudent: 'छात्र जोड़ें', qaAddStudentD: 'नया प्रवेश', qaMarkAtt: 'उपस्थिति दर्ज करें', qaMarkAttD: 'आज का रजिस्टर', qaEnterMarks: 'अंक भरें', qaEnterMarksD: 'परीक्षा परिणाम', qaGenReport: 'रिपोर्ट बनाएँ', qaGenReportD: 'CSV डाउनलोड',
@@ -466,60 +479,83 @@ function setLang(l) {
   $('langEn').classList.toggle('on', l === 'en');
   $('langHi').classList.toggle('on', l === 'hi');
   applyI18n();
-  refreshLandingStats();
   if (state.role) renderApp();
 }
 
 /* ================= auth & shell ================= */
 function showView(which) {
   hideTip();
-  if (which === 'landing') refreshLandingStats();
-  ['landing', 'login', 'app'].forEach(function (id) { $(id).classList.toggle('hidden', id !== which); });
+  ['login', 'app'].forEach(function (id) { $(id).classList.toggle('hidden', id !== which); });
   window.scrollTo(0, 0);
 }
 function showLogin() { showView('login'); $('loginId').focus(); }
-function backToLanding(e) { e.preventDefault(); showView('landing'); return false; }
-function forgotPw(e) { e.preventDefault(); toast(t('tDemoLogin')); return false; }
-function googleLogin() { toast(t('tGoogleDemo')); }
 function persistSession() {
   try {
-    if (state.role) sessionStorage.setItem(SESSION_KEY, JSON.stringify({ role: state.role, view: state.view }));
+    if (state.role && state.user) sessionStorage.setItem(SESSION_KEY, JSON.stringify({ role: state.role, email: state.user.email, view: state.view }));
     else sessionStorage.removeItem(SESSION_KEY);
   } catch (e) { /* private mode — session just won't survive refresh */ }
+}
+function loginAs(a, opts) {
+  state.role = a.role; state.user = a; state.view = 'dashboard';
+  DB_KEY = dbKeyFor(a);
+  db = loadDB(a.role === 'school' ? a : null);
+  showView('app'); renderApp();
+  persistSession();
+  if (!opts || !opts.silent) toast(t('tLoggedIn') + ' ' + a.name);
 }
 function restoreSession() {
   try {
     var raw = sessionStorage.getItem(SESSION_KEY);
     if (!raw) return false;
     var sv = JSON.parse(raw);
-    var a = DEMO_ACCOUNTS[sv.role];
-    if (!a) return false;
-    state.role = a.role; state.user = a;
+    var a = findAccount(sv.email);
+    if (!a || a.role !== sv.role) return false;
+    loginAs(a, { silent: true });
     state.view = (NAV[a.role] || []).some(function (n) { return n[0] === sv.view; }) ? sv.view : 'dashboard';
-    showView('app'); renderApp();
+    renderApp();
     return true;
   } catch (e) { return false; }
 }
-function demoLogin(key) {
-  var a = DEMO_ACCOUNTS[key];
-  state.role = a.role; state.user = a; state.view = 'dashboard';
-  showView('app'); renderApp();
-  persistSession();
-  toast(t('tLoggedIn') + ' ' + a.name + ' (demo)');
+function switchAuth(tab) {
+  $('tabLogin').classList.toggle('on', tab === 'login');
+  $('tabSignup').classList.toggle('on', tab === 'signup');
+  $('loginForm').classList.toggle('hidden', tab !== 'login');
+  $('signupForm').classList.toggle('hidden', tab !== 'signup');
+  $('loginErr').classList.add('hidden');
+  $('signupErr').classList.add('hidden');
+  setTimeout(function () { $(tab === 'login' ? 'loginId' : 'suSchool').focus(); }, 50);
 }
 function doLogin(e) {
   e.preventDefault();
   var id = $('loginId').value.trim().toLowerCase(), pw = $('loginPw').value;
   var err = $('loginErr');
-  var found = null;
-  Object.keys(DEMO_ACCOUNTS).forEach(function (k) { if (DEMO_ACCOUNTS[k].id === id && DEMO_ACCOUNTS[k].pw === pw) found = k; });
-  if (!found) {
-    err.textContent = 'Invalid credentials. Please use a one-tap demo login below.';
+  var a = findAccount(id);
+  var ok = a ? (a.role === 'super' ? pw === OWNER.pw : hashPw(pw) === a.pwHash) : false;
+  if (!a || !ok) {
+    err.textContent = t('tInvalidCreds');
     err.classList.remove('hidden');
     return false;
   }
   err.classList.add('hidden');
-  demoLogin(found);
+  loginAs(a);
+  return false;
+}
+function doSignup(e) {
+  e.preventDefault();
+  var err = $('signupErr');
+  var school = $('suSchool').value.trim(), name = $('suName').value.trim(),
+      email = $('suEmail').value.trim().toLowerCase(), pw = $('suPw').value, pw2 = $('suPw2').value;
+  function fail(msg) { err.textContent = msg; err.classList.remove('hidden'); return false; }
+  if (!school || !name || !email || !pw || !pw2) return fail(t('tFillAll'));
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail(t('tInvalidEmail'));
+  if (pw.length < 6) return fail(t('tPwShort'));
+  if (pw !== pw2) return fail(t('tPwMismatch'));
+  if (findAccount(email)) return fail(t('tEmailTaken'));
+  var a = { uid: 'u' + Date.now().toString(36), name: name, school: school, email: email, pwHash: hashPw(pw), role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10) };
+  var list = loadAccounts(); list.push(a); saveAccounts(list);
+  err.classList.add('hidden');
+  toast(t('tAccountCreated') + name);
+  loginAs(a, { silent: true });
   return false;
 }
 function logout() {
@@ -611,24 +647,6 @@ function renderPage() {
 }
 
 function hideTip() { var tip = $('chartTip'); if (tip) { tip.style.opacity = '0'; tip.textContent = ''; } }
-function refreshLandingStats() {
-  if (typeof db === 'undefined' || !db) return;
-  var sc = schoolCounts(), ft = feeTotals(), agg = db.attendanceAgg || { present: 1150, absent: 70, late: 30 };
-  var total = agg.present + agg.absent + agg.late;
-  var pct = total ? Math.round(agg.present / total * 100) : 0;
-  var vals = [sc.total, 12450, pct, ft.collected];
-  var nums = document.querySelectorAll('#stats .mini-stat .n');
-  nums.forEach(function (el, i) {
-    if (vals[i] == null) return;
-    el.setAttribute('data-count', vals[i]);
-    var pre = el.getAttribute('data-prefix') || '', suf = el.getAttribute('data-suffix') || '';
-    el.textContent = pre + num(vals[i]) + suf;
-  });
-  var pr = $('landPresent'), pe = $('landPending');
-  if (pr) pr.textContent = state.lang === 'hi' ? num(total) + ' \u092e\u0947\u0902 \u0938\u0947 ' + num(agg.present) + ' \u0909\u092a\u0938\u094d\u0925\u093f\u0924' : num(agg.present) + ' present of ' + num(total);
-  if (pe) pe.textContent = inr(ft.pending) + (state.lang === 'hi' ? ' \u092c\u0915\u093e\u092f\u093e' : ' pending');
-}
-
 /* ================= chart tooltip (mouse + touch) ================= */
 document.addEventListener('pointerover', function (e) {
   var el = e.target.closest ? e.target.closest('[data-tip]') : null;
@@ -827,7 +845,9 @@ function superSettings() {
 function resetDemo() {
   confirmModal('Reset all demo data to the original seed? Your changes will be lost.', function () {
     try { localStorage.removeItem(DB_KEY); } catch (e) {}
-    db = seedDB(); saveDB(db);
+    db = seedDB();
+    if (state.user && state.user.role === 'school') applySchoolProfile(db, state.user);
+    saveDB(db);
     state.attSnapKey = ''; state.attSnap = {};
     renderApp();
     toast(t('tDemoReset'));
@@ -1239,7 +1259,6 @@ var PAGE_STUDENT = { dashboard: studentDashboard, homework: homeworkPage, notice
 /* ================= init ================= */
 document.addEventListener('DOMContentLoaded', function () {
   applyI18n();
-  refreshLandingStats();
   if (!restoreSession()) showLogin();
   if ('serviceWorker' in navigator && window.location.protocol.indexOf('http') === 0) {
     try {
