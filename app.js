@@ -31,7 +31,7 @@ function findAccount(email) {
   for (var i = 0; i < list.length; i++) if (list[i].email === email) return list[i];
   return null;
 }
-function dbKeyFor(a) { return a.role === 'super' ? 'schoolSaathiDBv1' : 'schoolSaathiDB_' + a.uid; }
+function dbKeyFor(a) { if (a.role === 'parent') return DB_KEY; return a.role === 'super' ? 'schoolSaathiDBv1' : 'schoolSaathiDB_' + a.uid; }
 function applySchoolProfile(d, a) { d.profile.name = a.school; d.profile.principal = a.name; d.profile.email = a.email; return d; }
 
 /* ================= seed data ================= */
@@ -235,12 +235,83 @@ function migrateStudentsV9(d) {
   if (!Array.isArray(d.auditLog)) d.auditLog = [];
   return d;
 }
+
+/* ================= Phase 4: parent portal + admission requests =================
+   Static scope: no server. A parent logs in with Admission No. + PIN on the
+   device where the school's data lives; the PIN is the last 4 digits of the
+   primary mobile unless the school set a custom one. Real password accounts
+   arrive with the server phase. */
+function parentPinFromPhone(phone) { var d = digitsOnly(phone); return d.length >= 4 ? d.slice(-4) : ''; }
+function migrateV12(d) {
+  // Phase 4 migration for existing v2 DBs: parent PINs + admission requests.
+  // Idempotent; never changes existing values, amounts or statuses.
+  (d.students || []).forEach(function (s) {
+    if (s.parentPin === undefined) s.parentPin = parentPinFromPhone(s.phone);
+  });
+  if (!Array.isArray(d.admissionRequests)) d.admissionRequests = [];
+  return d;
+}
+function storageKeys() {
+  var out = [];
+  try {
+    if (typeof localStorage.key === 'function' && typeof localStorage.length === 'number') {
+      for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (k) out.push(k); }
+      return out;
+    }
+  } catch (e) {}
+  if (typeof localStorage.keys === 'function') { try { return localStorage.keys(); } catch (e2) {} }
+  return out;
+}
+function readDbByKey(key) {
+  try { var raw = localStorage.getItem(key); if (!raw) return null; var d = JSON.parse(raw); return (d && d.v === 2) ? d : null; }
+  catch (e) { return null; }
+}
+function writeDbByKey(key, d) { try { localStorage.setItem(key, JSON.stringify(d)); } catch (e) {} }
+function findStudentById(sid) {
+  // Same device-wide scan as findStudentByAdmNo, but by student id (used to
+  // restore a stored parent session after a refresh).
+  var want = String(sid || '').trim();
+  if (!want) return null;
+  var found = null;
+  storageKeys().forEach(function (key) {
+    if (found) return;
+    if (key.indexOf('schoolSaathiDB') !== 0 || key.slice(-4) === '.bak') return;
+    var d = readDbByKey(key);
+    if (!d) return;
+    migrateV12(d);
+    (d.students || []).some(function (s) {
+      if (String(s.id || '') === want) { found = { student: s, dbKey: key, db: d }; return true; }
+      return false;
+    });
+  });
+  return found;
+}
+function findStudentByAdmNo(admNo) {
+  // Search every school DB on this device for the admission number. Returns
+  // { student, dbKey, db } or null. Migrates the found DB in memory so the
+  // parent PIN is available even on a DB that has not loaded since v12.
+  var want = String(admNo || '').trim().toLowerCase();
+  if (!want) return null;
+  var found = null;
+  storageKeys().forEach(function (key) {
+    if (found) return;
+    if (key.indexOf('schoolSaathiDB') !== 0 || key.slice(-4) === '.bak') return;
+    var d = readDbByKey(key);
+    if (!d) return;
+    migrateV12(d);
+    (d.students || []).some(function (s) {
+      if (String(s.admissionNo || '').trim().toLowerCase() === want) { found = { student: s, dbKey: key, db: d }; return true; }
+      return false;
+    });
+  });
+  return found;
+}
 function loadDB(override) {
   try {
     var raw = localStorage.getItem(DB_KEY);
     if (raw) {
       var d = JSON.parse(raw);
-      if (d && d.v === 2) { var m = migrateStudentsV9(migrateFeesV7(migrateAttendance(d))); saveDB(m); return m; }
+      if (d && d.v === 2) { var m = migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))); saveDB(m); return m; }
       // Unknown version: keep a backup, never wipe silently.
       try { localStorage.setItem(DB_KEY + '.bak', raw); } catch (e2) { /* ignore */ }
     }
@@ -259,7 +330,7 @@ function saveDB(db) {
 var db = loadDB();
 
 /* ================= state ================= */
-var state = { role: null, user: null, view: 'dashboard', lang: 'en', feeFilter: 'All', feeType: 'All', feeSearch: '', feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', attSnapKey: '', attSnap: {}, stuSel: {} };
+var state = { role: null, user: null, view: 'dashboard', lang: 'en', parentStudentId: null, admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', attSnapKey: '', attSnap: {}, stuSel: {} };
 
 /* Phase 2: bulk import + promotion state (in-memory only, never persisted). */
 var importState = { rows: null, fileName: '', result: null };
@@ -917,6 +988,7 @@ function confirmImport() {
     var admNo = nextAdmNo();
     var rec = { id: 'stu' + now + '_' + i, att: 100, result: 0, fee: '—', enr: nextEnr(), admissionNo: admNo, status: 'Active' };
     Object.keys(d).forEach(function (k) { rec[k] = d[k]; });
+    rec.parentPin = parentPinFromPhone(rec.phone || '');
     rec.roll = d.roll || nextRoll(d.cls);
     // No fee record is created on import: dues are created by Generate Fees.
     // (The single-admission form adds a ₹6,000 placeholder record; a bulk
@@ -1103,7 +1175,8 @@ var I18N = {
     sampleList: 'sample list below', plansSub: 'Per-student monthly pricing', collectedW: 'Collected', pendingW: 'Pending', allW: 'All', editStudent: 'Edit Student', thePlatform: 'the platform', repSchoolsSub: 'city, students, plan, status', subActive: 'Active', subExpired: 'Expired', subTrial: 'Trial', feeTypeTuition: 'Tuition', feeTypeAdmission: 'Admission', feeTypeTransport: 'Transport', feeTypeExam: 'Exam', feeTypeLibrary: 'Library', feeTypeActivity: 'Activity', feeTypeComputer: 'Computer Lab', feeTypeOther: 'Other', allTypes: 'All Types', searchFee: 'Search name, enrollment no. or class…', thEnr: 'Enr. No.', thType: 'Type', feeByType: 'Fee by Type', feeByTypeSub: 'Collected and pending per fee type, computed live.', addFee: 'Add Fee', addFeeSub: 'Add one fee record manually for any student.', feeStruct: 'Fee Structure', feeStructSub: 'Monthly amount per class. Generate uses this to create fee records.', genFees: 'Generate Fees', saveStruct: 'Save Structure', addRow: 'Add Row', customType: 'Custom…', typeCustomPh: 'Type a custom fee type', fStudent: 'Student', fMonth: 'Month', fType: 'Fee Type', fAmount: 'Amount (₹)', fStatus: 'Status', fDate: 'Date', printList: 'Print List', printStmt: 'Print Statement', backFees: 'Back to All Fees', totalBilled: 'Total Billed', totalPaid: 'Paid', totalPending: 'Pending', feeRecsH: 'Fee Records', feeProfileSub: 'All fee records for this student in one place.', tFeeAdded: 'Fee record added.', tPickStudent: 'Please choose a student.', tAmtPositive: 'Amount must be more than 0.', tTypeRequired: 'Please type the custom fee type.', tStructSaved: 'Fee structure saved.', tStructAdded: 'Structure row added.', tStructRemoved: 'Structure row removed.', tGenRecords: 'fee records generated for', tGenSkipped: 'already existed', tNoFeeRecs: 'No fee records yet for this student.', printTitle: 'Fee Statement', printListTitle: 'Fee List', printGenOn: 'Generated on', closeW: 'Close', saveFeeBtn: 'Save Fee', photoLabel: 'Student Photo', photoHint: 'Photo is compressed automatically (max 512px, ~120KB).', removePhoto: 'Remove photo', logoLabel: 'School Logo', logoHint: 'Logo is compressed automatically (max 256px, PNG keeps transparency).', removeLogo: 'Remove logo', tPhotoTooBig: 'That photo is too large even after compression. Please choose a smaller photo.', tLogoTooBig: 'That logo is too large even after compression. Please choose a smaller logo.', tPhotoError: 'Could not read that image. Please choose another file.', aadhaarHint: 'Optional. Stored securely and never shown in full.', actActivate: 'Activate Student', actAtt: 'View Attendance', actDeactivate: 'Deactivate Student', actDownload: 'Download Details', actEdit: 'Edit Student', actFees: 'View Fees', actIdCard: 'Print ID Card', actResults: 'View Results', actTransfer: 'Transfer Student', actView: 'View Profile', actionsW: 'Actions', admNoAuto: 'Auto-generated', allClasses: 'All Classes', allFeeSt: 'All Fee Status', allGenders: 'All Genders', allSections: 'All Sections', allSessions: 'All Sessions', allStatus: 'All Statuses', attPct: 'Attendance', backDir: 'Back to Directory', cancelAdm: 'Cancel Admission', cancelAdmMsg: 'Cancel this admission? The student record will be kept with status Cancelled.', docMissing: 'Not received', docStatus: 'Received', docsNote: 'Document files will be uploaded in the server phase. This checklist records what has been received.', exportCsv: 'Export CSV', fAadhaar: 'Aadhaar Number (optional)', fAdmDate: 'Admission Date', fAdmNo: 'Admission Number', fBirthCert: 'Birth Certificate', fBlood: 'Blood Group', fCategory: 'Category', fDistrict: 'District', fDob: 'Date of Birth', fDocsOther: 'Other Documents (notes)', fFather: 'Father\'s Name', fGender: 'Gender', fMother: 'Mother\'s Name', fOccupation: 'Occupation', fParentEmail: 'Parent Email', fPhone2: 'Secondary Mobile', fPin: 'PIN Code', fPrevClass: 'Previous Class', fPrevSchool: 'Previous School', fSection: 'Section', fState: 'State', fTc: 'Transfer Certificate (TC)', fTcNo: 'Transfer Certificate No.', feeSt: 'Fee Status', hwDone: 'Done', hwPend: 'Pending', hwPending: 'Homework Pending', latestExam: 'Latest Exam', nextW: 'Next', noActivity: 'No activity recorded yet.', noAttRecs: 'No attendance records yet for this student.', noExamRecs: 'No examination results yet.', noHwRecs: 'No homework records for this class.', openFees: 'Open Fee Page', pgOf: 'of', pgPage: 'Page', phase3W: 'Phase 3', prevW: 'Previous', saveAddAnother: 'Save & Add Another', saveDraft: 'Save as Draft', secAcademic: 'Academic Details', secDocs: 'Documents', secParent: 'Parent / Guardian Details', secPersonal: 'Personal Details', stActive: 'Active Students', stAvgAtt: 'Average Attendance', stBoys: 'Boys', stByClass: 'Students by Class', stByClassSub: 'Number of students in each class-section.', stGenderDist: 'Boys & Girls', stGenderSub: 'Gender distribution across the school.', stGirls: 'Girls', stInactive: 'Inactive Students', stNewAdm: 'New Admissions', stNotSpec: 'Not specified', stPendFee: 'Students with Pending Fees', stTotal: 'Total Students', stuSearchPh: 'Search name, admission no. or mobile…', tActMsg: 'Activate student', tActivated: 'Student activated.', tAdmCancelled: 'Admission cancelled. The record is kept.', tAdmCreated: 'Admission saved. Admission No. ', tCsvExported: 'Student list exported.', tDeactMsg: 'Deactivate student', tDeactivated: 'Student deactivated.', tDraftSaved: 'Draft saved.', tDupFound: 'A matching student already exists: ', tInvalidAadhaar: 'Aadhaar must be 12 digits (optional).', tInvalidMobile: 'Enter a valid 10-digit mobile number.', tInvalidPin: 'PIN code must be 6 digits.', tPickClass: 'Please choose a class.', tReqFields: 'Please fill Student Name, Primary Mobile, Class and Section.', tStuCsvOne: 'Student details downloaded.', tTransferred: 'Student transferred.', tabAcademic: 'Academic Records', tabActivity: 'Activity History', tabAttendance: 'Attendance History', tabDocs: 'Documents', tabFees: 'Fee History', tabHomework: 'Homework Records', tabOverview: 'Overview', tabParent: 'Parent Information', tabPersonal: 'Personal Information', tabResults: 'Examination Results', thAdmNo: 'Admission No.', thExam: 'Exam', thFather: 'Father\'s Name', transferTitle: 'Transfer Student', transferTo: 'New Class & Section', idCardSoon: 'ID Card generator comes in Phase 3.',
     impTitle: 'Bulk Import Students', impImportBtn: 'Import Students', impTemplate: 'Download Sample Template', impTemplateSub: 'CSV format only — Excel (.xlsx) files cannot be read here. Use the template columns.', impChooseFile: 'Choose CSV File', impPreview: 'Import Preview', impSummary: 'Import Summary', impValid: 'Valid', impError: 'Error', impDuplicate: 'Duplicate', impReason: 'Reason', impConfirm: 'Import Valid Rows', impDone: 'Done', impNoRows: 'No rows found in this file. Please check the template.', impBadHeader: 'This file does not look like the student template — the Name column is missing.', impNoFile: 'Please choose a CSV file first.', impNoValid: 'No valid rows to import.', impImported: 'imported', impSkipped: 'skipped', impErrName: 'Name is required', impErrMobile: 'Mobile must be 10 digits', impErrMobile2: 'Secondary mobile must be 10 digits', impErrClass: 'Class is not valid', impErrSection: 'Section must be A, B or C', impErrPin: 'PIN must be 6 digits', impErrAadhaar: 'Aadhaar must be 12 digits', impErrDob: 'Date of birth is not a valid date', impErrAdmDate: 'Admission date is not a valid date', impErrSession: 'Session is not valid (e.g. 2025–26)', impErrGender: 'Gender must be Boy, Girl or Other', impErrBlood: 'Blood group is not valid', impErrCategory: 'Category must be General, OBC, SC, ST or Other', impErrEmail: 'Parent email is not valid', impErrRoll: 'Roll must be a positive number', impErrBool: 'Must be Yes or No', impErrDup: 'Duplicate of', impErrDupFile: 'Duplicate in this file', tImpDone: 'Bulk import complete.', tImpTemplate: 'Sample template downloaded.',
     promoTitle: 'Promote Students', promoBtn: 'Promote Students', promoSingle: 'Promote Student', promoFromSession: 'Current Session', promoFromClass: 'Current Class', promoToSession: 'Target Session', promoToClass: 'Target Class', promoToSection: 'Target Section', promoSelectAll: 'Select All', promoSelectNone: 'Select None', promoSelected: 'selected', promoPromote: 'Promote Selected', promoRetain: 'Retain Selected', promoNoStudents: 'No students in this class and session.', promoNoSelect: 'Please select at least one student.', promoNoop: 'Target class and session are the same as current — nothing to change.', promoNoopRetain: 'Target session is the same as the current session — nothing to change.', promoDone: 'Promotion complete.', promoPromoted: 'promoted', promoRetained: 'retained', promoNote: 'Attendance, fees, exam marks and homework history are preserved.', promoSingleNote: 'Single student promotion', promoSkipped: 'skipped (already moved)', promoNotEligible: 'Only Active or Inactive students can be promoted.',
-    idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.'
+    idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.',
+    authParent: 'Parent', parentAdmNo: 'Admission Number', parentPinLabel: 'Parent PIN', parentLoginBtn: 'Login as Parent', parentNote: 'Parent access on this device uses a PIN set by the school. Real password accounts arrive with the server version.', parentSub: 'Parent', parentDashboard: 'My Child', tInvalidParent: 'Invalid admission number or PIN.', tParentScope: 'You can only view your own child\'s profile.', parentAccess: 'Parent Access', parentPinNow: 'Current Parent PIN', parentPinNone: 'No PIN set — parent login unavailable for this student.', parentPinNew: 'New PIN (4–6 digits)', parentPinSetBtn: 'Set PIN', parentPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Parent PIN set.', tPinCleared: 'Parent PIN cleared.', tPinAuto: 'Default PIN is the last 4 digits of the parent\'s mobile.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.'
   },
   hi: {
     dashboard: 'डैशबोर्ड', schools: 'स्कूल', users: 'उपयोगकर्ता', subscriptions: 'सदस्यता', analytics: 'विश्लेषण', settings: 'सेटिंग्स', reports: 'रिपोर्ट', help: 'सहायता', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalSchools: 'कुल स्कूल', totalUsers: 'कुल उपयोगकर्ता', activeSchools: 'सक्रिय स्कूल', pendingApproval: 'स्वीकृति लंबित', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -1146,7 +1219,8 @@ var I18N = {
     sampleList: 'नमूना सूची नीचे', plansSub: 'प्रति छात्र मासिक मूल्य', collectedW: 'संग्रह', pendingW: 'बकाया', allW: 'सभी', editStudent: 'छात्र बदलें', thePlatform: 'पूरे प्लेटफ़ॉर्म', repSchoolsSub: 'शहर, छात्र, योजना, स्थिति', subActive: 'सक्रिय', subExpired: 'समाप्त', subTrial: 'परीक्षण', feeTypeTuition: 'ट्यूशन', feeTypeAdmission: 'प्रवेश', feeTypeTransport: 'परिवहन', feeTypeExam: 'परीक्षा', feeTypeLibrary: 'पुस्तकालय', feeTypeActivity: 'गतिविधि', feeTypeComputer: 'कंप्यूटर लैब', feeTypeOther: 'अन्य', allTypes: 'सभी प्रकार', searchFee: 'नाम, नामांकन संख्या या कक्षा खोजें…', thEnr: 'नामांकन सं.', thType: 'प्रकार', feeByType: 'प्रकार के अनुसार शुल्क', feeByTypeSub: 'प्रति प्रकार संग्रह और बकाया, लाइव गणना।', addFee: 'शुल्क जोड़ें', addFeeSub: 'किसी भी छात्र के लिए एक शुल्क रिकॉर्ड जोड़ें।', feeStruct: 'शुल्क संरचना', feeStructSub: 'प्रति कक्षा मासिक राशि। Generate इसी से रिकॉर्ड बनाता है।', genFees: 'शुल्क बनाएँ', saveStruct: 'संरचना सहेजें', addRow: 'पंक्ति जोड़ें', customType: 'कस्टम…', typeCustomPh: 'शुल्क का प्रकार लिखें', fStudent: 'छात्र', fMonth: 'महीना', fType: 'शुल्क प्रकार', fAmount: 'राशि (₹)', fStatus: 'स्थिति', fDate: 'तारीख', printList: 'सूची छापें', printStmt: 'विवरण छापें', backFees: 'सभी शुल्क पर वापस', totalBilled: 'कुल बिल', totalPaid: 'जमा', totalPending: 'बकाया', feeRecsH: 'शुल्क रिकॉर्ड', feeProfileSub: 'इस छात्र के सभी शुल्क रिकॉर्ड एक ही जगह।', tFeeAdded: 'शुल्क रिकॉर्ड जुड़ गया।', tPickStudent: 'कृपया छात्र चुनें।', tAmtPositive: 'राशि 0 से अधिक होनी चाहिए।', tTypeRequired: 'कृपया शुल्क का प्रकार लिखें।', tStructSaved: 'शुल्क संरचना सहेजी गई।', tStructAdded: 'संरचना पंक्ति जुड़ी।', tStructRemoved: 'संरचना पंक्ति हटाई गई।', tGenRecords: 'शुल्क रिकॉर्ड बने', tGenSkipped: 'पहले से थे', tNoFeeRecs: 'इस छात्र के लिए अभी कोई शुल्क रिकॉर्ड नहीं है।', printTitle: 'शुल्क विवरण', printListTitle: 'शुल्क सूची', printGenOn: 'बनाया गया', closeW: 'बंद करें', saveFeeBtn: 'शुल्क सहेजें', photoLabel: 'छात्र की फ़ोटो', photoHint: 'फ़ोटो अपने आप छोटी हो जाती है (अधिकतम 512px, ~120KB)।', removePhoto: 'फ़ोटो हटाएँ', logoLabel: 'स्कूल का लोगो', logoHint: 'लोगो अपने आप छोटा हो जाता है (अधिकतम 256px, PNG में पारदर्शिता रहती है)।', removeLogo: 'लोगो हटाएँ', tPhotoTooBig: 'यह फ़ोटो छोटी करने के बाद भी बड़ी है। कृपया छोटी फ़ोटो चुनें।', tLogoTooBig: 'यह लोगो छोटा करने के बाद भी बड़ा है। कृपया छोटा लोगो चुनें।', tPhotoError: 'यह तस्वीर पढ़ी नहीं जा सकी। कृपया दूसरी फ़ाइल चुनें।', aadhaarHint: 'वैकल्पिक। सुरक्षित रूप से सहेजा जाता है, पूरा कभी नहीं दिखाया जाता।', actActivate: 'छात्र सक्रिय करें', actAtt: 'उपस्थिति देखें', actDeactivate: 'छात्र निष्क्रिय करें', actDownload: 'विवरण डाउनलोड करें', actEdit: 'छात्र बदलें', actFees: 'शुल्क देखें', actIdCard: 'ID कार्ड छापें', actResults: 'परिणाम देखें', actTransfer: 'छात्र स्थानांतरित करें', actView: 'प्रोफ़ाइल देखें', actionsW: 'कार्रवाई', admNoAuto: 'स्वतः निर्मित', allClasses: 'सभी कक्षाएँ', allFeeSt: 'सभी शुल्क स्थितियाँ', allGenders: 'सभी लिंग', allSections: 'सभी अनुभाग', allSessions: 'सभी सत्र', allStatus: 'सभी स्थितियाँ', attPct: 'उपस्थिति', backDir: 'सूची पर वापस', cancelAdm: 'प्रवेश रद्द करें', cancelAdmMsg: 'यह प्रवेश रद्द करें? छात्र का रिकॉर्ड Cancelled स्थिति के साथ रखा जाएगा।', docMissing: 'प्राप्त नहीं', docStatus: 'प्राप्त', docsNote: 'दस्तावेज़ फ़ाइलें सर्वर चरण में अपलोड होंगी। यह सूची बताती है कि क्या प्राप्त हुआ है।', exportCsv: 'CSV निर्यात करें', fAadhaar: 'आधार संख्या (वैकल्पिक)', fAdmDate: 'प्रवेश तिथि', fAdmNo: 'प्रवेश संख्या', fBirthCert: 'जन्म प्रमाण पत्र', fBlood: 'रक्त समूह', fCategory: 'श्रेणी', fDistrict: 'जिला', fDob: 'जन्म तिथि', fDocsOther: 'अन्य दस्तावेज़ (नोट)', fFather: 'पिता का नाम', fGender: 'लिंग', fMother: 'माता का नाम', fOccupation: 'व्यवसाय', fParentEmail: 'अभिभावक ईमेल', fPhone2: 'दूसरा मोबाइल', fPin: 'पिन कोड', fPrevClass: 'पिछली कक्षा', fPrevSchool: 'पिछला स्कूल', fSection: 'अनुभाग', fState: 'राज्य', fTc: 'स्थानांतरण प्रमाण पत्र (TC)', fTcNo: 'TC संख्या', feeSt: 'शुल्क स्थिति', hwDone: 'पूर्ण', hwPend: 'बाकी', hwPending: 'होमवर्क बाकी', latestExam: 'हाल की परीक्षा', nextW: 'अगला', noActivity: 'अभी कोई गतिविधि दर्ज नहीं है।', noAttRecs: 'इस छात्र के लिए अभी कोई उपस्थिति रिकॉर्ड नहीं है।', noExamRecs: 'अभी कोई परीक्षा परिणाम नहीं है।', noHwRecs: 'इस कक्षा के लिए कोई होमवर्क रिकॉर्ड नहीं है।', openFees: 'शुल्क पेज खोलें', pgOf: 'का', pgPage: 'पृष्ठ', phase3W: 'Phase 3', prevW: 'पिछला', saveAddAnother: 'सहेजें और नया जोड़ें', saveDraft: 'ड्राफ़्ट सहेजें', secAcademic: 'शैक्षणिक विवरण', secDocs: 'दस्तावेज़', secParent: 'माता-पिता / अभिभावक विवरण', secPersonal: 'व्यक्तिगत विवरण', stActive: 'सक्रिय छात्र', stAvgAtt: 'औसत उपस्थिति', stBoys: 'लड़के', stByClass: 'कक्षा अनुसार छात्र', stByClassSub: 'प्रत्येक कक्षा-अनुभाग में छात्रों की संख्या।', stGenderDist: 'लड़के और लड़कियाँ', stGenderSub: 'पूरे स्कूल में लिंग वितरण।', stGirls: 'लड़कियाँ', stInactive: 'निष्क्रिय छात्र', stNewAdm: 'नए प्रवेश', stNotSpec: 'निर्दिष्ट नहीं', stPendFee: 'बकाया शुल्क वाले छात्र', stTotal: 'कुल छात्र', stuSearchPh: 'नाम, प्रवेश संख्या या मोबाइल खोजें…', tActMsg: 'छात्र सक्रिय करें', tActivated: 'छात्र सक्रिय हुआ।', tAdmCancelled: 'प्रवेश रद्द हुआ। रिकॉर्ड रखा गया है।', tAdmCreated: 'प्रवेश सहेजा गया। प्रवेश संख्या ', tCsvExported: 'छात्र सूची निर्यात हुई।', tDeactMsg: 'छात्र निष्क्रिय करें', tDeactivated: 'छात्र निष्क्रिय हुआ।', tDraftSaved: 'ड्राफ़्ट सहेजा गया।', tDupFound: 'मेल खाता छात्र पहले से मौजूद है: ', tInvalidAadhaar: 'आधार 12 अंकों का होना चाहिए (वैकल्पिक)।', tInvalidMobile: 'सही 10 अंकों का मोबाइल नंबर डालें।', tInvalidPin: 'पिन कोड 6 अंकों का होना चाहिए।', tPickClass: 'कृपया कक्षा चुनें।', tReqFields: 'कृपया छात्र का नाम, मुख्य मोबाइल, कक्षा और अनुभाग भरें।', tStuCsvOne: 'छात्र का विवरण डाउनलोड हुआ।', tTransferred: 'छात्र स्थानांतरित हुआ।', tabAcademic: 'शैक्षणिक रिकॉर्ड', tabActivity: 'गतिविधि इतिहास', tabAttendance: 'उपस्थिति इतिहास', tabDocs: 'दस्तावेज़', tabFees: 'शुल्क इतिहास', tabHomework: 'होमवर्क रिकॉर्ड', tabOverview: 'सारांश', tabParent: 'अभिभावक जानकारी', tabPersonal: 'व्यक्तिगत जानकारी', tabResults: 'परीक्षा परिणाम', thAdmNo: 'प्रवेश सं.', thExam: 'परीक्षा', thFather: 'पिता का नाम', transferTitle: 'छात्र स्थानांतरण', transferTo: 'नई कक्षा और अनुभाग', idCardSoon: 'ID कार्ड जनरेटर Phase 3 में आएगा।',
     impTitle: 'छात्रों का बल्क आयात', impImportBtn: 'छात्र आयात करें', impTemplate: 'नमूना टेम्पलेट डाउनलोड करें', impTemplateSub: 'सिर्फ CSV प्रारूप — Excel (.xlsx) फ़ाइल यहाँ पढ़ी नहीं जा सकती। टेम्पलेट के कॉलम इस्तेमाल करें।', impChooseFile: 'CSV फ़ाइल चुनें', impPreview: 'आयात पूर्वावलोकन', impSummary: 'आयात सारांश', impValid: 'सही', impError: 'त्रुटि', impDuplicate: 'दोहरा', impReason: 'कारण', impConfirm: 'सही पंक्तियाँ आयात करें', impDone: 'पूर्ण', impNoRows: 'इस फ़ाइल में कोई पंक्ति नहीं मिली। कृपया टेम्पलेट जाँचें।', impBadHeader: 'यह फ़ाइल छात्र टेम्पलेट जैसी नहीं लगती — नाम वाला कॉलम नहीं मिला।', impNoFile: 'कृपया पहले CSV फ़ाइल चुनें।', impNoValid: 'आयात के लिए कोई सही पंक्ति नहीं है।', impImported: 'आयात हुए', impSkipped: 'छोड़े गए', impErrName: 'नाम आवश्यक है', impErrMobile: 'मोबाइल 10 अंकों का होना चाहिए', impErrMobile2: 'दूसरा मोबाइल 10 अंकों का होना चाहिए', impErrClass: 'कक्षा सही नहीं है', impErrSection: 'अनुभाग A, B या C होना चाहिए', impErrPin: 'पिन 6 अंकों का होना चाहिए', impErrAadhaar: 'आधार 12 अंकों का होना चाहिए', impErrDob: 'जन्म तिथि सही तारीख नहीं है', impErrAdmDate: 'प्रवेश तिथि सही तारीख नहीं है', impErrSession: 'सत्र सही नहीं है (जैसे 2025–26)', impErrGender: 'लिंग Boy, Girl या Other होना चाहिए', impErrBlood: 'रक्त समूह सही नहीं है', impErrCategory: 'श्रेणी General, OBC, SC, ST या Other होनी चाहिए', impErrEmail: 'अभिभावक ईमेल सही नहीं है', impErrRoll: 'रोल धनात्मक संख्या होनी चाहिए', impErrBool: 'Yes या No होना चाहिए', impErrDup: 'इसकी प्रतिलिपि', impErrDupFile: 'इस फ़ाइल में दोहरा', tImpDone: 'बल्क आयात पूर्ण हुआ।', tImpTemplate: 'नमूना टेम्पलेट डाउनलोड हुआ।',
     promoTitle: 'छात्रों को प्रोन्नत करें', promoBtn: 'छात्र प्रोन्नत करें', promoSingle: 'छात्र प्रोन्नत करें', promoFromSession: 'वर्तमान सत्र', promoFromClass: 'वर्तमान कक्षा', promoToSession: 'लक्ष्य सत्र', promoToClass: 'लक्ष्य कक्षा', promoToSection: 'लक्ष्य अनुभाग', promoSelectAll: 'सभी चुनें', promoSelectNone: 'कोई नहीं', promoSelected: 'चयनित', promoPromote: 'चयनित को प्रोन्नत करें', promoRetain: 'चयनित को रोकें', promoNoStudents: 'इस कक्षा और सत्र में कोई छात्र नहीं है।', promoNoSelect: 'कृपया कम से कम एक छात्र चुनें।', promoNoop: 'लक्ष्य कक्षा और सत्र वर्तमान जैसे ही हैं — बदलने को कुछ नहीं।', promoNoopRetain: 'लक्ष्य सत्र वर्तमान सत्र जैसा ही है — बदलने को कुछ नहीं।', promoDone: 'प्रोन्नति पूर्ण हुई।', promoPromoted: 'प्रोन्नत हुए', promoRetained: 'रोके गए', promoNote: 'उपस्थिति, शुल्क, परीक्षा अंक और होमवर्क इतिहास सुरक्षित रहता है।', promoSingleNote: 'एक छात्र की प्रोन्नति', promoSkipped: 'छोड़े गए (पहले ही स्थानांतरित)', promoNotEligible: 'केवल सक्रिय या निष्क्रिय छात्र ही प्रोन्नत हो सकते हैं।',
-    idcPreview: 'ID कार्ड पूर्वावलोकन', idcPrint: 'छापें', idcPrintCards: 'ID कार्ड छापें', idcSelectAll: 'सभी चुनें', idcClearSel: 'चयन हटाएँ', idcReady: 'ID कार्ड छपाई के लिए तैयार', idcEmergency: 'आपातकालीन संपर्क', idcReturn: 'मिले तो कृपया लौटाएँ', idcNoQr: 'QR कोड नहीं बन सका।'
+    idcPreview: 'ID कार्ड पूर्वावलोकन', idcPrint: 'छापें', idcPrintCards: 'ID कार्ड छापें', idcSelectAll: 'सभी चुनें', idcClearSel: 'चयन हटाएँ', idcReady: 'ID कार्ड छपाई के लिए तैयार', idcEmergency: 'आपातकालीन संपर्क', idcReturn: 'मिले तो कृपया लौटाएँ', idcNoQr: 'QR कोड नहीं बन सका।',
+    authParent: 'अभिभावक', parentAdmNo: 'प्रवेश संख्या', parentPinLabel: 'अभिभावक PIN', parentLoginBtn: 'अभिभावक के रूप में लॉगिन करें', parentNote: 'इस डिवाइस पर अभिभावक लॉगिन स्कूल द्वारा दिए गए PIN से होता है। सर्वर संस्करण में असली पासवर्ड अकाउंट आएँगे।', parentSub: 'अभिभावक', parentDashboard: 'मेरा बच्चा', tInvalidParent: 'प्रवेश संख्या या PIN गलत है।', tParentScope: 'आप केवल अपने बच्चे की प्रोफ़ाइल देख सकते हैं।', parentAccess: 'अभिभावक पहुँच', parentPinNow: 'वर्तमान अभिभावक PIN', parentPinNone: 'कोई PIN नहीं है — इस छात्र के लिए अभिभावक लॉगिन उपलब्ध नहीं है।', parentPinNew: 'नया PIN (4–6 अंक)', parentPinSetBtn: 'PIN सेट करें', parentPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'अभिभावक PIN सेट हो गया।', tPinCleared: 'अभिभावक PIN हटा दिया गया।', tPinAuto: 'डिफ़ॉल्ट PIN अभिभावक के मोबाइल के आखिरी 4 अंक होते हैं।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।'
   }
 };
 function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || I18N.en[k] || k; }
@@ -1199,6 +1273,20 @@ function restoreSession() {
     var raw = sessionStorage.getItem(SESSION_KEY);
     if (!raw) return false;
     var sv = JSON.parse(raw);
+    if (sv.role === 'parent' && typeof sv.email === 'string' && sv.email.indexOf('parent:') === 0) {
+      // Parent accounts are not in schoolSaathiAccounts: restore by looking
+      // the student up on this device. A cleared PIN invalidates the session.
+      var pf = findStudentById(sv.email.slice(7));
+      if (pf && pf.student.parentPin) {
+        DB_KEY = pf.dbKey;
+        state.parentStudentId = pf.student.id;
+        loginAs({ role: 'parent', name: pf.student.name, sub: t('parentSub') + ' • ' + pf.student.name, email: 'parent:' + pf.student.id, uid: 'parent-' + pf.student.id, studentId: pf.student.id }, { silent: true });
+        state.view = 'dashboard';
+        renderApp();
+        return true;
+      }
+      return false;
+    }
     var a = findAccount(sv.email);
     if (!a || a.role !== sv.role) return false;
     loginAs(a, { silent: true });
@@ -1208,13 +1296,50 @@ function restoreSession() {
   } catch (e) { return false; }
 }
 function switchAuth(tab) {
-  $('tabLogin').classList.toggle('on', tab === 'login');
-  $('tabSignup').classList.toggle('on', tab === 'signup');
-  $('loginForm').classList.toggle('hidden', tab !== 'login');
-  $('signupForm').classList.toggle('hidden', tab !== 'signup');
-  $('loginErr').classList.add('hidden');
-  $('signupErr').classList.add('hidden');
-  setTimeout(function () { $(tab === 'login' ? 'loginId' : 'suSchool').focus(); }, 50);
+  var tabs = { login: ['tabLogin', 'loginForm', 'loginErr', 'loginId'], signup: ['tabSignup', 'signupForm', 'signupErr', 'suSchool'], parent: ['tabParent', 'parentForm', 'parentErr', 'parentAdmNo'] };
+  Object.keys(tabs).forEach(function (k) {
+    var ids = tabs[k];
+    $(ids[0]).classList.toggle('on', tab === k);
+    $(ids[1]).classList.toggle('hidden', tab !== k);
+    $(ids[2]).classList.add('hidden');
+  });
+  setTimeout(function () { $(tabs[tab][3]).focus(); }, 50);
+}
+function doParentLogin(e) {
+  e.preventDefault();
+  var adm = $('parentAdmNo').value.trim();
+  var pin = $('parentPin').value.trim();
+  var err = $('parentErr');
+  var found = findStudentByAdmNo(adm);
+  // One generic error: never reveal whether the number or the PIN was wrong.
+  var ok = found && found.student.parentPin && digitsOnly(pin).length >= 4 && digitsOnly(pin) === digitsOnly(found.student.parentPin);
+  if (!found || !ok) {
+    err.textContent = t('tInvalidParent');
+    err.classList.remove('hidden');
+    return false;
+  }
+  DB_KEY = found.dbKey;
+  var acct = { role: 'parent', name: found.student.name, sub: t('parentSub') + ' • ' + found.student.name, email: 'parent:' + found.student.id, uid: 'parent-' + found.student.id, studentId: found.student.id };
+  state.parentStudentId = found.student.id;
+  err.classList.add('hidden');
+  loginAs(acct);
+  return false;
+}
+function parentStudent() {
+  if (state.role !== 'parent' || !state.parentStudentId) return null;
+  return db.students.find(function (x) { return x.id === state.parentStudentId; }) || null;
+}
+function canViewStudent(id) {
+  // Parents may open ONLY their own child's profile. Everyone else is
+  // unrestricted here (their nav already limits which views exist).
+  if (state.role === 'parent') return id === state.parentStudentId;
+  return true;
+}
+function parentDashboard() {
+  var s = parentStudent();
+  if (!s) return '<div class="card"><div class="empty">' + t('tNoStudentData') + '</div></div>';
+  state.profileStudent = s.id;
+  return studentProfilePage(s.id);
 }
 function doLogin(e) {
   e.preventDefault();
@@ -1254,9 +1379,11 @@ function logout() {
   state.attSnapKey = ''; state.attSnap = {};
   state.feeStudent = null; state.feeSearch = ''; state.feeType = 'All'; state.feeFilter = 'All'; state.feeFormOpen = false; state.feePreselect = null;
   state.profileStudent = null; state.profileTab = 'overview'; state.stuPage = 1;
+  state.parentStudentId = null; state.admReqFilter = 'All';
   promoState = null; importState.rows = null; importState.result = null;
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
   $('loginId').value = ''; $('loginPw').value = '';
+  $('parentAdmNo').value = ''; $('parentPin').value = '';
   $('page').innerHTML = '';
   showLogin();
   toast(t('tLoggedOut'));
@@ -1269,12 +1396,15 @@ var NAV = {
     ['reports', '📄', 'reports'], ['help', '❓', 'help']
   ],
   school: [
-    ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['attendance', '✅', 'attendance'],
+    ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['admissions', '📋', 'admissions'], ['attendance', '✅', 'attendance'],
     ['fees', '💰', 'fees'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'],
     ['notices', '📢', 'notices'], ['reports', '📄', 'reports'], ['settings', '⚙️', 'settings']
   ],
   student: [
     ['dashboard', '🏠', 'dashboard'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
+  ],
+  parent: [
+    ['dashboard', '🏠', 'dashboard']
   ]
 };
 var VIEW_TITLES = {
@@ -1283,7 +1413,7 @@ var VIEW_TITLES = {
   subscriptions: ['Subscriptions', 'Plans & billing status'], analytics: ['Analytics', 'Growth, attendance & fees'],
   settings: ['Settings', 'Platform / school settings'], reports: ['Reports', 'Download CSV reports'],
   help: ['Help & Support', 'Guides & contact'],
-  students: ['Student Management', 'St. Xavier School, Patna'], attendance: ['Attendance', 'Mark & view attendance'],
+  students: ['Student Management', 'St. Xavier School, Patna'], admissions: ['Admission Requests', 'New applications & approvals'], attendance: ['Attendance', 'Mark & view attendance'],
   fees: ['Fees', 'Fee collection & pending dues'], exams: ['Examinations', 'Exams & marks entry'],
   homework: ['Homework', 'Assign & track homework'], notices: ['Notices', 'Notice board']
 };
@@ -1310,7 +1440,7 @@ function renderApp() {
     return '<button class="' + (state.view === n[0] ? 'active' : '') + '" onclick="go(\'' + n[0] + '\')"><span class="ic">' + n[1] + '</span>' + esc(t(n[2])) + '</button>';
   }).join('');
   var u = state.user;
-  var me = state.role === 'student' ? meStudent() : null;
+  var me = state.role === 'student' ? meStudent() : (state.role === 'parent' ? parentStudent() : null);
   var whoPhoto = me ? me.photo : null;
   var wa = $('whoAvatar');
   if (whoPhoto) { wa.innerHTML = '<img src="' + esc(whoPhoto) + '" alt="">'; wa.classList.add('has-photo'); }
@@ -1330,20 +1460,22 @@ function renderApp() {
     });
   }
   sess.value = prof.session;
+  sess.disabled = (state.role === 'parent');
   var vt = VIEW_TITLES[state.view] || ['Dashboard', ''];
   $('topTitle').textContent = t(state.view) === state.view ? vt[0] : t(state.view);
   if (state.view === 'dashboard') $('topTitle').textContent = t('dashboard');
-  $('topCrumb').textContent = state.role === 'super' ? t('superDashboard') : (state.role === 'school' ? prof.name + ', ' + prof.city : t('studentDashboard'));
+  $('topCrumb').textContent = state.role === 'super' ? t('superDashboard') : (state.role === 'school' ? prof.name + ', ' + prof.city : (state.role === 'parent' ? t('parentDashboard') : t('studentDashboard')));
   renderPage();
 }
 function changeSession(v) {
+  if (state.role !== 'school') return;
   db.profile.session = v; saveDB(db);
   toast(t('tSessionChanged') + ' ' + v);
 }
 function renderPage() {
   var p = $('page');
   hideTip();
-  var pages = state.role === 'super' ? PAGE_SUPER : state.role === 'school' ? PAGE_SCHOOL : PAGE_STUDENT;
+  var pages = state.role === 'super' ? PAGE_SUPER : state.role === 'school' ? PAGE_SCHOOL : state.role === 'parent' ? PAGE_PARENT : PAGE_STUDENT;
   var fn = pages[state.view] || pages.dashboard;
   p.innerHTML = fn();
   if (state.view === 'fees' && !state.feeStudent && state.feeSearch) filterFees(state.feeSearch);
@@ -1662,19 +1794,27 @@ function suggestRoll() {
   var cls = ($('fStCls') ? $('fStCls').value : '') + '-' + ($('fStSec') ? $('fStSec').value : 'A');
   if ($('fStRoll')) $('fStRoll').value = nextRoll(cls);
 }
+var admPrefill = null; // admission request being converted into an admission
 function studentForm(id) {
+  if (state.role !== 'school') { toast(t('tParentScope')); return; }
   pendingPhoto = null;
   admEditingId = id || null;
   var s = id ? db.students.find(function (x) { return x.id === id; }) : null;
+  var pf = (!s && admPrefill) ? admPrefill : null;
+  var reqId = pf ? pf.id : '';
   var d = s ? (s.documents || {}) : {};
   var clsPart = s ? classPartOf(s.cls) : '6th';
   var secPart = s ? sectionOf(s.cls) : 'A';
   var clsOpts = classParts().map(function (c) { return '<option ' + (c === clsPart ? 'selected' : '') + '>' + c + '</option>'; }).join('');
   var secOpts = SECTIONS.map(function (x) { return '<option ' + (x === secPart ? 'selected' : '') + '>' + x + '</option>'; }).join('');
   var sessOpts = SESSIONS.map(function (x) { return '<option ' + ((s ? s.session : db.profile.session) === x ? 'selected' : '') + '>' + x + '</option>'; }).join('');
-  var genOpts = [''].concat(GENDERS).map(function (g) { return '<option value="' + g + '" ' + ((s && s.gender === g) ? 'selected' : '') + '>' + (g || '—') + '</option>'; }).join('');
+  var genOpts = [''].concat(GENDERS).map(function (g) { return '<option value="' + g + '" ' + (((s && s.gender === g) || (pf && pf.gender === g)) ? 'selected' : '') + '>' + (g || '—') + '</option>'; }).join('');
   var bloodOpts = [''].concat(BLOOD_GROUPS).map(function (b) { return '<option value="' + b + '" ' + ((s && s.bloodGroup === b) ? 'selected' : '') + '>' + (b || '—') + '</option>'; }).join('');
   var catOpts = [''].concat(CATEGORIES).map(function (c) { return '<option value="' + c + '" ' + ((s && s.category === c) ? 'selected' : '') + '>' + (c || '—') + '</option>'; }).join('');
+  if (pf) {
+    clsPart = pf.classApply || clsPart;
+    admPrefill = null; // consumed into the form; the link now lives in fStAdmReq
+  }
   var admNo = s ? (s.admissionNo || '') : nextAdmNo(true);
   var admDate = s ? (s.admissionDate || '') : todayIST();
   var rollVal = s ? s.roll : nextRoll(clsPart + '-' + secPart);
@@ -1682,8 +1822,10 @@ function studentForm(id) {
     '<div id="fStErr" class="err hidden"></div>' +
     '<form onsubmit="return saveStudent(event,\'' + (id || '') + '\')"><div class="form-grid">' +
     '<div class="full sec-title">' + t('secPersonal') + '</div>' +
-    '<div><label>' + t('fStudentName') + ' *</label><input id="fStName" required value="' + esc(s ? s.name : '') + '" placeholder="e.g. Aarav Kumar"></div>' +
-    '<div><label>' + t('fDob') + '</label><input id="fStDob" type="date" value="' + esc(s ? (s.dob || '') : '') + '"></div>' +
+    '<input type="hidden" id="fStAdmReq" value="' + esc(reqId) + '">' +
+    (pf ? '<div class="full"><p class="muted">' + t('admReqPrefilled') + '</p></div>' : '') +
+    '<div><label>' + t('fStudentName') + ' *</label><input id="fStName" required value="' + esc(s ? s.name : (pf ? pf.name : '')) + '" placeholder="e.g. Aarav Kumar"></div>' +
+    '<div><label>' + t('fDob') + '</label><input id="fStDob" type="date" value="' + esc(s ? (s.dob || '') : (pf ? (pf.dob || '') : '')) + '"></div>' +
     '<div><label>' + t('fGender') + '</label><select id="fStGender">' + genOpts + '</select></div>' +
     '<div><label>' + t('fBlood') + '</label><select id="fStBlood">' + bloodOpts + '</select></div>' +
     '<div><label>' + t('fCategory') + '</label><select id="fStCategory">' + catOpts + '</select></div>' +
@@ -1702,13 +1844,13 @@ function studentForm(id) {
     '<div><label>' + t('fClass') + ' *</label><select id="fStCls" onchange="suggestRoll()">' + clsOpts + '</select></div>' +
     '<div><label>' + t('fSection') + ' *</label><select id="fStSec" onchange="suggestRoll()">' + secOpts + '</select></div>' +
     '<div><label>' + t('fRoll') + '</label><input id="fStRoll" type="number" min="1" value="' + rollVal + '" required></div>' +
-    '<div><label>' + t('fPrevSchool') + '</label><input id="fStPrevSchool" value="' + esc(s ? (s.previousSchool || '') : '') + '"></div>' +
+    '<div><label>' + t('fPrevSchool') + '</label><input id="fStPrevSchool" value="' + esc(s ? (s.previousSchool || '') : (pf ? (pf.previousSchool || '') : '')) + '"></div>' +
     '<div><label>' + t('fPrevClass') + '</label><input id="fStPrevClass" value="' + esc(s ? (s.previousClass || '') : '') + '"></div>' +
     '<div class="full sec-title">' + t('secParent') + '</div>' +
     '<div><label>' + t('fFather') + '</label><input id="fStFather" value="' + esc(s ? (s.fatherName || '') : '') + '" placeholder="Mr. Sharma"></div>' +
     '<div><label>' + t('fMother') + '</label><input id="fStMother" value="' + esc(s ? (s.motherName || '') : '') + '" placeholder="Mrs. Sharma"></div>' +
-    '<div><label>' + t('fGuardian') + '</label><input id="fStG" value="' + esc(s ? s.guardian : '') + '" placeholder="Mr. Sharma"></div>' +
-    '<div><label>' + t('fPhone') + ' *</label><input id="fStPh" value="' + esc(s ? s.phone : '') + '" placeholder="98XXXXXXXX"></div>' +
+    '<div><label>' + t('fGuardian') + '</label><input id="fStG" value="' + esc(s ? s.guardian : (pf ? pf.guardianName : '')) + '" placeholder="Mr. Sharma"></div>' +
+    '<div><label>' + t('fPhone') + ' *</label><input id="fStPh" value="' + esc(s ? s.phone : (pf ? pf.phone : '')) + '" placeholder="98XXXXXXXX"></div>' +
     '<div><label>' + t('fPhone2') + '</label><input id="fStPh2" value="' + esc(s ? (s.mobile2 || '') : '') + '" placeholder="98XXXXXXXX"></div>' +
     '<div><label>' + t('fParentEmail') + '</label><input id="fStParentEmail" type="email" value="' + esc(s ? (s.parentEmail || '') : '') + '" placeholder="parent@email.com"></div>' +
     '<div><label>' + t('fOccupation') + '</label><input id="fStOccupation" value="' + esc(s ? (s.occupation || '') : '') + '" placeholder="e.g. Farmer"></div>' +
@@ -1727,6 +1869,7 @@ function studentForm(id) {
     '<button class="btn" type="submit">' + t('saveStudentBtn') + '</button></div></form>', true);
 }
 function saveStudent(e, id, mode) {
+  if (state.role !== 'school') { toast(t('tParentScope')); return false; }
   e.preventDefault();
   mode = mode || 'active';
   var errEl = $('fStErr');
@@ -1771,7 +1914,11 @@ function saveStudent(e, id, mode) {
   if (id) {
     var s = db.students.find(function (x) { return x.id === id; });
     if (!s) return false;
+    var oldPhone = s.phone;
     Object.assign(s, data);
+    // Parent PIN follows the primary mobile while it is still the default
+    // (last 4 digits); a custom PIN set by the school is never overwritten.
+    if (!s.parentPin || s.parentPin === parentPinFromPhone(oldPhone)) s.parentPin = parentPinFromPhone(s.phone);
     s.status = mode === 'draft' ? 'Draft' : 'Active';
     if (pendingPhoto !== null) { if (pendingPhoto) s.photo = pendingPhoto; else delete s.photo; }
     logAudit('Student updated', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
@@ -1779,12 +1926,20 @@ function saveStudent(e, id, mode) {
   } else {
     var nid = 'stu' + Date.now();
     var admNo = nextAdmNo();
-    var newStu = Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: nextEnr(), admissionNo: admNo, status: mode === 'draft' ? 'Draft' : 'Active' }, data);
+    var newStu = Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: nextEnr(), admissionNo: admNo, status: mode === 'draft' ? 'Draft' : 'Active', parentPin: parentPinFromPhone(phone) }, data);
     if (pendingPhoto) newStu.photo = pendingPhoto;
     db.students.push(newStu);
     if (mode !== 'draft') {
       db.feeRecords.push({ id: 'fee' + Date.now(), studentId: nid, student: name, cls: cls,
         month: new Date().toLocaleString('en', { month: 'short' }), type: 'Tuition', amount: 6000, status: 'Pending', date: todayIST() });
+    }
+    var reqId = fval('fStAdmReq');
+    if (reqId) {
+      var rq = (db.admissionRequests || []).find(function (x) { return x.id === reqId; });
+      if (rq && rq.status === 'Pending') {
+        rq.status = 'Approved'; rq.studentId = nid;
+        logAudit('Admission request approved', rq.name + ' • ' + admNo + ' • ' + cls);
+      }
     }
     logAudit(mode === 'draft' ? 'Admission saved as draft' : 'Admission created', name + ' • ' + admNo + ' • ' + cls);
     toast(mode === 'draft' ? t('tDraftSaved') : t('tAdmCreated') + admNo);
@@ -1818,16 +1973,19 @@ function stuActions(id) {
     '</div>');
 }
 function viewStudentAttendance(id) {
+  if (state.role === 'parent' || !canViewStudent(id)) { toast(t('tParentScope')); return; }
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
   state.attCls = s.cls;
   go('attendance');
 }
 function viewStudentFees(id) {
+  if (state.role === 'parent' || !canViewStudent(id)) { toast(t('tParentScope')); return; }
   state.view = 'fees'; state.feeStudent = id;
   renderApp();
 }
 function viewStudentResults(id) {
+  if (state.role === 'parent' || !canViewStudent(id)) { toast(t('tParentScope')); return; }
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
   var ex = db.exams.find(function (e) { return e.cls === s.cls; });
@@ -1835,6 +1993,7 @@ function viewStudentResults(id) {
   go('exams');
 }
 function transferStudent(id) {
+  if (state.role !== 'school') { toast(t('tParentScope')); return; }
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
   var clsOpts = CLASSES.map(function (c) { return '<option ' + (c === s.cls ? 'selected' : '') + '>' + c + '</option>'; }).join('');
@@ -1926,6 +2085,7 @@ function promoList() {
   return promoEligible(promoState.fromSession, promoState.fromCls);
 }
 function openPromotion(singleId) {
+  if (state.role !== 'school') { toast(t('tParentScope')); return; }
   state.profileStudent = null; // never show profile + promotion at once
   var s = singleId ? db.students.find(function (x) { return x.id === singleId; }) : null;
   var fromSession = s ? (s.session || db.profile.session) : db.profile.session;
@@ -2030,6 +2190,7 @@ function promotionPage() {
     '<button class="btn ghost" onclick="doPromote(\'retain\')">' + t('promoRetain') + '</button></div></div>' + resHtml;
 }
 function deactivateStudent(id) {
+  if (state.role !== 'school') { toast(t('tParentScope')); return; }
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
   var toInactive = (s.status || 'Active') === 'Active';
@@ -2051,6 +2212,7 @@ function cancelAdmission(id) {
   });
 }
 function openStudentProfile(id) {
+  if (!canViewStudent(id)) { toast(t('tParentScope')); return; }
   promoState = null;
   state.profileStudent = id; state.profileTab = 'overview';
   renderPage();
@@ -2065,11 +2227,15 @@ function studentProfilePage(id) {
   var tabBar = '<div class="tabs">' + tabs.map(function (tb) {
     return '<button class="tab-btn' + (state.profileTab === tb[0] ? ' on' : '') + '" onclick="setProfileTab(\'' + tb[0] + '\')">' + t(tb[1]) + '</button>';
   }).join('') + '</div>';
-  return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + esc(s.cls) + ' • ' + t('thAdmNo') + ' ' + esc(s.admissionNo || '—') + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • <span class="badge ' + badgeCls + '">' + stt + '</span></p></div></div>' +
-    '<div class="toolbar"><button class="btn ghost" onclick="state.profileStudent=null;renderPage()">← ' + t('backDir') + '</button>' +
+  var isParent = state.role === 'parent';
+  var toolbar = isParent
+    ? '<div class="toolbar"><button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button></div>'
+    : '<div class="toolbar"><button class="btn ghost" onclick="state.profileStudent=null;renderPage()">← ' + t('backDir') + '</button>' +
     '<button class="btn" onclick="studentForm(\'' + s.id + '\')">' + t('editStudent') + '</button>' +
     '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button>' +
-    ((stt === 'Active' || stt === 'Inactive') ? '<button class="btn ghost" onclick="promoteSingle(\'' + s.id + '\')">⬆️ ' + t('promoSingle') + '</button>' : '') + '</div></div>' +
+    ((stt === 'Active' || stt === 'Inactive') ? '<button class="btn ghost" onclick="promoteSingle(\'' + s.id + '\')">⬆️ ' + t('promoSingle') + '</button>' : '') + '</div>';
+  return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + esc(s.cls) + ' • ' + t('thAdmNo') + ' ' + esc(s.admissionNo || '—') + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • <span class="badge ' + badgeCls + '">' + stt + '</span></p></div></div>' +
+    toolbar + '</div>' +
     tabBar + '<div style="margin-top:16px">' + profileTabBody(s, state.profileTab || 'overview') + '</div>';
 }
 function profileTabBody(s, tab) {
@@ -2079,7 +2245,16 @@ function profileTabBody(s, tab) {
     return '<div class="card">' + kv(t('fStudentName'), esc(s.name)) + kv(t('fDob'), esc(s.dob || '—')) + kv(t('fGender'), esc(s.gender || '—')) + kv(t('fBlood'), esc(s.bloodGroup || '—')) + kv(t('fCategory'), esc(s.category || '—')) + kv(t('fAddress'), esc(s.address || '—')) + kv(t('fState'), esc(s.state || '—')) + kv(t('fDistrict'), esc(s.district || '—')) + kv(t('fPin'), esc(s.pin || '—')) + kv(t('fAadhaar'), maskAadhaar(s.aadhaar)) + '</div>';
   }
   if (tab === 'parent') {
-    return '<div class="card">' + kv(t('fFather'), esc(s.fatherName || '—')) + kv(t('fMother'), esc(s.motherName || '—')) + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fPhone2'), esc(s.mobile2 || '—')) + kv(t('fParentEmail'), esc(s.parentEmail || '—')) + kv(t('fOccupation'), esc(s.occupation || '—')) + '</div>';
+    var base = '<div class="card">' + kv(t('fFather'), esc(s.fatherName || '—')) + kv(t('fMother'), esc(s.motherName || '—')) + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fPhone2'), esc(s.mobile2 || '—')) + kv(t('fParentEmail'), esc(s.parentEmail || '—')) + kv(t('fOccupation'), esc(s.occupation || '—')) + '</div>';
+    if (state.role !== 'school') return base;
+    var pinNow = s.parentPin ? esc(s.parentPin) : '—';
+    var pinBox = '<div class="card" style="margin-top:16px"><h3>' + t('parentAccess') + '</h3>' +
+      '<div class="kv"><b>' + t('parentPinNow') + '</b><span>' + pinNow + '</span></div>' +
+      '<p class="muted" style="margin:8px 0">' + t('tPinAuto') + (s.parentPin ? '' : ' ' + t('parentPinNone')) + '</p>' +
+      '<div class="form-grid"><div><label>' + t('parentPinNew') + '</label><input id="fParentPinNew" inputmode="numeric" maxlength="6" placeholder="4–6 digits"></div></div>' +
+      '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="setParentPin(\'' + s.id + '\')">' + t('parentPinSetBtn') + '</button>' +
+      '<button class="btn ghost" onclick="clearParentPin(\'' + s.id + '\')">' + t('parentPinClear') + '</button></div></div>';
+    return base + pinBox;
   }
   if (tab === 'academic') {
     return '<div class="card">' + kv(t('fAdmNo'), esc(s.admissionNo || '—')) + kv(t('fAdmDate'), esc(s.admissionDate || '—')) + kv(t('fSession'), esc(s.session || '—')) + kv(t('fClass'), esc(classPartOf(s.cls))) + kv(t('fSection'), esc(sectionOf(s.cls))) + kv(t('fRoll'), String(s.roll)) + kv(t('fPrevSchool'), esc(s.previousSchool || '—')) + kv(t('fPrevClass'), esc(s.previousClass || '—')) + kv(t('thStatus'), esc(s.status || 'Active')) + '</div>';
@@ -2109,7 +2284,7 @@ function profileTabBody(s, tab) {
     return '<div class="stats">' + statCard('🧾', 'blue', t('totalBilled'), sum.billed, '', 'up', { prefix: '₹' }) + statCard('✅', 'green', t('totalPaid'), sum.paid, '', 'up', { prefix: '₹' }) + statCard('⏰', 'red', t('totalPending'), sum.pend, '', 'down', { prefix: '₹' }) + '</div>' +
       '<div class="card"><h3>' + t('feeByType') + '</h3>' + (btRows || '<p class="muted">' + t('tNoFeeRecs') + '</p>') + '</div>' +
       '<div class="card" style="margin-top:16px"><h3>' + t('feeRecsH') + '</h3><div class="tbl-wrap"><table><thead><tr><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th></tr></thead><tbody>' + (frs || '<tr><td colspan="5"><div class="empty">' + t('tNoFeeRecs') + '</div></td></tr>') + '</tbody></table></div>' +
-      '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="viewStudentFees(\'' + s.id + '\')">' + t('openFees') + '</button></div></div>';
+      (state.role === 'parent' ? '' : '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="viewStudentFees(\'' + s.id + '\')">' + t('openFees') + '</button></div>') + '</div>';
   }
   if (tab === 'results') {
     var exs = db.exams.filter(function (e) { return e.cls === s.cls; }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
@@ -2156,17 +2331,34 @@ function profileTabBody(s, tab) {
     '</div>' +
     '<div class="card">' + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fAdmNo'), esc(s.admissionNo || '—')) + kv(t('thEnr'), esc(s.enr || '—')) + kv(t('fAdmDate'), esc(s.admissionDate || '—')) + kv(t('fSession'), esc(s.session || '—')) + kv(t('thStatus'), esc(s.status || 'Active')) + '</div>';
 }
+function setParentPin(id) {
+  var s = db.students.find(function (x) { return x.id === id; });
+  if (!s || state.role !== 'school') return;
+  var v = digitsOnly($('fParentPinNew') ? $('fParentPinNew').value : '');
+  if (v.length < 4 || v.length > 6) { toast(t('tPinLen')); return; }
+  s.parentPin = v;
+  logAudit('Parent PIN set', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
+  saveDB(db); renderPage();
+  toast(t('tPinSet'));
+}
+function clearParentPin(id) {
+  var s = db.students.find(function (x) { return x.id === id; });
+  if (!s || state.role !== 'school') return;
+  s.parentPin = '';
+  logAudit('Parent PIN cleared', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
+  saveDB(db); renderPage();
+  toast(t('tPinCleared'));
+}
 function deleteStudent(id) {
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
-  confirmModal('Delete ' + s.name + '? Their fee records, marks, attendance and homework progress will also be removed.', function () {
-    db.students = db.students.filter(function (x) { return x.id !== id; });
-    db.feeRecords = db.feeRecords.filter(function (r) { return r.studentId !== id; });
-    db.marks = db.marks.filter(function (m) { return m.studentId !== id; });
-    Object.keys(db.attendance).forEach(function (k) { delete db.attendance[k][id]; });
-    db.homework.forEach(function (h) { h.doneBy = h.doneBy.filter(function (x) { return x !== id; }); });
+  // Soft delete only: the record and ALL of its history (fees, marks,
+  // attendance, homework) are kept. Nothing is ever hard-deleted here.
+  confirmModal(t('softDelMsg') + ' — ' + s.name + '?', function () {
+    s.status = 'Cancelled';
+    logAudit('Student removed', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls + ' (soft delete — record kept)');
     saveDB(db); renderApp();
-    toast(t('tStudentDeleted'));
+    toast(t('tStudentRemoved'));
   });
 }
 function attendancePage() {
@@ -2507,6 +2699,8 @@ function idCardsPrintHTML(ids) {
 }
 // Print preview modal: shows the count + the exact cards, then prints via #printArea.
 function openIdCardPreview(ids) {
+  ids = (ids || []).filter(function (id) { return canViewStudent(id); });
+  if (!ids.length) { toast(t('tParentScope')); return; }
   var list = (ids || []).map(function (id) { return db.students.find(function (x) { return x.id === id; }); }).filter(function (s) { return !!s; });
   if (!list.length) { toast(t('promoNoSelect')); return; }
   pendingIdPrint = list.map(function (s) { return s.id; });
@@ -2553,6 +2747,128 @@ function collectFee(id) {
 }
 var PAGE_SCHOOL = { dashboard: schoolDashboard, students: studentsPage, attendance: attendancePage, fees: feesPage, exams: null, homework: null, notices: null, reports: null, settings: null };
 
+
+/* ================= Phase 4: admission requests =================
+   Public intake: anyone can apply from the auth screen. The request is
+   saved into the chosen school's own DB on this device (static scope — no
+   server, so there is no cross-device inbox yet). The school admin reviews
+   it; Approve prefills the admission form, Reject keeps it in history. */
+function validateAdmissionRequest(r) {
+  var errs = [];
+  if (!r.name) errs.push(t('tReqName'));
+  if (digitsOnly(r.phone).length !== 10) errs.push(t('tInvalidMobile'));
+  if (!r.classApply) errs.push(t('tReqClass'));
+  return errs;
+}
+function saveAdmissionRequestToSchool(dbKey, req) {
+  var d = readDbByKey(dbKey);
+  if (!d) return false;
+  migrateV12(d);
+  d.admissionRequests.push(req);
+  writeDbByKey(dbKey, d);
+  if (DB_KEY === dbKey) db = d; // keep the in-memory DB in sync
+  return true;
+}
+function openAdmissionApply() {
+  var schools = loadAccounts().filter(function (a) { return a.role === 'school'; }).filter(function (a) { return !!readDbByKey(dbKeyFor(a)); });
+  var schOpts = schools.map(function (a) { return '<option value="' + esc(dbKeyFor(a)) + '">' + esc(a.school) + '</option>'; }).join('');
+  var clsOpts = classParts().map(function (c) { return '<option>' + c + '</option>'; }).join('');
+  var genOpts = [''].concat(GENDERS).map(function (g) { return '<option value="' + g + '">' + (g || '—') + '</option>'; }).join('');
+  openModal('<h3>' + t('admReqFormTitle') + '</h3>' +
+    (schools.length ? '' : '<p class="err">' + t('admReqNoSchool') + '</p>') +
+    '<form onsubmit="return saveAdmissionRequest(event)"><div class="form-grid">' +
+    '<div class="full"><label>' + t('admReqSchool') + '</label><select id="fArSchool">' + schOpts + '</select></div>' +
+    '<div><label>' + t('fStudentName') + ' *</label><input id="fArName" required placeholder="e.g. Aarav Kumar"></div>' +
+    '<div><label>' + t('fDob') + '</label><input id="fArDob" type="date"></div>' +
+    '<div><label>' + t('fGender') + '</label><select id="fArGender">' + genOpts + '</select></div>' +
+    '<div><label>' + t('admReqClassApply') + ' *</label><select id="fArClass">' + clsOpts + '</select></div>' +
+    '<div><label>' + t('fGuardian') + '</label><input id="fArGuardian" placeholder="Mr. Sharma"></div>' +
+    '<div><label>' + t('fPhone') + ' *</label><input id="fArPhone" inputmode="numeric" placeholder="98XXXXXXXX"></div>' +
+    '<div class="full"><label>' + t('fPrevSchool') + '</label><input id="fArPrevSchool" placeholder="Previous school (if any)"></div>' +
+    '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    '<button class="btn" type="submit" ' + (schools.length ? '' : 'disabled') + '>' + t('admReqApply') + '</button></div></form>', true);
+}
+function saveAdmissionRequest(e) {
+  e.preventDefault();
+  var req = { id: 'ar' + Date.now(), name: ($('fArName') ? $('fArName').value : '').trim(),
+    dob: $('fArDob') ? $('fArDob').value : '', gender: $('fArGender') ? $('fArGender').value : '',
+    classApply: $('fArClass') ? $('fArClass').value : '', guardianName: ($('fArGuardian') ? $('fArGuardian').value : '').trim(),
+    phone: ($('fArPhone') ? $('fArPhone').value : '').trim(), previousSchool: ($('fArPrevSchool') ? $('fArPrevSchool').value : '').trim(),
+    status: 'Pending', reason: '', submitted: todayIST(), studentId: '' };
+  var errs = validateAdmissionRequest(req);
+  if (errs.length) { toast(errs.join(' ')); return false; }
+  var key = $('fArSchool') ? $('fArSchool').value : '';
+  if (!key || !saveAdmissionRequestToSchool(key, req)) { toast(t('tAdmReqFailed')); return false; }
+  closeModal();
+  toast(t('admReqSubmitted'));
+  return false;
+}
+function admissionRequestsPage() {
+  var list = (db.admissionRequests || []).slice().sort(function (a, b) { return a.submitted < b.submitted ? 1 : -1; });
+  var f = state.admReqFilter || 'All';
+  var shown = list.filter(function (r) { return f === 'All' || r.status === f; });
+  var counts = { Pending: 0, Approved: 0, Rejected: 0 };
+  list.forEach(function (r) { if (counts[r.status] != null) counts[r.status]++; });
+  var rows = shown.map(function (r) {
+    var badge = r.status === 'Pending' ? 'orange' : r.status === 'Approved' ? 'green' : 'red';
+    return '<tr><td><b>' + esc(r.name) + '</b></td><td>' + esc(r.dob || '—') + '</td><td>' + esc(r.classApply) + '</td><td>' + esc(r.guardianName || '—') + '</td><td>' + esc(r.phone) + '</td><td>' + esc(r.submitted) + '</td>' +
+      '<td><span class="badge ' + badge + '">' + t('admReq' + r.status) + '</span></td>' +
+      '<td><div class="row-actions"><button class="btn ghost sm" onclick="viewAdmissionRequest(\'' + r.id + '\')">' + t('admReqView') + '</button>' +
+      (r.status === 'Pending' ? '<button class="btn green sm" onclick="approveAdmissionRequest(\'' + r.id + '\')">' + t('admReqApprove') + '</button>' +
+      '<button class="btn danger sm" onclick="rejectAdmissionRequest(\'' + r.id + '\')">' + t('admReqReject') + '</button>' : '') +
+      '</div></td></tr>';
+  }).join('');
+  var fOpts = ['All', 'Pending', 'Approved', 'Rejected'].map(function (x) {
+    var lbl = x === 'All' ? t('admReqAll') : t('admReq' + x);
+    return '<option value="' + x + '" ' + (f === x ? 'selected' : '') + '>' + lbl + '</option>';
+  }).join('');
+  return '<div class="page-head"><div><h2>' + t('admissions') + '</h2><p>' + list.length + ' ' + t('admReqTitle') + ' — ' + counts.Pending + ' ' + t('admReqPending') + '</p></div>' +
+    '<div class="toolbar"><label>' + t('admReqStatus') + '</label><select onchange="state.admReqFilter=this.value;renderPage()">' + fOpts + '</select></div></div>' +
+    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('fStudentName') + '</th><th>' + t('fDob') + '</th><th>' + t('admReqClassApply') + '</th><th>' + t('fGuardian') + '</th><th>' + t('fPhone') + '</th><th>' + t('admReqSubmittedOn') + '</th><th>' + t('admReqStatus') + '</th><th>' + t('thAction') + '</th></tr></thead>' +
+    '<tbody>' + (rows || '<tr><td colspan="8"><div class="empty">' + t('admReqEmpty') + '</div></td></tr>') + '</tbody></table></div></div>';
+}
+function viewAdmissionRequest(id) {
+  var r = (db.admissionRequests || []).find(function (x) { return x.id === id; });
+  if (!r) return;
+  var kv = function (label, val) { return '<div class="kv"><b>' + label + '</b><span>' + val + '</span></div>'; };
+  var badge = r.status === 'Pending' ? 'orange' : r.status === 'Approved' ? 'green' : 'red';
+  openModal('<h3>' + esc(r.name) + ' • ' + esc(r.classApply) + '</h3><div class="card">' +
+    kv(t('fStudentName'), esc(r.name)) + kv(t('fDob'), esc(r.dob || '—')) + kv(t('fGender'), esc(r.gender || '—')) +
+    kv(t('admReqClassApply'), esc(r.classApply)) + kv(t('fGuardian'), esc(r.guardianName || '—')) + kv(t('fPhone'), esc(r.phone)) +
+    kv(t('fPrevSchool'), esc(r.previousSchool || '—')) + kv(t('admReqSubmittedOn'), esc(r.submitted)) +
+    kv(t('admReqStatus'), '<span class="badge ' + badge + '">' + t('admReq' + r.status) + '</span>') +
+    (r.status === 'Rejected' && r.reason ? kv(t('admReqReason'), esc(r.reason)) : '') +
+    (r.status === 'Approved' && r.studentId ? kv(t('fAdmNo'), esc((db.students.find(function (s) { return s.id === r.studentId; }) || {}).admissionNo || '—')) : '') +
+    '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    (r.status === 'Pending' ? '<button type="button" class="btn danger" onclick="closeModal();rejectAdmissionRequest(\'' + r.id + '\')">' + t('admReqReject') + '</button>' +
+    '<button type="button" class="btn green" onclick="closeModal();approveAdmissionRequest(\'' + r.id + '\')">' + t('admReqApprove') + '</button>' : '') +
+    '</div>');
+}
+function approveAdmissionRequest(id) {
+  var r = (db.admissionRequests || []).find(function (x) { return x.id === id; });
+  if (!r || r.status !== 'Pending') return;
+  admPrefill = r;
+  studentForm('');
+}
+function rejectAdmissionRequest(id) {
+  var r = (db.admissionRequests || []).find(function (x) { return x.id === id; });
+  if (!r || r.status !== 'Pending') return;
+  openModal('<h3>' + t('admReqReject') + ' — ' + esc(r.name) + '</h3><form onsubmit="return doRejectAdmissionRequest(event,\'' + r.id + '\')"><div class="form-grid">' +
+    '<div class="full"><label>' + t('admReqReason') + '</label><textarea id="fArReason" rows="3" placeholder="e.g. Seats full for this class"></textarea></div>' +
+    '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    '<button class="btn danger" type="submit">' + t('admReqReject') + '</button></div></form>');
+}
+function doRejectAdmissionRequest(e, id) {
+  e.preventDefault();
+  var r = (db.admissionRequests || []).find(function (x) { return x.id === id; });
+  if (!r) return false;
+  r.status = 'Rejected';
+  r.reason = ($('fArReason') ? $('fArReason').value : '').trim();
+  logAudit('Admission request rejected', r.name + ' • ' + r.classApply + (r.reason ? ' • ' + r.reason : ''));
+  saveDB(db); closeModal(); renderApp();
+  toast(t('admReqRejected'));
+  return false;
+}
 /* ================= exams / homework / notices / reports / settings ================= */
 function examsPage() {
   var ex = db.exams.find(function (e) { return e.id === state.examId; }) || db.exams[0];
@@ -2744,7 +3060,7 @@ function saveSettings(e) {
   return false;
 }
 PAGE_SCHOOL.exams = examsPage; PAGE_SCHOOL.homework = homeworkPage; PAGE_SCHOOL.notices = noticesPage;
-PAGE_SCHOOL.reports = function () { return reportsPage('school'); }; PAGE_SCHOOL.settings = settingsPage;
+PAGE_SCHOOL.reports = function () { return reportsPage('school'); }; PAGE_SCHOOL.settings = settingsPage; PAGE_SCHOOL.admissions = admissionRequestsPage;
 
 /* ================= STUDENT view ================= */
 function studentDashboard() {
@@ -2771,6 +3087,7 @@ function studentDashboard() {
     '<div class="card" style="margin-top:16px"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div></div>';
 }
 var PAGE_STUDENT = { dashboard: studentDashboard, homework: homeworkPage, notices: noticesPage };
+var PAGE_PARENT = { dashboard: parentDashboard };
 
 /* ================= init ================= */
 document.addEventListener('DOMContentLoaded', function () {

@@ -13,9 +13,9 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=11">
-<script src="qrgen.js?v=11" defer></script>
-<script src="app.js?v=11" defer></script>
+<link rel="stylesheet" href="styles.css?v=12">
+<script src="qrgen.js?v=12" defer></script>
+<script src="app.js?v=12" defer></script>
 </head>
 <body>
 
@@ -29,6 +29,7 @@
       <div class="auth-tabs">
         <button type="button" id="tabLogin" class="auth-tab on" onclick="switchAuth('login')" data-i18n="authLogin">Log In</button>
         <button type="button" id="tabSignup" class="auth-tab" onclick="switchAuth('signup')" data-i18n="authSignup">Sign Up</button>
+        <button type="button" id="tabParent" class="auth-tab" onclick="switchAuth('parent')" data-i18n="authParent">Parent</button>
       </div>
       <div id="loginErr" class="err hidden"></div>
       <form id="loginForm" onsubmit="return doLogin(event)">
@@ -45,7 +46,15 @@
         <div class="field"><label data-i18n="suPw2">Confirm Password</label><input id="suPw2" type="password" placeholder="Repeat password" autocomplete="new-password"></div>
         <button class="btn" type="submit" style="width:100%" data-i18n="suBtn">Create Account</button>
       </form>
+      <div id="parentErr" class="err hidden"></div>
+      <form id="parentForm" class="hidden" onsubmit="return doParentLogin(event)">
+        <div class="field"><label data-i18n="parentAdmNo">Admission Number</label><input id="parentAdmNo" type="text" placeholder="e.g. ADM-2025-001" autocomplete="off"></div>
+        <div class="field"><label data-i18n="parentPinLabel">Parent PIN</label><input id="parentPin" type="password" inputmode="numeric" maxlength="6" placeholder="4–6 digits" autocomplete="off"></div>
+        <button class="btn" type="submit" style="width:100%" data-i18n="parentLoginBtn">Login as Parent</button>
+        <p style="text-align:center;margin-top:10px;font-size:12.5px;color:var(--muted)" data-i18n="parentNote">Parent access on this device uses a PIN set by the school. Real password accounts arrive with the server version.</p>
+      </form>
       <p style="text-align:center;margin-top:16px;font-size:12.5px;color:var(--muted)" data-i18n="authNote">One account per school. Your school’s data stays on this device until the server version arrives.</p>
+      <p style="text-align:center;margin-top:8px;font-size:13px"><a href="#" onclick="openAdmissionApply();return false" data-i18n="admReqApply">Apply for Admission</a></p>
     </div>
   </div>
 </div>
