@@ -51,6 +51,7 @@ var SCHOOL_NAMES = [
 ];
 var FIRST = ['Aarav','Vivaan','Aditya','Arjun','Sai','Reyansh','Krishna','Ishaan','Rohan','Kabir','Ananya','Diya','Aadhya','Myra','Sara','Ira','Priya','Riya','Anika','Navya','Aarush','Vihaan','Aryan','Dhruv','Meera','Kavya','Sneha','Pooja','Nikhil','Varun','Rahul','Sana','Ishita','Tanvi','Yash','Om','Dev','Rudra','Aisha','Zara','Farhan','Imran','Nisha','Kiran','Manav','Shreya'];
 var LAST = ['Kumar','Singh','Sharma','Verma','Gupta','Mishra','Tiwari','Yadav','Jha','Pandey','Choudhary','Ranjan','Srivastava','Dubey','Sinha','Patel','Das','Roy','Kumari','Devi'];
+var GIRL_NAMES = ['Ananya', 'Diya', 'Aadhya', 'Myra', 'Sara', 'Ira', 'Priya', 'Riya', 'Anika', 'Navya', 'Meera', 'Kavya', 'Sneha', 'Pooja', 'Sana', 'Ishita', 'Tanvi', 'Aisha', 'Zara', 'Nisha', 'Shreya'];
 var CLASSES = ['6th-A','6th-B','7th-A','7th-B','8th-A','8th-B','9th-A','9th-B','10th-A','10th-B'];
 var FEE_TYPES = ['Tuition', 'Admission', 'Transport', 'Exam', 'Library', 'Activity', 'Computer Lab', 'Other'];
 var MONTHS_ACAD = ['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'];
@@ -86,7 +87,13 @@ function seedDB() {
         guardian: 'Mr. ' + LAST[(idx * 5 + 1) % LAST.length],
         phone: '98' + String(10000000 + ((idx * 7919) % 89999999)),
         att: 85 + ((idx * 7) % 14), result: 62 + ((idx * 11) % 36),
-        fee: feePending ? 'Pending' : 'Paid' };
+        fee: feePending ? 'Pending' : 'Paid',
+        status: 'Active', session: '2025–26', admissionNo: 'ADM-2025-' + String(idx + 1).padStart(3, '0'), admissionDate: '',
+        dob: '', gender: GIRL_NAMES.indexOf(name.split(' ')[0]) !== -1 ? 'Girl' : 'Boy', bloodGroup: '', category: '',
+        address: '', state: '', district: '', pin: '',
+        fatherName: 'Mr. ' + LAST[(idx * 5 + 1) % LAST.length], motherName: 'Mrs. ' + LAST[(idx * 5 + 1) % LAST.length],
+        mobile2: '', parentEmail: '', occupation: '', previousSchool: '', previousClass: '',
+        documents: { birthCert: idx % 4 !== 3, tc: idx % 2 === 0, tcNumber: idx % 2 === 0 ? 'TC-' + (1000 + idx) : '', other: '' }, aadhaar: '' };
       if (cls === '10th-A' && r === 1) { rec.att = 92; rec.result = 95; rec.fee = 'Paid'; }
       if (cls === '10th-A' && r === 2) { rec.att = 94; rec.result = 91; rec.fee = 'Paid'; }
       students.push(rec);
@@ -118,7 +125,7 @@ function seedDB() {
   var riyaStu = students.find(function (s) { return s.name === 'Riya Kumari'; });
   if (riyaStu) {
     var donorRec = feeRecords.find(function (r) { return r.month === 'Apr' && r.status === 'Collected' && r.studentId === students[27].id; });
-    if (donorRec) { donorRec.studentId = riyaStu.id; donorRec.student = riyaStu.name; }
+    if (donorRec) { donorRec.studentId = riyaStu.id; donorRec.student = riyaStu.name; donorRec.cls = riyaStu.cls; }
   }
   var today = todayIST();
   var attRecords = {};
@@ -133,6 +140,8 @@ function seedDB() {
     feeMonths: FEE_MONTHS,
     feeRecords: feeRecords,
     feeStructure: defaultFeeStructure(),
+    admCounter: 41,
+    auditLog: [],
     attendanceAgg: { present: 1150, absent: 70, late: 30 },
     attendance: (function () { var a = {}; a[today + '|10th-A'] = attRecords; return a; })(),
     exams: [
@@ -190,12 +199,48 @@ function migrateFeesV7(d) {
   if (!Array.isArray(d.feeStructure) || !d.feeStructure.length) d.feeStructure = defaultFeeStructure();
   return d;
 }
+function migrateStudentsV9(d) {
+  // Phase 1 (Student Management) migration for existing v2 DBs: admission numbers,
+  // status, session, documents checklist, audit log. Idempotent; never changes
+  // existing values, amounts or statuses. Admission dates are NOT fabricated —
+  // old records keep admissionDate blank until edited.
+  var maxAdm = 0;
+  (d.students || []).forEach(function (s) {
+    var m = /^ADM-(\d{4})-(\d+)$/.exec(s.admissionNo || '');
+    if (m) maxAdm = Math.max(maxAdm, parseInt(m[2], 10));
+  });
+  var next = Math.max(maxAdm + 1, d.admCounter || 1);
+  var year = ((d.profile && d.profile.session ? String(d.profile.session).match(/\d{4}/) : null) || ['2025'])[0];
+  (d.students || []).forEach(function (s) {
+    if (!s.admissionNo) { s.admissionNo = 'ADM-' + year + '-' + String(next).padStart(3, '0'); next++; }
+    if (!s.status) s.status = 'Active';
+    if (!s.session) s.session = (d.profile && d.profile.session) || '2025–26';
+    if (!s.documents) s.documents = { birthCert: false, tc: false, tcNumber: '', other: '' };
+    if (s.documents.birthCert == null) s.documents.birthCert = false;
+    if (s.documents.tc == null) s.documents.tc = false;
+  });
+  // One-time repair (v9): align feeRecord.cls to the owning student's cls. All
+  // current records are seed records, so this fixes the Riya 9th-A/10th-A
+  // mismatch on existing DBs (incl. the user's phone). Guarded by a flag so
+  // later class transfers keep OLD fee records under their historical cls —
+  // the migration runs on every load, so an unconditional align would undo that.
+  if (!d.feeClsAlignedV9) {
+    (d.feeRecords || []).forEach(function (r) {
+      var own = (d.students || []).find(function (s) { return s.id === r.studentId; });
+      if (own && r.cls !== own.cls) r.cls = own.cls;
+    });
+    d.feeClsAlignedV9 = true;
+  }
+  d.admCounter = next;
+  if (!Array.isArray(d.auditLog)) d.auditLog = [];
+  return d;
+}
 function loadDB(override) {
   try {
     var raw = localStorage.getItem(DB_KEY);
     if (raw) {
       var d = JSON.parse(raw);
-      if (d && d.v === 2) { var m = migrateFeesV7(migrateAttendance(d)); saveDB(m); return m; }
+      if (d && d.v === 2) { var m = migrateStudentsV9(migrateFeesV7(migrateAttendance(d))); saveDB(m); return m; }
       // Unknown version: keep a backup, never wipe silently.
       try { localStorage.setItem(DB_KEY + '.bak', raw); } catch (e2) { /* ignore */ }
     }
@@ -214,7 +259,7 @@ function saveDB(db) {
 var db = loadDB();
 
 /* ================= state ================= */
-var state = { role: null, user: null, view: 'dashboard', lang: 'en', feeFilter: 'All', feeType: 'All', feeSearch: '', feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', attCls: '10th-A', attDate: '', examId: 'ex1', attSnapKey: '', attSnap: {} };
+var state = { role: null, user: null, view: 'dashboard', lang: 'en', feeFilter: 'All', feeType: 'All', feeSearch: '', feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', attSnapKey: '', attSnap: {} };
 
 /* ================= utils ================= */
 function $(id) { return document.getElementById(id); }
@@ -408,7 +453,7 @@ function feeFiltered() {
 }
 function filterFees(q) {
   // Client-side row filter only — the page is NOT re-rendered, so the search
-  // input keeps focus and the typed text (same pattern as filterStudents).
+  // input keeps focus and the typed text (same pattern as the fees search filter).
   q = (q || '').toLowerCase();
   var visible = 0, total = 0;
   document.querySelectorAll('#feeBody tr').forEach(function (tr) {
@@ -433,6 +478,205 @@ function studentFeeStatus(id) {
     if (r.status === 'Collected') hasCol = true;
   }
   return hasCol ? 'Paid' : '\u2014';
+}
+
+// ---------------- Phase 1: Student Management helpers ----------------
+var GENDERS = ['Boy', 'Girl', 'Other'];
+var BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
+var CATEGORIES = ['General', 'OBC', 'SC', 'ST', 'Other'];
+var SESSIONS = ['2025–26', '2024–25', '2026–27'];
+var SECTIONS = ['A', 'B', 'C'];
+var STU_PAGE_SIZE = 10;
+var STU_STATUSES = ['Active', 'Inactive', 'Draft', 'Cancelled'];
+function classParts() {
+  var out = [];
+  CLASSES.forEach(function (c) { var p = c.split('-')[0]; if (out.indexOf(p) === -1) out.push(p); });
+  return out;
+}
+function classPartOf(cls) { return (cls || '').split('-')[0]; }
+function sectionOf(cls) { return (cls || '').split('-')[1] || ''; }
+function digitsOnly(v) { return String(v || '').replace(/[^0-9]/g, ''); }
+function maskAadhaar(a) {
+  var d = digitsOnly(a);
+  if (d.length !== 12) return '—';
+  return '**** **** ' + d.slice(8);
+}
+// Session containing a YYYY-MM-DD date (Apr-Mar academic year). Timezone-proof:
+// parses the ISO date directly instead of new Date(), whose UTC-midnight parse
+// can shift the day in far-western timezones.
+function sessionOfDate(ds) {
+  var m = /^(\d{4})-(\d{2})-\d{2}$/.exec(String(ds || ''));
+  if (!m) return '';
+  var y = parseInt(m[1], 10), mo = parseInt(m[2], 10);
+  if (mo >= 4) return y + '–' + String((y + 1) % 100).padStart(2, '0');
+  return (y - 1) + '–' + String(y % 100).padStart(2, '0');
+}
+function currentSession() { return sessionOfDate(todayIST()); }
+function admYear() {
+  var m = String(db.profile.session || '2025–26').match(/\d{4}/);
+  return m ? m[0] : '2025';
+}
+function ensureAdmCounter() {
+  if (!db.admCounter) {
+    var max = 0;
+    db.students.forEach(function (s) {
+      var m = /^ADM-(\d{4})-(\d+)$/.exec(s.admissionNo || '');
+      if (m) max = Math.max(max, parseInt(m[2], 10));
+    });
+    db.admCounter = max + 1;
+  }
+}
+// peek=true previews the next number without consuming it (form display only).
+function nextAdmNo(peek) {
+  ensureAdmCounter();
+  var n = 'ADM-' + admYear() + '-' + String(db.admCounter).padStart(3, '0');
+  if (!peek) db.admCounter++;
+  return n;
+}
+function nextRoll(cls) {
+  var max = 0;
+  db.students.forEach(function (s) { if (s.cls === cls) max = Math.max(max, s.roll || 0); });
+  return max + 1;
+}
+function logAudit(action, details) {
+  if (!Array.isArray(db.auditLog)) db.auditLog = [];
+  var actor = state.user ? (state.user.name + ' (' + state.role + ')') : 'system';
+  db.auditLog.unshift({ ts: new Date().toISOString(), actor: actor, action: action, details: details || '' });
+  if (db.auditLog.length > 200) db.auditLog.length = 200;
+}
+function findDupStudent(data, excludeId) {
+  var d = null;
+  db.students.some(function (s) {
+    if (excludeId && s.id === excludeId) return false;
+    if (data.admissionNo && s.admissionNo && s.admissionNo === data.admissionNo) { d = s; return true; }
+    if (data.dob && s.dob && s.dob === data.dob && s.name.trim().toLowerCase() === String(data.name || '').trim().toLowerCase()) { d = s; return true; }
+    if (data.phone && s.phone && digitsOnly(s.phone) === digitsOnly(data.phone) && s.name.trim().toLowerCase() === String(data.name || '').trim().toLowerCase()) { d = s; return true; }
+    return false;
+  });
+  return d;
+}
+function sessionOptions() {
+  var out = [];
+  db.students.forEach(function (s) { if (s.session && out.indexOf(s.session) === -1) out.push(s.session); });
+  if (db.profile.session && out.indexOf(db.profile.session) === -1) out.push(db.profile.session);
+  return out;
+}
+function studentStats() {
+  var total = db.students.length, active = 0, inactive = 0, draft = 0, cancelled = 0, boys = 0, girls = 0, unspec = 0, pend = 0, attSum = 0;
+  var byClass = {};
+  var curSess = currentSession();
+  var newAdm = 0;
+  db.students.forEach(function (s) {
+    var st = s.status || 'Active';
+    if (st === 'Active') active++; else if (st === 'Inactive') inactive++; else if (st === 'Draft') draft++; else if (st === 'Cancelled') cancelled++;
+    if (s.gender === 'Boy') boys++; else if (s.gender === 'Girl') girls++; else unspec++;
+    if (studentFeeStatus(s.id) === 'Pending') pend++;
+    attSum += s.att || 0;
+    byClass[s.cls] = (byClass[s.cls] || 0) + 1;
+    if (s.admissionDate && sessionOfDate(s.admissionDate) === curSess) newAdm++;
+  });
+  return { total: total, active: active, inactive: inactive, draft: draft, cancelled: cancelled, boys: boys, girls: girls, unspec: unspec, pendFee: pend, avgAtt: total ? Math.round(attSum / total) : 0, newAdm: newAdm, byClass: byClass };
+}
+function classBarsHTML(byClass) {
+  var max = 0;
+  CLASSES.forEach(function (c) { max = Math.max(max, byClass[c] || 0); });
+  return CLASSES.map(function (c) {
+    var n = byClass[c] || 0;
+    var w = max ? Math.round(n / max * 100) : 0;
+    return '<div class="class-bar"><b>' + esc(c) + '</b><span class="bar-track"><span class="bar-fill" style="width:' + w + '%"></span></span><span class="n">' + n + '</span></div>';
+  }).join('');
+}
+function stuFiltered() {
+  var q = (state.stuSearch || '').trim().toLowerCase();
+  return db.students.filter(function (s) {
+    if (state.stuClass !== 'All' && s.cls !== state.stuClass) return false;
+    if (state.stuSection !== 'All' && sectionOf(s.cls) !== state.stuSection) return false;
+    if (state.stuSession !== 'All' && (s.session || '') !== state.stuSession) return false;
+    if (state.stuGender !== 'All' && (s.gender || '') !== state.stuGender) return false;
+    if (state.stuStatus !== 'All' && (s.status || 'Active') !== state.stuStatus) return false;
+    if (state.stuFee !== 'All' && studentFeeStatus(s.id) !== state.stuFee) return false;
+    if (q) {
+      var hay = [s.name, s.admissionNo, s.enr, s.phone].join(' ').toLowerCase();
+      if (hay.indexOf(q) === -1) return false;
+    }
+    return true;
+  });
+}
+function stuSorted(list) {
+  var col = state.stuSort || 'name', dir = state.stuSortDir || 1;
+  var arr = list.slice();
+  arr.sort(function (a, b) {
+    var r = 0;
+    if (col === 'name') r = a.name.localeCompare(b.name);
+    else if (col === 'class') r = (CLASSES.indexOf(a.cls) - CLASSES.indexOf(b.cls)) || ((a.roll || 0) - (b.roll || 0));
+    else if (col === 'admDate') {
+      var da = a.admissionDate || '', dbv = b.admissionDate || '';
+      r = !da && !dbv ? 0 : !da ? 1 : !dbv ? -1 : (da < dbv ? -1 : da > dbv ? 1 : 0);
+    } else if (col === 'att') r = (a.att || 0) - (b.att || 0);
+    return r * dir;
+  });
+  return arr;
+}
+function stuPageCount(list) { return Math.max(1, Math.ceil(list.length / STU_PAGE_SIZE)); }
+function stuPageRows(list) {
+  if (state.stuPage > stuPageCount(list)) state.stuPage = stuPageCount(list);
+  if (state.stuPage < 1) state.stuPage = 1;
+  return list.slice((state.stuPage - 1) * STU_PAGE_SIZE, state.stuPage * STU_PAGE_SIZE);
+}
+function sortStu(col) {
+  if (state.stuSort === col) state.stuSortDir = -state.stuSortDir;
+  else { state.stuSort = col; state.stuSortDir = 1; }
+  renderPage();
+}
+function onStuSearch(el) {
+  state.stuSearch = el.value;
+  state.stuPage = 1;
+  renderPage();
+  var inp = $('stuSearchInput');
+  if (inp && inp.focus) { inp.focus(); if (inp.setSelectionRange) { try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e) {} } }
+}
+function feeSummaryFor(sid) {
+  var s = db.students.find(function (x) { return x.id === sid; });
+  if (!s) return null;
+  var recs = db.feeRecords.filter(function (r) { return r.studentId === sid; })
+    .sort(function (a, b) { return (MONTH_NUM[a.month] || 99) - (MONTH_NUM[b.month] || 99) || (a.date < b.date ? -1 : a.date > b.date ? 1 : 0); });
+  var billed = 0, paid = 0, pend = 0, byType = {};
+  recs.forEach(function (r) {
+    billed += r.amount;
+    if (r.status === 'Collected') paid += r.amount; else pend += r.amount;
+    var ty = feeTypeOf(r);
+    if (!byType[ty]) byType[ty] = { collected: 0, pending: 0 };
+    if (r.status === 'Collected') byType[ty].collected += r.amount; else byType[ty].pending += r.amount;
+  });
+  return { s: s, recs: recs, billed: billed, paid: paid, pend: pend, byType: byType };
+}
+function latestExamPct(s) {
+  var exs = db.exams.filter(function (e) { return e.cls === s.cls; }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
+  for (var i = 0; i < exs.length; i++) {
+    var mk = db.marks.find(function (m) { return m.examId === exs[i].id && m.studentId === s.id; });
+    if (mk) return { pct: Math.round(mk.marks / exs[i].total * 100), name: exs[i].name };
+  }
+  return null;
+}
+var STU_CSV_HEAD = ['Name', 'Admission No', 'Enr', 'Class', 'Section', 'Roll', "Father's Name", "Mother's Name", 'Guardian', 'Mobile', 'Secondary Mobile', 'Parent Email', 'Attendance %', 'Fee Status', 'Status', 'Session', 'Admission Date', 'DOB', 'Gender', 'Category', 'Blood Group', 'Address', 'District', 'State', 'PIN', 'Previous School', 'Previous Class', 'Birth Cert', 'TC', 'TC Number'];
+function studentCSVRow(s) {
+  var d = s.documents || {};
+  return [s.name, s.admissionNo || '', s.enr || '', s.cls, sectionOf(s.cls), s.roll,
+    s.fatherName || s.guardian, s.motherName || '', s.guardian, s.phone, s.mobile2 || '', s.parentEmail || '',
+    s.att, studentFeeStatus(s.id), s.status || 'Active', s.session || '', s.admissionDate || '', s.dob || '',
+    s.gender || '', s.category || '', s.bloodGroup || '', s.address || '', s.district || '', s.state || '', s.pin || '',
+    s.previousSchool || '', s.previousClass || '', d.birthCert ? 'Yes' : 'No', d.tc ? 'Yes' : 'No', d.tcNumber || ''];
+}
+function downloadStudentCSV(id) {
+  var s = db.students.find(function (x) { return x.id === id; });
+  if (!s) return;
+  downloadCSV('school-saathi-student-' + (s.admissionNo || s.id) + '.csv', [STU_CSV_HEAD, studentCSVRow(s)]);
+  toast('✓ ' + t('tStuCsvOne'));
+}
+function exportStudentsCSV() {
+  var list = stuSorted(stuFiltered());
+  downloadCSV('school-saathi-students-' + todayIST() + '.csv', [STU_CSV_HEAD].concat(list.map(studentCSVRow)));
+  toast('✓ ' + t('tCsvExported'));
 }
 function donutPct(v, total) { return total ? Math.round(v / total * 100) : 0; }
 function attTotal() { var a = db.attendanceAgg; return a.present + a.absent + a.late; }
@@ -463,7 +707,7 @@ function downloadCSV(filename, rows) {
   document.body.appendChild(a); a.click();
   setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
 }
-function openModal(html) { $('modalRoot').innerHTML = '<div class="modal-back" onclick="if(event.target===this)closeModal()"><div class="modal">' + html + '</div></div>'; }
+function openModal(html, wide) { $('modalRoot').innerHTML = '<div class="modal-back" onclick="if(event.target===this)closeModal()"><div class="modal' + (wide ? ' wide' : '') + '">' + html + '</div></div>'; }
 function closeModal() { $('modalRoot').innerHTML = ''; }
 var confirmCb = null;
 function confirmModal(msg, cb) {
@@ -603,7 +847,7 @@ var I18N = {
     planBasicT: 'Basic — ₹8 / student / month', planBasicD: 'Attendance, fees, notices', planStdT: 'Standard — ₹12 / student / month', planStdD: '+ Exams, homework, reports', planPremT: 'Premium — ₹15 / student / month', planPremD: '+ Analytics, WhatsApp, priority support', setupLine: 'Setup ₹4,999 one-time • 1 month free trial • Annual advance = 2 months free.',
     guide1t: 'Add a school', guide1d: 'Schools → + Add School → fill details → Save. New schools start as Pending until approved.', guide2t: 'Collect a fee', guide2d: 'School Admin → Fees → Collect on a pending record. Totals update instantly.', guide3t: 'Mark attendance', guide3d: 'School Admin → Attendance → pick class & date → Present / Absent / Late → Save.',
     contactPhone: 'Phone', contactHours: 'Hours', hoursV: 'Mon–Sat, 9 AM – 6 PM', raiseSupport: 'Raise a Support Request', supportNoted: 'Support request noted — we will call you back.',
-    sampleList: 'sample list below', plansSub: 'Per-student monthly pricing', collectedW: 'Collected', pendingW: 'Pending', allW: 'All', editStudent: 'Edit Student', thePlatform: 'the platform', repSchoolsSub: 'city, students, plan, status', subActive: 'Active', subExpired: 'Expired', subTrial: 'Trial', feeTypeTuition: 'Tuition', feeTypeAdmission: 'Admission', feeTypeTransport: 'Transport', feeTypeExam: 'Exam', feeTypeLibrary: 'Library', feeTypeActivity: 'Activity', feeTypeComputer: 'Computer Lab', feeTypeOther: 'Other', allTypes: 'All Types', searchFee: 'Search name, enrollment no. or class…', thEnr: 'Enr. No.', thType: 'Type', feeByType: 'Fee by Type', feeByTypeSub: 'Collected and pending per fee type, computed live.', addFee: 'Add Fee', addFeeSub: 'Add one fee record manually for any student.', feeStruct: 'Fee Structure', feeStructSub: 'Monthly amount per class. Generate uses this to create fee records.', genFees: 'Generate Fees', saveStruct: 'Save Structure', addRow: 'Add Row', customType: 'Custom…', typeCustomPh: 'Type a custom fee type', fStudent: 'Student', fMonth: 'Month', fType: 'Fee Type', fAmount: 'Amount (₹)', fStatus: 'Status', fDate: 'Date', printList: 'Print List', printStmt: 'Print Statement', backFees: 'Back to All Fees', totalBilled: 'Total Billed', totalPaid: 'Paid', totalPending: 'Pending', feeRecsH: 'Fee Records', feeProfileSub: 'All fee records for this student in one place.', tFeeAdded: 'Fee record added.', tPickStudent: 'Please choose a student.', tAmtPositive: 'Amount must be more than 0.', tTypeRequired: 'Please type the custom fee type.', tStructSaved: 'Fee structure saved.', tStructAdded: 'Structure row added.', tStructRemoved: 'Structure row removed.', tGenRecords: 'fee records generated for', tGenSkipped: 'already existed', tNoFeeRecs: 'No fee records yet for this student.', printTitle: 'Fee Statement', printListTitle: 'Fee List', printGenOn: 'Generated on', closeW: 'Close', saveFeeBtn: 'Save Fee', photoLabel: 'Student Photo', photoHint: 'Photo is compressed automatically (max 512px, ~120KB).', removePhoto: 'Remove photo', logoLabel: 'School Logo', logoHint: 'Logo is compressed automatically (max 256px, PNG keeps transparency).', removeLogo: 'Remove logo', tPhotoTooBig: 'That photo is too large even after compression. Please choose a smaller photo.', tLogoTooBig: 'That logo is too large even after compression. Please choose a smaller logo.', tPhotoError: 'Could not read that image. Please choose another file.'
+    sampleList: 'sample list below', plansSub: 'Per-student monthly pricing', collectedW: 'Collected', pendingW: 'Pending', allW: 'All', editStudent: 'Edit Student', thePlatform: 'the platform', repSchoolsSub: 'city, students, plan, status', subActive: 'Active', subExpired: 'Expired', subTrial: 'Trial', feeTypeTuition: 'Tuition', feeTypeAdmission: 'Admission', feeTypeTransport: 'Transport', feeTypeExam: 'Exam', feeTypeLibrary: 'Library', feeTypeActivity: 'Activity', feeTypeComputer: 'Computer Lab', feeTypeOther: 'Other', allTypes: 'All Types', searchFee: 'Search name, enrollment no. or class…', thEnr: 'Enr. No.', thType: 'Type', feeByType: 'Fee by Type', feeByTypeSub: 'Collected and pending per fee type, computed live.', addFee: 'Add Fee', addFeeSub: 'Add one fee record manually for any student.', feeStruct: 'Fee Structure', feeStructSub: 'Monthly amount per class. Generate uses this to create fee records.', genFees: 'Generate Fees', saveStruct: 'Save Structure', addRow: 'Add Row', customType: 'Custom…', typeCustomPh: 'Type a custom fee type', fStudent: 'Student', fMonth: 'Month', fType: 'Fee Type', fAmount: 'Amount (₹)', fStatus: 'Status', fDate: 'Date', printList: 'Print List', printStmt: 'Print Statement', backFees: 'Back to All Fees', totalBilled: 'Total Billed', totalPaid: 'Paid', totalPending: 'Pending', feeRecsH: 'Fee Records', feeProfileSub: 'All fee records for this student in one place.', tFeeAdded: 'Fee record added.', tPickStudent: 'Please choose a student.', tAmtPositive: 'Amount must be more than 0.', tTypeRequired: 'Please type the custom fee type.', tStructSaved: 'Fee structure saved.', tStructAdded: 'Structure row added.', tStructRemoved: 'Structure row removed.', tGenRecords: 'fee records generated for', tGenSkipped: 'already existed', tNoFeeRecs: 'No fee records yet for this student.', printTitle: 'Fee Statement', printListTitle: 'Fee List', printGenOn: 'Generated on', closeW: 'Close', saveFeeBtn: 'Save Fee', photoLabel: 'Student Photo', photoHint: 'Photo is compressed automatically (max 512px, ~120KB).', removePhoto: 'Remove photo', logoLabel: 'School Logo', logoHint: 'Logo is compressed automatically (max 256px, PNG keeps transparency).', removeLogo: 'Remove logo', tPhotoTooBig: 'That photo is too large even after compression. Please choose a smaller photo.', tLogoTooBig: 'That logo is too large even after compression. Please choose a smaller logo.', tPhotoError: 'Could not read that image. Please choose another file.', aadhaarHint: 'Optional. Stored securely and never shown in full.', actActivate: 'Activate Student', actAtt: 'View Attendance', actDeactivate: 'Deactivate Student', actDownload: 'Download Details', actEdit: 'Edit Student', actFees: 'View Fees', actIdCard: 'Print ID Card', actResults: 'View Results', actTransfer: 'Transfer Student', actView: 'View Profile', actionsW: 'Actions', admNoAuto: 'Auto-generated', allClasses: 'All Classes', allFeeSt: 'All Fee Status', allGenders: 'All Genders', allSections: 'All Sections', allSessions: 'All Sessions', allStatus: 'All Statuses', attPct: 'Attendance', backDir: 'Back to Directory', cancelAdm: 'Cancel Admission', cancelAdmMsg: 'Cancel this admission? The student record will be kept with status Cancelled.', docMissing: 'Not received', docStatus: 'Received', docsNote: 'Document files will be uploaded in the server phase. This checklist records what has been received.', exportCsv: 'Export CSV', fAadhaar: 'Aadhaar Number (optional)', fAdmDate: 'Admission Date', fAdmNo: 'Admission Number', fBirthCert: 'Birth Certificate', fBlood: 'Blood Group', fCategory: 'Category', fDistrict: 'District', fDob: 'Date of Birth', fDocsOther: 'Other Documents (notes)', fFather: 'Father\'s Name', fGender: 'Gender', fMother: 'Mother\'s Name', fOccupation: 'Occupation', fParentEmail: 'Parent Email', fPhone2: 'Secondary Mobile', fPin: 'PIN Code', fPrevClass: 'Previous Class', fPrevSchool: 'Previous School', fSection: 'Section', fState: 'State', fTc: 'Transfer Certificate (TC)', fTcNo: 'Transfer Certificate No.', feeSt: 'Fee Status', hwDone: 'Done', hwPend: 'Pending', hwPending: 'Homework Pending', latestExam: 'Latest Exam', nextW: 'Next', noActivity: 'No activity recorded yet.', noAttRecs: 'No attendance records yet for this student.', noExamRecs: 'No examination results yet.', noHwRecs: 'No homework records for this class.', openFees: 'Open Fee Page', pgOf: 'of', pgPage: 'Page', phase3W: 'Phase 3', prevW: 'Previous', saveAddAnother: 'Save & Add Another', saveDraft: 'Save as Draft', secAcademic: 'Academic Details', secDocs: 'Documents', secParent: 'Parent / Guardian Details', secPersonal: 'Personal Details', stActive: 'Active Students', stAvgAtt: 'Average Attendance', stBoys: 'Boys', stByClass: 'Students by Class', stByClassSub: 'Number of students in each class-section.', stGenderDist: 'Boys & Girls', stGenderSub: 'Gender distribution across the school.', stGirls: 'Girls', stInactive: 'Inactive Students', stNewAdm: 'New Admissions', stNotSpec: 'Not specified', stPendFee: 'Students with Pending Fees', stTotal: 'Total Students', stuSearchPh: 'Search name, admission no. or mobile…', tActMsg: 'Activate student', tActivated: 'Student activated.', tAdmCancelled: 'Admission cancelled. The record is kept.', tAdmCreated: 'Admission saved. Admission No. ', tCsvExported: 'Student list exported.', tDeactMsg: 'Deactivate student', tDeactivated: 'Student deactivated.', tDraftSaved: 'Draft saved.', tDupFound: 'A matching student already exists: ', tInvalidAadhaar: 'Aadhaar must be 12 digits (optional).', tInvalidMobile: 'Enter a valid 10-digit mobile number.', tInvalidPin: 'PIN code must be 6 digits.', tPickClass: 'Please choose a class.', tReqFields: 'Please fill Student Name, Primary Mobile, Class and Section.', tStuCsvOne: 'Student details downloaded.', tTransferred: 'Student transferred.', tabAcademic: 'Academic Records', tabActivity: 'Activity History', tabAttendance: 'Attendance History', tabDocs: 'Documents', tabFees: 'Fee History', tabHomework: 'Homework Records', tabOverview: 'Overview', tabParent: 'Parent Information', tabPersonal: 'Personal Information', tabResults: 'Examination Results', thAdmNo: 'Admission No.', thExam: 'Exam', thFather: 'Father\'s Name', transferTitle: 'Transfer Student', transferTo: 'New Class & Section', idCardSoon: 'ID Card generator comes in Phase 3.'
   },
   hi: {
     dashboard: 'डैशबोर्ड', schools: 'स्कूल', users: 'उपयोगकर्ता', subscriptions: 'सदस्यता', analytics: 'विश्लेषण', settings: 'सेटिंग्स', reports: 'रिपोर्ट', help: 'सहायता', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalSchools: 'कुल स्कूल', totalUsers: 'कुल उपयोगकर्ता', activeSchools: 'सक्रिय स्कूल', pendingApproval: 'स्वीकृति लंबित', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -643,7 +887,7 @@ var I18N = {
     planBasicT: 'बेसिक — ₹8 / छात्र / माह', planBasicD: 'उपस्थिति, शुल्क, नोटिस', planStdT: 'स्टैंडर्ड — ₹12 / छात्र / माह', planStdD: '+ परीक्षा, होमवर्क, रिपोर्ट', planPremT: 'प्रीमियम — ₹15 / छात्र / माह', planPremD: '+ विश्लेषण, WhatsApp, प्राथमिकता सहायता', setupLine: 'सेटअप ₹4,999 एक बार • 1 महीना मुफ़्त ट्रायल • वार्षिक अग्रिम = 2 महीने मुफ़्त।',
     guide1t: 'स्कूल जोड़ें', guide1d: 'स्कूल → + स्कूल जोड़ें → विवरण भरें → सहेजें। नए स्कूल स्वीकृति तक लंबित रहते हैं।', guide2t: 'शुल्क वसूलें', guide2d: 'स्कूल एडमिन → शुल्क → बकाया रिकॉर्ड पर वसूलें दबाएँ। कुल तुरंत अपडेट होता है।', guide3t: 'उपस्थिति दर्ज करें', guide3d: 'स्कूल एडमिन → उपस्थिति → कक्षा और तारीख चुनें → उपस्थित / अनुपस्थित / देर से → सहेजें।',
     contactPhone: 'फ़ोन', contactHours: 'समय', hoursV: 'सोम–शनि, सुबह 9 – शाम 6', raiseSupport: 'सहायता अनुरोध भेजें', supportNoted: 'सहायता अनुरोध दर्ज हुआ — हम आपको कॉल करेंगे।',
-    sampleList: 'नमूना सूची नीचे', plansSub: 'प्रति छात्र मासिक मूल्य', collectedW: 'संग्रह', pendingW: 'बकाया', allW: 'सभी', editStudent: 'छात्र बदलें', thePlatform: 'पूरे प्लेटफ़ॉर्म', repSchoolsSub: 'शहर, छात्र, योजना, स्थिति', subActive: 'सक्रिय', subExpired: 'समाप्त', subTrial: 'परीक्षण', feeTypeTuition: 'ट्यूशन', feeTypeAdmission: 'प्रवेश', feeTypeTransport: 'परिवहन', feeTypeExam: 'परीक्षा', feeTypeLibrary: 'पुस्तकालय', feeTypeActivity: 'गतिविधि', feeTypeComputer: 'कंप्यूटर लैब', feeTypeOther: 'अन्य', allTypes: 'सभी प्रकार', searchFee: 'नाम, नामांकन संख्या या कक्षा खोजें…', thEnr: 'नामांकन सं.', thType: 'प्रकार', feeByType: 'प्रकार के अनुसार शुल्क', feeByTypeSub: 'प्रति प्रकार संग्रह और बकाया, लाइव गणना।', addFee: 'शुल्क जोड़ें', addFeeSub: 'किसी भी छात्र के लिए एक शुल्क रिकॉर्ड जोड़ें।', feeStruct: 'शुल्क संरचना', feeStructSub: 'प्रति कक्षा मासिक राशि। Generate इसी से रिकॉर्ड बनाता है।', genFees: 'शुल्क बनाएँ', saveStruct: 'संरचना सहेजें', addRow: 'पंक्ति जोड़ें', customType: 'कस्टम…', typeCustomPh: 'शुल्क का प्रकार लिखें', fStudent: 'छात्र', fMonth: 'महीना', fType: 'शुल्क प्रकार', fAmount: 'राशि (₹)', fStatus: 'स्थिति', fDate: 'तारीख', printList: 'सूची छापें', printStmt: 'विवरण छापें', backFees: 'सभी शुल्क पर वापस', totalBilled: 'कुल बिल', totalPaid: 'जमा', totalPending: 'बकाया', feeRecsH: 'शुल्क रिकॉर्ड', feeProfileSub: 'इस छात्र के सभी शुल्क रिकॉर्ड एक ही जगह।', tFeeAdded: 'शुल्क रिकॉर्ड जुड़ गया।', tPickStudent: 'कृपया छात्र चुनें।', tAmtPositive: 'राशि 0 से अधिक होनी चाहिए।', tTypeRequired: 'कृपया शुल्क का प्रकार लिखें।', tStructSaved: 'शुल्क संरचना सहेजी गई।', tStructAdded: 'संरचना पंक्ति जुड़ी।', tStructRemoved: 'संरचना पंक्ति हटाई गई।', tGenRecords: 'शुल्क रिकॉर्ड बने', tGenSkipped: 'पहले से थे', tNoFeeRecs: 'इस छात्र के लिए अभी कोई शुल्क रिकॉर्ड नहीं है।', printTitle: 'शुल्क विवरण', printListTitle: 'शुल्क सूची', printGenOn: 'बनाया गया', closeW: 'बंद करें', saveFeeBtn: 'शुल्क सहेजें', photoLabel: 'छात्र की फ़ोटो', photoHint: 'फ़ोटो अपने आप छोटी हो जाती है (अधिकतम 512px, ~120KB)।', removePhoto: 'फ़ोटो हटाएँ', logoLabel: 'स्कूल का लोगो', logoHint: 'लोगो अपने आप छोटा हो जाता है (अधिकतम 256px, PNG में पारदर्शिता रहती है)।', removeLogo: 'लोगो हटाएँ', tPhotoTooBig: 'यह फ़ोटो छोटी करने के बाद भी बड़ी है। कृपया छोटी फ़ोटो चुनें।', tLogoTooBig: 'यह लोगो छोटा करने के बाद भी बड़ा है। कृपया छोटा लोगो चुनें।', tPhotoError: 'यह तस्वीर पढ़ी नहीं जा सकी। कृपया दूसरी फ़ाइल चुनें।'
+    sampleList: 'नमूना सूची नीचे', plansSub: 'प्रति छात्र मासिक मूल्य', collectedW: 'संग्रह', pendingW: 'बकाया', allW: 'सभी', editStudent: 'छात्र बदलें', thePlatform: 'पूरे प्लेटफ़ॉर्म', repSchoolsSub: 'शहर, छात्र, योजना, स्थिति', subActive: 'सक्रिय', subExpired: 'समाप्त', subTrial: 'परीक्षण', feeTypeTuition: 'ट्यूशन', feeTypeAdmission: 'प्रवेश', feeTypeTransport: 'परिवहन', feeTypeExam: 'परीक्षा', feeTypeLibrary: 'पुस्तकालय', feeTypeActivity: 'गतिविधि', feeTypeComputer: 'कंप्यूटर लैब', feeTypeOther: 'अन्य', allTypes: 'सभी प्रकार', searchFee: 'नाम, नामांकन संख्या या कक्षा खोजें…', thEnr: 'नामांकन सं.', thType: 'प्रकार', feeByType: 'प्रकार के अनुसार शुल्क', feeByTypeSub: 'प्रति प्रकार संग्रह और बकाया, लाइव गणना।', addFee: 'शुल्क जोड़ें', addFeeSub: 'किसी भी छात्र के लिए एक शुल्क रिकॉर्ड जोड़ें।', feeStruct: 'शुल्क संरचना', feeStructSub: 'प्रति कक्षा मासिक राशि। Generate इसी से रिकॉर्ड बनाता है।', genFees: 'शुल्क बनाएँ', saveStruct: 'संरचना सहेजें', addRow: 'पंक्ति जोड़ें', customType: 'कस्टम…', typeCustomPh: 'शुल्क का प्रकार लिखें', fStudent: 'छात्र', fMonth: 'महीना', fType: 'शुल्क प्रकार', fAmount: 'राशि (₹)', fStatus: 'स्थिति', fDate: 'तारीख', printList: 'सूची छापें', printStmt: 'विवरण छापें', backFees: 'सभी शुल्क पर वापस', totalBilled: 'कुल बिल', totalPaid: 'जमा', totalPending: 'बकाया', feeRecsH: 'शुल्क रिकॉर्ड', feeProfileSub: 'इस छात्र के सभी शुल्क रिकॉर्ड एक ही जगह।', tFeeAdded: 'शुल्क रिकॉर्ड जुड़ गया।', tPickStudent: 'कृपया छात्र चुनें।', tAmtPositive: 'राशि 0 से अधिक होनी चाहिए।', tTypeRequired: 'कृपया शुल्क का प्रकार लिखें।', tStructSaved: 'शुल्क संरचना सहेजी गई।', tStructAdded: 'संरचना पंक्ति जुड़ी।', tStructRemoved: 'संरचना पंक्ति हटाई गई।', tGenRecords: 'शुल्क रिकॉर्ड बने', tGenSkipped: 'पहले से थे', tNoFeeRecs: 'इस छात्र के लिए अभी कोई शुल्क रिकॉर्ड नहीं है।', printTitle: 'शुल्क विवरण', printListTitle: 'शुल्क सूची', printGenOn: 'बनाया गया', closeW: 'बंद करें', saveFeeBtn: 'शुल्क सहेजें', photoLabel: 'छात्र की फ़ोटो', photoHint: 'फ़ोटो अपने आप छोटी हो जाती है (अधिकतम 512px, ~120KB)।', removePhoto: 'फ़ोटो हटाएँ', logoLabel: 'स्कूल का लोगो', logoHint: 'लोगो अपने आप छोटा हो जाता है (अधिकतम 256px, PNG में पारदर्शिता रहती है)।', removeLogo: 'लोगो हटाएँ', tPhotoTooBig: 'यह फ़ोटो छोटी करने के बाद भी बड़ी है। कृपया छोटी फ़ोटो चुनें।', tLogoTooBig: 'यह लोगो छोटा करने के बाद भी बड़ा है। कृपया छोटा लोगो चुनें।', tPhotoError: 'यह तस्वीर पढ़ी नहीं जा सकी। कृपया दूसरी फ़ाइल चुनें।', aadhaarHint: 'वैकल्पिक। सुरक्षित रूप से सहेजा जाता है, पूरा कभी नहीं दिखाया जाता।', actActivate: 'छात्र सक्रिय करें', actAtt: 'उपस्थिति देखें', actDeactivate: 'छात्र निष्क्रिय करें', actDownload: 'विवरण डाउनलोड करें', actEdit: 'छात्र बदलें', actFees: 'शुल्क देखें', actIdCard: 'ID कार्ड छापें', actResults: 'परिणाम देखें', actTransfer: 'छात्र स्थानांतरित करें', actView: 'प्रोफ़ाइल देखें', actionsW: 'कार्रवाई', admNoAuto: 'स्वतः निर्मित', allClasses: 'सभी कक्षाएँ', allFeeSt: 'सभी शुल्क स्थितियाँ', allGenders: 'सभी लिंग', allSections: 'सभी अनुभाग', allSessions: 'सभी सत्र', allStatus: 'सभी स्थितियाँ', attPct: 'उपस्थिति', backDir: 'सूची पर वापस', cancelAdm: 'प्रवेश रद्द करें', cancelAdmMsg: 'यह प्रवेश रद्द करें? छात्र का रिकॉर्ड Cancelled स्थिति के साथ रखा जाएगा।', docMissing: 'प्राप्त नहीं', docStatus: 'प्राप्त', docsNote: 'दस्तावेज़ फ़ाइलें सर्वर चरण में अपलोड होंगी। यह सूची बताती है कि क्या प्राप्त हुआ है।', exportCsv: 'CSV निर्यात करें', fAadhaar: 'आधार संख्या (वैकल्पिक)', fAdmDate: 'प्रवेश तिथि', fAdmNo: 'प्रवेश संख्या', fBirthCert: 'जन्म प्रमाण पत्र', fBlood: 'रक्त समूह', fCategory: 'श्रेणी', fDistrict: 'जिला', fDob: 'जन्म तिथि', fDocsOther: 'अन्य दस्तावेज़ (नोट)', fFather: 'पिता का नाम', fGender: 'लिंग', fMother: 'माता का नाम', fOccupation: 'व्यवसाय', fParentEmail: 'अभिभावक ईमेल', fPhone2: 'दूसरा मोबाइल', fPin: 'पिन कोड', fPrevClass: 'पिछली कक्षा', fPrevSchool: 'पिछला स्कूल', fSection: 'अनुभाग', fState: 'राज्य', fTc: 'स्थानांतरण प्रमाण पत्र (TC)', fTcNo: 'TC संख्या', feeSt: 'शुल्क स्थिति', hwDone: 'पूर्ण', hwPend: 'बाकी', hwPending: 'होमवर्क बाकी', latestExam: 'हाल की परीक्षा', nextW: 'अगला', noActivity: 'अभी कोई गतिविधि दर्ज नहीं है।', noAttRecs: 'इस छात्र के लिए अभी कोई उपस्थिति रिकॉर्ड नहीं है।', noExamRecs: 'अभी कोई परीक्षा परिणाम नहीं है।', noHwRecs: 'इस कक्षा के लिए कोई होमवर्क रिकॉर्ड नहीं है।', openFees: 'शुल्क पेज खोलें', pgOf: 'का', pgPage: 'पृष्ठ', phase3W: 'Phase 3', prevW: 'पिछला', saveAddAnother: 'सहेजें और नया जोड़ें', saveDraft: 'ड्राफ़्ट सहेजें', secAcademic: 'शैक्षणिक विवरण', secDocs: 'दस्तावेज़', secParent: 'माता-पिता / अभिभावक विवरण', secPersonal: 'व्यक्तिगत विवरण', stActive: 'सक्रिय छात्र', stAvgAtt: 'औसत उपस्थिति', stBoys: 'लड़के', stByClass: 'कक्षा अनुसार छात्र', stByClassSub: 'प्रत्येक कक्षा-अनुभाग में छात्रों की संख्या।', stGenderDist: 'लड़के और लड़कियाँ', stGenderSub: 'पूरे स्कूल में लिंग वितरण।', stGirls: 'लड़कियाँ', stInactive: 'निष्क्रिय छात्र', stNewAdm: 'नए प्रवेश', stNotSpec: 'निर्दिष्ट नहीं', stPendFee: 'बकाया शुल्क वाले छात्र', stTotal: 'कुल छात्र', stuSearchPh: 'नाम, प्रवेश संख्या या मोबाइल खोजें…', tActMsg: 'छात्र सक्रिय करें', tActivated: 'छात्र सक्रिय हुआ।', tAdmCancelled: 'प्रवेश रद्द हुआ। रिकॉर्ड रखा गया है।', tAdmCreated: 'प्रवेश सहेजा गया। प्रवेश संख्या ', tCsvExported: 'छात्र सूची निर्यात हुई।', tDeactMsg: 'छात्र निष्क्रिय करें', tDeactivated: 'छात्र निष्क्रिय हुआ।', tDraftSaved: 'ड्राफ़्ट सहेजा गया।', tDupFound: 'मेल खाता छात्र पहले से मौजूद है: ', tInvalidAadhaar: 'आधार 12 अंकों का होना चाहिए (वैकल्पिक)।', tInvalidMobile: 'सही 10 अंकों का मोबाइल नंबर डालें।', tInvalidPin: 'पिन कोड 6 अंकों का होना चाहिए।', tPickClass: 'कृपया कक्षा चुनें।', tReqFields: 'कृपया छात्र का नाम, मुख्य मोबाइल, कक्षा और अनुभाग भरें।', tStuCsvOne: 'छात्र का विवरण डाउनलोड हुआ।', tTransferred: 'छात्र स्थानांतरित हुआ।', tabAcademic: 'शैक्षणिक रिकॉर्ड', tabActivity: 'गतिविधि इतिहास', tabAttendance: 'उपस्थिति इतिहास', tabDocs: 'दस्तावेज़', tabFees: 'शुल्क इतिहास', tabHomework: 'होमवर्क रिकॉर्ड', tabOverview: 'सारांश', tabParent: 'अभिभावक जानकारी', tabPersonal: 'व्यक्तिगत जानकारी', tabResults: 'परीक्षा परिणाम', thAdmNo: 'प्रवेश सं.', thExam: 'परीक्षा', thFather: 'पिता का नाम', transferTitle: 'छात्र स्थानांतरण', transferTo: 'नई कक्षा और अनुभाग', idCardSoon: 'ID कार्ड जनरेटर Phase 3 में आएगा।'
   }
 };
 function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || I18N.en[k] || k; }
@@ -750,6 +994,7 @@ function logout() {
   state.role = null; state.user = null; state.view = 'dashboard';
   state.attSnapKey = ''; state.attSnap = {};
   state.feeStudent = null; state.feeSearch = ''; state.feeType = 'All'; state.feeFilter = 'All'; state.feeFormOpen = false; state.feePreselect = null;
+  state.profileStudent = null; state.profileTab = 'overview'; state.stuPage = 1;
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
   $('loginId').value = ''; $('loginPw').value = '';
   $('page').innerHTML = '';
@@ -787,6 +1032,7 @@ function go(view) {
   var ok = nav.some(function (n) { return n[0] === view; });
   state.view = ok ? view : 'dashboard';
   if (state.view !== 'fees') state.feeStudent = null;
+  state.profileStudent = null;
   persistSession();
   toggleSidebar(false);
   renderApp();
@@ -926,18 +1172,6 @@ function filterSchools(q) {
     if (show) visible++;
   });
   var nm = document.getElementById('schNoMatch');
-  if (nm) nm.style.display = visible ? 'none' : '';
-}
-function filterStudents(q) {
-  q = q.toLowerCase();
-  var visible = 0;
-  document.querySelectorAll('#stuBody tr').forEach(function (tr) {
-    if (tr.id === 'stuNoMatch') return;
-    var show = tr.textContent.toLowerCase().indexOf(q) !== -1;
-    tr.style.display = show ? '' : 'none';
-    if (show) visible++;
-  });
-  var nm = document.getElementById('stuNoMatch');
   if (nm) nm.style.display = visible ? 'none' : '';
 }
 function schoolForm() {
@@ -1094,64 +1328,396 @@ function schoolDashboard() {
   '</div></div></div>';
 }
 function studentsPage() {
-  var q = state.stuSearch.toLowerCase(), cls = state.stuClass;
-  var list = db.students.filter(function (s) {
-    return (cls === 'All' || s.cls === cls) && (!q || s.name.toLowerCase().indexOf(q) !== -1);
-  });
-  var rows = list.map(function (s) {
+  if (state.profileStudent) return studentProfilePage(state.profileStudent);
+  var st = studentStats();
+  var list = stuSorted(stuFiltered());
+  var pages = stuPageCount(list);
+  var rows = stuPageRows(list);
+  var sortArrow = function (col) { return state.stuSort === col ? (state.stuSortDir === 1 ? ' ▲' : ' ▼') : ''; };
+  var trs = rows.map(function (s) {
     var fs = studentFeeStatus(s.id);
-    return '<tr><td>' + avatarHTML(s.photo, s.name, 'mini-avatar') + '<b>' + esc(s.name) + '</b></td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.guardian) + '</td><td>' + esc(s.phone) + '</td><td>' + s.att + '%</td>' +
+    var stt = s.status || 'Active';
+    var badgeCls = stt === 'Active' ? 'green' : stt === 'Inactive' ? 'grey' : stt === 'Draft' ? 'blue' : 'red';
+    return '<tr><td>' + avatarHTML(s.photo, s.name, 'mini-avatar') + '<button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td>' +
+      '<td>' + esc(s.admissionNo || '—') + '</td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.fatherName || s.guardian) + '</td><td>' + esc(s.phone) + '</td><td>' + s.att + '%</td>' +
       '<td><span class="badge ' + (fs === 'Paid' ? 'green' : fs === 'Pending' ? 'orange' : 'grey') + '">' + fs + '</span></td>' +
-      '<td><div class="row-actions"><button class="btn ghost sm" onclick="studentForm(\'' + s.id + '\')">' + t('editBtn') + '</button><button class="btn danger sm" onclick="deleteStudent(\'' + s.id + '\')">' + t('deleteBtn') + '</button></div></td></tr>';
+      '<td><span class="badge ' + badgeCls + '">' + stt + '</span></td>' +
+      '<td><button class="btn ghost sm" onclick="stuActions(\'' + s.id + '\')">⋮ ' + t('actionsW') + '</button></td></tr>';
   }).join('');
-  var clsOpts = ['All'].concat(CLASSES).map(function (c) { return '<option ' + (cls === c ? 'selected' : '') + '>' + c + '</option>'; }).join('');
-  return '<div class="page-head"><div><h2>' + t('students') + '</h2><p>' + list.length + ' ' + t('ofWord') + ' ' + db.students.length + ' ' + t('demoRecords') + '</p></div>' +
-    '<div class="toolbar"><input placeholder="' + t('searchStudent') + '" value="' + esc(state.stuSearch) + '" oninput="state.stuSearch=this.value;filterStudents(this.value)" style="min-width:200px">' +
-    '<select onchange="state.stuClass=this.value;renderPage()">' + clsOpts + '</select>' +
+  var opt = function (vals, cur, allLabel) {
+    return ['All'].concat(vals).map(function (v) {
+      return '<option value="' + v + '" ' + (cur === v ? 'selected' : '') + '>' + (v === 'All' ? allLabel : v) + '</option>';
+    }).join('');
+  };
+  var from = list.length ? (state.stuPage - 1) * STU_PAGE_SIZE + 1 : 0;
+  var to = Math.min(list.length, state.stuPage * STU_PAGE_SIZE);
+  return '<div class="page-head"><div><h2>' + t('students') + '</h2><p>' + list.length + ' ' + t('ofWord') + ' ' + db.students.length + ' ' + t('studentsW') + '</p></div>' +
+    '<div class="toolbar"><input id="stuSearchInput" placeholder="' + t('stuSearchPh') + '" value="' + esc(state.stuSearch) + '" oninput="onStuSearch(this)" style="min-width:200px">' +
+    '<select onchange="state.stuClass=this.value;state.stuPage=1;renderPage()">' + opt(CLASSES, state.stuClass, t('allClasses')) + '</select>' +
+    '<select onchange="state.stuSection=this.value;state.stuPage=1;renderPage()">' + opt(SECTIONS, state.stuSection, t('allSections')) + '</select>' +
+    '<select onchange="state.stuSession=this.value;state.stuPage=1;renderPage()">' + opt(sessionOptions(), state.stuSession, t('allSessions')) + '</select>' +
+    '<select onchange="state.stuGender=this.value;state.stuPage=1;renderPage()">' + opt(GENDERS, state.stuGender, t('allGenders')) + '</select>' +
+    '<select onchange="state.stuFee=this.value;state.stuPage=1;renderPage()">' + opt(['Paid', 'Pending', '—'], state.stuFee, t('allFeeSt')) + '</select>' +
+    '<select onchange="state.stuStatus=this.value;state.stuPage=1;renderPage()">' + opt(STU_STATUSES, state.stuStatus, t('allStatus')) + '</select>' +
+    '<button class="btn ghost" onclick="exportStudentsCSV()">⬇ ' + t('exportCsv') + '</button>' +
     '<button class="btn" onclick="studentForm()">+ ' + t('addStudent') + '</button></div></div>' +
-    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thName') + '</th><th>' + t('thClass') + '</th><th>' + t('thRoll') + '</th><th>' + t('thGuardian') + '</th><th>' + t('thPhone') + '</th><th>' + t('thAtt') + '</th><th>' + t('thFee') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody id="stuBody">' +
-    (rows || '<tr><td colspan="8"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '<tr id="stuNoMatch" style="display:none"><td colspan="8"><div class="empty">' + t('tNoMatch') + '</div></td></tr></tbody></table></div></div>';
+    '<div class="stats">' +
+    statCard('👥', 'blue', t('stTotal'), st.total, '', 'up') +
+    statCard('✅', 'green', t('stActive'), st.active, '', 'up') +
+    statCard('⏸️', 'blue', t('stInactive'), st.inactive, '', 'up') +
+    statCard('🆕', 'orange', t('stNewAdm'), st.newAdm, '', 'up') +
+    statCard('⏰', 'red', t('stPendFee'), st.pendFee, '', 'down') +
+    statCard('📊', 'blue', t('stAvgAtt'), st.avgAtt, '', 'up', { suffix: '%' }) +
+    '</div>' +
+    '<div class="grid2" style="margin-top:16px"><div class="card"><h3>' + t('stByClass') + '</h3><p class="muted">' + t('stByClassSub') + '</p><div style="margin-top:10px">' + classBarsHTML(st.byClass) + '</div></div>' +
+    '<div class="card"><h3>' + t('stGenderDist') + '</h3><p class="muted">' + t('stGenderSub') + '</p><div style="display:flex;align-items:center;gap:16px;margin-top:10px">' +
+    donutSVG([{ value: st.boys, color: BLUE, label: t('stBoys'), pct: donutPct(st.boys, st.total) }, { value: st.girls, color: '#EC4899', label: t('stGirls'), pct: donutPct(st.girls, st.total) }, { value: st.unspec, color: '#94A3B8', label: t('stNotSpec'), pct: donutPct(st.unspec, st.total) }], 150, String(st.total), t('studentsW')) +
+    '<div><div class="type-row"><b>' + t('stBoys') + '</b><span>' + st.boys + '</span></div>' +
+    '<div class="type-row"><b>' + t('stGirls') + '</b><span>' + st.girls + '</span></div>' +
+    '<div class="type-row"><b>' + t('stNotSpec') + '</b><span>' + st.unspec + '</span></div></div></div></div></div>' +
+    '<div class="card" style="margin-top:16px"><div class="tbl-wrap"><table><thead><tr>' +
+    '<th onclick="sortStu(\'name\')" style="cursor:pointer">' + t('thName') + sortArrow('name') + '</th>' +
+    '<th>' + t('thAdmNo') + '</th>' +
+    '<th onclick="sortStu(\'class\')" style="cursor:pointer">' + t('thClass') + sortArrow('class') + '</th>' +
+    '<th>' + t('thRoll') + '</th><th>' + t('thFather') + '</th><th>' + t('thPhone') + '</th>' +
+    '<th onclick="sortStu(\'att\')" style="cursor:pointer">' + t('thAtt') + sortArrow('att') + '</th>' +
+    '<th>' + t('thFee') + '</th><th>' + t('thStatus') + '</th><th>' + t('actionsW') + '</th></tr></thead><tbody>' +
+    (trs || '<tr><td colspan="10"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '</tbody></table></div>' +
+    '<div class="toolbar" style="margin-top:12px;justify-content:space-between"><span class="muted">' + t('showingRec') + ' ' + from + '–' + to + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('studentsW') + '</span>' +
+    '<span><button class="btn ghost sm" ' + (state.stuPage <= 1 ? 'disabled' : '') + ' onclick="state.stuPage--;renderPage()">← ' + t('prevW') + '</button> ' +
+    '<span class="muted">' + t('pgPage') + ' ' + state.stuPage + ' ' + t('pgOf') + ' ' + pages + '</span> ' +
+    '<button class="btn ghost sm" ' + (state.stuPage >= pages ? 'disabled' : '') + ' onclick="state.stuPage++;renderPage()">' + t('nextW') + ' →</button></span></div></div>';
+}
+var admEditingId = null;
+function suggestRoll() {
+  if (admEditingId) return;
+  var cls = ($('fStCls') ? $('fStCls').value : '') + '-' + ($('fStSec') ? $('fStSec').value : 'A');
+  if ($('fStRoll')) $('fStRoll').value = nextRoll(cls);
 }
 function studentForm(id) {
   pendingPhoto = null;
+  admEditingId = id || null;
   var s = id ? db.students.find(function (x) { return x.id === id; }) : null;
-  var clsOpts = CLASSES.map(function (c) { return '<option ' + (s && s.cls === c ? 'selected' : '') + '>' + c + '</option>'; }).join('');
-  openModal('<h3>' + (s ? t('editStudent') : t('addStudent')) + '</h3><form onsubmit="return saveStudent(event,\'' + (id || '') + '\')"><div class="form-grid">' +
-    '<div><label>' + t('fStudentName') + '</label><input id="fStName" required value="' + esc(s ? s.name : '') + '" placeholder="e.g. Aarav Kumar"></div>' +
-    '<div><label>' + t('fClass') + '</label><select id="fStCls">' + clsOpts + '</select></div>' +
-    '<div><label>' + t('fRoll') + '</label><input id="fStRoll" type="number" min="1" value="' + (s ? s.roll : 1) + '" required></div>' +
-    '<div><label>' + t('fGuardian') + '</label><input id="fStG" value="' + esc(s ? s.guardian : '') + '" placeholder="Mr. Sharma"></div>' +
-    '<div><label>' + t('fPhone') + '</label><input id="fStPh" value="' + esc(s ? s.phone : '') + '" placeholder="98XXXXXXXX"></div>' +
+  var d = s ? (s.documents || {}) : {};
+  var clsPart = s ? classPartOf(s.cls) : '6th';
+  var secPart = s ? sectionOf(s.cls) : 'A';
+  var clsOpts = classParts().map(function (c) { return '<option ' + (c === clsPart ? 'selected' : '') + '>' + c + '</option>'; }).join('');
+  var secOpts = SECTIONS.map(function (x) { return '<option ' + (x === secPart ? 'selected' : '') + '>' + x + '</option>'; }).join('');
+  var sessOpts = SESSIONS.map(function (x) { return '<option ' + ((s ? s.session : db.profile.session) === x ? 'selected' : '') + '>' + x + '</option>'; }).join('');
+  var genOpts = [''].concat(GENDERS).map(function (g) { return '<option value="' + g + '" ' + ((s && s.gender === g) ? 'selected' : '') + '>' + (g || '—') + '</option>'; }).join('');
+  var bloodOpts = [''].concat(BLOOD_GROUPS).map(function (b) { return '<option value="' + b + '" ' + ((s && s.bloodGroup === b) ? 'selected' : '') + '>' + (b || '—') + '</option>'; }).join('');
+  var catOpts = [''].concat(CATEGORIES).map(function (c) { return '<option value="' + c + '" ' + ((s && s.category === c) ? 'selected' : '') + '>' + (c || '—') + '</option>'; }).join('');
+  var admNo = s ? (s.admissionNo || '') : nextAdmNo(true);
+  var admDate = s ? (s.admissionDate || '') : todayIST();
+  var rollVal = s ? s.roll : nextRoll(clsPart + '-' + secPart);
+  openModal('<h3>' + (s ? t('editStudent') : t('addStudent')) + '</h3>' +
+    '<div id="fStErr" class="err hidden"></div>' +
+    '<form onsubmit="return saveStudent(event,\'' + (id || '') + '\')"><div class="form-grid">' +
+    '<div class="full sec-title">' + t('secPersonal') + '</div>' +
+    '<div><label>' + t('fStudentName') + ' *</label><input id="fStName" required value="' + esc(s ? s.name : '') + '" placeholder="e.g. Aarav Kumar"></div>' +
+    '<div><label>' + t('fDob') + '</label><input id="fStDob" type="date" value="' + esc(s ? (s.dob || '') : '') + '"></div>' +
+    '<div><label>' + t('fGender') + '</label><select id="fStGender">' + genOpts + '</select></div>' +
+    '<div><label>' + t('fBlood') + '</label><select id="fStBlood">' + bloodOpts + '</select></div>' +
+    '<div><label>' + t('fCategory') + '</label><select id="fStCategory">' + catOpts + '</select></div>' +
+    '<div><label>' + t('fPin') + '</label><input id="fStPin" inputmode="numeric" value="' + esc(s ? (s.pin || '') : '') + '" placeholder="800001"></div>' +
+    '<div class="full"><label>' + t('fAddress') + '</label><input id="fStAddress" value="' + esc(s ? (s.address || '') : '') + '" placeholder="House no., street, area"></div>' +
+    '<div><label>' + t('fState') + '</label><input id="fStState" value="' + esc(s ? (s.state || '') : '') + '" placeholder="Bihar"></div>' +
+    '<div><label>' + t('fDistrict') + '</label><input id="fStDistrict" value="' + esc(s ? (s.district || '') : '') + '" placeholder="Gopalganj"></div>' +
     '<div class="full"><label>' + t('photoLabel') + '</label><div class="photo-row"><span id="fStPhotoPrev">' + photoPrevHTML(s ? s.photo : null, s ? s.name : '') + '</span>' +
     '<input type="file" id="fStPhoto" accept="image/*" onchange="onStudentPhoto(this)">' +
     '<button type="button" class="btn ghost sm" onclick="clearStudentPhoto()">' + t('removePhoto') + '</button></div>' +
     '<p class="muted">' + t('photoHint') + '</p></div>' +
-    '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + t('saveStudentBtn') + '</button></div></form>');
+    '<div class="full sec-title">' + t('secAcademic') + '</div>' +
+    '<div><label>' + t('fAdmNo') + '</label><input value="' + esc(admNo) + '" disabled><p class="muted">' + t('admNoAuto') + '</p></div>' +
+    '<div><label>' + t('fAdmDate') + '</label><input id="fStAdmDate" type="date" value="' + esc(admDate) + '"></div>' +
+    '<div><label>' + t('fSession') + '</label><select id="fStSession">' + sessOpts + '</select></div>' +
+    '<div><label>' + t('fClass') + ' *</label><select id="fStCls" onchange="suggestRoll()">' + clsOpts + '</select></div>' +
+    '<div><label>' + t('fSection') + ' *</label><select id="fStSec" onchange="suggestRoll()">' + secOpts + '</select></div>' +
+    '<div><label>' + t('fRoll') + '</label><input id="fStRoll" type="number" min="1" value="' + rollVal + '" required></div>' +
+    '<div><label>' + t('fPrevSchool') + '</label><input id="fStPrevSchool" value="' + esc(s ? (s.previousSchool || '') : '') + '"></div>' +
+    '<div><label>' + t('fPrevClass') + '</label><input id="fStPrevClass" value="' + esc(s ? (s.previousClass || '') : '') + '"></div>' +
+    '<div class="full sec-title">' + t('secParent') + '</div>' +
+    '<div><label>' + t('fFather') + '</label><input id="fStFather" value="' + esc(s ? (s.fatherName || '') : '') + '" placeholder="Mr. Sharma"></div>' +
+    '<div><label>' + t('fMother') + '</label><input id="fStMother" value="' + esc(s ? (s.motherName || '') : '') + '" placeholder="Mrs. Sharma"></div>' +
+    '<div><label>' + t('fGuardian') + '</label><input id="fStG" value="' + esc(s ? s.guardian : '') + '" placeholder="Mr. Sharma"></div>' +
+    '<div><label>' + t('fPhone') + ' *</label><input id="fStPh" value="' + esc(s ? s.phone : '') + '" placeholder="98XXXXXXXX"></div>' +
+    '<div><label>' + t('fPhone2') + '</label><input id="fStPh2" value="' + esc(s ? (s.mobile2 || '') : '') + '" placeholder="98XXXXXXXX"></div>' +
+    '<div><label>' + t('fParentEmail') + '</label><input id="fStParentEmail" type="email" value="' + esc(s ? (s.parentEmail || '') : '') + '" placeholder="parent@email.com"></div>' +
+    '<div><label>' + t('fOccupation') + '</label><input id="fStOccupation" value="' + esc(s ? (s.occupation || '') : '') + '" placeholder="e.g. Farmer"></div>' +
+    '<div class="full sec-title">' + t('secDocs') + '</div>' +
+    '<div><label class="check"><input type="checkbox" id="fStBirthCert" ' + (d.birthCert ? 'checked' : '') + '> ' + t('fBirthCert') + '</label></div>' +
+    '<div><label class="check"><input type="checkbox" id="fStTc" ' + (d.tc ? 'checked' : '') + '> ' + t('fTc') + '</label></div>' +
+    '<div><label>' + t('fTcNo') + '</label><input id="fStTcNo" value="' + esc(d.tcNumber || '') + '"></div>' +
+    '<div><label>' + t('fAadhaar') + '</label><input id="fStAadhaar" inputmode="numeric" value="' + esc(s ? (s.aadhaar || '') : '') + '" placeholder="12-digit (optional)"><p class="muted">' + t('aadhaarHint') + '</p></div>' +
+    '<div class="full"><label>' + t('fDocsOther') + '</label><input id="fStDocsOther" value="' + esc(d.other || '') + '"></div>' +
+    '<div class="full"><p class="muted">' + t('docsNote') + '</p></div>' +
+    '</div><div class="actions" style="flex-wrap:wrap">' +
+    (s ? '<button type="button" class="btn danger" onclick="cancelAdmission(\'' + s.id + '\')">' + t('cancelAdm') + '</button>' : '') +
+    '<button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    '<button type="button" class="btn ghost" onclick="return saveStudent(event,\'' + (id || '') + '\',\'draft\')">' + t('saveDraft') + '</button>' +
+    '<button type="button" class="btn ghost" onclick="return saveStudent(event,\'' + (id || '') + '\',\'another\')">' + t('saveAddAnother') + '</button>' +
+    '<button class="btn" type="submit">' + t('saveStudentBtn') + '</button></div></form>', true);
 }
-function saveStudent(e, id) {
+function saveStudent(e, id, mode) {
   e.preventDefault();
-  var name = $('fStName').value.trim();
-  var cls = $('fStCls').value;
-  var dup = db.students.find(function (x) { return x.name.toLowerCase() === name.toLowerCase() && x.cls === cls && x.id !== id; });
-  if (dup) { toast(name + ' ' + t('tDupStudent') + ' ' + cls + '.'); return false; }
-  var data = { name: name, cls: cls, roll: parseInt($('fStRoll').value, 10) || 1,
-    guardian: $('fStG').value.trim() || '—', phone: $('fStPh').value.trim() || '—' };
+  mode = mode || 'active';
+  var errEl = $('fStErr');
+  function fail(msg) { if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); } toast(msg); return false; }
+  var fval = function (fid) { var el = $(fid); return el ? (el.value || '') : ''; };
+  var name = fval('fStName').trim();
+  var clsRaw = fval('fStCls');
+  var secRaw = fval('fStSec');
+  var cls = clsRaw.indexOf('-') !== -1 ? clsRaw : (clsRaw + '-' + (secRaw || 'A'));
+  var phone = fval('fStPh').trim();
+  if (!name || !phone || !clsRaw) return fail(t('tReqFields'));
+  if (digitsOnly(phone).length !== 10) return fail(t('tInvalidMobile'));
+  var pin = fval('fStPin').trim();
+  if (pin && !/^\d{6}$/.test(pin)) return fail(t('tInvalidPin'));
+  var aadhaar = digitsOnly(fval('fStAadhaar'));
+  if (aadhaar && aadhaar.length !== 12) return fail(t('tInvalidAadhaar'));
+  var admDateVal = fval('fStAdmDate');
+  var dob = fval('fStDob');
+  var data = { name: name, cls: cls, roll: parseInt(fval('fStRoll'), 10) || 1,
+    guardian: fval('fStG').trim() || '—', phone: phone,
+    dob: dob, gender: fval('fStGender'), bloodGroup: fval('fStBlood'),
+    category: fval('fStCategory'), address: fval('fStAddress').trim(),
+    state: fval('fStState').trim(), district: fval('fStDistrict').trim(), pin: pin,
+    session: fval('fStSession') || db.profile.session,
+    admissionDate: admDateVal || todayIST(),
+    previousSchool: fval('fStPrevSchool').trim(),
+    previousClass: fval('fStPrevClass').trim(),
+    fatherName: fval('fStFather').trim(),
+    motherName: fval('fStMother').trim(),
+    mobile2: fval('fStPh2').trim(),
+    parentEmail: fval('fStParentEmail').trim(),
+    occupation: fval('fStOccupation').trim(),
+    aadhaar: aadhaar,
+    documents: { birthCert: $('fStBirthCert') ? !!$('fStBirthCert').checked : false,
+      tc: $('fStTc') ? !!$('fStTc').checked : false,
+      tcNumber: fval('fStTcNo').trim(),
+      other: fval('fStDocsOther').trim() } };
+  // Edit with a blank date field keeps the stored date (never fabricate one on edit).
+  if (id && !admDateVal) { var ex0 = db.students.find(function (x) { return x.id === id; }); if (ex0) data.admissionDate = ex0.admissionDate || ''; }
+  var dup = findDupStudent(data, id || null);
+  if (dup) return fail(t('tDupFound') + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' • ' + dup.cls + ')');
   if (id) {
     var s = db.students.find(function (x) { return x.id === id; });
-    if (s) { Object.assign(s, data); if (pendingPhoto !== null) { if (pendingPhoto) s.photo = pendingPhoto; else delete s.photo; } toast(t('tStudentUpdated')); }
+    if (!s) return false;
+    Object.assign(s, data);
+    s.status = mode === 'draft' ? 'Draft' : 'Active';
+    if (pendingPhoto !== null) { if (pendingPhoto) s.photo = pendingPhoto; else delete s.photo; }
+    logAudit('Student updated', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
+    toast(t('tStudentUpdated'));
   } else {
     var nid = 'stu' + Date.now();
-    var newStu = Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: nextEnr() }, data);
+    var admNo = nextAdmNo();
+    var newStu = Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: nextEnr(), admissionNo: admNo, status: mode === 'draft' ? 'Draft' : 'Active' }, data);
     if (pendingPhoto) newStu.photo = pendingPhoto;
     db.students.push(newStu);
-    // New admission owes the first month's fee (average pending amount).
-    db.feeRecords.push({ id: 'fee' + Date.now(), studentId: nid, student: name, cls: cls,
-      month: new Date().toLocaleString('en', { month: 'short' }), type: 'Tuition', amount: 6000, status: 'Pending', date: todayIST() });
-    toast(t('tStudentAdded'));
+    if (mode !== 'draft') {
+      db.feeRecords.push({ id: 'fee' + Date.now(), studentId: nid, student: name, cls: cls,
+        month: new Date().toLocaleString('en', { month: 'short' }), type: 'Tuition', amount: 6000, status: 'Pending', date: todayIST() });
+    }
+    logAudit(mode === 'draft' ? 'Admission saved as draft' : 'Admission created', name + ' • ' + admNo + ' • ' + cls);
+    toast(mode === 'draft' ? t('tDraftSaved') : t('tAdmCreated') + admNo);
   }
   pendingPhoto = null;
-  saveDB(db); closeModal(); renderApp();
+  saveDB(db); closeModal();
+  if (mode === 'another') { renderApp(); studentForm(''); }
+  else renderApp();
   return false;
+}
+function stuActions(id) {
+  var s = db.students.find(function (x) { return x.id === id; });
+  if (!s) return;
+  var stt = s.status || 'Active';
+  var toggleBtn = stt === 'Active'
+    ? '<button class="btn ghost" onclick="closeModal();deactivateStudent(\'' + s.id + '\')">' + t('actDeactivate') + '</button>'
+    : (stt === 'Inactive'
+      ? '<button class="btn ghost" onclick="closeModal();deactivateStudent(\'' + s.id + '\')">' + t('actActivate') + '</button>' : '');
+  openModal('<h3>' + esc(s.name) + ' • ' + esc(s.cls) + '</h3><div class="menu-list">' +
+    '<button class="btn ghost" onclick="closeModal();openStudentProfile(\'' + s.id + '\')">' + t('actView') + '</button>' +
+    '<button class="btn ghost" onclick="closeModal();studentForm(\'' + s.id + '\')">' + t('actEdit') + '</button>' +
+    '<button class="btn ghost" onclick="closeModal();viewStudentAttendance(\'' + s.id + '\')">' + t('actAtt') + '</button>' +
+    '<button class="btn ghost" onclick="closeModal();viewStudentFees(\'' + s.id + '\')">' + t('actFees') + '</button>' +
+    '<button class="btn ghost" onclick="closeModal();viewStudentResults(\'' + s.id + '\')">' + t('actResults') + '</button>' +
+    '<button class="btn ghost" onclick="closeModal();toast(t(\'idCardSoon\'))">🪪 ' + t('actIdCard') + ' <span class="muted">(' + t('phase3W') + ')</span></button>' +
+    '<button class="btn ghost" onclick="closeModal();downloadStudentCSV(\'' + s.id + '\')">' + t('actDownload') + '</button>' +
+    '<button class="btn ghost" onclick="closeModal();transferStudent(\'' + s.id + '\')">' + t('actTransfer') + '</button>' +
+    toggleBtn +
+    '<button class="btn danger" onclick="closeModal();deleteStudent(\'' + s.id + '\')">' + t('deleteBtn') + '</button>' +
+    '</div>');
+}
+function viewStudentAttendance(id) {
+  var s = db.students.find(function (x) { return x.id === id; });
+  if (!s) return;
+  state.attCls = s.cls;
+  go('attendance');
+}
+function viewStudentFees(id) {
+  state.view = 'fees'; state.feeStudent = id;
+  renderApp();
+}
+function viewStudentResults(id) {
+  var s = db.students.find(function (x) { return x.id === id; });
+  if (!s) return;
+  var ex = db.exams.find(function (e) { return e.cls === s.cls; });
+  if (ex) state.examId = ex.id;
+  go('exams');
+}
+function transferStudent(id) {
+  var s = db.students.find(function (x) { return x.id === id; });
+  if (!s) return;
+  var clsOpts = CLASSES.map(function (c) { return '<option ' + (c === s.cls ? 'selected' : '') + '>' + c + '</option>'; }).join('');
+  openModal('<h3>' + t('transferTitle') + ' — ' + esc(s.name) + '</h3><form onsubmit="return doTransfer(event,\'' + s.id + '\')"><div class="form-grid">' +
+    '<div class="full"><label>' + t('transferTo') + '</label><select id="fTrCls" onchange="suggestTransferRoll()">' + clsOpts + '</select></div>' +
+    '<div><label>' + t('fRoll') + '</label><input id="fTrRoll" type="number" min="1" value="' + nextRoll(s.cls) + '"></div>' +
+    '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + t('transferTitle') + '</button></div></form>');
+}
+function suggestTransferRoll() {
+  var cls = $('fTrCls') ? $('fTrCls').value : '';
+  if (cls && $('fTrRoll')) $('fTrRoll').value = nextRoll(cls);
+}
+function doTransfer(e, id) {
+  e.preventDefault();
+  var s = db.students.find(function (x) { return x.id === id; });
+  if (!s) return false;
+  var toCls = $('fTrCls') ? $('fTrCls').value : '';
+  if (!toCls) { toast(t('tPickClass')); return false; }
+  var fromCls = s.cls;
+  s.cls = toCls;
+  s.roll = parseInt($('fTrRoll') ? $('fTrRoll').value : '', 10) || nextRoll(toCls);
+  // NOTE: fee records keep their historical cls (the fee belonged to the old
+  // class); only the student's cls changes. The v9 migration's one-time
+  // fee-cls alignment is flag-guarded so it never rewrites these either.
+  logAudit('Student transferred', s.name + ' • ' + (s.admissionNo || '') + ' • ' + fromCls + ' → ' + toCls);
+  saveDB(db); closeModal(); renderApp();
+  toast(t('tTransferred'));
+  return false;
+}
+function deactivateStudent(id) {
+  var s = db.students.find(function (x) { return x.id === id; });
+  if (!s) return;
+  var toInactive = (s.status || 'Active') === 'Active';
+  confirmModal((toInactive ? t('tDeactMsg') : t('tActMsg')) + ' — ' + s.name + '?', function () {
+    s.status = toInactive ? 'Inactive' : 'Active';
+    logAudit(toInactive ? 'Student deactivated' : 'Student activated', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
+    saveDB(db); renderApp();
+    toast(toInactive ? t('tDeactivated') : t('tActivated'));
+  });
+}
+function cancelAdmission(id) {
+  var s = db.students.find(function (x) { return x.id === id; });
+  if (!s) return;
+  confirmModal(t('cancelAdmMsg'), function () {
+    s.status = 'Cancelled';
+    logAudit('Admission cancelled', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
+    saveDB(db); closeModal(); renderApp();
+    toast(t('tAdmCancelled'));
+  });
+}
+function openStudentProfile(id) {
+  state.profileStudent = id; state.profileTab = 'overview';
+  renderPage();
+}
+function setProfileTab(tab) { state.profileTab = tab; renderPage(); }
+function studentProfilePage(id) {
+  var s = db.students.find(function (x) { return x.id === id; });
+  if (!s) { state.profileStudent = null; return studentsPage(); }
+  var stt = s.status || 'Active';
+  var badgeCls = stt === 'Active' ? 'green' : stt === 'Inactive' ? 'grey' : stt === 'Draft' ? 'blue' : 'red';
+  var tabs = [['overview', 'tabOverview'], ['personal', 'tabPersonal'], ['parent', 'tabParent'], ['academic', 'tabAcademic'], ['attendance', 'tabAttendance'], ['fees', 'tabFees'], ['results', 'tabResults'], ['homework', 'tabHomework'], ['docs', 'tabDocs'], ['activity', 'tabActivity']];
+  var tabBar = '<div class="tabs">' + tabs.map(function (tb) {
+    return '<button class="tab-btn' + (state.profileTab === tb[0] ? ' on' : '') + '" onclick="setProfileTab(\'' + tb[0] + '\')">' + t(tb[1]) + '</button>';
+  }).join('') + '</div>';
+  return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + esc(s.cls) + ' • ' + t('thAdmNo') + ' ' + esc(s.admissionNo || '—') + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • <span class="badge ' + badgeCls + '">' + stt + '</span></p></div></div>' +
+    '<div class="toolbar"><button class="btn ghost" onclick="state.profileStudent=null;renderPage()">← ' + t('backDir') + '</button>' +
+    '<button class="btn" onclick="studentForm(\'' + s.id + '\')">' + t('editStudent') + '</button></div></div>' +
+    tabBar + '<div style="margin-top:16px">' + profileTabBody(s, state.profileTab || 'overview') + '</div>';
+}
+function profileTabBody(s, tab) {
+  var d = s.documents || {};
+  var kv = function (label, val) { return '<div class="kv"><b>' + label + '</b><span>' + val + '</span></div>'; };
+  if (tab === 'personal') {
+    return '<div class="card">' + kv(t('fStudentName'), esc(s.name)) + kv(t('fDob'), esc(s.dob || '—')) + kv(t('fGender'), esc(s.gender || '—')) + kv(t('fBlood'), esc(s.bloodGroup || '—')) + kv(t('fCategory'), esc(s.category || '—')) + kv(t('fAddress'), esc(s.address || '—')) + kv(t('fState'), esc(s.state || '—')) + kv(t('fDistrict'), esc(s.district || '—')) + kv(t('fPin'), esc(s.pin || '—')) + kv(t('fAadhaar'), maskAadhaar(s.aadhaar)) + '</div>';
+  }
+  if (tab === 'parent') {
+    return '<div class="card">' + kv(t('fFather'), esc(s.fatherName || '—')) + kv(t('fMother'), esc(s.motherName || '—')) + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fPhone2'), esc(s.mobile2 || '—')) + kv(t('fParentEmail'), esc(s.parentEmail || '—')) + kv(t('fOccupation'), esc(s.occupation || '—')) + '</div>';
+  }
+  if (tab === 'academic') {
+    return '<div class="card">' + kv(t('fAdmNo'), esc(s.admissionNo || '—')) + kv(t('fAdmDate'), esc(s.admissionDate || '—')) + kv(t('fSession'), esc(s.session || '—')) + kv(t('fClass'), esc(classPartOf(s.cls))) + kv(t('fSection'), esc(sectionOf(s.cls))) + kv(t('fRoll'), String(s.roll)) + kv(t('fPrevSchool'), esc(s.previousSchool || '—')) + kv(t('fPrevClass'), esc(s.previousClass || '—')) + kv(t('thStatus'), esc(s.status || 'Active')) + '</div>';
+  }
+  if (tab === 'attendance') {
+    var rows = [];
+    Object.keys(db.attendance).forEach(function (k) {
+      var recs = db.attendance[k] || {};
+      if (recs[s.id]) rows.push({ date: k.split('|')[0], cls: k.split('|')[1], st: recs[s.id] });
+    });
+    rows.sort(function (a, b) { return a.date < b.date ? 1 : -1; });
+    var shown = rows.slice(0, 30);
+    var trs = shown.map(function (r) {
+      return '<tr><td>' + esc(r.date) + '</td><td>' + esc(r.cls) + '</td><td><span class="badge ' + (r.st === 'Present' ? 'green' : r.st === 'Absent' ? 'red' : 'orange') + '">' + r.st + '</span></td></tr>';
+    }).join('');
+    return '<div class="card"><p class="muted">' + t('attPct') + ': <b>' + s.att + '%</b>' + (rows.length > 30 ? ' • ' + t('showingRec') + ' 30 ' + t('ofRec') + ' ' + rows.length : '') + '</p><div class="tbl-wrap"><table><thead><tr><th>' + t('thDate') + '</th><th>' + t('thClass') + '</th><th>' + t('thStatus') + '</th></tr></thead><tbody>' + (trs || '<tr><td colspan="3"><div class="empty">' + t('noAttRecs') + '</div></td></tr>') + '</tbody></table></div></div>';
+  }
+  if (tab === 'fees') {
+    var sum = feeSummaryFor(s.id);
+    if (!sum) return '<div class="card"><div class="empty">' + t('tNoFeeRecs') + '</div></div>';
+    var btRows = Object.keys(sum.byType).map(function (ty) {
+      return '<div class="type-row"><b>' + esc(feeTypeLabel(ty)) + '</b><span>' + t('collectedW') + ' ' + inr(sum.byType[ty].collected) + ' • ' + t('pendingW') + ' ' + inr(sum.byType[ty].pending) + '</span></div>';
+    }).join('');
+    var frs = sum.recs.map(function (r) {
+      return '<tr><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td><td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td></tr>';
+    }).join('');
+    return '<div class="stats">' + statCard('🧾', 'blue', t('totalBilled'), sum.billed, '', 'up', { prefix: '₹' }) + statCard('✅', 'green', t('totalPaid'), sum.paid, '', 'up', { prefix: '₹' }) + statCard('⏰', 'red', t('totalPending'), sum.pend, '', 'down', { prefix: '₹' }) + '</div>' +
+      '<div class="card"><h3>' + t('feeByType') + '</h3>' + (btRows || '<p class="muted">' + t('tNoFeeRecs') + '</p>') + '</div>' +
+      '<div class="card" style="margin-top:16px"><h3>' + t('feeRecsH') + '</h3><div class="tbl-wrap"><table><thead><tr><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th></tr></thead><tbody>' + (frs || '<tr><td colspan="5"><div class="empty">' + t('tNoFeeRecs') + '</div></td></tr>') + '</tbody></table></div>' +
+      '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="viewStudentFees(\'' + s.id + '\')">' + t('openFees') + '</button></div></div>';
+  }
+  if (tab === 'results') {
+    var exs = db.exams.filter(function (e) { return e.cls === s.cls; }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
+    var rtrs = exs.map(function (ex) {
+      var mk = db.marks.find(function (m) { return m.examId === ex.id && m.studentId === s.id; });
+      var pct = mk ? Math.round(mk.marks / ex.total * 100) + '%' : '—';
+      return '<tr><td>' + esc(ex.name) + '</td><td>' + esc(ex.subject) + '</td><td>' + esc(ex.date) + '</td><td>' + (mk ? mk.marks + ' / ' + ex.total : '—') + '</td><td>' + pct + '</td></tr>';
+    }).join('');
+    return '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thExam') + '</th><th>' + t('fSubject') + '</th><th>' + t('thDate') + '</th><th>' + t('thMarks') + '</th><th>' + t('thResult') + '</th></tr></thead><tbody>' + (rtrs || '<tr><td colspan="5"><div class="empty">' + t('noExamRecs') + '</div></td></tr>') + '</tbody></table></div></div>';
+  }
+  if (tab === 'homework') {
+    var hws = db.homework.filter(function (h) { return h.cls === s.cls; });
+    var htrs = hws.map(function (h) {
+      var done = (h.doneBy || []).indexOf(s.id) !== -1;
+      return '<tr><td>' + esc(h.title) + '</td><td>' + esc(h.subject) + '</td><td>' + esc(h.due) + '</td><td><span class="badge ' + (done ? 'green' : 'orange') + '">' + (done ? t('hwDone') : t('hwPend')) + '</span></td></tr>';
+    }).join('');
+    return '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('fTitle') + '</th><th>' + t('fSubject') + '</th><th>' + t('fDue') + '</th><th>' + t('thStatus') + '</th></tr></thead><tbody>' + (htrs || '<tr><td colspan="4"><div class="empty">' + t('noHwRecs') + '</div></td></tr>') + '</tbody></table></div></div>';
+  }
+  if (tab === 'docs') {
+    var docRow = function (label, ok) { return '<div class="kv"><b>' + label + '</b><span class="badge ' + (ok ? 'green' : 'grey') + '">' + (ok ? t('docStatus') : t('docMissing')) + '</span></div>'; };
+    return '<div class="card">' + docRow(t('fBirthCert'), !!d.birthCert) + docRow(t('fTc'), !!d.tc) + kv(t('fTcNo'), esc(d.tcNumber || '—')) + kv(t('fDocsOther'), esc(d.other || '—')) + '<p class="muted" style="margin-top:10px">' + t('docsNote') + '</p></div>';
+  }
+  if (tab === 'activity') {
+    var acts = (db.auditLog || []).filter(function (a) {
+      var det = a.details || '';
+      if (s.admissionNo) return det.indexOf(s.admissionNo) !== -1;
+      return det.indexOf(s.name) !== -1;
+    });
+    var arows = acts.map(function (a) {
+      return '<div class="act"><div><b>' + esc(a.action) + '</b><div class="muted">' + esc(a.details) + '</div><div class="muted">' + esc(a.ts) + ' • ' + esc(a.actor) + '</div></div></div>';
+    }).join('');
+    return '<div class="card">' + (arows || '<div class="empty">' + t('noActivity') + '</div>') + '</div>';
+  }
+  // overview (default)
+  var lex = latestExamPct(s);
+  var hwPend = db.homework.filter(function (h) { return h.cls === s.cls && (h.doneBy || []).indexOf(s.id) === -1; }).length;
+  var sum2 = feeSummaryFor(s.id);
+  var pendAmt = sum2 ? sum2.pend : 0;
+  return '<div class="stats">' +
+    statCard('📊', 'blue', t('attPct'), s.att, '', 'up', { suffix: '%' }) +
+    statCard('💰', 'green', t('feeSt'), pendAmt, '', pendAmt ? 'down' : 'up', { prefix: '₹' }) +
+    statCard('📝', 'orange', t('latestExam'), lex ? lex.pct : 0, lex ? lex.name : '', 'up', { suffix: '%' }) +
+    statCard('📚', 'red', t('hwPending'), hwPend, '', 'up') +
+    '</div>' +
+    '<div class="card">' + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fAdmNo'), esc(s.admissionNo || '—')) + kv(t('thEnr'), esc(s.enr || '—')) + kv(t('fAdmDate'), esc(s.admissionDate || '—')) + kv(t('fSession'), esc(s.session || '—')) + kv(t('thStatus'), esc(s.status || 'Active')) + '</div>';
 }
 function deleteStudent(id) {
   var s = db.students.find(function (x) { return x.id === id; });
@@ -1269,18 +1835,9 @@ function openAddFeeFor(sid) {
   renderApp();
 }
 function studentFeeProfile(sid) {
-  var s = db.students.find(function (x) { return x.id === sid; });
-  if (!s) { state.feeStudent = null; return feesPage(); }
-  var recs = db.feeRecords.filter(function (r) { return r.studentId === sid; })
-    .sort(function (a, b) { return (MONTH_NUM[a.month] || 99) - (MONTH_NUM[b.month] || 99) || (a.date < b.date ? -1 : a.date > b.date ? 1 : 0); });
-  var billed = 0, paid = 0, pend = 0, byType = {};
-  recs.forEach(function (r) {
-    billed += r.amount;
-    if (r.status === 'Collected') paid += r.amount; else pend += r.amount;
-    var ty = feeTypeOf(r);
-    if (!byType[ty]) byType[ty] = { collected: 0, pending: 0 };
-    if (r.status === 'Collected') byType[ty].collected += r.amount; else byType[ty].pending += r.amount;
-  });
+  var sum = feeSummaryFor(sid);
+  if (!sum) { state.feeStudent = null; return feesPage(); }
+  var s = sum.s, recs = sum.recs, billed = sum.billed, paid = sum.paid, pend = sum.pend, byType = sum.byType;
   var btRows = Object.keys(byType).map(function (ty2) {
     return '<div class="type-row"><b>' + esc(feeTypeLabel(ty2)) + '</b><span>' + t('collectedW') + ' ' + inr(byType[ty2].collected) + ' • ' + t('pendingW') + ' ' + inr(byType[ty2].pending) + '</span></div>';
   }).join('');

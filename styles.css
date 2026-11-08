@@ -322,3 +322,19 @@ tbody tr:hover{background:#F8FAFC}
 .dash-logo{width:56px;height:56px;border-radius:12px;object-fit:contain;background:#fff;border:1px solid var(--border);flex:none}
 .print-head{display:flex;gap:12px;align-items:center}
 .print-logo{width:54px;height:54px;object-fit:contain}
+
+/* ---- Phase 1: Student Management (v9) ---- */
+.modal.wide{max-width:760px}
+.sec-title{font-size:13px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid var(--blue-soft);padding-bottom:6px;margin:6px 0 2px}
+.check{display:flex!important;align-items:center;gap:8px;font-weight:600;margin:0}
+.check input[type=checkbox]{width:auto!important;margin:0}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+.tab-btn{border:1px solid var(--border);background:#fff;border-radius:20px;padding:7px 14px;font-size:13px;font-weight:600;color:var(--muted);cursor:pointer;font-family:inherit}
+.tab-btn.on{background:var(--navy);color:#fff;border-color:var(--navy)}
+.menu-list{display:flex;flex-direction:column;gap:8px}
+.menu-list .btn{justify-content:flex-start}
+.class-bar{display:flex;align-items:center;gap:10px;font-size:13.5px;margin-bottom:9px}
+.class-bar b{min-width:64px;color:var(--navy)}
+.class-bar .bar-track{flex:1;height:10px;background:#E2E8F0;border-radius:6px;overflow:hidden}
+.class-bar .bar-fill{display:block;height:100%;background:var(--blue);border-radius:6px}
+.class-bar .n{min-width:26px;text-align:right;font-weight:700}
