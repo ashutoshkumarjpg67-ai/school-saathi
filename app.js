@@ -261,6 +261,10 @@ var db = loadDB();
 /* ================= state ================= */
 var state = { role: null, user: null, view: 'dashboard', lang: 'en', feeFilter: 'All', feeType: 'All', feeSearch: '', feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', attSnapKey: '', attSnap: {} };
 
+/* Phase 2: bulk import + promotion state (in-memory only, never persisted). */
+var importState = { rows: null, fileName: '', result: null };
+var promoState = null;
+
 /* ================= utils ================= */
 function $(id) { return document.getElementById(id); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
@@ -678,6 +682,254 @@ function exportStudentsCSV() {
   downloadCSV('school-saathi-students-' + todayIST() + '.csv', [STU_CSV_HEAD].concat(list.map(studentCSVRow)));
   toast('✓ ' + t('tCsvExported'));
 }
+
+/* ================= Phase 2: bulk CSV import =================
+   CSV only — Excel (.xlsx) is a zipped binary format and cannot be parsed
+   without a library; this static build has zero external dependencies, so the
+   template and the import are CSV. The UI says so (impTemplateSub). */
+var IMPORT_CSV_HEAD = ['name', 'dob', 'gender', 'bloodGroup', 'category', 'address', 'state', 'district', 'pin', 'admissionDate', 'session', 'class', 'section', 'roll', 'previousSchool', 'previousClass', 'fatherName', 'motherName', 'guardianName', 'mobile', 'mobile2', 'parentEmail', 'occupation', 'birthCert', 'tc', 'tcNumber', 'aadhaar'];
+function buildImportTemplate() {
+  return [IMPORT_CSV_HEAD,
+    ['Aarav Kumar', '2014-05-12', 'Boy', 'O+', 'OBC', 'Ward 4, Manikpur', 'Bihar', 'Gopalganj', '841428', '2026-04-01', '2026–27', '6th', 'A', '1', '', '', 'Ramesh Kumar', 'Sunita Devi', 'Ramesh Kumar', '9812345678', '', 'ramesh@example.com', 'Farmer', 'Yes', 'No', '', ''],
+    ['Sneha Kumari', '2013-11-03', 'Girl', 'B+', 'General', 'Boring Road', 'Bihar', 'Patna', '800001', '2026-04-01', '2026–27', '6th', 'A', '2', 'Sunrise Academy', '5th', 'Anil Sharma', 'Pooja Sharma', 'Anil Sharma', '9812345679', '9812345680', '', 'Teacher', 'Yes', 'Yes', 'TC-2041', '']];
+}
+function downloadImportTemplate() {
+  downloadCSV('school-saathi-import-template.csv', buildImportTemplate());
+  toast(t('tImpTemplate'));
+}
+function parseCSV(text) {
+  // Small RFC-4180 reader: quoted fields (commas, doubled quotes, newlines
+  // inside quotes), CRLF/LF endings, BOM stripped, fully-empty lines skipped.
+  var rows = [], row = [], field = '', inQ = false;
+  var s = String(text || '').replace(/^\uFEFF/, '');
+  for (var i = 0; i < s.length; i++) {
+    var c = s[i];
+    if (inQ) {
+      if (c === '"') {
+        if (s[i + 1] === '"') { field += '"'; i++; }
+        else inQ = false;
+      } else field += c;
+    } else if (c === '"') {
+      if (field.trim() === '') { field = ''; inQ = true; } // quote opens the field (leading spaces tolerated)
+      else field += c; // stray quote inside an unquoted field: keep literally
+    } else if (c === ',') {
+      row.push(field); field = '';
+    } else if (c === '\n' || c === '\r') {
+      if (c === '\r' && s[i + 1] === '\n') i++;
+      row.push(field); field = '';
+      rows.push(row); row = [];
+    } else field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(function (r) { return r.some(function (c) { return String(c).trim() !== ''; }); });
+}
+function parseImportCSV(text) {
+  var grid = parseCSV(text);
+  if (!grid.length) return { rows: [], error: t('impNoRows') };
+  var head = grid[0].map(function (h) { return String(h || '').trim().toLowerCase(); });
+  if (head.indexOf('name') === -1) return { rows: [], error: t('impBadHeader') };
+  var rows = [];
+  for (var i = 1; i < grid.length; i++) {
+    var obj = { __line: i + 1 };
+    IMPORT_CSV_HEAD.forEach(function (col) {
+      var idx = head.indexOf(col.toLowerCase());
+      obj[col] = idx === -1 ? '' : String(grid[i][idx] == null ? '' : grid[i][idx]).trim();
+    });
+    rows.push(obj);
+  }
+  return { rows: rows, error: null };
+}
+function isValidDateStr(ds) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ds || '').trim());
+  if (!m) return false;
+  var y = +m[1], mo = +m[2], d = +m[3];
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+  var dt = new Date(y, mo - 1, d); // component round-trip is timezone-proof
+  return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === d;
+}
+function normSession(v) {
+  var s = String(v || '').trim().replace(/(\d{4})-(\d{2})/, '$1–$2');
+  return /^\d{4}–\d{2}$/.test(s) ? s : '';
+}
+function normBool(v) {
+  var s = String(v || '').trim().toLowerCase();
+  if (['yes', 'y', 'true', '1'].indexOf(s) !== -1) return true;
+  if (['no', 'n', 'false', '0', ''].indexOf(s) !== -1) return false;
+  return null; // not a recognisable Yes/No
+}
+// Validates ONE import row against the same rules as the admission form.
+// seenValid: normalised data objects of previously VALID rows in this file
+// (in-file duplicates are checked against valid rows only, so a row with its
+// own errors reports the real error instead of "duplicate").
+function validateImportRow(row, seenValid) {
+  var errors = [];
+  var name = String(row.name || '').trim();
+  if (!name) errors.push(t('impErrName'));
+  var phone = digitsOnly(row.mobile);
+  if (phone.length !== 10) errors.push(t('impErrMobile'));
+  var phone2 = digitsOnly(row.mobile2);
+  if (row.mobile2 && String(row.mobile2).trim() !== '' && phone2.length !== 10) errors.push(t('impErrMobile2'));
+  var clsRaw = String(row.class || '').trim();
+  var secRaw = String(row.section || '').trim().toUpperCase();
+  var clsPart = clsRaw, sec = secRaw;
+  if (clsRaw.indexOf('-') !== -1) { // tolerate a combined '6th-A' in the class column
+    var parts = clsRaw.split('-');
+    clsPart = parts[0].trim();
+    if (!secRaw) sec = (parts[1] || '').trim().toUpperCase();
+  }
+  if (classParts().indexOf(clsPart) === -1) errors.push(t('impErrClass'));
+  if (SECTIONS.indexOf(sec) === -1) errors.push(t('impErrSection'));
+  var pin = digitsOnly(row.pin);
+  if (row.pin && String(row.pin).trim() !== '' && pin.length !== 6) errors.push(t('impErrPin'));
+  var aadhaar = digitsOnly(row.aadhaar);
+  if (row.aadhaar && String(row.aadhaar).trim() !== '' && aadhaar.length !== 12) errors.push(t('impErrAadhaar'));
+  var dob = String(row.dob || '').trim();
+  if (dob && !isValidDateStr(dob)) errors.push(t('impErrDob'));
+  var admDate = String(row.admissionDate || '').trim();
+  if (admDate && !isValidDateStr(admDate)) errors.push(t('impErrAdmDate'));
+  var session = '';
+  if (row.session && String(row.session).trim() !== '') {
+    session = normSession(row.session);
+    if (!session) errors.push(t('impErrSession'));
+  }
+  var gender = '';
+  if (row.gender && String(row.gender).trim() !== '') {
+    var g = String(row.gender).trim().toLowerCase();
+    gender = g === 'boy' ? 'Boy' : g === 'girl' ? 'Girl' : g === 'other' ? 'Other' : '';
+    if (!gender) errors.push(t('impErrGender'));
+  }
+  var blood = '';
+  if (row.bloodGroup && String(row.bloodGroup).trim() !== '') {
+    blood = String(row.bloodGroup).trim().toUpperCase();
+    if (BLOOD_GROUPS.indexOf(blood) === -1) { errors.push(t('impErrBlood')); blood = ''; }
+  }
+  var cat = '';
+  if (row.category && String(row.category).trim() !== '') {
+    var cl = String(row.category).trim().toLowerCase();
+    CATEGORIES.forEach(function (c) { if (c.toLowerCase() === cl) cat = c; });
+    if (!cat) errors.push(t('impErrCategory'));
+  }
+  var email = String(row.parentEmail || '').trim();
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.push(t('impErrEmail'));
+  var roll = 0;
+  if (row.roll && String(row.roll).trim() !== '') {
+    if (!/^\d+$/.test(String(row.roll).trim()) || parseInt(row.roll, 10) < 1) errors.push(t('impErrRoll'));
+    else roll = parseInt(row.roll, 10);
+  }
+  var bc = normBool(row.birthCert), tcB = normBool(row.tc);
+  if (bc === null) errors.push(t('impErrBool') + ' (' + t('fBirthCert') + ')');
+  if (tcB === null) errors.push(t('impErrBool') + ' (' + t('fTc') + ')');
+  var cls = clsPart + '-' + sec;
+  var data = null;
+  if (!errors.length) {
+    data = { name: name, cls: cls, roll: roll, guardian: String(row.guardianName || '').trim() || String(row.fatherName || '').trim() || '—',
+      phone: phone, dob: dob, gender: gender, bloodGroup: blood, category: cat,
+      address: String(row.address || '').trim(), state: String(row.state || '').trim(), district: String(row.district || '').trim(), pin: pin,
+      session: session || db.profile.session, admissionDate: admDate || todayIST(),
+      previousSchool: String(row.previousSchool || '').trim(), previousClass: String(row.previousClass || '').trim(),
+      fatherName: String(row.fatherName || '').trim(), motherName: String(row.motherName || '').trim(),
+      mobile2: phone2, parentEmail: email, occupation: String(row.occupation || '').trim(), aadhaar: aadhaar,
+      documents: { birthCert: !!bc, tc: !!tcB, tcNumber: String(row.tcNumber || '').trim(), other: '' } };
+    var dup = findDupStudent(data, null); // same rules as the admission form
+    if (dup) return { ok: false, status: 'duplicate', errors: [t('impErrDup') + ' ' + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' • ' + dup.cls + ')'], data: null };
+    var dupIn = null;
+    (seenValid || []).some(function (v) {
+      if (v.name.trim().toLowerCase() === name.toLowerCase() && ((dob && v.dob === dob) || (phone && digitsOnly(v.phone) === phone))) { dupIn = v; return true; }
+      return false;
+    });
+    if (dupIn) return { ok: false, status: 'duplicate', errors: [t('impErrDupFile') + ' (' + dupIn.name + ' • ' + dupIn.cls + ')'], data: null };
+  }
+  return { ok: errors.length === 0, status: errors.length ? 'error' : 'valid', errors: errors, data: data };
+}
+function validateImportRows(rows) {
+  var seen = [], out = [];
+  (rows || []).forEach(function (r) {
+    var v = validateImportRow(r, seen);
+    if (v.ok) seen.push(v.data);
+    out.push({ row: r, status: v.status, errors: v.errors, data: v.data });
+  });
+  return out;
+}
+function onImportFile(input) {
+  var file = input && input.files && input.files[0];
+  if (!file) return;
+  if (typeof FileReader === 'undefined') { toast(t('tPhotoError')); return; }
+  var reader = new FileReader();
+  reader.onerror = function () { toast(t('tPhotoError')); };
+  reader.onload = function () {
+    var parsed = parseImportCSV(reader.result);
+    if (parsed.error) { importState.rows = null; importState.result = null; toast(parsed.error); openImportModal(); return; }
+    importState.rows = validateImportRows(parsed.rows);
+    importState.fileName = file.name || '';
+    importState.result = null;
+    openImportModal();
+  };
+  reader.readAsText(file);
+}
+function importPreviewHTML() {
+  var rows = importState.rows || [];
+  var valid = 0, errs = 0, dups = 0, impd = 0;
+  rows.forEach(function (r) {
+    if (r.status === 'valid') valid++;
+    else if (r.status === 'duplicate') dups++;
+    else if (r.status === 'imported') impd++;
+    else errs++;
+  });
+  var trs = rows.map(function (r, i) {
+    var badgeCls = (r.status === 'valid' || r.status === 'imported') ? 'green' : r.status === 'duplicate' ? 'orange' : 'red';
+    var label = r.status === 'valid' ? t('impValid') : r.status === 'imported' ? t('impImported') : r.status === 'duplicate' ? t('impDuplicate') : t('impError');
+    return '<tr><td>' + (r.row.__line || i + 2) + '</td><td><b>' + esc(r.row.name || '—') + '</b></td><td>' + esc((r.row.class || '') + (r.row.section ? '-' + r.row.section : '')) + '</td><td>' + esc(r.row.mobile || '') + '</td>' +
+      '<td><span class="badge ' + badgeCls + '">' + label + '</span></td><td>' + esc(r.errors.join('; ') || '—') + '</td></tr>';
+  }).join('');
+  var res = '';
+  if (importState.result) {
+    var rs = importState.result;
+    res = '<div class="card" style="margin-top:12px"><h3>' + t('impSummary') + '</h3><p>' + rs.imported + ' ' + t('impImported') + ' • ' + rs.skipped + ' ' + t('impSkipped') + '</p></div>';
+  }
+  return '<h3 style="margin-top:14px">' + t('impPreview') + ' — ' + rows.length + ' ' + t('recordsWord') + '</h3>' +
+    '<p class="muted">' + valid + ' ' + t('impValid') + ' • ' + errs + ' ' + t('impError') + ' • ' + dups + ' ' + t('impDuplicate') + (impd ? ' • ' + impd + ' ' + t('impImported') : '') + (importState.fileName ? ' • ' + esc(importState.fileName) : '') + '</p>' +
+    '<div class="tbl-wrap imp-scroll"><table><thead><tr><th>#</th><th>' + t('thName') + '</th><th>' + t('thClass') + '</th><th>' + t('thPhone') + '</th><th>' + t('thStatus') + '</th><th>' + t('impReason') + '</th></tr></thead><tbody>' +
+    (trs || '<tr><td colspan="6"><div class="empty">' + t('impNoRows') + '</div></td></tr>') + '</tbody></table></div>' +
+    '<div class="actions" style="justify-content:flex-start">' +
+    '<button class="btn green" ' + (valid ? '' : 'disabled') + ' onclick="confirmImport()">' + t('impConfirm') + ' (' + valid + ')</button>' +
+    (importState.result ? '<button class="btn" onclick="closeModal();renderApp()">' + t('impDone') + '</button>' : '') + '</div>' + res;
+}
+function openImportModal() {
+  openModal('<h3>' + t('impTitle') + '</h3>' +
+    '<p class="muted">' + t('impTemplateSub') + '</p>' +
+    '<div class="toolbar" style="margin:12px 0"><button class="btn ghost sm" onclick="downloadImportTemplate()">⬇ ' + t('impTemplate') + '</button>' +
+    '<input type="file" id="impFile" accept=".csv,text/csv" onchange="onImportFile(this)" style="flex:1;min-width:180px"></div>' +
+    '<div id="impPreviewWrap">' + (importState.rows ? importPreviewHTML() : '') + '</div>' +
+    '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('closeW') + '</button></div>', true);
+}
+function confirmImport() {
+  var rows = importState.rows || [];
+  var imported = 0, skipped = 0;
+  var now = Date.now();
+  rows.forEach(function (r, i) {
+    if (r.status !== 'valid' || !r.data) { if (r.status === 'error' || r.status === 'duplicate') skipped++; return; }
+    // Re-check duplicates at import time, so a second Confirm (or data that
+    // changed since the preview) can never import the same student twice.
+    var dup = findDupStudent(r.data, null);
+    if (dup) { r.status = 'duplicate'; r.errors = [t('impErrDup') + ' ' + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' • ' + dup.cls + ')']; skipped++; return; }
+    var d = r.data;
+    var admNo = nextAdmNo();
+    var rec = { id: 'stu' + now + '_' + i, att: 100, result: 0, fee: '—', enr: nextEnr(), admissionNo: admNo, status: 'Active' };
+    Object.keys(d).forEach(function (k) { rec[k] = d[k]; });
+    rec.roll = d.roll || nextRoll(d.cls);
+    // No fee record is created on import: dues are created by Generate Fees.
+    // (The single-admission form adds a ₹6,000 placeholder record; a bulk
+    // import of many students must not silently inflate the fee totals.)
+    db.students.push(rec);
+    logAudit('Bulk import', rec.name + ' • ' + admNo + ' • ' + rec.cls);
+    r.status = 'imported';
+    imported++;
+  });
+  importState.result = { imported: imported, skipped: skipped };
+  saveDB(db);
+  toast(t('tImpDone') + ' ' + imported + ' ' + t('impImported') + '.');
+  openImportModal();
+}
 function donutPct(v, total) { return total ? Math.round(v / total * 100) : 0; }
 function attTotal() { var a = db.attendanceAgg; return a.present + a.absent + a.late; }
 function schoolCounts() {
@@ -847,7 +1099,9 @@ var I18N = {
     planBasicT: 'Basic — ₹8 / student / month', planBasicD: 'Attendance, fees, notices', planStdT: 'Standard — ₹12 / student / month', planStdD: '+ Exams, homework, reports', planPremT: 'Premium — ₹15 / student / month', planPremD: '+ Analytics, WhatsApp, priority support', setupLine: 'Setup ₹4,999 one-time • 1 month free trial • Annual advance = 2 months free.',
     guide1t: 'Add a school', guide1d: 'Schools → + Add School → fill details → Save. New schools start as Pending until approved.', guide2t: 'Collect a fee', guide2d: 'School Admin → Fees → Collect on a pending record. Totals update instantly.', guide3t: 'Mark attendance', guide3d: 'School Admin → Attendance → pick class & date → Present / Absent / Late → Save.',
     contactPhone: 'Phone', contactHours: 'Hours', hoursV: 'Mon–Sat, 9 AM – 6 PM', raiseSupport: 'Raise a Support Request', supportNoted: 'Support request noted — we will call you back.',
-    sampleList: 'sample list below', plansSub: 'Per-student monthly pricing', collectedW: 'Collected', pendingW: 'Pending', allW: 'All', editStudent: 'Edit Student', thePlatform: 'the platform', repSchoolsSub: 'city, students, plan, status', subActive: 'Active', subExpired: 'Expired', subTrial: 'Trial', feeTypeTuition: 'Tuition', feeTypeAdmission: 'Admission', feeTypeTransport: 'Transport', feeTypeExam: 'Exam', feeTypeLibrary: 'Library', feeTypeActivity: 'Activity', feeTypeComputer: 'Computer Lab', feeTypeOther: 'Other', allTypes: 'All Types', searchFee: 'Search name, enrollment no. or class…', thEnr: 'Enr. No.', thType: 'Type', feeByType: 'Fee by Type', feeByTypeSub: 'Collected and pending per fee type, computed live.', addFee: 'Add Fee', addFeeSub: 'Add one fee record manually for any student.', feeStruct: 'Fee Structure', feeStructSub: 'Monthly amount per class. Generate uses this to create fee records.', genFees: 'Generate Fees', saveStruct: 'Save Structure', addRow: 'Add Row', customType: 'Custom…', typeCustomPh: 'Type a custom fee type', fStudent: 'Student', fMonth: 'Month', fType: 'Fee Type', fAmount: 'Amount (₹)', fStatus: 'Status', fDate: 'Date', printList: 'Print List', printStmt: 'Print Statement', backFees: 'Back to All Fees', totalBilled: 'Total Billed', totalPaid: 'Paid', totalPending: 'Pending', feeRecsH: 'Fee Records', feeProfileSub: 'All fee records for this student in one place.', tFeeAdded: 'Fee record added.', tPickStudent: 'Please choose a student.', tAmtPositive: 'Amount must be more than 0.', tTypeRequired: 'Please type the custom fee type.', tStructSaved: 'Fee structure saved.', tStructAdded: 'Structure row added.', tStructRemoved: 'Structure row removed.', tGenRecords: 'fee records generated for', tGenSkipped: 'already existed', tNoFeeRecs: 'No fee records yet for this student.', printTitle: 'Fee Statement', printListTitle: 'Fee List', printGenOn: 'Generated on', closeW: 'Close', saveFeeBtn: 'Save Fee', photoLabel: 'Student Photo', photoHint: 'Photo is compressed automatically (max 512px, ~120KB).', removePhoto: 'Remove photo', logoLabel: 'School Logo', logoHint: 'Logo is compressed automatically (max 256px, PNG keeps transparency).', removeLogo: 'Remove logo', tPhotoTooBig: 'That photo is too large even after compression. Please choose a smaller photo.', tLogoTooBig: 'That logo is too large even after compression. Please choose a smaller logo.', tPhotoError: 'Could not read that image. Please choose another file.', aadhaarHint: 'Optional. Stored securely and never shown in full.', actActivate: 'Activate Student', actAtt: 'View Attendance', actDeactivate: 'Deactivate Student', actDownload: 'Download Details', actEdit: 'Edit Student', actFees: 'View Fees', actIdCard: 'Print ID Card', actResults: 'View Results', actTransfer: 'Transfer Student', actView: 'View Profile', actionsW: 'Actions', admNoAuto: 'Auto-generated', allClasses: 'All Classes', allFeeSt: 'All Fee Status', allGenders: 'All Genders', allSections: 'All Sections', allSessions: 'All Sessions', allStatus: 'All Statuses', attPct: 'Attendance', backDir: 'Back to Directory', cancelAdm: 'Cancel Admission', cancelAdmMsg: 'Cancel this admission? The student record will be kept with status Cancelled.', docMissing: 'Not received', docStatus: 'Received', docsNote: 'Document files will be uploaded in the server phase. This checklist records what has been received.', exportCsv: 'Export CSV', fAadhaar: 'Aadhaar Number (optional)', fAdmDate: 'Admission Date', fAdmNo: 'Admission Number', fBirthCert: 'Birth Certificate', fBlood: 'Blood Group', fCategory: 'Category', fDistrict: 'District', fDob: 'Date of Birth', fDocsOther: 'Other Documents (notes)', fFather: 'Father\'s Name', fGender: 'Gender', fMother: 'Mother\'s Name', fOccupation: 'Occupation', fParentEmail: 'Parent Email', fPhone2: 'Secondary Mobile', fPin: 'PIN Code', fPrevClass: 'Previous Class', fPrevSchool: 'Previous School', fSection: 'Section', fState: 'State', fTc: 'Transfer Certificate (TC)', fTcNo: 'Transfer Certificate No.', feeSt: 'Fee Status', hwDone: 'Done', hwPend: 'Pending', hwPending: 'Homework Pending', latestExam: 'Latest Exam', nextW: 'Next', noActivity: 'No activity recorded yet.', noAttRecs: 'No attendance records yet for this student.', noExamRecs: 'No examination results yet.', noHwRecs: 'No homework records for this class.', openFees: 'Open Fee Page', pgOf: 'of', pgPage: 'Page', phase3W: 'Phase 3', prevW: 'Previous', saveAddAnother: 'Save & Add Another', saveDraft: 'Save as Draft', secAcademic: 'Academic Details', secDocs: 'Documents', secParent: 'Parent / Guardian Details', secPersonal: 'Personal Details', stActive: 'Active Students', stAvgAtt: 'Average Attendance', stBoys: 'Boys', stByClass: 'Students by Class', stByClassSub: 'Number of students in each class-section.', stGenderDist: 'Boys & Girls', stGenderSub: 'Gender distribution across the school.', stGirls: 'Girls', stInactive: 'Inactive Students', stNewAdm: 'New Admissions', stNotSpec: 'Not specified', stPendFee: 'Students with Pending Fees', stTotal: 'Total Students', stuSearchPh: 'Search name, admission no. or mobile…', tActMsg: 'Activate student', tActivated: 'Student activated.', tAdmCancelled: 'Admission cancelled. The record is kept.', tAdmCreated: 'Admission saved. Admission No. ', tCsvExported: 'Student list exported.', tDeactMsg: 'Deactivate student', tDeactivated: 'Student deactivated.', tDraftSaved: 'Draft saved.', tDupFound: 'A matching student already exists: ', tInvalidAadhaar: 'Aadhaar must be 12 digits (optional).', tInvalidMobile: 'Enter a valid 10-digit mobile number.', tInvalidPin: 'PIN code must be 6 digits.', tPickClass: 'Please choose a class.', tReqFields: 'Please fill Student Name, Primary Mobile, Class and Section.', tStuCsvOne: 'Student details downloaded.', tTransferred: 'Student transferred.', tabAcademic: 'Academic Records', tabActivity: 'Activity History', tabAttendance: 'Attendance History', tabDocs: 'Documents', tabFees: 'Fee History', tabHomework: 'Homework Records', tabOverview: 'Overview', tabParent: 'Parent Information', tabPersonal: 'Personal Information', tabResults: 'Examination Results', thAdmNo: 'Admission No.', thExam: 'Exam', thFather: 'Father\'s Name', transferTitle: 'Transfer Student', transferTo: 'New Class & Section', idCardSoon: 'ID Card generator comes in Phase 3.'
+    sampleList: 'sample list below', plansSub: 'Per-student monthly pricing', collectedW: 'Collected', pendingW: 'Pending', allW: 'All', editStudent: 'Edit Student', thePlatform: 'the platform', repSchoolsSub: 'city, students, plan, status', subActive: 'Active', subExpired: 'Expired', subTrial: 'Trial', feeTypeTuition: 'Tuition', feeTypeAdmission: 'Admission', feeTypeTransport: 'Transport', feeTypeExam: 'Exam', feeTypeLibrary: 'Library', feeTypeActivity: 'Activity', feeTypeComputer: 'Computer Lab', feeTypeOther: 'Other', allTypes: 'All Types', searchFee: 'Search name, enrollment no. or class…', thEnr: 'Enr. No.', thType: 'Type', feeByType: 'Fee by Type', feeByTypeSub: 'Collected and pending per fee type, computed live.', addFee: 'Add Fee', addFeeSub: 'Add one fee record manually for any student.', feeStruct: 'Fee Structure', feeStructSub: 'Monthly amount per class. Generate uses this to create fee records.', genFees: 'Generate Fees', saveStruct: 'Save Structure', addRow: 'Add Row', customType: 'Custom…', typeCustomPh: 'Type a custom fee type', fStudent: 'Student', fMonth: 'Month', fType: 'Fee Type', fAmount: 'Amount (₹)', fStatus: 'Status', fDate: 'Date', printList: 'Print List', printStmt: 'Print Statement', backFees: 'Back to All Fees', totalBilled: 'Total Billed', totalPaid: 'Paid', totalPending: 'Pending', feeRecsH: 'Fee Records', feeProfileSub: 'All fee records for this student in one place.', tFeeAdded: 'Fee record added.', tPickStudent: 'Please choose a student.', tAmtPositive: 'Amount must be more than 0.', tTypeRequired: 'Please type the custom fee type.', tStructSaved: 'Fee structure saved.', tStructAdded: 'Structure row added.', tStructRemoved: 'Structure row removed.', tGenRecords: 'fee records generated for', tGenSkipped: 'already existed', tNoFeeRecs: 'No fee records yet for this student.', printTitle: 'Fee Statement', printListTitle: 'Fee List', printGenOn: 'Generated on', closeW: 'Close', saveFeeBtn: 'Save Fee', photoLabel: 'Student Photo', photoHint: 'Photo is compressed automatically (max 512px, ~120KB).', removePhoto: 'Remove photo', logoLabel: 'School Logo', logoHint: 'Logo is compressed automatically (max 256px, PNG keeps transparency).', removeLogo: 'Remove logo', tPhotoTooBig: 'That photo is too large even after compression. Please choose a smaller photo.', tLogoTooBig: 'That logo is too large even after compression. Please choose a smaller logo.', tPhotoError: 'Could not read that image. Please choose another file.', aadhaarHint: 'Optional. Stored securely and never shown in full.', actActivate: 'Activate Student', actAtt: 'View Attendance', actDeactivate: 'Deactivate Student', actDownload: 'Download Details', actEdit: 'Edit Student', actFees: 'View Fees', actIdCard: 'Print ID Card', actResults: 'View Results', actTransfer: 'Transfer Student', actView: 'View Profile', actionsW: 'Actions', admNoAuto: 'Auto-generated', allClasses: 'All Classes', allFeeSt: 'All Fee Status', allGenders: 'All Genders', allSections: 'All Sections', allSessions: 'All Sessions', allStatus: 'All Statuses', attPct: 'Attendance', backDir: 'Back to Directory', cancelAdm: 'Cancel Admission', cancelAdmMsg: 'Cancel this admission? The student record will be kept with status Cancelled.', docMissing: 'Not received', docStatus: 'Received', docsNote: 'Document files will be uploaded in the server phase. This checklist records what has been received.', exportCsv: 'Export CSV', fAadhaar: 'Aadhaar Number (optional)', fAdmDate: 'Admission Date', fAdmNo: 'Admission Number', fBirthCert: 'Birth Certificate', fBlood: 'Blood Group', fCategory: 'Category', fDistrict: 'District', fDob: 'Date of Birth', fDocsOther: 'Other Documents (notes)', fFather: 'Father\'s Name', fGender: 'Gender', fMother: 'Mother\'s Name', fOccupation: 'Occupation', fParentEmail: 'Parent Email', fPhone2: 'Secondary Mobile', fPin: 'PIN Code', fPrevClass: 'Previous Class', fPrevSchool: 'Previous School', fSection: 'Section', fState: 'State', fTc: 'Transfer Certificate (TC)', fTcNo: 'Transfer Certificate No.', feeSt: 'Fee Status', hwDone: 'Done', hwPend: 'Pending', hwPending: 'Homework Pending', latestExam: 'Latest Exam', nextW: 'Next', noActivity: 'No activity recorded yet.', noAttRecs: 'No attendance records yet for this student.', noExamRecs: 'No examination results yet.', noHwRecs: 'No homework records for this class.', openFees: 'Open Fee Page', pgOf: 'of', pgPage: 'Page', phase3W: 'Phase 3', prevW: 'Previous', saveAddAnother: 'Save & Add Another', saveDraft: 'Save as Draft', secAcademic: 'Academic Details', secDocs: 'Documents', secParent: 'Parent / Guardian Details', secPersonal: 'Personal Details', stActive: 'Active Students', stAvgAtt: 'Average Attendance', stBoys: 'Boys', stByClass: 'Students by Class', stByClassSub: 'Number of students in each class-section.', stGenderDist: 'Boys & Girls', stGenderSub: 'Gender distribution across the school.', stGirls: 'Girls', stInactive: 'Inactive Students', stNewAdm: 'New Admissions', stNotSpec: 'Not specified', stPendFee: 'Students with Pending Fees', stTotal: 'Total Students', stuSearchPh: 'Search name, admission no. or mobile…', tActMsg: 'Activate student', tActivated: 'Student activated.', tAdmCancelled: 'Admission cancelled. The record is kept.', tAdmCreated: 'Admission saved. Admission No. ', tCsvExported: 'Student list exported.', tDeactMsg: 'Deactivate student', tDeactivated: 'Student deactivated.', tDraftSaved: 'Draft saved.', tDupFound: 'A matching student already exists: ', tInvalidAadhaar: 'Aadhaar must be 12 digits (optional).', tInvalidMobile: 'Enter a valid 10-digit mobile number.', tInvalidPin: 'PIN code must be 6 digits.', tPickClass: 'Please choose a class.', tReqFields: 'Please fill Student Name, Primary Mobile, Class and Section.', tStuCsvOne: 'Student details downloaded.', tTransferred: 'Student transferred.', tabAcademic: 'Academic Records', tabActivity: 'Activity History', tabAttendance: 'Attendance History', tabDocs: 'Documents', tabFees: 'Fee History', tabHomework: 'Homework Records', tabOverview: 'Overview', tabParent: 'Parent Information', tabPersonal: 'Personal Information', tabResults: 'Examination Results', thAdmNo: 'Admission No.', thExam: 'Exam', thFather: 'Father\'s Name', transferTitle: 'Transfer Student', transferTo: 'New Class & Section', idCardSoon: 'ID Card generator comes in Phase 3.',
+    impTitle: 'Bulk Import Students', impImportBtn: 'Import Students', impTemplate: 'Download Sample Template', impTemplateSub: 'CSV format only — Excel (.xlsx) files cannot be read here. Use the template columns.', impChooseFile: 'Choose CSV File', impPreview: 'Import Preview', impSummary: 'Import Summary', impValid: 'Valid', impError: 'Error', impDuplicate: 'Duplicate', impReason: 'Reason', impConfirm: 'Import Valid Rows', impDone: 'Done', impNoRows: 'No rows found in this file. Please check the template.', impBadHeader: 'This file does not look like the student template — the Name column is missing.', impNoFile: 'Please choose a CSV file first.', impNoValid: 'No valid rows to import.', impImported: 'imported', impSkipped: 'skipped', impErrName: 'Name is required', impErrMobile: 'Mobile must be 10 digits', impErrMobile2: 'Secondary mobile must be 10 digits', impErrClass: 'Class is not valid', impErrSection: 'Section must be A, B or C', impErrPin: 'PIN must be 6 digits', impErrAadhaar: 'Aadhaar must be 12 digits', impErrDob: 'Date of birth is not a valid date', impErrAdmDate: 'Admission date is not a valid date', impErrSession: 'Session is not valid (e.g. 2025–26)', impErrGender: 'Gender must be Boy, Girl or Other', impErrBlood: 'Blood group is not valid', impErrCategory: 'Category must be General, OBC, SC, ST or Other', impErrEmail: 'Parent email is not valid', impErrRoll: 'Roll must be a positive number', impErrBool: 'Must be Yes or No', impErrDup: 'Duplicate of', impErrDupFile: 'Duplicate in this file', tImpDone: 'Bulk import complete.', tImpTemplate: 'Sample template downloaded.',
+    promoTitle: 'Promote Students', promoBtn: 'Promote Students', promoSingle: 'Promote Student', promoFromSession: 'Current Session', promoFromClass: 'Current Class', promoToSession: 'Target Session', promoToClass: 'Target Class', promoToSection: 'Target Section', promoSelectAll: 'Select All', promoSelectNone: 'Select None', promoSelected: 'selected', promoPromote: 'Promote Selected', promoRetain: 'Retain Selected', promoNoStudents: 'No students in this class and session.', promoNoSelect: 'Please select at least one student.', promoNoop: 'Target class and session are the same as current — nothing to change.', promoNoopRetain: 'Target session is the same as the current session — nothing to change.', promoDone: 'Promotion complete.', promoPromoted: 'promoted', promoRetained: 'retained', promoNote: 'Attendance, fees, exam marks and homework history are preserved.', promoSingleNote: 'Single student promotion', promoSkipped: 'skipped (already moved)', promoNotEligible: 'Only Active or Inactive students can be promoted.'
   },
   hi: {
     dashboard: 'डैशबोर्ड', schools: 'स्कूल', users: 'उपयोगकर्ता', subscriptions: 'सदस्यता', analytics: 'विश्लेषण', settings: 'सेटिंग्स', reports: 'रिपोर्ट', help: 'सहायता', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalSchools: 'कुल स्कूल', totalUsers: 'कुल उपयोगकर्ता', activeSchools: 'सक्रिय स्कूल', pendingApproval: 'स्वीकृति लंबित', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -887,7 +1141,9 @@ var I18N = {
     planBasicT: 'बेसिक — ₹8 / छात्र / माह', planBasicD: 'उपस्थिति, शुल्क, नोटिस', planStdT: 'स्टैंडर्ड — ₹12 / छात्र / माह', planStdD: '+ परीक्षा, होमवर्क, रिपोर्ट', planPremT: 'प्रीमियम — ₹15 / छात्र / माह', planPremD: '+ विश्लेषण, WhatsApp, प्राथमिकता सहायता', setupLine: 'सेटअप ₹4,999 एक बार • 1 महीना मुफ़्त ट्रायल • वार्षिक अग्रिम = 2 महीने मुफ़्त।',
     guide1t: 'स्कूल जोड़ें', guide1d: 'स्कूल → + स्कूल जोड़ें → विवरण भरें → सहेजें। नए स्कूल स्वीकृति तक लंबित रहते हैं।', guide2t: 'शुल्क वसूलें', guide2d: 'स्कूल एडमिन → शुल्क → बकाया रिकॉर्ड पर वसूलें दबाएँ। कुल तुरंत अपडेट होता है।', guide3t: 'उपस्थिति दर्ज करें', guide3d: 'स्कूल एडमिन → उपस्थिति → कक्षा और तारीख चुनें → उपस्थित / अनुपस्थित / देर से → सहेजें।',
     contactPhone: 'फ़ोन', contactHours: 'समय', hoursV: 'सोम–शनि, सुबह 9 – शाम 6', raiseSupport: 'सहायता अनुरोध भेजें', supportNoted: 'सहायता अनुरोध दर्ज हुआ — हम आपको कॉल करेंगे।',
-    sampleList: 'नमूना सूची नीचे', plansSub: 'प्रति छात्र मासिक मूल्य', collectedW: 'संग्रह', pendingW: 'बकाया', allW: 'सभी', editStudent: 'छात्र बदलें', thePlatform: 'पूरे प्लेटफ़ॉर्म', repSchoolsSub: 'शहर, छात्र, योजना, स्थिति', subActive: 'सक्रिय', subExpired: 'समाप्त', subTrial: 'परीक्षण', feeTypeTuition: 'ट्यूशन', feeTypeAdmission: 'प्रवेश', feeTypeTransport: 'परिवहन', feeTypeExam: 'परीक्षा', feeTypeLibrary: 'पुस्तकालय', feeTypeActivity: 'गतिविधि', feeTypeComputer: 'कंप्यूटर लैब', feeTypeOther: 'अन्य', allTypes: 'सभी प्रकार', searchFee: 'नाम, नामांकन संख्या या कक्षा खोजें…', thEnr: 'नामांकन सं.', thType: 'प्रकार', feeByType: 'प्रकार के अनुसार शुल्क', feeByTypeSub: 'प्रति प्रकार संग्रह और बकाया, लाइव गणना।', addFee: 'शुल्क जोड़ें', addFeeSub: 'किसी भी छात्र के लिए एक शुल्क रिकॉर्ड जोड़ें।', feeStruct: 'शुल्क संरचना', feeStructSub: 'प्रति कक्षा मासिक राशि। Generate इसी से रिकॉर्ड बनाता है।', genFees: 'शुल्क बनाएँ', saveStruct: 'संरचना सहेजें', addRow: 'पंक्ति जोड़ें', customType: 'कस्टम…', typeCustomPh: 'शुल्क का प्रकार लिखें', fStudent: 'छात्र', fMonth: 'महीना', fType: 'शुल्क प्रकार', fAmount: 'राशि (₹)', fStatus: 'स्थिति', fDate: 'तारीख', printList: 'सूची छापें', printStmt: 'विवरण छापें', backFees: 'सभी शुल्क पर वापस', totalBilled: 'कुल बिल', totalPaid: 'जमा', totalPending: 'बकाया', feeRecsH: 'शुल्क रिकॉर्ड', feeProfileSub: 'इस छात्र के सभी शुल्क रिकॉर्ड एक ही जगह।', tFeeAdded: 'शुल्क रिकॉर्ड जुड़ गया।', tPickStudent: 'कृपया छात्र चुनें।', tAmtPositive: 'राशि 0 से अधिक होनी चाहिए।', tTypeRequired: 'कृपया शुल्क का प्रकार लिखें।', tStructSaved: 'शुल्क संरचना सहेजी गई।', tStructAdded: 'संरचना पंक्ति जुड़ी।', tStructRemoved: 'संरचना पंक्ति हटाई गई।', tGenRecords: 'शुल्क रिकॉर्ड बने', tGenSkipped: 'पहले से थे', tNoFeeRecs: 'इस छात्र के लिए अभी कोई शुल्क रिकॉर्ड नहीं है।', printTitle: 'शुल्क विवरण', printListTitle: 'शुल्क सूची', printGenOn: 'बनाया गया', closeW: 'बंद करें', saveFeeBtn: 'शुल्क सहेजें', photoLabel: 'छात्र की फ़ोटो', photoHint: 'फ़ोटो अपने आप छोटी हो जाती है (अधिकतम 512px, ~120KB)।', removePhoto: 'फ़ोटो हटाएँ', logoLabel: 'स्कूल का लोगो', logoHint: 'लोगो अपने आप छोटा हो जाता है (अधिकतम 256px, PNG में पारदर्शिता रहती है)।', removeLogo: 'लोगो हटाएँ', tPhotoTooBig: 'यह फ़ोटो छोटी करने के बाद भी बड़ी है। कृपया छोटी फ़ोटो चुनें।', tLogoTooBig: 'यह लोगो छोटा करने के बाद भी बड़ा है। कृपया छोटा लोगो चुनें।', tPhotoError: 'यह तस्वीर पढ़ी नहीं जा सकी। कृपया दूसरी फ़ाइल चुनें।', aadhaarHint: 'वैकल्पिक। सुरक्षित रूप से सहेजा जाता है, पूरा कभी नहीं दिखाया जाता।', actActivate: 'छात्र सक्रिय करें', actAtt: 'उपस्थिति देखें', actDeactivate: 'छात्र निष्क्रिय करें', actDownload: 'विवरण डाउनलोड करें', actEdit: 'छात्र बदलें', actFees: 'शुल्क देखें', actIdCard: 'ID कार्ड छापें', actResults: 'परिणाम देखें', actTransfer: 'छात्र स्थानांतरित करें', actView: 'प्रोफ़ाइल देखें', actionsW: 'कार्रवाई', admNoAuto: 'स्वतः निर्मित', allClasses: 'सभी कक्षाएँ', allFeeSt: 'सभी शुल्क स्थितियाँ', allGenders: 'सभी लिंग', allSections: 'सभी अनुभाग', allSessions: 'सभी सत्र', allStatus: 'सभी स्थितियाँ', attPct: 'उपस्थिति', backDir: 'सूची पर वापस', cancelAdm: 'प्रवेश रद्द करें', cancelAdmMsg: 'यह प्रवेश रद्द करें? छात्र का रिकॉर्ड Cancelled स्थिति के साथ रखा जाएगा।', docMissing: 'प्राप्त नहीं', docStatus: 'प्राप्त', docsNote: 'दस्तावेज़ फ़ाइलें सर्वर चरण में अपलोड होंगी। यह सूची बताती है कि क्या प्राप्त हुआ है।', exportCsv: 'CSV निर्यात करें', fAadhaar: 'आधार संख्या (वैकल्पिक)', fAdmDate: 'प्रवेश तिथि', fAdmNo: 'प्रवेश संख्या', fBirthCert: 'जन्म प्रमाण पत्र', fBlood: 'रक्त समूह', fCategory: 'श्रेणी', fDistrict: 'जिला', fDob: 'जन्म तिथि', fDocsOther: 'अन्य दस्तावेज़ (नोट)', fFather: 'पिता का नाम', fGender: 'लिंग', fMother: 'माता का नाम', fOccupation: 'व्यवसाय', fParentEmail: 'अभिभावक ईमेल', fPhone2: 'दूसरा मोबाइल', fPin: 'पिन कोड', fPrevClass: 'पिछली कक्षा', fPrevSchool: 'पिछला स्कूल', fSection: 'अनुभाग', fState: 'राज्य', fTc: 'स्थानांतरण प्रमाण पत्र (TC)', fTcNo: 'TC संख्या', feeSt: 'शुल्क स्थिति', hwDone: 'पूर्ण', hwPend: 'बाकी', hwPending: 'होमवर्क बाकी', latestExam: 'हाल की परीक्षा', nextW: 'अगला', noActivity: 'अभी कोई गतिविधि दर्ज नहीं है।', noAttRecs: 'इस छात्र के लिए अभी कोई उपस्थिति रिकॉर्ड नहीं है।', noExamRecs: 'अभी कोई परीक्षा परिणाम नहीं है।', noHwRecs: 'इस कक्षा के लिए कोई होमवर्क रिकॉर्ड नहीं है।', openFees: 'शुल्क पेज खोलें', pgOf: 'का', pgPage: 'पृष्ठ', phase3W: 'Phase 3', prevW: 'पिछला', saveAddAnother: 'सहेजें और नया जोड़ें', saveDraft: 'ड्राफ़्ट सहेजें', secAcademic: 'शैक्षणिक विवरण', secDocs: 'दस्तावेज़', secParent: 'माता-पिता / अभिभावक विवरण', secPersonal: 'व्यक्तिगत विवरण', stActive: 'सक्रिय छात्र', stAvgAtt: 'औसत उपस्थिति', stBoys: 'लड़के', stByClass: 'कक्षा अनुसार छात्र', stByClassSub: 'प्रत्येक कक्षा-अनुभाग में छात्रों की संख्या।', stGenderDist: 'लड़के और लड़कियाँ', stGenderSub: 'पूरे स्कूल में लिंग वितरण।', stGirls: 'लड़कियाँ', stInactive: 'निष्क्रिय छात्र', stNewAdm: 'नए प्रवेश', stNotSpec: 'निर्दिष्ट नहीं', stPendFee: 'बकाया शुल्क वाले छात्र', stTotal: 'कुल छात्र', stuSearchPh: 'नाम, प्रवेश संख्या या मोबाइल खोजें…', tActMsg: 'छात्र सक्रिय करें', tActivated: 'छात्र सक्रिय हुआ।', tAdmCancelled: 'प्रवेश रद्द हुआ। रिकॉर्ड रखा गया है।', tAdmCreated: 'प्रवेश सहेजा गया। प्रवेश संख्या ', tCsvExported: 'छात्र सूची निर्यात हुई।', tDeactMsg: 'छात्र निष्क्रिय करें', tDeactivated: 'छात्र निष्क्रिय हुआ।', tDraftSaved: 'ड्राफ़्ट सहेजा गया।', tDupFound: 'मेल खाता छात्र पहले से मौजूद है: ', tInvalidAadhaar: 'आधार 12 अंकों का होना चाहिए (वैकल्पिक)।', tInvalidMobile: 'सही 10 अंकों का मोबाइल नंबर डालें।', tInvalidPin: 'पिन कोड 6 अंकों का होना चाहिए।', tPickClass: 'कृपया कक्षा चुनें।', tReqFields: 'कृपया छात्र का नाम, मुख्य मोबाइल, कक्षा और अनुभाग भरें।', tStuCsvOne: 'छात्र का विवरण डाउनलोड हुआ।', tTransferred: 'छात्र स्थानांतरित हुआ।', tabAcademic: 'शैक्षणिक रिकॉर्ड', tabActivity: 'गतिविधि इतिहास', tabAttendance: 'उपस्थिति इतिहास', tabDocs: 'दस्तावेज़', tabFees: 'शुल्क इतिहास', tabHomework: 'होमवर्क रिकॉर्ड', tabOverview: 'सारांश', tabParent: 'अभिभावक जानकारी', tabPersonal: 'व्यक्तिगत जानकारी', tabResults: 'परीक्षा परिणाम', thAdmNo: 'प्रवेश सं.', thExam: 'परीक्षा', thFather: 'पिता का नाम', transferTitle: 'छात्र स्थानांतरण', transferTo: 'नई कक्षा और अनुभाग', idCardSoon: 'ID कार्ड जनरेटर Phase 3 में आएगा।'
+    sampleList: 'नमूना सूची नीचे', plansSub: 'प्रति छात्र मासिक मूल्य', collectedW: 'संग्रह', pendingW: 'बकाया', allW: 'सभी', editStudent: 'छात्र बदलें', thePlatform: 'पूरे प्लेटफ़ॉर्म', repSchoolsSub: 'शहर, छात्र, योजना, स्थिति', subActive: 'सक्रिय', subExpired: 'समाप्त', subTrial: 'परीक्षण', feeTypeTuition: 'ट्यूशन', feeTypeAdmission: 'प्रवेश', feeTypeTransport: 'परिवहन', feeTypeExam: 'परीक्षा', feeTypeLibrary: 'पुस्तकालय', feeTypeActivity: 'गतिविधि', feeTypeComputer: 'कंप्यूटर लैब', feeTypeOther: 'अन्य', allTypes: 'सभी प्रकार', searchFee: 'नाम, नामांकन संख्या या कक्षा खोजें…', thEnr: 'नामांकन सं.', thType: 'प्रकार', feeByType: 'प्रकार के अनुसार शुल्क', feeByTypeSub: 'प्रति प्रकार संग्रह और बकाया, लाइव गणना।', addFee: 'शुल्क जोड़ें', addFeeSub: 'किसी भी छात्र के लिए एक शुल्क रिकॉर्ड जोड़ें।', feeStruct: 'शुल्क संरचना', feeStructSub: 'प्रति कक्षा मासिक राशि। Generate इसी से रिकॉर्ड बनाता है।', genFees: 'शुल्क बनाएँ', saveStruct: 'संरचना सहेजें', addRow: 'पंक्ति जोड़ें', customType: 'कस्टम…', typeCustomPh: 'शुल्क का प्रकार लिखें', fStudent: 'छात्र', fMonth: 'महीना', fType: 'शुल्क प्रकार', fAmount: 'राशि (₹)', fStatus: 'स्थिति', fDate: 'तारीख', printList: 'सूची छापें', printStmt: 'विवरण छापें', backFees: 'सभी शुल्क पर वापस', totalBilled: 'कुल बिल', totalPaid: 'जमा', totalPending: 'बकाया', feeRecsH: 'शुल्क रिकॉर्ड', feeProfileSub: 'इस छात्र के सभी शुल्क रिकॉर्ड एक ही जगह।', tFeeAdded: 'शुल्क रिकॉर्ड जुड़ गया।', tPickStudent: 'कृपया छात्र चुनें।', tAmtPositive: 'राशि 0 से अधिक होनी चाहिए।', tTypeRequired: 'कृपया शुल्क का प्रकार लिखें।', tStructSaved: 'शुल्क संरचना सहेजी गई।', tStructAdded: 'संरचना पंक्ति जुड़ी।', tStructRemoved: 'संरचना पंक्ति हटाई गई।', tGenRecords: 'शुल्क रिकॉर्ड बने', tGenSkipped: 'पहले से थे', tNoFeeRecs: 'इस छात्र के लिए अभी कोई शुल्क रिकॉर्ड नहीं है।', printTitle: 'शुल्क विवरण', printListTitle: 'शुल्क सूची', printGenOn: 'बनाया गया', closeW: 'बंद करें', saveFeeBtn: 'शुल्क सहेजें', photoLabel: 'छात्र की फ़ोटो', photoHint: 'फ़ोटो अपने आप छोटी हो जाती है (अधिकतम 512px, ~120KB)।', removePhoto: 'फ़ोटो हटाएँ', logoLabel: 'स्कूल का लोगो', logoHint: 'लोगो अपने आप छोटा हो जाता है (अधिकतम 256px, PNG में पारदर्शिता रहती है)।', removeLogo: 'लोगो हटाएँ', tPhotoTooBig: 'यह फ़ोटो छोटी करने के बाद भी बड़ी है। कृपया छोटी फ़ोटो चुनें।', tLogoTooBig: 'यह लोगो छोटा करने के बाद भी बड़ा है। कृपया छोटा लोगो चुनें।', tPhotoError: 'यह तस्वीर पढ़ी नहीं जा सकी। कृपया दूसरी फ़ाइल चुनें।', aadhaarHint: 'वैकल्पिक। सुरक्षित रूप से सहेजा जाता है, पूरा कभी नहीं दिखाया जाता।', actActivate: 'छात्र सक्रिय करें', actAtt: 'उपस्थिति देखें', actDeactivate: 'छात्र निष्क्रिय करें', actDownload: 'विवरण डाउनलोड करें', actEdit: 'छात्र बदलें', actFees: 'शुल्क देखें', actIdCard: 'ID कार्ड छापें', actResults: 'परिणाम देखें', actTransfer: 'छात्र स्थानांतरित करें', actView: 'प्रोफ़ाइल देखें', actionsW: 'कार्रवाई', admNoAuto: 'स्वतः निर्मित', allClasses: 'सभी कक्षाएँ', allFeeSt: 'सभी शुल्क स्थितियाँ', allGenders: 'सभी लिंग', allSections: 'सभी अनुभाग', allSessions: 'सभी सत्र', allStatus: 'सभी स्थितियाँ', attPct: 'उपस्थिति', backDir: 'सूची पर वापस', cancelAdm: 'प्रवेश रद्द करें', cancelAdmMsg: 'यह प्रवेश रद्द करें? छात्र का रिकॉर्ड Cancelled स्थिति के साथ रखा जाएगा।', docMissing: 'प्राप्त नहीं', docStatus: 'प्राप्त', docsNote: 'दस्तावेज़ फ़ाइलें सर्वर चरण में अपलोड होंगी। यह सूची बताती है कि क्या प्राप्त हुआ है।', exportCsv: 'CSV निर्यात करें', fAadhaar: 'आधार संख्या (वैकल्पिक)', fAdmDate: 'प्रवेश तिथि', fAdmNo: 'प्रवेश संख्या', fBirthCert: 'जन्म प्रमाण पत्र', fBlood: 'रक्त समूह', fCategory: 'श्रेणी', fDistrict: 'जिला', fDob: 'जन्म तिथि', fDocsOther: 'अन्य दस्तावेज़ (नोट)', fFather: 'पिता का नाम', fGender: 'लिंग', fMother: 'माता का नाम', fOccupation: 'व्यवसाय', fParentEmail: 'अभिभावक ईमेल', fPhone2: 'दूसरा मोबाइल', fPin: 'पिन कोड', fPrevClass: 'पिछली कक्षा', fPrevSchool: 'पिछला स्कूल', fSection: 'अनुभाग', fState: 'राज्य', fTc: 'स्थानांतरण प्रमाण पत्र (TC)', fTcNo: 'TC संख्या', feeSt: 'शुल्क स्थिति', hwDone: 'पूर्ण', hwPend: 'बाकी', hwPending: 'होमवर्क बाकी', latestExam: 'हाल की परीक्षा', nextW: 'अगला', noActivity: 'अभी कोई गतिविधि दर्ज नहीं है।', noAttRecs: 'इस छात्र के लिए अभी कोई उपस्थिति रिकॉर्ड नहीं है।', noExamRecs: 'अभी कोई परीक्षा परिणाम नहीं है।', noHwRecs: 'इस कक्षा के लिए कोई होमवर्क रिकॉर्ड नहीं है।', openFees: 'शुल्क पेज खोलें', pgOf: 'का', pgPage: 'पृष्ठ', phase3W: 'Phase 3', prevW: 'पिछला', saveAddAnother: 'सहेजें और नया जोड़ें', saveDraft: 'ड्राफ़्ट सहेजें', secAcademic: 'शैक्षणिक विवरण', secDocs: 'दस्तावेज़', secParent: 'माता-पिता / अभिभावक विवरण', secPersonal: 'व्यक्तिगत विवरण', stActive: 'सक्रिय छात्र', stAvgAtt: 'औसत उपस्थिति', stBoys: 'लड़के', stByClass: 'कक्षा अनुसार छात्र', stByClassSub: 'प्रत्येक कक्षा-अनुभाग में छात्रों की संख्या।', stGenderDist: 'लड़के और लड़कियाँ', stGenderSub: 'पूरे स्कूल में लिंग वितरण।', stGirls: 'लड़कियाँ', stInactive: 'निष्क्रिय छात्र', stNewAdm: 'नए प्रवेश', stNotSpec: 'निर्दिष्ट नहीं', stPendFee: 'बकाया शुल्क वाले छात्र', stTotal: 'कुल छात्र', stuSearchPh: 'नाम, प्रवेश संख्या या मोबाइल खोजें…', tActMsg: 'छात्र सक्रिय करें', tActivated: 'छात्र सक्रिय हुआ।', tAdmCancelled: 'प्रवेश रद्द हुआ। रिकॉर्ड रखा गया है।', tAdmCreated: 'प्रवेश सहेजा गया। प्रवेश संख्या ', tCsvExported: 'छात्र सूची निर्यात हुई।', tDeactMsg: 'छात्र निष्क्रिय करें', tDeactivated: 'छात्र निष्क्रिय हुआ।', tDraftSaved: 'ड्राफ़्ट सहेजा गया।', tDupFound: 'मेल खाता छात्र पहले से मौजूद है: ', tInvalidAadhaar: 'आधार 12 अंकों का होना चाहिए (वैकल्पिक)।', tInvalidMobile: 'सही 10 अंकों का मोबाइल नंबर डालें।', tInvalidPin: 'पिन कोड 6 अंकों का होना चाहिए।', tPickClass: 'कृपया कक्षा चुनें।', tReqFields: 'कृपया छात्र का नाम, मुख्य मोबाइल, कक्षा और अनुभाग भरें।', tStuCsvOne: 'छात्र का विवरण डाउनलोड हुआ।', tTransferred: 'छात्र स्थानांतरित हुआ।', tabAcademic: 'शैक्षणिक रिकॉर्ड', tabActivity: 'गतिविधि इतिहास', tabAttendance: 'उपस्थिति इतिहास', tabDocs: 'दस्तावेज़', tabFees: 'शुल्क इतिहास', tabHomework: 'होमवर्क रिकॉर्ड', tabOverview: 'सारांश', tabParent: 'अभिभावक जानकारी', tabPersonal: 'व्यक्तिगत जानकारी', tabResults: 'परीक्षा परिणाम', thAdmNo: 'प्रवेश सं.', thExam: 'परीक्षा', thFather: 'पिता का नाम', transferTitle: 'छात्र स्थानांतरण', transferTo: 'नई कक्षा और अनुभाग', idCardSoon: 'ID कार्ड जनरेटर Phase 3 में आएगा।',
+    impTitle: 'छात्रों का बल्क आयात', impImportBtn: 'छात्र आयात करें', impTemplate: 'नमूना टेम्पलेट डाउनलोड करें', impTemplateSub: 'सिर्फ CSV प्रारूप — Excel (.xlsx) फ़ाइल यहाँ पढ़ी नहीं जा सकती। टेम्पलेट के कॉलम इस्तेमाल करें।', impChooseFile: 'CSV फ़ाइल चुनें', impPreview: 'आयात पूर्वावलोकन', impSummary: 'आयात सारांश', impValid: 'सही', impError: 'त्रुटि', impDuplicate: 'दोहरा', impReason: 'कारण', impConfirm: 'सही पंक्तियाँ आयात करें', impDone: 'पूर्ण', impNoRows: 'इस फ़ाइल में कोई पंक्ति नहीं मिली। कृपया टेम्पलेट जाँचें।', impBadHeader: 'यह फ़ाइल छात्र टेम्पलेट जैसी नहीं लगती — नाम वाला कॉलम नहीं मिला।', impNoFile: 'कृपया पहले CSV फ़ाइल चुनें।', impNoValid: 'आयात के लिए कोई सही पंक्ति नहीं है।', impImported: 'आयात हुए', impSkipped: 'छोड़े गए', impErrName: 'नाम आवश्यक है', impErrMobile: 'मोबाइल 10 अंकों का होना चाहिए', impErrMobile2: 'दूसरा मोबाइल 10 अंकों का होना चाहिए', impErrClass: 'कक्षा सही नहीं है', impErrSection: 'अनुभाग A, B या C होना चाहिए', impErrPin: 'पिन 6 अंकों का होना चाहिए', impErrAadhaar: 'आधार 12 अंकों का होना चाहिए', impErrDob: 'जन्म तिथि सही तारीख नहीं है', impErrAdmDate: 'प्रवेश तिथि सही तारीख नहीं है', impErrSession: 'सत्र सही नहीं है (जैसे 2025–26)', impErrGender: 'लिंग Boy, Girl या Other होना चाहिए', impErrBlood: 'रक्त समूह सही नहीं है', impErrCategory: 'श्रेणी General, OBC, SC, ST या Other होनी चाहिए', impErrEmail: 'अभिभावक ईमेल सही नहीं है', impErrRoll: 'रोल धनात्मक संख्या होनी चाहिए', impErrBool: 'Yes या No होना चाहिए', impErrDup: 'इसकी प्रतिलिपि', impErrDupFile: 'इस फ़ाइल में दोहरा', tImpDone: 'बल्क आयात पूर्ण हुआ।', tImpTemplate: 'नमूना टेम्पलेट डाउनलोड हुआ।',
+    promoTitle: 'छात्रों को प्रोन्नत करें', promoBtn: 'छात्र प्रोन्नत करें', promoSingle: 'छात्र प्रोन्नत करें', promoFromSession: 'वर्तमान सत्र', promoFromClass: 'वर्तमान कक्षा', promoToSession: 'लक्ष्य सत्र', promoToClass: 'लक्ष्य कक्षा', promoToSection: 'लक्ष्य अनुभाग', promoSelectAll: 'सभी चुनें', promoSelectNone: 'कोई नहीं', promoSelected: 'चयनित', promoPromote: 'चयनित को प्रोन्नत करें', promoRetain: 'चयनित को रोकें', promoNoStudents: 'इस कक्षा और सत्र में कोई छात्र नहीं है।', promoNoSelect: 'कृपया कम से कम एक छात्र चुनें।', promoNoop: 'लक्ष्य कक्षा और सत्र वर्तमान जैसे ही हैं — बदलने को कुछ नहीं।', promoNoopRetain: 'लक्ष्य सत्र वर्तमान सत्र जैसा ही है — बदलने को कुछ नहीं।', promoDone: 'प्रोन्नति पूर्ण हुई।', promoPromoted: 'प्रोन्नत हुए', promoRetained: 'रोके गए', promoNote: 'उपस्थिति, शुल्क, परीक्षा अंक और होमवर्क इतिहास सुरक्षित रहता है।', promoSingleNote: 'एक छात्र की प्रोन्नति', promoSkipped: 'छोड़े गए (पहले ही स्थानांतरित)', promoNotEligible: 'केवल सक्रिय या निष्क्रिय छात्र ही प्रोन्नत हो सकते हैं।'
   }
 };
 function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || I18N.en[k] || k; }
@@ -995,6 +1251,7 @@ function logout() {
   state.attSnapKey = ''; state.attSnap = {};
   state.feeStudent = null; state.feeSearch = ''; state.feeType = 'All'; state.feeFilter = 'All'; state.feeFormOpen = false; state.feePreselect = null;
   state.profileStudent = null; state.profileTab = 'overview'; state.stuPage = 1;
+  promoState = null; importState.rows = null; importState.result = null;
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
   $('loginId').value = ''; $('loginPw').value = '';
   $('page').innerHTML = '';
@@ -1033,6 +1290,7 @@ function go(view) {
   state.view = ok ? view : 'dashboard';
   if (state.view !== 'fees') state.feeStudent = null;
   state.profileStudent = null;
+  promoState = null; importState.rows = null; importState.result = null;
   persistSession();
   toggleSidebar(false);
   renderApp();
@@ -1329,6 +1587,7 @@ function schoolDashboard() {
 }
 function studentsPage() {
   if (state.profileStudent) return studentProfilePage(state.profileStudent);
+  if (promoState) return promotionPage();
   var st = studentStats();
   var list = stuSorted(stuFiltered());
   var pages = stuPageCount(list);
@@ -1360,6 +1619,8 @@ function studentsPage() {
     '<select onchange="state.stuFee=this.value;state.stuPage=1;renderPage()">' + opt(['Paid', 'Pending', '—'], state.stuFee, t('allFeeSt')) + '</select>' +
     '<select onchange="state.stuStatus=this.value;state.stuPage=1;renderPage()">' + opt(STU_STATUSES, state.stuStatus, t('allStatus')) + '</select>' +
     '<button class="btn ghost" onclick="exportStudentsCSV()">⬇ ' + t('exportCsv') + '</button>' +
+    '<button class="btn ghost" onclick="openImportModal()">📥 ' + t('impImportBtn') + '</button>' +
+    '<button class="btn ghost" onclick="openPromotion()">⬆️ ' + t('promoBtn') + '</button>' +
     '<button class="btn" onclick="studentForm()">+ ' + t('addStudent') + '</button></div></div>' +
     '<div class="stats">' +
     statCard('👥', 'blue', t('stTotal'), st.total, '', 'up') +
@@ -1544,6 +1805,7 @@ function stuActions(id) {
     '<button class="btn ghost" onclick="closeModal();toast(t(\'idCardSoon\'))">🪪 ' + t('actIdCard') + ' <span class="muted">(' + t('phase3W') + ')</span></button>' +
     '<button class="btn ghost" onclick="closeModal();downloadStudentCSV(\'' + s.id + '\')">' + t('actDownload') + '</button>' +
     '<button class="btn ghost" onclick="closeModal();transferStudent(\'' + s.id + '\')">' + t('actTransfer') + '</button>' +
+    ((stt === 'Active' || stt === 'Inactive') ? '<button class="btn ghost" onclick="closeModal();promoteSingle(\'' + s.id + '\')">⬆️ ' + t('promoSingle') + '</button>' : '') +
     toggleBtn +
     '<button class="btn danger" onclick="closeModal();deleteStudent(\'' + s.id + '\')">' + t('deleteBtn') + '</button>' +
     '</div>');
@@ -1595,6 +1857,170 @@ function doTransfer(e, id) {
   toast(t('tTransferred'));
   return false;
 }
+
+/* ================= Phase 2: promotion =================
+   History is preserved by design: fee records keep their historical cls,
+   marks stay keyed by exam, attendance stays keyed by date|old class — so a
+   promoted student's whole history stays visible in the profile tabs. */
+function nextSession(sess) {
+  var m = /^(\d{4})–(\d{2})$/.exec(String(sess || '').trim());
+  if (!m) return '';
+  var y = parseInt(m[1], 10) + 1;
+  return y + '–' + String((y + 1) % 100).padStart(2, '0');
+}
+function nextClassPart(cp) {
+  var parts = classParts();
+  var i = parts.indexOf(cp);
+  return i === -1 ? cp : parts[Math.min(i + 1, parts.length - 1)];
+}
+function promoEligible(fromSession, fromCls) {
+  // Only Active/Inactive students in that exact class + session.
+  // Draft/Cancelled students are never listed. A second run on the same
+  // class/session naturally finds none of the already-promoted students.
+  return db.students.filter(function (s) {
+    return s.cls === fromCls && (s.session || '') === fromSession && ((s.status || 'Active') === 'Active' || (s.status || 'Active') === 'Inactive');
+  });
+}
+// Pure promotion core (UI-free, so the harness can drive it directly).
+// sel: { ids, toSession, toCls (full '10th-A'), mode: 'promote'|'retain' }.
+// Returns { promoted, retained, skipped: [{id, reason}] }.
+function runPromotion(sel) {
+  var out = { promoted: 0, retained: 0, skipped: [] };
+  (sel.ids || []).forEach(function (id) {
+    var s = db.students.find(function (x) { return x.id === id; });
+    if (!s) { out.skipped.push({ id: id, reason: t('promoNotEligible') }); return; }
+    var stt = s.status || 'Active';
+    if (stt !== 'Active' && stt !== 'Inactive') { out.skipped.push({ id: id, reason: t('promoNotEligible') }); return; }
+    var fromCls = s.cls, fromSess = s.session || '';
+    if (sel.mode === 'retain') {
+      if (fromSess === sel.toSession) { out.skipped.push({ id: id, reason: t('promoNoopRetain') }); return; }
+      s.session = sel.toSession;
+      logAudit('Student retained', s.name + ' • ' + (s.admissionNo || '') + ' • ' + 'Retained in ' + fromCls + ', session ' + fromSess + ' → ' + sel.toSession);
+      out.retained++;
+    } else {
+      if (fromCls === sel.toCls && fromSess === sel.toSession) { out.skipped.push({ id: id, reason: t('promoNoop') }); return; }
+      s.cls = sel.toCls;
+      s.roll = nextRoll(sel.toCls); // next free roll in the TARGET class, in order
+      s.session = sel.toSession;
+      logAudit('Student promoted', s.name + ' • ' + (s.admissionNo || '') + ' • ' + fromCls + ' → ' + sel.toCls + ', session ' + fromSess + ' → ' + sel.toSession);
+      out.promoted++;
+    }
+  });
+  saveDB(db);
+  return out;
+}
+function promoList() {
+  if (!promoState) return [];
+  if (promoState.mode === 'single' && promoState.singleId) {
+    var s = db.students.find(function (x) { return x.id === promoState.singleId; });
+    return s ? [s] : [];
+  }
+  return promoEligible(promoState.fromSession, promoState.fromCls);
+}
+function openPromotion(singleId) {
+  state.profileStudent = null; // never show profile + promotion at once
+  var s = singleId ? db.students.find(function (x) { return x.id === singleId; }) : null;
+  var fromSession = s ? (s.session || db.profile.session) : db.profile.session;
+  var fromCls = s ? s.cls : '9th-A';
+  var sel = {};
+  if (singleId) sel[singleId] = true;
+  promoState = {
+    mode: singleId ? 'single' : 'bulk',
+    singleId: singleId || null,
+    fromSession: fromSession, fromCls: fromCls,
+    toSession: nextSession(fromSession) || db.profile.session,
+    toCls: nextClassPart(classPartOf(fromCls)), toSec: sectionOf(fromCls) || 'A',
+    selected: sel, result: null
+  };
+  renderPage();
+}
+function promoteSingle(id) { openPromotion(id); }
+function onPromoFromChange() {
+  if (!promoState) return;
+  var fs = $('promoFromSession'), fc = $('promoFromClass');
+  if (fs) promoState.fromSession = fs.value;
+  if (fc) promoState.fromCls = fc.value;
+  promoState.selected = {};
+  promoState.result = null;
+  renderPage();
+}
+function onPromoToChange() {
+  if (!promoState) return;
+  var ts = $('promoToSession'), tc = $('promoToClass'), tsec = $('promoToSection');
+  if (ts) promoState.toSession = ts.value;
+  if (tc) promoState.toCls = tc.value;
+  if (tsec) promoState.toSec = tsec.value;
+  renderPage();
+}
+function togglePromo(id, checked) {
+  if (!promoState) return;
+  if (checked) promoState.selected[id] = true; else delete promoState.selected[id];
+  renderPage();
+}
+function togglePromoAll(checked) {
+  if (!promoState) return;
+  if (checked) promoList().forEach(function (s) { promoState.selected[s.id] = true; });
+  else promoState.selected = {};
+  renderPage();
+}
+function doPromote(mode) {
+  if (!promoState) return;
+  var ids = Object.keys(promoState.selected);
+  if (!ids.length) { toast(t('promoNoSelect')); return; }
+  var toCls = promoState.toCls + '-' + promoState.toSec;
+  var res = runPromotion({ ids: ids, toSession: promoState.toSession, toCls: toCls, mode: mode });
+  promoState.result = { mode: mode, promoted: res.promoted, retained: res.retained, skipped: res.skipped.length };
+  promoState.selected = {};
+  renderPage();
+  if (res.promoted === 0 && res.retained === 0) toast(mode === 'retain' ? t('promoNoopRetain') : t('promoNoop'));
+  else toast(t('promoDone') + ' ' + res.promoted + ' ' + t('promoPromoted') + ', ' + res.retained + ' ' + t('promoRetained') + '.');
+}
+function promotionPage() {
+  var p = promoState;
+  var list = promoList();
+  var sessOpts = function (cur) {
+    var opts = [];
+    SESSIONS.concat(sessionOptions()).forEach(function (s) { if (opts.indexOf(s) === -1) opts.push(s); });
+    if (opts.indexOf(cur) === -1) opts.push(cur);
+    return opts.map(function (s) { return '<option ' + (s === cur ? 'selected' : '') + '>' + s + '</option>'; }).join('');
+  };
+  var clsOpts = function (cur) {
+    return CLASSES.map(function (c) { return '<option ' + (c === cur ? 'selected' : '') + '>' + c + '</option>'; }).join('');
+  };
+  var cpOpts = function (cur) {
+    return classParts().map(function (c) { return '<option ' + (c === cur ? 'selected' : '') + '>' + c + '</option>'; }).join('');
+  };
+  var secOpts = function (cur) {
+    return SECTIONS.map(function (x) { return '<option ' + (x === cur ? 'selected' : '') + '>' + x + '</option>'; }).join('');
+  };
+  var selCount = Object.keys(p.selected).length;
+  var rows = list.map(function (s) {
+    var checked = !!p.selected[s.id];
+    return '<label class="promo-row"><input type="checkbox" ' + (checked ? 'checked' : '') + ' ' + (p.mode === 'single' ? 'disabled' : '') + ' onchange="togglePromo(\'' + s.id + '\', this.checked)">' +
+      '<span style="flex:1"><b>' + esc(s.name) + '</b> <span class="muted">• ' + esc(s.cls) + ' • ' + t('thAdmNo') + ' ' + esc(s.admissionNo || '—') + ' • ' + t('thRoll') + ' ' + s.roll + '</span></span>' +
+      '<span class="badge ' + ((s.status || 'Active') === 'Active' ? 'green' : 'grey') + '">' + (s.status || 'Active') + '</span></label>';
+  }).join('');
+  var resHtml = '';
+  if (p.result) {
+    resHtml = '<div class="card" style="margin-top:16px"><h3>' + t('promoDone') + '</h3><p>' + p.result.promoted + ' ' + t('promoPromoted') + ' • ' + p.result.retained + ' ' + t('promoRetained') + ' • ' + p.result.skipped + ' ' + t('impSkipped') + '</p></div>';
+  }
+  return '<div class="page-head"><div><h2>' + t('promoTitle') + '</h2><p>' + t('promoNote') + '</p></div>' +
+    '<div class="toolbar"><button class="btn ghost" onclick="promoState=null;renderPage()">← ' + t('backDir') + '</button></div></div>' +
+    (p.mode === 'single' ? '<p class="muted" style="margin-bottom:12px">' + t('promoSingleNote') + '</p>' : '') +
+    '<div class="card"><div class="form-grid">' +
+    '<div><label>' + t('promoFromSession') + '</label><select id="promoFromSession" onchange="onPromoFromChange()">' + sessOpts(p.fromSession) + '</select></div>' +
+    '<div><label>' + t('promoFromClass') + '</label><select id="promoFromClass" onchange="onPromoFromChange()">' + clsOpts(p.fromCls) + '</select></div>' +
+    '<div><label>' + t('promoToSession') + '</label><select id="promoToSession" onchange="onPromoToChange()">' + sessOpts(p.toSession) + '</select></div>' +
+    '<div><label>' + t('promoToClass') + '</label><select id="promoToClass" onchange="onPromoToChange()">' + cpOpts(p.toCls) + '</select></div>' +
+    '<div><label>' + t('promoToSection') + '</label><select id="promoToSection" onchange="onPromoToChange()">' + secOpts(p.toSec) + '</select></div>' +
+    '</div></div>' +
+    '<div class="card" style="margin-top:16px"><div class="head-row"><div><h3>' + list.length + ' ' + t('studentsW') + '</h3><p class="card-sub">' + selCount + ' ' + t('promoSelected') + '</p></div>' +
+    '<div class="toolbar"><button class="btn ghost sm" onclick="togglePromoAll(true)">' + t('promoSelectAll') + '</button>' +
+    '<button class="btn ghost sm" onclick="togglePromoAll(false)">' + t('promoSelectNone') + '</button></div></div>' +
+    '<div class="promo-list">' + (rows || '<div class="empty">' + t('promoNoStudents') + '</div>') + '</div>' +
+    '<div class="actions" style="justify-content:flex-start;margin-top:16px"><button class="btn green" onclick="doPromote(\'promote\')">' + t('promoPromote') + '</button>' +
+    '<button class="btn ghost" onclick="doPromote(\'retain\')">' + t('promoRetain') + '</button></div></div>' + resHtml;
+}
 function deactivateStudent(id) {
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
@@ -1617,6 +2043,7 @@ function cancelAdmission(id) {
   });
 }
 function openStudentProfile(id) {
+  promoState = null;
   state.profileStudent = id; state.profileTab = 'overview';
   renderPage();
 }
@@ -1632,7 +2059,8 @@ function studentProfilePage(id) {
   }).join('') + '</div>';
   return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + esc(s.cls) + ' • ' + t('thAdmNo') + ' ' + esc(s.admissionNo || '—') + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • <span class="badge ' + badgeCls + '">' + stt + '</span></p></div></div>' +
     '<div class="toolbar"><button class="btn ghost" onclick="state.profileStudent=null;renderPage()">← ' + t('backDir') + '</button>' +
-    '<button class="btn" onclick="studentForm(\'' + s.id + '\')">' + t('editStudent') + '</button></div></div>' +
+    '<button class="btn" onclick="studentForm(\'' + s.id + '\')">' + t('editStudent') + '</button>' +
+    ((stt === 'Active' || stt === 'Inactive') ? '<button class="btn ghost" onclick="promoteSingle(\'' + s.id + '\')">⬆️ ' + t('promoSingle') + '</button>' : '') + '</div></div>' +
     tabBar + '<div style="margin-top:16px">' + profileTabBody(s, state.profileTab || 'overview') + '</div>';
 }
 function profileTabBody(s, tab) {
