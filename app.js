@@ -180,6 +180,34 @@ function seedDB() {
   };
 }
 
+/* A brand-new school starts EMPTY — no demo students, fees or notices.
+   Only the Super Admin (platform owner) gets the seeded demo DB.
+   Same shape as seedDB() so every page works. */
+function emptyDB() {
+  return {
+    v: 2,
+    schools: [],
+    students: [],
+    teachers: [],
+    feeMonths: FEE_MONTHS,
+    feeRecords: [],
+    feeStructure: defaultFeeStructure(),
+    feeExtras: { admissionFee: 0, cautionMoney: 0, annualCharges: 0, transportFee: 0 },
+    admCounter: 1,
+    receipts: [],
+    receiptCounter: 1,
+    auditLog: [],
+    attendanceAgg: { present: 0, absent: 0, late: 0 },
+    attendance: {},
+    exams: [],
+    marks: [],
+    homework: [],
+    notices: [],
+    activities: [],
+    profile: { name: '', city: '', principal: '', phone: '', email: '', session: '2025–26', address: '' }
+  };
+}
+
 /* ================= DB helpers ================= */
 function migrateAttendance(d) {
   // Old shape: { date, cls, records } (single day). New: keyed by 'YYYY-MM-DD|Class'.
@@ -327,7 +355,7 @@ function findStudentByAdmNo(admNo) {
   });
   return found;
 }
-function loadDB(override) {
+function loadDB(override, seed) {
   try {
     var raw = localStorage.getItem(DB_KEY);
     if (raw) {
@@ -337,7 +365,7 @@ function loadDB(override) {
       try { localStorage.setItem(DB_KEY + '.bak', raw); } catch (e2) { /* ignore */ }
     }
   } catch (e) { /* storage unavailable — fall back to memory */ }
-  var fresh = seedDB();
+  var fresh = (seed === false) ? emptyDB() : seedDB();
   if (override) applySchoolProfile(fresh, override);
   saveDB(fresh);
   return fresh;
@@ -1331,7 +1359,7 @@ function persistSession() {
 function loginAs(a, opts) {
   state.role = a.role; state.user = a; state.view = 'dashboard';
   DB_KEY = dbKeyFor(a);
-  db = loadDB(a.role === 'school' ? a : null);
+  db = loadDB(a.role === 'school' ? a : null, a.role === 'super');
   showView('app'); renderApp();
   persistSession();
   if (!opts || !opts.silent) toast(t('tLoggedIn') + ' ' + a.name);
@@ -1768,8 +1796,8 @@ function schoolDashboard() {
   return '<div class="page-head"><div class="prof-head">' + logoHtml + '<div><h2>' + t('schoolDashboard') + '</h2><p>' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div></div>' +
     '<div class="toolbar"><button class="btn sm" onclick="downloadReportCSV(\'fees\')">⬇ ' + t('downloadReport') + '</button></div></div>' +
   '<div class="stats">' +
-    statCard('🎒', 'blue', t('totalStudents'), 1250, '↑ 5%', 'up') +
-    statCard('👩‍🏫', 'green', t('totalTeachers'), 85, '↑ 2%', 'up') +
+    statCard('🎒', 'blue', t('totalStudents'), db.students.length, db.students.length ? '↑ 5%' : '', 'up') +
+    statCard('👩‍🏫', 'green', t('totalTeachers'), db.teachers.length, db.teachers.length ? '↑ 2%' : '', 'up') +
     statCard('💰', 'orange', t('feeCollected'), ft.collected, '↑ 78%', 'up', { prefix: '₹' }) +
     statCard('⏰', 'red', t('pendingFee'), ft.pending, '', 'down', { prefix: '₹' }) +
   '</div>' +
