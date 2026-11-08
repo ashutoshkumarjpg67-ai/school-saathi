@@ -219,6 +219,100 @@ var state = { role: null, user: null, view: 'dashboard', lang: 'en', feeFilter: 
 /* ================= utils ================= */
 function $(id) { return document.getElementById(id); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+
+/* ================= photos + school logo (v8) ================= */
+function initialsOf(name) { return String(name || '').split(' ').filter(function (w) { return w; }).map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase(); }
+function avatarHTML(photo, name, cls) {
+  var c = cls || 'avatar';
+  if (photo) return '<span class="' + c + ' has-photo"><img src="' + esc(photo) + '" alt=""></span>';
+  return '<span class="' + c + '">' + esc(initialsOf(name)) + '</span>';
+}
+function photoPrevHTML(photo, name) {
+  if (photo) return '<img class="photo-prev" src="' + esc(photo) + '" alt="">';
+  return '<span class="photo-prev">' + esc(initialsOf(name)) + '</span>';
+}
+function fitWithin(w, h, max) {
+  w = +w || 0; h = +h || 0; max = +max || 0;
+  if (!w || !h || !max) return { w: 0, h: 0 };
+  var s = Math.min(1, max / Math.max(w, h));
+  return { w: Math.max(1, Math.round(w * s)), h: Math.max(1, Math.round(h * s)) };
+}
+function dataUrlBytes(url) { var p = String(url || '').split(',')[1] || ''; return Math.floor(p.length * 0.75); }
+function compressAttempts(w, h, opts) {
+  var list = [];
+  if (opts.format === 'png') {
+    [opts.max, Math.round(opts.max / 2)].forEach(function (m) { var d = fitWithin(w, h, m); list.push({ w: d.w, h: d.h, q: 1, format: 'png' }); });
+  } else {
+    [0.8, 0.7, 0.6, 0.5].forEach(function (q) { var d = fitWithin(w, h, opts.max); list.push({ w: d.w, h: d.h, q: q, format: 'jpeg' }); });
+    [384, 256].forEach(function (m) { var d = fitWithin(w, h, m); list.push({ w: d.w, h: d.h, q: 0.6, format: 'jpeg' }); });
+  }
+  return list;
+}
+var PHOTO_MAX = 512, PHOTO_CAP = 120 * 1024, LOGO_MAX = 256, LOGO_CAP = 250 * 1024;
+var pendingPhoto = null, pendingLogo = null;
+function compressImageFile(file, opts, cb) {
+  if (typeof FileReader === 'undefined' || typeof Image === 'undefined' || typeof document === 'undefined' || !document.createElement) { cb(null, 'not-supported'); return; }
+  if (!file) { cb(null, 'no-file'); return; }
+  var reader = new FileReader();
+  reader.onerror = function () { cb(null, 'read-failed'); };
+  reader.onload = function () {
+    var img = new Image();
+    img.onerror = function () { cb(null, 'bad-image'); };
+    img.onload = function () {
+      try {
+        var iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+        if (!iw || !ih) { cb(null, 'bad-image'); return; }
+        var attempts = compressAttempts(iw, ih, opts);
+        for (var i = 0; i < attempts.length; i++) {
+          var a = attempts[i];
+          var c = document.createElement('canvas');
+          c.width = a.w; c.height = a.h;
+          var cx = c.getContext('2d');
+          if (!cx) { cb(null, 'no-canvas'); return; }
+          if (a.format === 'jpeg') { cx.fillStyle = '#ffffff'; cx.fillRect(0, 0, a.w, a.h); }
+          cx.drawImage(img, 0, 0, a.w, a.h);
+          var url = a.format === 'png' ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', a.q);
+          if (dataUrlBytes(url) <= opts.cap) { cb(url, null); return; }
+        }
+        cb(null, 'too-big');
+      } catch (e) { cb(null, 'compress-failed'); }
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+}
+function onStudentPhoto(input) {
+  var file = input && input.files && input.files[0];
+  if (!file) return;
+  compressImageFile(file, { max: PHOTO_MAX, cap: PHOTO_CAP, format: 'jpeg' }, function (url, err) {
+    if (!url) { toast(err === 'too-big' ? t('tPhotoTooBig') : t('tPhotoError')); input.value = ''; return; }
+    pendingPhoto = url;
+    var prev = $('fStPhotoPrev');
+    if (prev) prev.innerHTML = photoPrevHTML(url, $('fStName') ? $('fStName').value : '');
+  });
+}
+function clearStudentPhoto() {
+  pendingPhoto = '';
+  var inp = $('fStPhoto'); if (inp) inp.value = '';
+  var prev = $('fStPhotoPrev');
+  if (prev) prev.innerHTML = photoPrevHTML(null, $('fStName') ? $('fStName').value : '');
+}
+function onSchoolLogo(input) {
+  var file = input && input.files && input.files[0];
+  if (!file) return;
+  compressImageFile(file, { max: LOGO_MAX, cap: LOGO_CAP, format: 'png' }, function (url, err) {
+    if (!url) { toast(err === 'too-big' ? t('tLogoTooBig') : t('tPhotoError')); input.value = ''; return; }
+    pendingLogo = url;
+    var prev = $('fPfLogoPrev');
+    if (prev) prev.innerHTML = '<img class="photo-prev" src="' + esc(url) + '" alt="">';
+  });
+}
+function clearSchoolLogo() {
+  pendingLogo = '';
+  var inp = $('fPfLogo'); if (inp) inp.value = '';
+  var prev = $('fPfLogoPrev');
+  if (prev) prev.innerHTML = '<span class="photo-prev">🎓</span>';
+}
 function inr(n) { return '₹' + Number(n).toLocaleString('en-IN'); }
 function num(n) { return Number(n).toLocaleString('en-IN'); }
 function todayIST() { // IST date, not UTC (before 5:30 AM UTC date is yesterday in IST)
@@ -509,7 +603,7 @@ var I18N = {
     planBasicT: 'Basic — ₹8 / student / month', planBasicD: 'Attendance, fees, notices', planStdT: 'Standard — ₹12 / student / month', planStdD: '+ Exams, homework, reports', planPremT: 'Premium — ₹15 / student / month', planPremD: '+ Analytics, WhatsApp, priority support', setupLine: 'Setup ₹4,999 one-time • 1 month free trial • Annual advance = 2 months free.',
     guide1t: 'Add a school', guide1d: 'Schools → + Add School → fill details → Save. New schools start as Pending until approved.', guide2t: 'Collect a fee', guide2d: 'School Admin → Fees → Collect on a pending record. Totals update instantly.', guide3t: 'Mark attendance', guide3d: 'School Admin → Attendance → pick class & date → Present / Absent / Late → Save.',
     contactPhone: 'Phone', contactHours: 'Hours', hoursV: 'Mon–Sat, 9 AM – 6 PM', raiseSupport: 'Raise a Support Request', supportNoted: 'Support request noted — we will call you back.',
-    sampleList: 'sample list below', plansSub: 'Per-student monthly pricing', collectedW: 'Collected', pendingW: 'Pending', allW: 'All', editStudent: 'Edit Student', thePlatform: 'the platform', repSchoolsSub: 'city, students, plan, status', subActive: 'Active', subExpired: 'Expired', subTrial: 'Trial', feeTypeTuition: 'Tuition', feeTypeAdmission: 'Admission', feeTypeTransport: 'Transport', feeTypeExam: 'Exam', feeTypeLibrary: 'Library', feeTypeActivity: 'Activity', feeTypeComputer: 'Computer Lab', feeTypeOther: 'Other', allTypes: 'All Types', searchFee: 'Search name, enrollment no. or class…', thEnr: 'Enr. No.', thType: 'Type', feeByType: 'Fee by Type', feeByTypeSub: 'Collected and pending per fee type, computed live.', addFee: 'Add Fee', addFeeSub: 'Add one fee record manually for any student.', feeStruct: 'Fee Structure', feeStructSub: 'Monthly amount per class. Generate uses this to create fee records.', genFees: 'Generate Fees', saveStruct: 'Save Structure', addRow: 'Add Row', customType: 'Custom…', typeCustomPh: 'Type a custom fee type', fStudent: 'Student', fMonth: 'Month', fType: 'Fee Type', fAmount: 'Amount (₹)', fStatus: 'Status', fDate: 'Date', printList: 'Print List', printStmt: 'Print Statement', backFees: 'Back to All Fees', totalBilled: 'Total Billed', totalPaid: 'Paid', totalPending: 'Pending', feeRecsH: 'Fee Records', feeProfileSub: 'All fee records for this student in one place.', tFeeAdded: 'Fee record added.', tPickStudent: 'Please choose a student.', tAmtPositive: 'Amount must be more than 0.', tTypeRequired: 'Please type the custom fee type.', tStructSaved: 'Fee structure saved.', tStructAdded: 'Structure row added.', tStructRemoved: 'Structure row removed.', tGenRecords: 'fee records generated for', tGenSkipped: 'already existed', tNoFeeRecs: 'No fee records yet for this student.', printTitle: 'Fee Statement', printListTitle: 'Fee List', printGenOn: 'Generated on', closeW: 'Close', saveFeeBtn: 'Save Fee'
+    sampleList: 'sample list below', plansSub: 'Per-student monthly pricing', collectedW: 'Collected', pendingW: 'Pending', allW: 'All', editStudent: 'Edit Student', thePlatform: 'the platform', repSchoolsSub: 'city, students, plan, status', subActive: 'Active', subExpired: 'Expired', subTrial: 'Trial', feeTypeTuition: 'Tuition', feeTypeAdmission: 'Admission', feeTypeTransport: 'Transport', feeTypeExam: 'Exam', feeTypeLibrary: 'Library', feeTypeActivity: 'Activity', feeTypeComputer: 'Computer Lab', feeTypeOther: 'Other', allTypes: 'All Types', searchFee: 'Search name, enrollment no. or class…', thEnr: 'Enr. No.', thType: 'Type', feeByType: 'Fee by Type', feeByTypeSub: 'Collected and pending per fee type, computed live.', addFee: 'Add Fee', addFeeSub: 'Add one fee record manually for any student.', feeStruct: 'Fee Structure', feeStructSub: 'Monthly amount per class. Generate uses this to create fee records.', genFees: 'Generate Fees', saveStruct: 'Save Structure', addRow: 'Add Row', customType: 'Custom…', typeCustomPh: 'Type a custom fee type', fStudent: 'Student', fMonth: 'Month', fType: 'Fee Type', fAmount: 'Amount (₹)', fStatus: 'Status', fDate: 'Date', printList: 'Print List', printStmt: 'Print Statement', backFees: 'Back to All Fees', totalBilled: 'Total Billed', totalPaid: 'Paid', totalPending: 'Pending', feeRecsH: 'Fee Records', feeProfileSub: 'All fee records for this student in one place.', tFeeAdded: 'Fee record added.', tPickStudent: 'Please choose a student.', tAmtPositive: 'Amount must be more than 0.', tTypeRequired: 'Please type the custom fee type.', tStructSaved: 'Fee structure saved.', tStructAdded: 'Structure row added.', tStructRemoved: 'Structure row removed.', tGenRecords: 'fee records generated for', tGenSkipped: 'already existed', tNoFeeRecs: 'No fee records yet for this student.', printTitle: 'Fee Statement', printListTitle: 'Fee List', printGenOn: 'Generated on', closeW: 'Close', saveFeeBtn: 'Save Fee', photoLabel: 'Student Photo', photoHint: 'Photo is compressed automatically (max 512px, ~120KB).', removePhoto: 'Remove photo', logoLabel: 'School Logo', logoHint: 'Logo is compressed automatically (max 256px, PNG keeps transparency).', removeLogo: 'Remove logo', tPhotoTooBig: 'That photo is too large even after compression. Please choose a smaller photo.', tLogoTooBig: 'That logo is too large even after compression. Please choose a smaller logo.', tPhotoError: 'Could not read that image. Please choose another file.'
   },
   hi: {
     dashboard: 'डैशबोर्ड', schools: 'स्कूल', users: 'उपयोगकर्ता', subscriptions: 'सदस्यता', analytics: 'विश्लेषण', settings: 'सेटिंग्स', reports: 'रिपोर्ट', help: 'सहायता', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalSchools: 'कुल स्कूल', totalUsers: 'कुल उपयोगकर्ता', activeSchools: 'सक्रिय स्कूल', pendingApproval: 'स्वीकृति लंबित', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -549,7 +643,7 @@ var I18N = {
     planBasicT: 'बेसिक — ₹8 / छात्र / माह', planBasicD: 'उपस्थिति, शुल्क, नोटिस', planStdT: 'स्टैंडर्ड — ₹12 / छात्र / माह', planStdD: '+ परीक्षा, होमवर्क, रिपोर्ट', planPremT: 'प्रीमियम — ₹15 / छात्र / माह', planPremD: '+ विश्लेषण, WhatsApp, प्राथमिकता सहायता', setupLine: 'सेटअप ₹4,999 एक बार • 1 महीना मुफ़्त ट्रायल • वार्षिक अग्रिम = 2 महीने मुफ़्त।',
     guide1t: 'स्कूल जोड़ें', guide1d: 'स्कूल → + स्कूल जोड़ें → विवरण भरें → सहेजें। नए स्कूल स्वीकृति तक लंबित रहते हैं।', guide2t: 'शुल्क वसूलें', guide2d: 'स्कूल एडमिन → शुल्क → बकाया रिकॉर्ड पर वसूलें दबाएँ। कुल तुरंत अपडेट होता है।', guide3t: 'उपस्थिति दर्ज करें', guide3d: 'स्कूल एडमिन → उपस्थिति → कक्षा और तारीख चुनें → उपस्थित / अनुपस्थित / देर से → सहेजें।',
     contactPhone: 'फ़ोन', contactHours: 'समय', hoursV: 'सोम–शनि, सुबह 9 – शाम 6', raiseSupport: 'सहायता अनुरोध भेजें', supportNoted: 'सहायता अनुरोध दर्ज हुआ — हम आपको कॉल करेंगे।',
-    sampleList: 'नमूना सूची नीचे', plansSub: 'प्रति छात्र मासिक मूल्य', collectedW: 'संग्रह', pendingW: 'बकाया', allW: 'सभी', editStudent: 'छात्र बदलें', thePlatform: 'पूरे प्लेटफ़ॉर्म', repSchoolsSub: 'शहर, छात्र, योजना, स्थिति', subActive: 'सक्रिय', subExpired: 'समाप्त', subTrial: 'परीक्षण', feeTypeTuition: 'ट्यूशन', feeTypeAdmission: 'प्रवेश', feeTypeTransport: 'परिवहन', feeTypeExam: 'परीक्षा', feeTypeLibrary: 'पुस्तकालय', feeTypeActivity: 'गतिविधि', feeTypeComputer: 'कंप्यूटर लैब', feeTypeOther: 'अन्य', allTypes: 'सभी प्रकार', searchFee: 'नाम, नामांकन संख्या या कक्षा खोजें…', thEnr: 'नामांकन सं.', thType: 'प्रकार', feeByType: 'प्रकार के अनुसार शुल्क', feeByTypeSub: 'प्रति प्रकार संग्रह और बकाया, लाइव गणना।', addFee: 'शुल्क जोड़ें', addFeeSub: 'किसी भी छात्र के लिए एक शुल्क रिकॉर्ड जोड़ें।', feeStruct: 'शुल्क संरचना', feeStructSub: 'प्रति कक्षा मासिक राशि। Generate इसी से रिकॉर्ड बनाता है।', genFees: 'शुल्क बनाएँ', saveStruct: 'संरचना सहेजें', addRow: 'पंक्ति जोड़ें', customType: 'कस्टम…', typeCustomPh: 'शुल्क का प्रकार लिखें', fStudent: 'छात्र', fMonth: 'महीना', fType: 'शुल्क प्रकार', fAmount: 'राशि (₹)', fStatus: 'स्थिति', fDate: 'तारीख', printList: 'सूची छापें', printStmt: 'विवरण छापें', backFees: 'सभी शुल्क पर वापस', totalBilled: 'कुल बिल', totalPaid: 'जमा', totalPending: 'बकाया', feeRecsH: 'शुल्क रिकॉर्ड', feeProfileSub: 'इस छात्र के सभी शुल्क रिकॉर्ड एक ही जगह।', tFeeAdded: 'शुल्क रिकॉर्ड जुड़ गया।', tPickStudent: 'कृपया छात्र चुनें।', tAmtPositive: 'राशि 0 से अधिक होनी चाहिए।', tTypeRequired: 'कृपया शुल्क का प्रकार लिखें।', tStructSaved: 'शुल्क संरचना सहेजी गई।', tStructAdded: 'संरचना पंक्ति जुड़ी।', tStructRemoved: 'संरचना पंक्ति हटाई गई।', tGenRecords: 'शुल्क रिकॉर्ड बने', tGenSkipped: 'पहले से थे', tNoFeeRecs: 'इस छात्र के लिए अभी कोई शुल्क रिकॉर्ड नहीं है।', printTitle: 'शुल्क विवरण', printListTitle: 'शुल्क सूची', printGenOn: 'बनाया गया', closeW: 'बंद करें', saveFeeBtn: 'शुल्क सहेजें'
+    sampleList: 'नमूना सूची नीचे', plansSub: 'प्रति छात्र मासिक मूल्य', collectedW: 'संग्रह', pendingW: 'बकाया', allW: 'सभी', editStudent: 'छात्र बदलें', thePlatform: 'पूरे प्लेटफ़ॉर्म', repSchoolsSub: 'शहर, छात्र, योजना, स्थिति', subActive: 'सक्रिय', subExpired: 'समाप्त', subTrial: 'परीक्षण', feeTypeTuition: 'ट्यूशन', feeTypeAdmission: 'प्रवेश', feeTypeTransport: 'परिवहन', feeTypeExam: 'परीक्षा', feeTypeLibrary: 'पुस्तकालय', feeTypeActivity: 'गतिविधि', feeTypeComputer: 'कंप्यूटर लैब', feeTypeOther: 'अन्य', allTypes: 'सभी प्रकार', searchFee: 'नाम, नामांकन संख्या या कक्षा खोजें…', thEnr: 'नामांकन सं.', thType: 'प्रकार', feeByType: 'प्रकार के अनुसार शुल्क', feeByTypeSub: 'प्रति प्रकार संग्रह और बकाया, लाइव गणना।', addFee: 'शुल्क जोड़ें', addFeeSub: 'किसी भी छात्र के लिए एक शुल्क रिकॉर्ड जोड़ें।', feeStruct: 'शुल्क संरचना', feeStructSub: 'प्रति कक्षा मासिक राशि। Generate इसी से रिकॉर्ड बनाता है।', genFees: 'शुल्क बनाएँ', saveStruct: 'संरचना सहेजें', addRow: 'पंक्ति जोड़ें', customType: 'कस्टम…', typeCustomPh: 'शुल्क का प्रकार लिखें', fStudent: 'छात्र', fMonth: 'महीना', fType: 'शुल्क प्रकार', fAmount: 'राशि (₹)', fStatus: 'स्थिति', fDate: 'तारीख', printList: 'सूची छापें', printStmt: 'विवरण छापें', backFees: 'सभी शुल्क पर वापस', totalBilled: 'कुल बिल', totalPaid: 'जमा', totalPending: 'बकाया', feeRecsH: 'शुल्क रिकॉर्ड', feeProfileSub: 'इस छात्र के सभी शुल्क रिकॉर्ड एक ही जगह।', tFeeAdded: 'शुल्क रिकॉर्ड जुड़ गया।', tPickStudent: 'कृपया छात्र चुनें।', tAmtPositive: 'राशि 0 से अधिक होनी चाहिए।', tTypeRequired: 'कृपया शुल्क का प्रकार लिखें।', tStructSaved: 'शुल्क संरचना सहेजी गई।', tStructAdded: 'संरचना पंक्ति जुड़ी।', tStructRemoved: 'संरचना पंक्ति हटाई गई।', tGenRecords: 'शुल्क रिकॉर्ड बने', tGenSkipped: 'पहले से थे', tNoFeeRecs: 'इस छात्र के लिए अभी कोई शुल्क रिकॉर्ड नहीं है।', printTitle: 'शुल्क विवरण', printListTitle: 'शुल्क सूची', printGenOn: 'बनाया गया', closeW: 'बंद करें', saveFeeBtn: 'शुल्क सहेजें', photoLabel: 'छात्र की फ़ोटो', photoHint: 'फ़ोटो अपने आप छोटी हो जाती है (अधिकतम 512px, ~120KB)।', removePhoto: 'फ़ोटो हटाएँ', logoLabel: 'स्कूल का लोगो', logoHint: 'लोगो अपने आप छोटा हो जाता है (अधिकतम 256px, PNG में पारदर्शिता रहती है)।', removeLogo: 'लोगो हटाएँ', tPhotoTooBig: 'यह फ़ोटो छोटी करने के बाद भी बड़ी है। कृपया छोटी फ़ोटो चुनें।', tLogoTooBig: 'यह लोगो छोटा करने के बाद भी बड़ा है। कृपया छोटा लोगो चुनें।', tPhotoError: 'यह तस्वीर पढ़ी नहीं जा सकी। कृपया दूसरी फ़ाइल चुनें।'
   }
 };
 function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || I18N.en[k] || k; }
@@ -709,10 +803,16 @@ function renderApp() {
     return '<button class="' + (state.view === n[0] ? 'active' : '') + '" onclick="go(\'' + n[0] + '\')"><span class="ic">' + n[1] + '</span>' + esc(t(n[2])) + '</button>';
   }).join('');
   var u = state.user;
-  $('whoAvatar').textContent = u.name.split(' ').map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase();
+  var me = state.role === 'student' ? meStudent() : null;
+  var whoPhoto = me ? me.photo : null;
+  var wa = $('whoAvatar');
+  if (whoPhoto) { wa.innerHTML = '<img src="' + esc(whoPhoto) + '" alt="">'; wa.classList.add('has-photo'); }
+  else { wa.textContent = initialsOf(u.name); wa.classList.remove('has-photo'); }
   $('whoName').textContent = u.name;
   $('whoRole').textContent = u.sub;
   var prof = db.profile;
+  var bc = $('sideBrandCap');
+  if (bc) bc.innerHTML = (state.role !== 'super' && prof.logo) ? '<img class="side-logo" src="' + esc(prof.logo) + '" alt="">' : '🎓';
   $('sideSchoolInfo').innerHTML = state.role === 'super'
     ? '<b style="color:#fff">School Saathi</b><br>Platform Admin'
     : '<b style="color:#fff">' + esc(prof.name) + '</b><br>' + esc(prof.city) + ', Bihar';
@@ -969,7 +1069,8 @@ function schoolDashboard() {
   var acts = db.activities.map(function (a) {
     return '<div class="act"><div class="ic" style="background:var(--' + (a.bg === 'green' ? 'green' : a.bg === 'blue' ? 'blue' : 'orange') + '-soft)">' + a.icon + '</div><div><b>' + esc(a.title) + '</b><span>' + esc(a.sub) + ' • ' + esc(a.time) + '</span></div></div>';
   }).join('');
-  return '<div class="page-head"><div><h2>' + t('schoolDashboard') + '</h2><p>' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div>' +
+  var logoHtml = db.profile.logo ? '<img class="dash-logo" src="' + esc(db.profile.logo) + '" alt="">' : '';
+  return '<div class="page-head"><div class="prof-head">' + logoHtml + '<div><h2>' + t('schoolDashboard') + '</h2><p>' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div></div>' +
     '<div class="toolbar"><button class="btn sm" onclick="downloadReportCSV(\'fees\')">⬇ ' + t('downloadReport') + '</button></div></div>' +
   '<div class="stats">' +
     statCard('🎒', 'blue', t('totalStudents'), 1250, '↑ 5%', 'up') +
@@ -999,7 +1100,7 @@ function studentsPage() {
   });
   var rows = list.map(function (s) {
     var fs = studentFeeStatus(s.id);
-    return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.guardian) + '</td><td>' + esc(s.phone) + '</td><td>' + s.att + '%</td>' +
+    return '<tr><td>' + avatarHTML(s.photo, s.name, 'mini-avatar') + '<b>' + esc(s.name) + '</b></td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.guardian) + '</td><td>' + esc(s.phone) + '</td><td>' + s.att + '%</td>' +
       '<td><span class="badge ' + (fs === 'Paid' ? 'green' : fs === 'Pending' ? 'orange' : 'grey') + '">' + fs + '</span></td>' +
       '<td><div class="row-actions"><button class="btn ghost sm" onclick="studentForm(\'' + s.id + '\')">' + t('editBtn') + '</button><button class="btn danger sm" onclick="deleteStudent(\'' + s.id + '\')">' + t('deleteBtn') + '</button></div></td></tr>';
   }).join('');
@@ -1012,6 +1113,7 @@ function studentsPage() {
     (rows || '<tr><td colspan="8"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '<tr id="stuNoMatch" style="display:none"><td colspan="8"><div class="empty">' + t('tNoMatch') + '</div></td></tr></tbody></table></div></div>';
 }
 function studentForm(id) {
+  pendingPhoto = null;
   var s = id ? db.students.find(function (x) { return x.id === id; }) : null;
   var clsOpts = CLASSES.map(function (c) { return '<option ' + (s && s.cls === c ? 'selected' : '') + '>' + c + '</option>'; }).join('');
   openModal('<h3>' + (s ? t('editStudent') : t('addStudent')) + '</h3><form onsubmit="return saveStudent(event,\'' + (id || '') + '\')"><div class="form-grid">' +
@@ -1020,6 +1122,10 @@ function studentForm(id) {
     '<div><label>' + t('fRoll') + '</label><input id="fStRoll" type="number" min="1" value="' + (s ? s.roll : 1) + '" required></div>' +
     '<div><label>' + t('fGuardian') + '</label><input id="fStG" value="' + esc(s ? s.guardian : '') + '" placeholder="Mr. Sharma"></div>' +
     '<div><label>' + t('fPhone') + '</label><input id="fStPh" value="' + esc(s ? s.phone : '') + '" placeholder="98XXXXXXXX"></div>' +
+    '<div class="full"><label>' + t('photoLabel') + '</label><div class="photo-row"><span id="fStPhotoPrev">' + photoPrevHTML(s ? s.photo : null, s ? s.name : '') + '</span>' +
+    '<input type="file" id="fStPhoto" accept="image/*" onchange="onStudentPhoto(this)">' +
+    '<button type="button" class="btn ghost sm" onclick="clearStudentPhoto()">' + t('removePhoto') + '</button></div>' +
+    '<p class="muted">' + t('photoHint') + '</p></div>' +
     '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + t('saveStudentBtn') + '</button></div></form>');
 }
 function saveStudent(e, id) {
@@ -1032,15 +1138,18 @@ function saveStudent(e, id) {
     guardian: $('fStG').value.trim() || '—', phone: $('fStPh').value.trim() || '—' };
   if (id) {
     var s = db.students.find(function (x) { return x.id === id; });
-    if (s) { Object.assign(s, data); toast(t('tStudentUpdated')); }
+    if (s) { Object.assign(s, data); if (pendingPhoto !== null) { if (pendingPhoto) s.photo = pendingPhoto; else delete s.photo; } toast(t('tStudentUpdated')); }
   } else {
     var nid = 'stu' + Date.now();
-    db.students.push(Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: nextEnr() }, data));
+    var newStu = Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: nextEnr() }, data);
+    if (pendingPhoto) newStu.photo = pendingPhoto;
+    db.students.push(newStu);
     // New admission owes the first month's fee (average pending amount).
     db.feeRecords.push({ id: 'fee' + Date.now(), studentId: nid, student: name, cls: cls,
       month: new Date().toLocaleString('en', { month: 'short' }), type: 'Tuition', amount: 6000, status: 'Pending', date: todayIST() });
     toast(t('tStudentAdded'));
   }
+  pendingPhoto = null;
   saveDB(db); closeModal(); renderApp();
   return false;
 }
@@ -1180,7 +1289,7 @@ function studentFeeProfile(sid) {
       '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
       '<td>' + (r.status === 'Pending' ? '<button class="btn green sm" onclick="collectFee(\'' + r.id + '\')">' + t('collectBtn') + '</button>' : '<span class="muted">—</span>') + '</td></tr>';
   }).join('');
-  return '<div class="page-head"><div><h2>' + esc(s.name) + '</h2><p>' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • ' + t('thGuardian') + ' ' + esc(s.guardian) + ' • ' + t('thPhone') + ' ' + esc(s.phone) + '</p><p class="muted">' + t('feeProfileSub') + '</p></div>' +
+  return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • ' + t('thGuardian') + ' ' + esc(s.guardian) + ' • ' + t('thPhone') + ' ' + esc(s.phone) + '</p><p class="muted">' + t('feeProfileSub') + '</p></div></div>' +
     '<div class="toolbar"><button class="btn ghost" onclick="state.feeStudent=null;renderPage()">← ' + t('backFees') + '</button>' +
     '<button class="btn" onclick="openAddFeeFor(\'' + s.id + '\')">+ ' + t('addFee') + '</button>' +
     '<button class="btn ghost" onclick="printStudentStatement(\'' + s.id + '\')">🖨 ' + t('printStmt') + '</button></div></div>' +
@@ -1320,7 +1429,8 @@ function generateFees() {
 
 /* ================= print ================= */
 function printRowsToArea(title, sub, headHtml, bodyHtml, totalsHtml) {
-  $('printArea').innerHTML = '<div class="print-stmt"><h1>' + esc(db.profile.name) + '</h1><p class="muted">' + esc(db.profile.address || '') + ' • ' + esc(db.profile.phone || '') + '</p>' +
+  var printLogoHtml = db.profile.logo ? '<img class="print-logo" src="' + esc(db.profile.logo) + '" alt="">' : '';
+  $('printArea').innerHTML = '<div class="print-stmt"><div class="print-head">' + printLogoHtml + '<div><h1>' + esc(db.profile.name) + '</h1><p class="muted">' + esc(db.profile.address || '') + ' • ' + esc(db.profile.phone || '') + '</p></div></div>' +
     '<h2>' + esc(title) + '</h2><p>' + sub + '</p><table><thead><tr>' + headHtml + '</tr></thead><tbody>' + bodyHtml + '</tbody></table>' + totalsHtml +
     '<p class="muted" style="margin-top:14px">' + t('printGenOn') + ' ' + todayIST() + '</p></div>';
   if (window.print) window.print();
@@ -1516,6 +1626,7 @@ function feeCSVRows() {
     .concat(db.feeRecords.map(function (r) { return [r.student, enrOf(r.studentId), r.cls, r.month, feeTypeOf(r), r.amount, r.date, r.status]; }));
 }
 function settingsPage() {
+  pendingLogo = null;
   var p = db.profile, isSuper = state.role === 'super';
   return '<div class="page-head"><div><h2>' + t('settings') + '</h2><p>' + (isSuper ? t('subSettingsP') : t('subSettingsS')) + '</p></div></div>' +
   '<div class="card" style="max-width:680px"><h3>' + (isSuper ? t('platformH') : esc(p.name)) + '</h3><p class="card-sub">' + t('settingsSub') + '</p>' +
@@ -1527,6 +1638,10 @@ function settingsPage() {
   '<div><label>' + t('fEmail') + '</label><input id="fPfEm" value="' + esc(p.email) + '"></div>' +
   '<div><label>' + t('fSession') + '</label><select id="fPfSe"><option ' + (p.session === '2025–26' ? 'selected' : '') + '>2025–26</option><option ' + (p.session === '2024–25' ? 'selected' : '') + '>2024–25</option><option ' + (p.session === '2026–27' ? 'selected' : '') + '>2026–27</option></select></div>' +
   '<div class="full"><label>' + t('fAddress') + '</label><input id="fPfAd" value="' + esc(p.address) + '"></div>' +
+  (isSuper ? '' : '<div class="full"><label>' + t('logoLabel') + '</label><div class="photo-row"><span id="fPfLogoPrev">' + (p.logo ? '<img class="photo-prev" src="' + esc(p.logo) + '" alt="">' : '<span class="photo-prev">🎓</span>') + '</span>' +
+  '<input type="file" id="fPfLogo" accept="image/*" onchange="onSchoolLogo(this)">' +
+  '<button type="button" class="btn ghost sm" onclick="clearSchoolLogo()">' + t('removeLogo') + '</button></div>' +
+  '<p class="muted">' + t('logoHint') + '</p></div>') +
   '</div><div class="actions" style="justify-content:flex-start"><button class="btn" type="submit">' + t('saveSettingsBtn') + '</button>' +
   '<button type="button" class="btn danger" onclick="resetDemo()">' + t('resetDemo') + '</button></div></form></div>';
 }
@@ -1543,6 +1658,7 @@ function saveSettings(e) {
   }
   p.principal = $('fPfPr').value.trim(); p.phone = $('fPfPh').value.trim(); p.email = $('fPfEm').value.trim();
   p.session = $('fPfSe').value; p.address = $('fPfAd').value.trim();
+  if (pendingLogo !== null) { if (pendingLogo) p.logo = pendingLogo; else delete p.logo; pendingLogo = null; }
   saveDB(db); renderApp();
   toast('✓ ' + t('tSettingsSaved'));
   return false;
@@ -1563,7 +1679,7 @@ function studentDashboard() {
   var notices = db.notices.slice(0, 2).map(function (n) {
     return '<div class="notice"><b>' + esc(n.title) + '</b><span>' + esc(n.date) + '</span><p>' + esc(n.body) + '</p></div>';
   }).join('');
-  return '<div class="phone"><div class="card"><div class="stu-hero"><div class="avatar">RK</div>' +
+  return '<div class="phone"><div class="card"><div class="stu-hero">' + avatarHTML(me.photo, me.name, 'avatar') + '</div>' +
     '<h3>' + esc(me.name) + '</h3><p>Class ' + esc(me.cls) + ' • ' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div>' +
     '<div class="tile-grid">' +
     '<div class="tile green"><div class="n">' + me.att + '%</div><div class="l">' + t('tileAtt') + '</div></div>' +
