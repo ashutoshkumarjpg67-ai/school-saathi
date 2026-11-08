@@ -1322,23 +1322,27 @@ function showView(which) {
   window.scrollTo(0, 0);
 }
 function showLogin() { showView('login'); $('loginId').focus(); }
+/* Session lives in localStorage (not sessionStorage): in the installed PWA,
+   Android Back on the root view closes the app, and sessionStorage dies with
+   it — so every relaunch asked for login again. localStorage survives app
+   restarts; Logout still clears it. On a shared device, tap Logout. */
 function persistSession() {
   try {
-    if (state.role && state.user) sessionStorage.setItem(SESSION_KEY, JSON.stringify({ role: state.role, email: state.user.email, view: state.view }));
-    else sessionStorage.removeItem(SESSION_KEY);
+    if (state.role && state.user) localStorage.setItem(SESSION_KEY, JSON.stringify({ role: state.role, email: state.user.email, view: state.view }));
+    else localStorage.removeItem(SESSION_KEY);
   } catch (e) { /* private mode — session just won't survive refresh */ }
 }
 function loginAs(a, opts) {
   state.role = a.role; state.user = a; state.view = 'dashboard';
   DB_KEY = dbKeyFor(a);
   db = loadDB(a.role === 'school' ? a : null);
-  showView('app'); renderApp();
+  showView('app'); renderApp(); navReset();
   persistSession();
   if (!opts || !opts.silent) toast(t('tLoggedIn') + ' ' + a.name);
 }
 function restoreSession() {
   try {
-    var raw = sessionStorage.getItem(SESSION_KEY);
+    var raw = localStorage.getItem(SESSION_KEY);
     if (!raw) return false;
     var sv = JSON.parse(raw);
     if (sv.role === 'parent' && typeof sv.email === 'string' && sv.email.indexOf('parent:') === 0) {
@@ -1449,7 +1453,7 @@ function logout() {
   state.profileStudent = null; state.profileTab = 'overview'; state.stuPage = 1;
   state.parentStudentId = null; state.admReqFilter = 'All';
   promoState = null; importState.rows = null; importState.result = null;
-  try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
+  try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
   $('loginId').value = ''; $('loginPw').value = '';
   $('parentAdmNo').value = ''; $('parentPin').value = '';
   $('page').innerHTML = '';
@@ -1485,10 +1489,32 @@ var VIEW_TITLES = {
   fees: ['Fees', 'Fee collection & pending dues'], exams: ['Examinations', 'Exams & marks entry'],
   homework: ['Homework', 'Assign & track homework'], notices: ['Notices', 'Notice board']
 };
+/* Android Back button: without history entries the PWA exits on the first
+   Back press, even from an inner page. Every in-app navigation pushes one
+   history entry; Back then walks back through views instead of closing the
+   app. Back from the dashboard still exits (normal). */
+function navPush(view) {
+  try { if (typeof history !== 'undefined' && history.pushState) history.pushState({ view: view }, ''); } catch (e) {}
+}
+function navReset() {
+  try { if (typeof history !== 'undefined' && history.replaceState) history.replaceState({ view: 'dashboard' }, ''); } catch (e) {}
+}
+function onBackPressed(ev) {
+  var v = (ev && ev.state && ev.state.view) || 'dashboard';
+  if (!state.role) return;
+  if ((NAV[state.role] || []).some(function (n) { return n[0] === v; })) {
+    state.view = v;
+    state.profileStudent = null;
+    promoState = null;
+    renderApp();
+    persistSession();
+  }
+}
 function go(view) {
   var nav = NAV[state.role] || [];
   var ok = nav.some(function (n) { return n[0] === view; });
   state.view = ok ? view : 'dashboard';
+  navPush(state.view);
   if (state.view !== 'fees') { state.feeStudent = null; state.collectStudent = null; state.collectRecordId = null; state.savedReceiptId = null; collectDraft = null; }
   state.profileStudent = null;
   promoState = null; importState.rows = null; importState.result = null;
@@ -3504,6 +3530,7 @@ var PAGE_PARENT = { dashboard: parentDashboard };
 /* ================= init ================= */
 document.addEventListener('DOMContentLoaded', function () {
   applyI18n();
+  window.addEventListener('popstate', onBackPressed);
   if (!restoreSession()) showLogin();
   if ('serviceWorker' in navigator && window.location.protocol.indexOf('http') === 0) {
     try {
