@@ -528,7 +528,7 @@ function logout() {
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
   $('loginId').value = ''; $('loginPw').value = '';
   $('page').innerHTML = '';
-  showView('landing');
+  showLogin();
   toast(t('tLoggedOut'));
 }
 
@@ -1240,7 +1240,7 @@ var PAGE_STUDENT = { dashboard: studentDashboard, homework: homeworkPage, notice
 document.addEventListener('DOMContentLoaded', function () {
   applyI18n();
   refreshLandingStats();
-  if (!restoreSession()) runCountUps(document);
+  if (!restoreSession()) showLogin();
   if ('serviceWorker' in navigator && window.location.protocol.indexOf('http') === 0) {
     try {
       navigator.serviceWorker.register('sw.js').then(function () { /* PWA ready */ }).catch(function () { /* offline mode still works without SW */ });
