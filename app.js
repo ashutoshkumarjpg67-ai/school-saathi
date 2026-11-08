@@ -353,6 +353,7 @@ function findStudentByAdmNo(admNo) {
   storageKeys().forEach(function (key) {
     if (found) return;
     if (key.indexOf('schoolSaathiDB') !== 0 || key.slice(-4) === '.bak') return;
+    if (key === 'schoolSaathiDBv1') return; // v24: platform demo DB is never a real school's DB
     var d = readDbByKey(key);
     if (!d) return;
     migrateV12(d);
@@ -362,6 +363,33 @@ function findStudentByAdmNo(admNo) {
     });
   });
   return found;
+}
+function findParentByAdmNo(admNo, pin) {
+  // v24: same device-wide scan as findStudentByAdmNo, but a parent is
+  // identified by admission number AND parent PIN together. Admission
+  // numbers alone are NOT unique across schools — every school restarts at
+  // ADM-2025-001 — and the platform demo DB holds them too, so matching on
+  // the number alone once opened a demo child for a real parent. The
+  // platform demo DB (schoolSaathiDBv1) is never a parent login target.
+  var want = String(admNo || '').trim().toLowerCase();
+  var pinDigits = digitsOnly(pin || '');
+  if (!want || pinDigits.length < 4) return null;
+  var match = null;
+  storageKeys().forEach(function (key) {
+    if (match) return;
+    if (key.indexOf('schoolSaathiDB') !== 0 || key.slice(-4) === '.bak') return;
+    if (key === 'schoolSaathiDBv1') return;
+    var d = readDbByKey(key);
+    if (!d) return;
+    migrateV12(d);
+    (d.students || []).some(function (s) {
+      if (String(s.admissionNo || '').trim().toLowerCase() === want && s.parentPin && digitsOnly(s.parentPin) === pinDigits) {
+        match = { student: s, dbKey: key, db: d }; return true;
+      }
+      return false;
+    });
+  });
+  return match;
 }
 function loadDB(override) {
   try {
@@ -543,6 +571,14 @@ function feeExtras() {
     if (typeof e[k] !== 'number' || isNaN(e[k]) || e[k] < 0) e[k] = 0;
   });
   return e;
+}
+// v24: ids must stay unique even when two records are created in the same
+// millisecond (fast "Save & Add Another" entry, or a scripted flow).
+// Date.now() alone collided — two students once shared one id, which broke
+// fees, attendance and profiles for both of them.
+var uidSeq = 0;
+function uniqueId(prefix) {
+  return prefix + Date.now().toString(36) + '_' + (++uidSeq) + Math.random().toString(36).slice(2, 6);
 }
 // peek=true previews the next number without consuming it (draft display only).
 function nextReceiptNo(peek) {
@@ -1454,10 +1490,11 @@ function doParentLogin(e) {
   var adm = $('parentAdmNo').value.trim();
   var pin = $('parentPin').value.trim();
   var err = $('parentErr');
-  var found = findStudentByAdmNo(adm);
+  // v24: admission numbers restart at ADM-2025-001 in every school, and the
+  // platform demo DB holds them too — so match on admission no. AND PIN.
+  var found = findParentByAdmNo(adm, pin);
   // One generic error: never reveal whether the number or the PIN was wrong.
-  var ok = found && found.student.parentPin && digitsOnly(pin).length >= 4 && digitsOnly(pin) === digitsOnly(found.student.parentPin);
-  if (!found || !ok) {
+  if (!found) {
     err.textContent = t('tInvalidParent');
     err.classList.remove('hidden');
     return false;
@@ -1511,7 +1548,7 @@ function doSignup(e) {
   if (pw.length < 6) return fail(t('tPwShort'));
   if (pw !== pw2) return fail(t('tPwMismatch'));
   if (findAccount(email)) return fail(t('tEmailTaken'));
-  var a = { uid: 'u' + Date.now().toString(36), name: name, school: school, email: email, pwHash: hashPw(pw), role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10) };
+  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: hashPw(pw), role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10) };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   err.classList.add('hidden');
   toast(t('tAccountCreated') + name);
@@ -1890,7 +1927,7 @@ function saveSchool(e) {
   var n = parseInt($('fSchStu').value, 10);
   if (db.schools.some(function (x) { return x.name.toLowerCase() === name.toLowerCase(); })) { toast(name + ' ' + t('tDupSchool')); return false; }
   if (!n || n < 1 || n > 100000) { toast(t('tStudentsRange')); return false; }
-  db.schools.push({ id: 'sch' + Date.now(), name: name, city: $('fSchCity').value.trim(),
+  db.schools.push({ id: uniqueId('sch'), name: name, city: $('fSchCity').value.trim(),
     students: n, status: 'pending', plan: $('fSchPlan').value, users: 0, since: todayIST() });
   saveDB(db); closeModal(); renderApp();
   toast(t('tSchoolAdded'));
@@ -2277,7 +2314,7 @@ function saveStudent(e, id, mode) {
     logAudit('Student updated', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
     toast(t('tStudentUpdated'));
   } else {
-    var nid = 'stu' + Date.now();
+    var nid = uniqueId('stu');
     var admNo = nextAdmNo();
     var newStu = Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: nextEnr(), admissionNo: admNo, status: mode === 'draft' ? 'Draft' : 'Active', parentPin: parentPinFromPhone(phone) }, data);
     if (pendingPhoto) newStu.photo = pendingPhoto;
@@ -2887,7 +2924,7 @@ function saveFeeRecord(e) {
     ty = $('fFeeCustom').value.trim();
     if (!ty) { toast(t('tTypeRequired')); return false; }
   }
-  db.feeRecords.push({ id: 'fee' + Date.now(), studentId: sid, student: s.name, cls: s.cls,
+  db.feeRecords.push({ id: uniqueId('fee'), studentId: sid, student: s.name, cls: s.cls,
     month: $('fFeeMonth').value, type: ty, amount: amt, status: $('fFeeStatus').value, date: $('fFeeDate').value || todayIST() });
   refreshStudentFee(sid);
   state.feePreselect = null;
@@ -3499,7 +3536,7 @@ function openAdmissionApply() {
 }
 function saveAdmissionRequest(e) {
   e.preventDefault();
-  var req = { id: 'ar' + Date.now(), name: ($('fArName') ? $('fArName').value : '').trim(),
+  var req = { id: uniqueId('ar'), name: ($('fArName') ? $('fArName').value : '').trim(),
     dob: $('fArDob') ? $('fArDob').value : '', gender: $('fArGender') ? $('fArGender').value : '',
     classApply: $('fArClass') ? $('fArClass').value : '', guardianName: ($('fArGuardian') ? $('fArGuardian').value : '').trim(),
     phone: ($('fArPhone') ? $('fArPhone').value : '').trim(), previousSchool: ($('fArPrevSchool') ? $('fArPrevSchool').value : '').trim(),
@@ -3670,7 +3707,7 @@ function homeworkForm() {
 function saveHomework(e) {
   e.preventDefault();
   if ($('fHwDue').value < todayIST()) { toast(t('tDueFuture')); return false; }
-  db.homework.unshift({ id: 'hw' + Date.now(), cls: $('fHwCls').value, subject: $('fHwSub').value, title: $('fHwTitle').value.trim(), due: $('fHwDue').value, doneBy: [] });
+  db.homework.unshift({ id: uniqueId('hw'), cls: $('fHwCls').value, subject: $('fHwSub').value, title: $('fHwTitle').value.trim(), due: $('fHwDue').value, doneBy: [] });
   addActivity('📚', 'orange', 'Homework assigned', $('fHwSub').value + ' • Class ' + $('fHwCls').value);
   saveDB(db); closeModal(); renderApp();
   toast(t('tHwAssigned'));
@@ -3693,7 +3730,7 @@ function noticeForm() {
 }
 function saveNotice(e) {
   e.preventDefault();
-  db.notices.unshift({ id: 'n' + Date.now(), title: $('fNtTitle').value.trim(), date: todayIST(), body: $('fNtBody').value.trim() });
+  db.notices.unshift({ id: uniqueId('n'), title: $('fNtTitle').value.trim(), date: todayIST(), body: $('fNtBody').value.trim() });
   addActivity('📢', 'orange', 'New notice published', $('fNtTitle').value.trim());
   saveDB(db); closeModal(); renderApp();
   toast(t('tNoticePub'));
