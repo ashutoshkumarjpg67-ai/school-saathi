@@ -610,7 +610,7 @@ function renderPage() {
   runCountUps(p); animateDonuts(p); animateBars(p); animateLine(p);
 }
 
-function hideTip() { var tip = $('chartTip'); if (tip) tip.style.opacity = '0'; }
+function hideTip() { var tip = $('chartTip'); if (tip) { tip.style.opacity = '0'; tip.textContent = ''; } }
 function refreshLandingStats() {
   if (typeof db === 'undefined' || !db) return;
   var sc = schoolCounts(), ft = feeTotals(), agg = db.attendanceAgg || { present: 1150, absent: 70, late: 30 };
