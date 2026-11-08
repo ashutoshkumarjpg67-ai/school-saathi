@@ -289,6 +289,11 @@ tbody tr:hover{background:#F8FAFC}
   .fee-hist-tbl th:nth-child(5),.fee-hist-tbl td:nth-child(5){width:72px}
   .fee-hist-tbl .badge{padding:2px 5px;font-size:10.5px}
   .fee-hist-tbl td:nth-child(2){overflow-wrap:break-word}
+  /* v22: fee profile + fees list date columns stay on one line on phones (same as v21 fee-history) */
+  .fee-prof-tbl th,.fee-prof-tbl td{padding:4px;font-size:12px}
+  .fee-prof-tbl th:nth-child(4),.fee-prof-tbl td:nth-child(4){white-space:nowrap;font-size:11px}
+  .fee-prof-tbl .badge{padding:2px 5px;font-size:10.5px}
+  .fee-list-tbl th:nth-child(7),.fee-list-tbl td:nth-child(7){white-space:nowrap;font-size:11px}
 }
 
 .auth-tabs{display:flex;gap:8px;margin:2px 0 18px}
