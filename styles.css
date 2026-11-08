@@ -267,7 +267,10 @@ tbody tr:hover{background:#F8FAFC}
   .topbar h1{font-size:16px}
   .topbar .who > span:last-child{display:none}
   .topbar{gap:8px}
-  .topbar .lang-toggle button{padding:7px 8px}
+  .topbar .lang-toggle{display:none}
+  .lang-one{display:block}
+  .topbar .btn.ghost.sm{padding:7px 10px;font-size:12.5px}
+  .topbar .crumb{white-space:normal}
   .feat-grid,.roles,.dash-strip{grid-template-columns:1fr}
   .form-grid{grid-template-columns:1fr}
   .land-nav .links{display:flex}
@@ -280,3 +283,28 @@ tbody tr:hover{background:#F8FAFC}
 .auth-tabs{display:flex;gap:8px;margin:2px 0 18px}
 .auth-tab{flex:1;padding:11px 8px;border-radius:10px;border:1px solid var(--border);background:#F1F5F9;font-weight:700;font-size:14.5px;color:var(--muted);cursor:pointer;font-family:inherit}
 .auth-tab.on{background:var(--navy);color:#fff;border-color:var(--navy)}
+
+/* ---------- fees v2 ---------- */
+.page>.card{margin-bottom:16px}
+.type-rows{display:flex;flex-direction:column;gap:8px}
+.type-row{display:flex;align-items:center;gap:10px;font-size:13.5px}
+.type-row b{min-width:110px;color:var(--navy)}
+.type-row span{margin-left:auto;color:var(--muted)}
+.linklike{background:none;border:0;color:var(--blue);font-weight:700;font-size:13.5px;padding:0;text-align:left;cursor:pointer;font-family:inherit}
+.linklike:hover{text-decoration:underline}
+.lang-one{display:none;border:1px solid var(--border);background:var(--navy);color:#fff;border-radius:9px;padding:7px 11px;font-size:12.5px;font-weight:700;min-width:42px;text-align:center}
+.top-titles{min-width:0}
+
+/* ---------- print ---------- */
+#printArea{display:none}
+@media print{
+  body{background:#fff}
+  #app,#login,#toast,#chartTip,#modalRoot{display:none!important}
+  #printArea{display:block!important}
+  .print-stmt{max-width:720px;margin:0 auto;color:#000;font-size:13.5px}
+  .print-stmt h1{font-size:20px;color:#0A1E4B;margin-bottom:2px}
+  .print-stmt h2{font-size:15px;margin:14px 0 6px;color:#0A1E4B}
+  .print-stmt table{width:100%;border-collapse:collapse}
+  .print-stmt th,.print-stmt td{border:1px solid #999;padding:6px 8px;text-align:left;font-size:12.5px}
+  .print-stmt .tot{display:flex;gap:18px;margin-top:12px;font-weight:700;flex-wrap:wrap}
+}

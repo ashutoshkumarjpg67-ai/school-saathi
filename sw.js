@@ -4,12 +4,12 @@
    builds after deploys. Navigation is network-first here; static assets are
    cache-first with background refresh. Per-file precache: one missing file (e.g.
    an icon not yet uploaded) must not fail the whole app shell. */
-var CACHE_NAME = 'school-saathi-v6';
+var CACHE_NAME = 'school-saathi-v7';
 var APP_SHELL = [
   './',
   'index.html',
-  'styles.css?v=5',
-  'app.js?v=5',
+  'styles.css?v=7',
+  'app.js?v=7',
   'manifest.json',
   'icons/icon-192.png',
   'icons/icon-512.png',

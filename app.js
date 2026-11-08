@@ -52,6 +52,18 @@ var SCHOOL_NAMES = [
 var FIRST = ['Aarav','Vivaan','Aditya','Arjun','Sai','Reyansh','Krishna','Ishaan','Rohan','Kabir','Ananya','Diya','Aadhya','Myra','Sara','Ira','Priya','Riya','Anika','Navya','Aarush','Vihaan','Aryan','Dhruv','Meera','Kavya','Sneha','Pooja','Nikhil','Varun','Rahul','Sana','Ishita','Tanvi','Yash','Om','Dev','Rudra','Aisha','Zara','Farhan','Imran','Nisha','Kiran','Manav','Shreya'];
 var LAST = ['Kumar','Singh','Sharma','Verma','Gupta','Mishra','Tiwari','Yadav','Jha','Pandey','Choudhary','Ranjan','Srivastava','Dubey','Sinha','Patel','Das','Roy','Kumari','Devi'];
 var CLASSES = ['6th-A','6th-B','7th-A','7th-B','8th-A','8th-B','9th-A','9th-B','10th-A','10th-B'];
+var FEE_TYPES = ['Tuition', 'Admission', 'Transport', 'Exam', 'Library', 'Activity', 'Computer Lab', 'Other'];
+var MONTHS_ACAD = ['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'];
+var MONTH_NUM = { Apr: 4, May: 5, Jun: 6, Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12, Jan: 1, Feb: 2, Mar: 3 };
+var FEE_TYPE_KEYS = { 'Tuition': 'feeTypeTuition', 'Admission': 'feeTypeAdmission', 'Transport': 'feeTypeTransport', 'Exam': 'feeTypeExam', 'Library': 'feeTypeLibrary', 'Activity': 'feeTypeActivity', 'Computer Lab': 'feeTypeComputer', 'Other': 'feeTypeOther' };
+function defaultFeeStructure() {
+  var amt = { '6': 800, '7': 900, '8': 1000, '9': 1200, '10': 1500 };
+  return CLASSES.map(function (c) { return { cls: c, type: 'Tuition', amount: amt[c.split('th')[0]] || 1000 }; });
+}
+function monthStartDate(m) { // 1st of the month, on the seed's 2026-based academic timeline
+  var n = MONTH_NUM[m] || 4, y = n >= 4 ? 2026 : 2027;
+  return y + '-' + String(n).padStart(2, '0') + '-01';
+}
 var SUBJECTS = ['Mathematics','Science','English','Hindi','Social Science'];
 
 function seedDB() {
@@ -70,7 +82,7 @@ function seedDB() {
       else if (cls === '10th-A' && r === 2) name = 'Priya Kumari';
       else { name = FIRST[fi % FIRST.length] + ' ' + LAST[(fi * 7 + 3) % LAST.length]; fi++; }
       var feePending = (idx % 6 === 4); // ~7 of 40 pending
-      var rec = { id: 'stu' + (idx + 1), name: name, cls: cls, roll: r,
+      var rec = { id: 'stu' + (idx + 1), name: name, cls: cls, roll: r, enr: 'ENR-' + String(idx + 1).padStart(3, '0'),
         guardian: 'Mr. ' + LAST[(idx * 5 + 1) % LAST.length],
         phone: '98' + String(10000000 + ((idx * 7919) % 89999999)),
         att: 85 + ((idx * 7) % 14), result: 62 + ((idx * 11) % 36),
@@ -96,7 +108,7 @@ function seedDB() {
         var idx = status === 'Pending' ? (mi * 4 + k) : (mi * 9 + k * 3); // pending: 20 distinct students
         var st = students[idx % students.length];
         feeRecords.push({ id: 'fee' + (fid++), studentId: st.id, student: st.name, cls: st.cls,
-          month: mo.m, amount: amt, status: status, date: '2026-0' + (mi + 4) + '-' + String(3 + ((k * 5) % 24)).padStart(2, '0') });
+          month: mo.m, type: 'Tuition', amount: amt, status: status, date: '2026-0' + (mi + 4) + '-' + String(3 + ((k * 5) % 24)).padStart(2, '0') });
       }
     }
     split(mo.collected, 10, 'Collected');
@@ -120,6 +132,7 @@ function seedDB() {
     teachers: teachers,
     feeMonths: FEE_MONTHS,
     feeRecords: feeRecords,
+    feeStructure: defaultFeeStructure(),
     attendanceAgg: { present: 1150, absent: 70, late: 30 },
     attendance: (function () { var a = {}; a[today + '|10th-A'] = attRecords; return a; })(),
     exams: [
@@ -166,12 +179,23 @@ function migrateAttendance(d) {
   if (!d.attendance || typeof d.attendance !== 'object') d.attendance = {};
   return d;
 }
+function migrateFeesV7(d) {
+  // Fees v2 -> v7 migration for existing DBs (e.g. the user's phone): ENR numbers
+  // in seed order, 'Tuition' on old fee records, default fee structure if missing.
+  // Idempotent; never changes amounts or statuses.
+  (d.students || []).forEach(function (s, i) {
+    if (!s.enr) s.enr = 'ENR-' + String(i + 1).padStart(3, '0');
+  });
+  (d.feeRecords || []).forEach(function (r) { if (!r.type) r.type = 'Tuition'; });
+  if (!Array.isArray(d.feeStructure) || !d.feeStructure.length) d.feeStructure = defaultFeeStructure();
+  return d;
+}
 function loadDB(override) {
   try {
     var raw = localStorage.getItem(DB_KEY);
     if (raw) {
       var d = JSON.parse(raw);
-      if (d && d.v === 2) return migrateAttendance(d);
+      if (d && d.v === 2) { var m = migrateFeesV7(migrateAttendance(d)); saveDB(m); return m; }
       // Unknown version: keep a backup, never wipe silently.
       try { localStorage.setItem(DB_KEY + '.bak', raw); } catch (e2) { /* ignore */ }
     }
@@ -190,7 +214,7 @@ function saveDB(db) {
 var db = loadDB();
 
 /* ================= state ================= */
-var state = { role: null, user: null, view: 'dashboard', lang: 'en', feeFilter: 'All', stuSearch: '', stuClass: 'All', attCls: '10th-A', attDate: '', examId: 'ex1', attSnapKey: '', attSnap: {} };
+var state = { role: null, user: null, view: 'dashboard', lang: 'en', feeFilter: 'All', feeType: 'All', feeSearch: '', feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', attCls: '10th-A', attDate: '', examId: 'ex1', attSnapKey: '', attSnap: {} };
 
 /* ================= utils ================= */
 function $(id) { return document.getElementById(id); }
@@ -228,14 +252,82 @@ function feeTotals() {
   db.feeRecords.forEach(function (r) { if (r.status === 'Collected') c += r.amount; else p += r.amount; });
   return { collected: c, pending: p };
 }
+function feeMonthsUsed() {
+  // Academic order Apr->Mar: seed months first, then any month found in feeRecords.
+  var seen = {}, list = [];
+  FEE_MONTHS.forEach(function (mo) { if (!seen[mo.m]) { seen[mo.m] = 1; list.push(mo.m); } });
+  db.feeRecords.forEach(function (r) { if (r.month && !seen[r.month]) { seen[r.month] = 1; list.push(r.month); } });
+  return list.sort(function (a, b) { return (MONTH_NUM[a] || 99) - (MONTH_NUM[b] || 99); });
+}
+function feeRangeLabel() {
+  var ms = feeMonthsUsed();
+  return ms.length ? ms[0] + '–' + ms[ms.length - 1] : '';
+}
 function feeChartData() {
   // Month-wise totals computed LIVE from feeRecords, not the static seed ledger.
-  var months = ['Apr', 'May', 'Jun', 'Jul', 'Aug'];
-  return months.map(function (m) {
+  return feeMonthsUsed().map(function (m) {
     var c = 0, p = 0;
     db.feeRecords.forEach(function (r) { if (r.month === m) { if (r.status === 'Collected') c += r.amount; else p += r.amount; } });
     return { label: m, collected: c, pending: p };
   });
+}
+function feeTypeOf(r) { return r.type || 'Tuition'; }
+function feeTypeLabel(ty) { var k = FEE_TYPE_KEYS[ty]; return k ? t(k) : ty; }
+function feeAllTypes() {
+  var list = FEE_TYPES.slice();
+  db.feeRecords.forEach(function (r) { var ty = feeTypeOf(r); if (list.indexOf(ty) === -1) list.push(ty); });
+  return list;
+}
+function feeTypeTotals() {
+  var m = {};
+  db.feeRecords.forEach(function (r) {
+    var ty = feeTypeOf(r);
+    if (!m[ty]) m[ty] = { collected: 0, pending: 0 };
+    if (r.status === 'Collected') m[ty].collected += r.amount; else m[ty].pending += r.amount;
+  });
+  return m;
+}
+function enrOf(sid) { var s = db.students.find(function (x) { return x.id === sid; }); return s ? (s.enr || '') : ''; }
+function nextEnr() {
+  var max = 0;
+  db.students.forEach(function (s) {
+    var m = /^ENR-(\d+)$/.exec(s.enr || '');
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  });
+  return 'ENR-' + String(max + 1).padStart(3, '0');
+}
+function refreshStudentFee(sid) {
+  var s = db.students.find(function (x) { return x.id === sid; });
+  if (s) s.fee = studentFeeStatus(sid);
+}
+function feeFiltered() {
+  var q = state.feeSearch.toLowerCase(), f = state.feeFilter, ty = state.feeType;
+  return db.feeRecords.filter(function (r) {
+    if (f !== 'All' && r.status !== f) return false;
+    if (ty !== 'All' && feeTypeOf(r) !== ty) return false;
+    if (q) {
+      var hay = (r.student + ' ' + r.cls + ' ' + enrOf(r.studentId)).toLowerCase();
+      if (hay.indexOf(q) === -1) return false;
+    }
+    return true;
+  });
+}
+function filterFees(q) {
+  // Client-side row filter only — the page is NOT re-rendered, so the search
+  // input keeps focus and the typed text (same pattern as filterStudents).
+  q = (q || '').toLowerCase();
+  var visible = 0, total = 0;
+  document.querySelectorAll('#feeBody tr').forEach(function (tr) {
+    if (tr.id === 'feeNoMatch') return;
+    total++;
+    var show = !q || tr.textContent.toLowerCase().indexOf(q) !== -1;
+    tr.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  var nm = document.getElementById('feeNoMatch');
+  if (nm) nm.style.display = visible ? 'none' : '';
+  var fc = document.getElementById('feeCount');
+  if (fc) fc.textContent = t('showingRec') + ' ' + visible + ' ' + t('ofRec') + ' ' + total + ' ' + t('recordsWord');
 }
 function studentFeeStatus(id) {
   // Derived from fee records: Pending if ANY Pending record exists, Paid if ANY Collected record exists, else no dues.
@@ -417,7 +509,7 @@ var I18N = {
     planBasicT: 'Basic — ₹8 / student / month', planBasicD: 'Attendance, fees, notices', planStdT: 'Standard — ₹12 / student / month', planStdD: '+ Exams, homework, reports', planPremT: 'Premium — ₹15 / student / month', planPremD: '+ Analytics, WhatsApp, priority support', setupLine: 'Setup ₹4,999 one-time • 1 month free trial • Annual advance = 2 months free.',
     guide1t: 'Add a school', guide1d: 'Schools → + Add School → fill details → Save. New schools start as Pending until approved.', guide2t: 'Collect a fee', guide2d: 'School Admin → Fees → Collect on a pending record. Totals update instantly.', guide3t: 'Mark attendance', guide3d: 'School Admin → Attendance → pick class & date → Present / Absent / Late → Save.',
     contactPhone: 'Phone', contactHours: 'Hours', hoursV: 'Mon–Sat, 9 AM – 6 PM', raiseSupport: 'Raise a Support Request', supportNoted: 'Support request noted — we will call you back.',
-    sampleList: 'sample list below', plansSub: 'Per-student monthly pricing', collectedW: 'Collected', pendingW: 'Pending', allW: 'All', editStudent: 'Edit Student', thePlatform: 'the platform', repSchoolsSub: 'city, students, plan, status', subActive: 'Active', subExpired: 'Expired', subTrial: 'Trial'
+    sampleList: 'sample list below', plansSub: 'Per-student monthly pricing', collectedW: 'Collected', pendingW: 'Pending', allW: 'All', editStudent: 'Edit Student', thePlatform: 'the platform', repSchoolsSub: 'city, students, plan, status', subActive: 'Active', subExpired: 'Expired', subTrial: 'Trial', feeTypeTuition: 'Tuition', feeTypeAdmission: 'Admission', feeTypeTransport: 'Transport', feeTypeExam: 'Exam', feeTypeLibrary: 'Library', feeTypeActivity: 'Activity', feeTypeComputer: 'Computer Lab', feeTypeOther: 'Other', allTypes: 'All Types', searchFee: 'Search name, enrollment no. or class…', thEnr: 'Enr. No.', thType: 'Type', feeByType: 'Fee by Type', feeByTypeSub: 'Collected and pending per fee type, computed live.', addFee: 'Add Fee', addFeeSub: 'Add one fee record manually for any student.', feeStruct: 'Fee Structure', feeStructSub: 'Monthly amount per class. Generate uses this to create fee records.', genFees: 'Generate Fees', saveStruct: 'Save Structure', addRow: 'Add Row', customType: 'Custom…', typeCustomPh: 'Type a custom fee type', fStudent: 'Student', fMonth: 'Month', fType: 'Fee Type', fAmount: 'Amount (₹)', fStatus: 'Status', fDate: 'Date', printList: 'Print List', printStmt: 'Print Statement', backFees: 'Back to All Fees', totalBilled: 'Total Billed', totalPaid: 'Paid', totalPending: 'Pending', feeRecsH: 'Fee Records', feeProfileSub: 'All fee records for this student in one place.', tFeeAdded: 'Fee record added.', tPickStudent: 'Please choose a student.', tAmtPositive: 'Amount must be more than 0.', tTypeRequired: 'Please type the custom fee type.', tStructSaved: 'Fee structure saved.', tStructAdded: 'Structure row added.', tStructRemoved: 'Structure row removed.', tGenRecords: 'fee records generated for', tGenSkipped: 'already existed', tNoFeeRecs: 'No fee records yet for this student.', printTitle: 'Fee Statement', printListTitle: 'Fee List', printGenOn: 'Generated on', closeW: 'Close', saveFeeBtn: 'Save Fee'
   },
   hi: {
     dashboard: 'डैशबोर्ड', schools: 'स्कूल', users: 'उपयोगकर्ता', subscriptions: 'सदस्यता', analytics: 'विश्लेषण', settings: 'सेटिंग्स', reports: 'रिपोर्ट', help: 'सहायता', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalSchools: 'कुल स्कूल', totalUsers: 'कुल उपयोगकर्ता', activeSchools: 'सक्रिय स्कूल', pendingApproval: 'स्वीकृति लंबित', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -457,7 +549,7 @@ var I18N = {
     planBasicT: 'बेसिक — ₹8 / छात्र / माह', planBasicD: 'उपस्थिति, शुल्क, नोटिस', planStdT: 'स्टैंडर्ड — ₹12 / छात्र / माह', planStdD: '+ परीक्षा, होमवर्क, रिपोर्ट', planPremT: 'प्रीमियम — ₹15 / छात्र / माह', planPremD: '+ विश्लेषण, WhatsApp, प्राथमिकता सहायता', setupLine: 'सेटअप ₹4,999 एक बार • 1 महीना मुफ़्त ट्रायल • वार्षिक अग्रिम = 2 महीने मुफ़्त।',
     guide1t: 'स्कूल जोड़ें', guide1d: 'स्कूल → + स्कूल जोड़ें → विवरण भरें → सहेजें। नए स्कूल स्वीकृति तक लंबित रहते हैं।', guide2t: 'शुल्क वसूलें', guide2d: 'स्कूल एडमिन → शुल्क → बकाया रिकॉर्ड पर वसूलें दबाएँ। कुल तुरंत अपडेट होता है।', guide3t: 'उपस्थिति दर्ज करें', guide3d: 'स्कूल एडमिन → उपस्थिति → कक्षा और तारीख चुनें → उपस्थित / अनुपस्थित / देर से → सहेजें।',
     contactPhone: 'फ़ोन', contactHours: 'समय', hoursV: 'सोम–शनि, सुबह 9 – शाम 6', raiseSupport: 'सहायता अनुरोध भेजें', supportNoted: 'सहायता अनुरोध दर्ज हुआ — हम आपको कॉल करेंगे।',
-    sampleList: 'नमूना सूची नीचे', plansSub: 'प्रति छात्र मासिक मूल्य', collectedW: 'संग्रह', pendingW: 'बकाया', allW: 'सभी', editStudent: 'छात्र बदलें', thePlatform: 'पूरे प्लेटफ़ॉर्म', repSchoolsSub: 'शहर, छात्र, योजना, स्थिति', subActive: 'सक्रिय', subExpired: 'समाप्त', subTrial: 'परीक्षण'
+    sampleList: 'नमूना सूची नीचे', plansSub: 'प्रति छात्र मासिक मूल्य', collectedW: 'संग्रह', pendingW: 'बकाया', allW: 'सभी', editStudent: 'छात्र बदलें', thePlatform: 'पूरे प्लेटफ़ॉर्म', repSchoolsSub: 'शहर, छात्र, योजना, स्थिति', subActive: 'सक्रिय', subExpired: 'समाप्त', subTrial: 'परीक्षण', feeTypeTuition: 'ट्यूशन', feeTypeAdmission: 'प्रवेश', feeTypeTransport: 'परिवहन', feeTypeExam: 'परीक्षा', feeTypeLibrary: 'पुस्तकालय', feeTypeActivity: 'गतिविधि', feeTypeComputer: 'कंप्यूटर लैब', feeTypeOther: 'अन्य', allTypes: 'सभी प्रकार', searchFee: 'नाम, नामांकन संख्या या कक्षा खोजें…', thEnr: 'नामांकन सं.', thType: 'प्रकार', feeByType: 'प्रकार के अनुसार शुल्क', feeByTypeSub: 'प्रति प्रकार संग्रह और बकाया, लाइव गणना।', addFee: 'शुल्क जोड़ें', addFeeSub: 'किसी भी छात्र के लिए एक शुल्क रिकॉर्ड जोड़ें।', feeStruct: 'शुल्क संरचना', feeStructSub: 'प्रति कक्षा मासिक राशि। Generate इसी से रिकॉर्ड बनाता है।', genFees: 'शुल्क बनाएँ', saveStruct: 'संरचना सहेजें', addRow: 'पंक्ति जोड़ें', customType: 'कस्टम…', typeCustomPh: 'शुल्क का प्रकार लिखें', fStudent: 'छात्र', fMonth: 'महीना', fType: 'शुल्क प्रकार', fAmount: 'राशि (₹)', fStatus: 'स्थिति', fDate: 'तारीख', printList: 'सूची छापें', printStmt: 'विवरण छापें', backFees: 'सभी शुल्क पर वापस', totalBilled: 'कुल बिल', totalPaid: 'जमा', totalPending: 'बकाया', feeRecsH: 'शुल्क रिकॉर्ड', feeProfileSub: 'इस छात्र के सभी शुल्क रिकॉर्ड एक ही जगह।', tFeeAdded: 'शुल्क रिकॉर्ड जुड़ गया।', tPickStudent: 'कृपया छात्र चुनें।', tAmtPositive: 'राशि 0 से अधिक होनी चाहिए।', tTypeRequired: 'कृपया शुल्क का प्रकार लिखें।', tStructSaved: 'शुल्क संरचना सहेजी गई।', tStructAdded: 'संरचना पंक्ति जुड़ी।', tStructRemoved: 'संरचना पंक्ति हटाई गई।', tGenRecords: 'शुल्क रिकॉर्ड बने', tGenSkipped: 'पहले से थे', tNoFeeRecs: 'इस छात्र के लिए अभी कोई शुल्क रिकॉर्ड नहीं है।', printTitle: 'शुल्क विवरण', printListTitle: 'शुल्क सूची', printGenOn: 'बनाया गया', closeW: 'बंद करें', saveFeeBtn: 'शुल्क सहेजें'
   }
 };
 function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || I18N.en[k] || k; }
@@ -478,9 +570,11 @@ function setLang(l) {
   state.lang = l;
   $('langEn').classList.toggle('on', l === 'en');
   $('langHi').classList.toggle('on', l === 'hi');
+  var lo = $('langOne'); if (lo) lo.textContent = l === 'en' ? 'EN' : 'हिं';
   applyI18n();
   if (state.role) renderApp();
 }
+function toggleLang() { setLang(state.lang === 'en' ? 'hi' : 'en'); }
 
 /* ================= auth & shell ================= */
 function showView(which) {
@@ -561,6 +655,7 @@ function doSignup(e) {
 function logout() {
   state.role = null; state.user = null; state.view = 'dashboard';
   state.attSnapKey = ''; state.attSnap = {};
+  state.feeStudent = null; state.feeSearch = ''; state.feeType = 'All'; state.feeFilter = 'All'; state.feeFormOpen = false; state.feePreselect = null;
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
   $('loginId').value = ''; $('loginPw').value = '';
   $('page').innerHTML = '';
@@ -597,6 +692,7 @@ function go(view) {
   var nav = NAV[state.role] || [];
   var ok = nav.some(function (n) { return n[0] === view; });
   state.view = ok ? view : 'dashboard';
+  if (state.view !== 'fees') state.feeStudent = null;
   persistSession();
   toggleSidebar(false);
   renderApp();
@@ -643,6 +739,7 @@ function renderPage() {
   var pages = state.role === 'super' ? PAGE_SUPER : state.role === 'school' ? PAGE_SCHOOL : PAGE_STUDENT;
   var fn = pages[state.view] || pages.dashboard;
   p.innerHTML = fn();
+  if (state.view === 'fees' && !state.feeStudent && state.feeSearch) filterFees(state.feeSearch);
   runCountUps(p); animateDonuts(p); animateBars(p); animateLine(p);
 }
 
@@ -825,7 +922,7 @@ function superAnalytics() {
     statCard('⏰', 'red', t('pendingFee'), ft.pending, '↓ 4%', 'down', { prefix: '₹' }) +
   '</div>' +
   '<div class="grid2"><div class="card"><h3>' + t('schoolGrowth') + '</h3><p class="card-sub">' + t('growthWeek') + '</p><div class="chart-box">' + lineChartSVG(GROWTH) + '</div></div>' +
-  '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + esc(db.profile.name) + ' — ' + t('feeTrendSub2') + '</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted" style="margin-top:8px"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div></div>' +
+  '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + esc(db.profile.name) + ' — ' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted" style="margin-top:8px"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div></div>' +
   '<div class="card"><h3>' + t('todayAtt') + ' — ' + esc(db.profile.name) + '</h3><p class="card-sub">' + num(attTotal()) + ' students • ' + donutPct(db.attendanceAgg.present, attTotal()) + '% present</p><div class="donut-wrap">' +
     donutSVG([{ value: db.attendanceAgg.present, color: GREEN, label: t('presBtn'), pct: donutPct(db.attendanceAgg.present, attTotal()) }, { value: db.attendanceAgg.absent, color: RED, label: t('absBtn'), pct: donutPct(db.attendanceAgg.absent, attTotal()) }, { value: db.attendanceAgg.late, color: ORANGE, label: t('lateBtn'), pct: donutPct(db.attendanceAgg.late, attTotal()) }], 190, donutPct(db.attendanceAgg.present, attTotal()) + '%', t('todayAtt')) +
     '<div class="legend"><div class="row"><span class="dot" style="background:' + GREEN + '"></span>' + t('presBtn') + '<b>' + num(db.attendanceAgg.present) + '</b></div>' +
@@ -938,10 +1035,10 @@ function saveStudent(e, id) {
     if (s) { Object.assign(s, data); toast(t('tStudentUpdated')); }
   } else {
     var nid = 'stu' + Date.now();
-    db.students.push(Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending' }, data));
+    db.students.push(Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: nextEnr() }, data));
     // New admission owes the first month's fee (average pending amount).
     db.feeRecords.push({ id: 'fee' + Date.now(), studentId: nid, student: name, cls: cls,
-      month: new Date().toLocaleString('en', { month: 'short' }), amount: 6000, status: 'Pending', date: todayIST() });
+      month: new Date().toLocaleString('en', { month: 'short' }), type: 'Tuition', amount: 6000, status: 'Pending', date: todayIST() });
     toast(t('tStudentAdded'));
   }
   saveDB(db); closeModal(); renderApp();
@@ -1017,24 +1114,244 @@ function saveAttendance() {
   toast('✓ ' + t('tAttSaved') + ' — Class ' + state.attCls + ' (' + state.attDate + ').');
 }
 function feesPage() {
-  var ft = feeTotals(), f = state.feeFilter;
-  var list = db.feeRecords.filter(function (r) { return f === 'All' || r.status === f; });
+  if (state.feeStudent) return studentFeeProfile(state.feeStudent);
+  var ft = feeTotals(), f = state.feeFilter, ty = state.feeType;
+  var list = feeFiltered();
+  var bt = feeTypeTotals();
+  var btRows = Object.keys(bt).sort(function (a, b) { return (bt[b].collected + bt[b].pending) - (bt[a].collected + bt[a].pending); }).map(function (ty2) {
+    return '<div class="type-row"><b>' + esc(feeTypeLabel(ty2)) + '</b><span>' + t('collectedW') + ' ' + inr(bt[ty2].collected) + ' • ' + t('pendingW') + ' ' + inr(bt[ty2].pending) + '</span></div>';
+  }).join('');
+  var typeOpts = ['All'].concat(feeAllTypes()).map(function (x) {
+    return '<option value="' + esc(x) + '" ' + (ty === x ? 'selected' : '') + '>' + (x === 'All' ? t('allTypes') : esc(feeTypeLabel(x))) + '</option>';
+  }).join('');
   var rows = list.slice(0, 120).map(function (r) {
-    return '<tr><td><b>' + esc(r.student) + '</b></td><td>' + esc(r.cls) + '</td><td>' + r.month + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td>' +
+    return '<tr><td><button class="linklike" onclick="return openFeeProfile(\'' + r.studentId + '\', event)">' + esc(r.student) + '</button></td><td>' + esc(enrOf(r.studentId)) + '</td><td>' + esc(r.cls) + '</td><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td>' +
       '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
       '<td>' + (r.status === 'Pending' ? '<button class="btn green sm" onclick="collectFee(\'' + r.id + '\')">' + t('collectBtn') + '</button>' : '<span class="muted">—</span>') + '</td></tr>';
   }).join('');
-  return '<div class="page-head"><div><h2>' + t('fees') + '</h2><p>' + t('collectedW') + ' ' + inr(ft.collected) + ' • ' + t('pendingW') + ' ' + inr(ft.pending) + ' (Apr–Aug)</p></div>' +
+  return '<div class="page-head"><div><h2>' + t('fees') + '</h2><p>' + t('collectedW') + ' ' + inr(ft.collected) + ' • ' + t('pendingW') + ' ' + inr(ft.pending) + ' (' + feeRangeLabel() + ')</p></div>' +
     '<div class="toolbar"><div class="pill-tabs">' + ['All', 'Pending', 'Collected'].map(function (x) {
       return '<button class="' + (f === x ? 'on' : '') + '" onclick="state.feeFilter=\'' + x + '\';renderPage()">' + (x === 'All' ? t('allW') : x === 'Pending' ? t('pendingW') : t('collectedW')) + '</button>';
-    }).join('') + '</div></div></div>' +
+    }).join('') + '</div>' +
+    '<select onchange="state.feeType=this.value;renderPage()" aria-label="Fee type">' + typeOpts + '</select>' +
+    '<input id="feeSearchInput" placeholder="' + t('searchFee') + '" value="' + esc(state.feeSearch) + '" oninput="state.feeSearch=this.value;filterFees(this.value)" style="min-width:200px">' +
+    '<button class="btn ghost" onclick="printFeeList()">🖨 ' + t('printList') + '</button></div></div>' +
     '<div class="stats">' +
     statCard('💰', 'orange', t('feeCollected'), ft.collected, '↑ 78%', 'up', { prefix: '₹' }) +
     statCard('⏰', 'red', t('pendingFee'), ft.pending, '', 'down', { prefix: '₹' }) +
     '</div>' +
-    '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + t('feeTrendSub') + '</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted" style="margin-top:8px"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div>' +
-    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thClass') + '</th><th>' + t('thMonth') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
-    '<p class="muted" style="margin-top:10px">' + t('showingRec') + ' ' + Math.min(120, list.length) + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('recordsWord') + '</p></div>';
+    '<div class="card"><h3>' + t('feeByType') + '</h3><p class="card-sub">' + t('feeByTypeSub') + '</p><div class="type-rows">' + (btRows || '<div class="empty">' + t('tNoFeeRecs') + '</div>') + '</div></div>' +
+    '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted" style="margin-top:8px"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div>' +
+    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thEnr') + '</th><th>' + t('thClass') + '</th><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody id="feeBody">' +
+    (rows || '<tr><td colspan="9"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '<tr id="feeNoMatch" style="display:none"><td colspan="9"><div class="empty">' + t('tNoMatch') + '</div></td></tr></tbody></table></div>' +
+    '<p class="muted" id="feeCount" style="margin-top:10px">' + t('showingRec') + ' ' + Math.min(120, list.length) + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('recordsWord') + '</p></div>' +
+    feeFormCard() + feeStructureCard();
+}
+
+/* ================= student fee profile ================= */
+function openFeeProfile(sid, e) {
+  if (e) e.preventDefault();
+  state.feeStudent = sid;
+  renderPage();
+  return false;
+}
+function openAddFeeFor(sid) {
+  state.feeStudent = null; state.feeFormOpen = true; state.feePreselect = sid;
+  renderApp();
+}
+function studentFeeProfile(sid) {
+  var s = db.students.find(function (x) { return x.id === sid; });
+  if (!s) { state.feeStudent = null; return feesPage(); }
+  var recs = db.feeRecords.filter(function (r) { return r.studentId === sid; })
+    .sort(function (a, b) { return (MONTH_NUM[a.month] || 99) - (MONTH_NUM[b.month] || 99) || (a.date < b.date ? -1 : a.date > b.date ? 1 : 0); });
+  var billed = 0, paid = 0, pend = 0, byType = {};
+  recs.forEach(function (r) {
+    billed += r.amount;
+    if (r.status === 'Collected') paid += r.amount; else pend += r.amount;
+    var ty = feeTypeOf(r);
+    if (!byType[ty]) byType[ty] = { collected: 0, pending: 0 };
+    if (r.status === 'Collected') byType[ty].collected += r.amount; else byType[ty].pending += r.amount;
+  });
+  var btRows = Object.keys(byType).map(function (ty2) {
+    return '<div class="type-row"><b>' + esc(feeTypeLabel(ty2)) + '</b><span>' + t('collectedW') + ' ' + inr(byType[ty2].collected) + ' • ' + t('pendingW') + ' ' + inr(byType[ty2].pending) + '</span></div>';
+  }).join('');
+  var rows = recs.map(function (r) {
+    return '<tr><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td>' +
+      '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
+      '<td>' + (r.status === 'Pending' ? '<button class="btn green sm" onclick="collectFee(\'' + r.id + '\')">' + t('collectBtn') + '</button>' : '<span class="muted">—</span>') + '</td></tr>';
+  }).join('');
+  return '<div class="page-head"><div><h2>' + esc(s.name) + '</h2><p>' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • ' + t('thGuardian') + ' ' + esc(s.guardian) + ' • ' + t('thPhone') + ' ' + esc(s.phone) + '</p><p class="muted">' + t('feeProfileSub') + '</p></div>' +
+    '<div class="toolbar"><button class="btn ghost" onclick="state.feeStudent=null;renderPage()">← ' + t('backFees') + '</button>' +
+    '<button class="btn" onclick="openAddFeeFor(\'' + s.id + '\')">+ ' + t('addFee') + '</button>' +
+    '<button class="btn ghost" onclick="printStudentStatement(\'' + s.id + '\')">🖨 ' + t('printStmt') + '</button></div></div>' +
+    '<div class="stats">' +
+    statCard('🧾', 'blue', t('totalBilled'), billed, '', 'up', { prefix: '₹' }) +
+    statCard('✅', 'green', t('totalPaid'), paid, '', 'up', { prefix: '₹' }) +
+    statCard('⏰', 'red', t('totalPending'), pend, '', 'down', { prefix: '₹' }) +
+    '</div>' +
+    '<div class="card"><h3>' + t('feeByType') + '</h3><p class="card-sub">' + t('feeByTypeSub') + '</p><div class="type-rows">' + (btRows || '<div class="empty">' + t('tNoFeeRecs') + '</div>') + '</div></div>' +
+    '<div class="card"><h3>' + t('feeRecsH') + '</h3><p class="card-sub">' + recs.length + ' ' + t('recordsWord') + '</p><div class="tbl-wrap"><table><thead><tr><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6"><div class="empty">' + t('tNoFeeRecs') + '</div></td></tr>') + '</tbody></table></div></div>';
+}
+
+/* ================= manual fee + fee structure + generate ================= */
+function toggleFeeForm() { state.feeFormOpen = !state.feeFormOpen; if (!state.feeFormOpen) state.feePreselect = null; renderPage(); }
+function toggleCustom(selId, wrapId) {
+  var s = $(selId), w = $(wrapId);
+  if (s && w) w.classList.toggle('hidden', s.value !== '__custom');
+}
+function feeTypeSelectOpts() {
+  return FEE_TYPES.map(function (x) { return '<option value="' + esc(x) + '">' + esc(feeTypeLabel(x)) + '</option>'; }).join('') + '<option value="__custom">' + t('customType') + '</option>';
+}
+function feeFormCard() {
+  var btn = '<button class="btn ghost sm" onclick="toggleFeeForm()">' + (state.feeFormOpen ? '✕ ' + t('closeW') : '+ ' + t('addFee')) + '</button>';
+  var body = '';
+  if (state.feeFormOpen) {
+    var stuOpts = db.students.map(function (s) {
+      return '<option value="' + s.id + '" ' + (state.feePreselect === s.id ? 'selected' : '') + '>' + esc(s.name) + ' — ' + esc(s.cls) + ' (' + esc(s.enr || '') + ')</option>';
+    }).join('');
+    var curM = new Date().toLocaleString('en', { month: 'short' });
+    if (MONTHS_ACAD.indexOf(curM) === -1) curM = 'Sep';
+    var moOpts = MONTHS_ACAD.map(function (m) { return '<option ' + (m === curM ? 'selected' : '') + '>' + m + '</option>'; }).join('');
+    body = '<form onsubmit="return saveFeeRecord(event)" style="margin-top:14px"><div class="form-grid">' +
+      '<div><label>' + t('fStudent') + '</label><select id="fFeeStudent">' + stuOpts + '</select></div>' +
+      '<div><label>' + t('fMonth') + '</label><select id="fFeeMonth">' + moOpts + '</select></div>' +
+      '<div><label>' + t('fType') + '</label><select id="fFeeType" onchange="toggleCustom(\'fFeeType\',\'fFeeCustomWrap\')">' + feeTypeSelectOpts() + '</select></div>' +
+      '<div><label>' + t('fAmount') + '</label><input id="fFeeAmount" type="number" min="1" step="1" placeholder="e.g. 1500" required></div>' +
+      '<div><label>' + t('fStatus') + '</label><select id="fFeeStatus"><option value="Pending">' + t('pendingW') + '</option><option value="Collected">' + t('collectedW') + '</option></select></div>' +
+      '<div><label>' + t('fDate') + '</label><input id="fFeeDate" type="date" value="' + todayIST() + '"></div>' +
+      '<div class="full hidden" id="fFeeCustomWrap"><label>' + t('customType') + '</label><input id="fFeeCustom" placeholder="' + t('typeCustomPh') + '"></div>' +
+      '</div><div class="actions" style="justify-content:flex-start"><button class="btn" type="submit">' + t('saveFeeBtn') + '</button></div></form>';
+  }
+  return '<div class="card"><div class="head-row"><div><h3>' + t('addFee') + '</h3><p class="card-sub">' + t('addFeeSub') + '</p></div>' + btn + '</div>' + body + '</div>';
+}
+function saveFeeRecord(e) {
+  e.preventDefault();
+  var sid = $('fFeeStudent').value;
+  var s = db.students.find(function (x) { return x.id === sid; });
+  if (!sid || !s) { toast(t('tPickStudent')); return false; }
+  var amt = parseFloat($('fFeeAmount').value);
+  if (isNaN(amt) || amt <= 0) { toast(t('tAmtPositive')); return false; }
+  var ty = $('fFeeType').value;
+  if (ty === '__custom') {
+    ty = $('fFeeCustom').value.trim();
+    if (!ty) { toast(t('tTypeRequired')); return false; }
+  }
+  db.feeRecords.push({ id: 'fee' + Date.now(), studentId: sid, student: s.name, cls: s.cls,
+    month: $('fFeeMonth').value, type: ty, amount: amt, status: $('fFeeStatus').value, date: $('fFeeDate').value || todayIST() });
+  refreshStudentFee(sid);
+  state.feePreselect = null;
+  saveDB(db); renderApp();
+  toast('✓ ' + t('tFeeAdded'));
+  return false;
+}
+function feeStructureCard() {
+  var rows = (db.feeStructure || []).map(function (row, i) {
+    return '<tr><td>' + esc(row.cls) + '</td><td>' + esc(feeTypeLabel(row.type)) + '</td>' +
+      '<td><input type="number" min="0" step="50" value="' + row.amount + '" id="fsAmt-' + i + '" style="width:120px"></td>' +
+      '<td><button class="btn danger sm" onclick="deleteFeeStructureRow(' + i + ')">' + t('deleteBtn') + '</button></td></tr>';
+  }).join('');
+  var clsOpts = CLASSES.map(function (c) { return '<option>' + c + '</option>'; }).join('');
+  var moOpts = MONTHS_ACAD.map(function (m) { return '<option ' + (m === state.feeGenMonth ? 'selected' : '') + '>' + m + '</option>'; }).join('');
+  return '<div class="card"><div class="head-row"><div><h3>' + t('feeStruct') + '</h3><p class="card-sub">' + t('feeStructSub') + '</p></div><button class="btn sm" onclick="saveFeeStructure()">' + t('saveStruct') + '</button></div>' +
+    '<div class="tbl-wrap"><table><thead><tr><th>' + t('thClass') + '</th><th>' + t('thType') + '</th><th>' + t('fAmount') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div class="toolbar" style="margin-top:14px"><select id="fsNewCls">' + clsOpts + '</select>' +
+    '<select id="fsNewType" onchange="toggleCustom(\'fsNewType\',\'fsNewCustomWrap\')">' + feeTypeSelectOpts() + '</select>' +
+    '<input id="fsNewAmt" type="number" min="1" step="50" placeholder="e.g. 1500" style="max-width:130px">' +
+    '<button class="btn ghost sm" onclick="addFeeStructureRow()">+ ' + t('addRow') + '</button></div>' +
+    '<div class="full hidden" id="fsNewCustomWrap" style="margin-top:10px"><input id="fsNewCustom" placeholder="' + t('typeCustomPh') + '" style="max-width:260px"></div>' +
+    '<div class="toolbar" style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px"><label style="margin:0">' + t('fMonth') + '</label>' +
+    '<select id="fGenMonth" onchange="state.feeGenMonth=this.value">' + moOpts + '</select>' +
+    '<button class="btn green" onclick="generateFees()">' + t('genFees') + '</button></div></div>';
+}
+function saveFeeStructure() {
+  var rows = db.feeStructure || [];
+  for (var i = 0; i < rows.length; i++) {
+    var inp = $('fsAmt-' + i);
+    if (!inp) continue;
+    var v = parseFloat(inp.value);
+    if (isNaN(v) || v < 0) { toast(t('tAmtPositive')); return; }
+    rows[i].amount = v;
+  }
+  saveDB(db); renderPage();
+  toast('✓ ' + t('tStructSaved'));
+}
+function addFeeStructureRow() {
+  var cls = $('fsNewCls').value;
+  var ty = $('fsNewType').value;
+  if (ty === '__custom') {
+    ty = $('fsNewCustom').value.trim();
+    if (!ty) { toast(t('tTypeRequired')); return; }
+  }
+  var amt = parseFloat($('fsNewAmt').value);
+  if (isNaN(amt) || amt <= 0) { toast(t('tAmtPositive')); return; }
+  if (!Array.isArray(db.feeStructure)) db.feeStructure = defaultFeeStructure();
+  db.feeStructure.push({ cls: cls, type: ty, amount: amt });
+  saveDB(db); renderPage();
+  toast('✓ ' + t('tStructAdded'));
+}
+function deleteFeeStructureRow(i) {
+  if (!Array.isArray(db.feeStructure) || !db.feeStructure[i]) return;
+  db.feeStructure.splice(i, 1);
+  saveDB(db); renderPage();
+  toast(t('tStructRemoved'));
+}
+function generateFees() {
+  var month = state.feeGenMonth;
+  var sel = $('fGenMonth');
+  if (sel && sel.value) month = sel.value;
+  state.feeGenMonth = month;
+  var existing = {};
+  db.feeRecords.forEach(function (r) { if (r.month === month) existing[r.studentId + '|' + feeTypeOf(r)] = 1; });
+  var made = 0, skipped = 0;
+  db.students.forEach(function (s) {
+    (db.feeStructure || []).forEach(function (row) {
+      if (row.cls !== s.cls) return;
+      var key = s.id + '|' + row.type;
+      if (existing[key]) { skipped++; return; }
+      db.feeRecords.push({ id: 'fee' + Date.now() + '_' + made, studentId: s.id, student: s.name, cls: s.cls,
+        month: month, type: row.type, amount: row.amount, status: 'Pending', date: monthStartDate(month) });
+      existing[key] = 1; made++;
+    });
+  });
+  db.students.forEach(function (s) { s.fee = studentFeeStatus(s.id); });
+  saveDB(db); renderApp();
+  toast('✓ ' + made + ' ' + t('tGenRecords') + ' ' + month + ' • ' + skipped + ' ' + t('tGenSkipped') + '.');
+}
+
+/* ================= print ================= */
+function printRowsToArea(title, sub, headHtml, bodyHtml, totalsHtml) {
+  $('printArea').innerHTML = '<div class="print-stmt"><h1>' + esc(db.profile.name) + '</h1><p class="muted">' + esc(db.profile.address || '') + ' • ' + esc(db.profile.phone || '') + '</p>' +
+    '<h2>' + esc(title) + '</h2><p>' + sub + '</p><table><thead><tr>' + headHtml + '</tr></thead><tbody>' + bodyHtml + '</tbody></table>' + totalsHtml +
+    '<p class="muted" style="margin-top:14px">' + t('printGenOn') + ' ' + todayIST() + '</p></div>';
+  if (window.print) window.print();
+}
+function printStudentStatement(sid) {
+  var s = db.students.find(function (x) { return x.id === sid; });
+  if (!s) return;
+  var recs = db.feeRecords.filter(function (r) { return r.studentId === sid; })
+    .sort(function (a, b) { return (MONTH_NUM[a.month] || 99) - (MONTH_NUM[b.month] || 99) || (a.date < b.date ? -1 : a.date > b.date ? 1 : 0); });
+  var billed = 0, paid = 0, pend = 0;
+  recs.forEach(function (r) { billed += r.amount; if (r.status === 'Collected') paid += r.amount; else pend += r.amount; });
+  var body = recs.map(function (r) {
+    return '<tr><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td><td>' + r.status + '</td></tr>';
+  }).join('');
+  printRowsToArea(t('printTitle'), esc(s.name) + ' • ' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • ' + t('thGuardian') + ' ' + esc(s.guardian),
+    '<th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th>',
+    body,
+    '<div class="tot"><span>' + t('totalBilled') + ': ' + inr(billed) + '</span><span>' + t('totalPaid') + ': ' + inr(paid) + '</span><span>' + t('totalPending') + ': ' + inr(pend) + '</span></div>');
+}
+function printFeeList() {
+  var list = feeFiltered();
+  var c = 0, p = 0;
+  list.forEach(function (r) { if (r.status === 'Collected') c += r.amount; else p += r.amount; });
+  var body = list.slice(0, 500).map(function (r) {
+    return '<tr><td>' + esc(r.student) + '</td><td>' + esc(enrOf(r.studentId)) + '</td><td>' + esc(r.cls) + '</td><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td><td>' + r.status + '</td></tr>';
+  }).join('');
+  var filt = t('fees') + ' — ' + (state.feeFilter === 'All' ? t('allW') : state.feeFilter) + ' • ' + (state.feeType === 'All' ? t('allTypes') : feeTypeLabel(state.feeType)) + (state.feeSearch ? ' • \u201c' + esc(state.feeSearch) + '\u201d' : '') + ' (' + feeRangeLabel() + ')';
+  printRowsToArea(t('printListTitle'), filt,
+    '<th>' + t('thStudent') + '</th><th>' + t('thEnr') + '</th><th>' + t('thClass') + '</th><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th>',
+    body,
+    '<div class="tot"><span>' + t('collectedW') + ': ' + inr(c) + '</span><span>' + t('pendingW') + ': ' + inr(p) + '</span><span>' + list.length + ' ' + t('recordsWord') + '</span></div>');
 }
 function collectFee(id) {
   var r = db.feeRecords.find(function (x) { return x.id === id; });
@@ -1181,8 +1498,7 @@ function downloadReportCSV(kind) {
     downloadCSV('school-saathi-students.csv', [['Name', 'Class', 'Roll', 'Guardian', 'Phone', 'Attendance %', 'Fee Status']]
       .concat(db.students.map(function (s) { return [s.name, s.cls, s.roll, s.guardian, s.phone, s.att, studentFeeStatus(s.id)]; })));
   } else if (kind === 'fees') {
-    downloadCSV('school-saathi-fees.csv', [['Student', 'Class', 'Month', 'Amount (INR)', 'Date', 'Status']]
-      .concat(db.feeRecords.map(function (r) { return [r.student, r.cls, r.month, r.amount, r.date, r.status]; })));
+    downloadCSV('school-saathi-fees.csv', feeCSVRows());
   } else if (kind === 'attendance') {
     var aDate = state.attDate || todayIST();
     var recs = db.attendance[aDate + '|' + state.attCls] || {};
@@ -1194,6 +1510,10 @@ function downloadReportCSV(kind) {
       .concat(db.schools.map(function (s) { return [s.name, s.city, s.students, s.users, s.plan, s.status]; })));
   }
   toast('✓ ' + t('tReportDl'));
+}
+function feeCSVRows() {
+  return [['Student', 'Enr', 'Class', 'Month', 'Type', 'Amount (INR)', 'Date', 'Status']]
+    .concat(db.feeRecords.map(function (r) { return [r.student, enrOf(r.studentId), r.cls, r.month, feeTypeOf(r), r.amount, r.date, r.status]; }));
 }
 function settingsPage() {
   var p = db.profile, isSuper = state.role === 'super';
