@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 49;
+var APP_VERSION = 50;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -1137,6 +1137,24 @@ function sbSyncUploadMissing(account, sbUid, token) {
   // sbStatusText). A failed students step leaves stuMap empty, so
   // dependent rows are skipped by their own student_id filters —
   // nothing uploads with a dangling foreign key.
+  // v47: EVERY upload step uses the v39/v46 bypass — a row the server
+  // lacks uploads even when a stale snapshot entry says it already
+  // synced. The trap is structural, not table-specific: the snapshot
+  // is only rebuilt after a pull, the pull only runs after a
+  // successful verify, and the verify fails exactly when a row the
+  // snapshot claims is missing from the server — so one stale entry
+  // stalls the cycle forever (v39 receipts, v46 fee records, v47
+  // attendance, each on the next table in the chain). sbUploadMissing
+  // dedupes against the server's actual rows, so an already-uploaded
+  // row is never re-POSTed. Skipped only when the school row itself
+  // was recreated (a full server wipe): then the snapshot still means
+  // "deleted elsewhere" and the pull drops the row instead of
+  // resurrecting it. The repair pass runs before the upload in every
+  // cycle, so a number collision is re-numbered before any POST can
+  // 409; a POST that still fails is caught by step() and reported by
+  // table, never killing the chain. Support requests and admission
+  // applications are fire-and-forget queues (no snapshot filter), so
+  // they carry no version of this trap.
   var uploadErrors = [];
   function step(table, fn) {
     return Promise.resolve().then(fn).catch(function (err) {
@@ -1174,13 +1192,26 @@ function sbSyncUploadMissing(account, sbUid, token) {
       serverReceiptCounter = row.receipt_counter || 1;
     }
     return step('ss_fee_structure', function () {
+      var fsRows = (d.feeStructure || []).map(function (f) { return sbMapFeeStructure(f, schoolId); });
+      // v47: the bypass (see the note above step()).
+      var fsUpload = schoolRecreated
+        ? freshRows('ss_fee_structure', fsRows, function (row) { return row.cls + '|' + row.fee_type; })
+        : fsRows;
       return sbUploadMissing(token, schoolId, 'ss_fee_structure', 'cls,fee_type',
-        freshRows('ss_fee_structure', (d.feeStructure || []).map(function (f) { return sbMapFeeStructure(f, schoolId); }),
-          function (row) { return row.cls + '|' + row.fee_type; }),
+        fsUpload,
         function (row) { return row.cls + '|' + row.fee_type; });
     });
   }).then(function () {
     return step('ss_students', function () {
+      // v47: students deliberately KEEP the snapshot filter — they are
+      // the anchor rows, and the filter is what implements the designed
+      // server-wins delete (v31: a student deleted on the server drops
+      // locally instead of resurrecting). The bypass would re-upload a
+      // deleted student and, through stuMap, its fee records too — the
+      // v31 test proves it. No live stale-student stall exists (the V21
+      // row IS on the server; the v44 failure was the stored id map,
+      // already fixed), and the onInserted GET below still fills stuMap
+      // when nothing is fresh, so dependent rows keep resolving.
       return sbUploadMissing(token, schoolId, 'ss_students', 'local_id,id',
         freshRows('ss_students', (d.students || []).filter(function (s) { return !s.numPending && !sbIsSeedRow('ss_students', s, d); }).map(function (s) { return sbMapStudent(s, schoolId); }),
           function (row) { return row.local_id; }),
@@ -1193,16 +1224,24 @@ function sbSyncUploadMissing(account, sbUid, token) {
     });
   }).then(function () {
     return step('ss_teachers', function () {
+      var teRows = (d.teachers || []).filter(function (te) { return !sbIsSeedRow('ss_teachers', te, d); }).map(function (te) { return sbMapTeacher(te, schoolId); });
+      // v47: the bypass (see the note above step()).
+      var teUpload = schoolRecreated
+        ? freshRows('ss_teachers', teRows, function (row) { return row.local_id; })
+        : teRows;
       return sbUploadMissing(token, schoolId, 'ss_teachers', 'local_id',
-        freshRows('ss_teachers', (d.teachers || []).filter(function (te) { return !sbIsSeedRow('ss_teachers', te, d); }).map(function (te) { return sbMapTeacher(te, schoolId); }),
-          function (row) { return row.local_id; }),
+        teUpload,
         function (row) { return row.local_id; });
     });
   }).then(function () {
     return step('ss_exams', function () {
+      var exRows = (d.exams || []).filter(function (e) { return !sbIsSeedRow('ss_exams', e, d); }).map(function (e) { return sbMapExam(e, schoolId); });
+      // v47: the bypass (see the note above step()).
+      var exUpload = schoolRecreated
+        ? freshRows('ss_exams', exRows, function (row) { return row.local_id; })
+        : exRows;
       return sbUploadMissing(token, schoolId, 'ss_exams', 'local_id,id',
-        freshRows('ss_exams', (d.exams || []).filter(function (e) { return !sbIsSeedRow('ss_exams', e, d); }).map(function (e) { return sbMapExam(e, schoolId); }),
-          function (row) { return row.local_id; }),
+        exUpload,
         function (row) { return row.local_id; },
         // v44: same map persist as students — a row uploaded by this
         // pass must not leave a stale stored id behind.
@@ -1230,12 +1269,21 @@ function sbSyncUploadMissing(account, sbUid, token) {
     });
   }).then(function () {
     return step('ss_attendance', function () {
-      var attRows = sbFlattenAttendance(d).filter(function (a) { return !!stuMap[a.studentId] && !sbIsSeedStudentId(a.studentId, d); })
-        .filter(function (a) { return notSynced('ss_attendance', a.date + '|' + a.cls + '|' + a.studentId); })
-        .map(function (a) {
-          return { school_id: schoolId, att_date: a.date, cls: a.cls, student_id: stuMap[a.studentId], status: a.status };
-        });
-      return sbUploadMissing(token, schoolId, 'ss_attendance', 'att_date,cls,student_id', attRows,
+      var attRows = sbFlattenAttendance(d).filter(function (a) { return !!stuMap[a.studentId] && !sbIsSeedStudentId(a.studentId, d); });
+      // v47: THE fix — the v39/v46 bypass, applied here at last. The
+      // step used to drop rows through an inline notSynced() filter,
+      // so a stale snapshot entry hid the real V21 mark forever and
+      // every cycle failed at the verify ("Backup failed …
+      // (ss_attendance 0/1)"). The filter now runs only when the
+      // school row itself was recreated (a full server wipe). The
+      // quarantine does not flag the real row: its student id is
+      // uniqueId-style, never stu1..stu40.
+      var attUpload = schoolRecreated
+        ? attRows.filter(function (a) { return notSynced('ss_attendance', a.date + '|' + a.cls + '|' + a.studentId); })
+        : attRows;
+      return sbUploadMissing(token, schoolId, 'ss_attendance', 'att_date,cls,student_id', attUpload.map(function (a) {
+        return { school_id: schoolId, att_date: a.date, cls: a.cls, student_id: stuMap[a.studentId], status: a.status };
+      }),
         function (row) { return row.att_date + '|' + row.cls + '|' + row.student_id; });
     });
   }).then(function () {
@@ -1262,40 +1310,59 @@ function sbSyncUploadMissing(account, sbUid, token) {
     });
   }).then(function () {
     return step('ss_marks', function () {
-      var markRows = (d.marks || []).filter(function (m) { return examMap[m.examId] && stuMap[m.studentId] && !sbIsSeedExamId(m.examId, d) && !sbIsSeedStudentId(m.studentId, d); })
-        .filter(function (m) { return notSynced('ss_marks', m.examId + '|' + m.studentId); })
-        .map(function (m) {
-          return { school_id: schoolId, exam_id: examMap[m.examId], student_id: stuMap[m.studentId], marks: m.marks };
-        });
-      return sbUploadMissing(token, schoolId, 'ss_marks', 'exam_id,student_id', markRows,
+      var markRows = (d.marks || []).filter(function (m) { return examMap[m.examId] && stuMap[m.studentId] && !sbIsSeedExamId(m.examId, d) && !sbIsSeedStudentId(m.studentId, d); });
+      // v47: the bypass (see the note above step()) — the marks step
+      // carried the same inline notSynced() trap as attendance.
+      var markUpload = schoolRecreated
+        ? markRows.filter(function (m) { return notSynced('ss_marks', m.examId + '|' + m.studentId); })
+        : markRows;
+      return sbUploadMissing(token, schoolId, 'ss_marks', 'exam_id,student_id', markUpload.map(function (m) {
+        return { school_id: schoolId, exam_id: examMap[m.examId], student_id: stuMap[m.studentId], marks: m.marks };
+      }),
         function (row) { return row.exam_id + '|' + row.student_id; });
     });
   }).then(function () {
     return step('ss_homework', function () {
+      var hwRows = (d.homework || []).filter(function (h) { return !sbIsSeedRow('ss_homework', h, d); }).map(function (h) { return sbMapHomework(h, schoolId, stuMap); });
+      // v47: the bypass (see the note above step()).
+      var hwUpload = schoolRecreated
+        ? freshRows('ss_homework', hwRows, function (row) { return row.local_id; })
+        : hwRows;
       return sbUploadMissing(token, schoolId, 'ss_homework', 'local_id',
-        freshRows('ss_homework', (d.homework || []).filter(function (h) { return !sbIsSeedRow('ss_homework', h, d); }).map(function (h) { return sbMapHomework(h, schoolId, stuMap); }),
-          function (row) { return row.local_id; }),
+        hwUpload,
         function (row) { return row.local_id; });
     });
   }).then(function () {
     return step('ss_notices', function () {
+      var nRows = (d.notices || []).filter(function (n) { return !sbIsSeedRow('ss_notices', n, d); }).map(function (n) { return sbMapNotice(n, schoolId); });
+      // v47: the bypass (see the note above step()).
+      var nUpload = schoolRecreated
+        ? freshRows('ss_notices', nRows, function (row) { return row.local_id; })
+        : nRows;
       return sbUploadMissing(token, schoolId, 'ss_notices', 'local_id',
-        freshRows('ss_notices', (d.notices || []).filter(function (n) { return !sbIsSeedRow('ss_notices', n, d); }).map(function (n) { return sbMapNotice(n, schoolId); }),
-          function (row) { return row.local_id; }),
+        nUpload,
         function (row) { return row.local_id; });
     });
   }).then(function () {
     return step('ss_audit_log', function () {
+      var auRows = (d.auditLog || []).map(function (a) { return sbMapAudit(a, schoolId); });
+      // v47: the bypass (see the note above step()).
+      var auUpload = schoolRecreated
+        ? freshRows('ss_audit_log', auRows, function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; })
+        : auRows;
       return sbUploadMissing(token, schoolId, 'ss_audit_log', 'ts,actor,action,details',
-        freshRows('ss_audit_log', (d.auditLog || []).map(function (a) { return sbMapAudit(a, schoolId); }),
-          function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; }),
+        auUpload,
         function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; });
     });
   }).then(function () {
     return step('ss_activities', function () {
+      var acRows = (d.activities || []).map(function (a) { return sbMapActivity(a, schoolId); });
+      // v47: the bypass (see the note above step()).
+      var acUpload = schoolRecreated
+        ? freshRows('ss_activities', acRows, function (row) { return row.title + '|' + row.sub; })
+        : acRows;
       return sbUploadMissing(token, schoolId, 'ss_activities', 'title,sub',
-        freshRows('ss_activities', (d.activities || []).map(function (a) { return sbMapActivity(a, schoolId); }),
-          function (row) { return row.title + '|' + row.sub; }),
+        acUpload,
         function (row) { return row.title + '|' + row.sub; });
     });
   }).then(function () {
@@ -1496,7 +1563,10 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // still drops. Shared by mergeById (fee records) and the receipts
   // keep-loop below — the v39 receipts load read the local account
   // uid and so always saw an empty outbox; the keep never fired.
-  var outboxUpsert46 = { feeRecords: {}, receipts: {} };
+  // v47 extends the same keep to attendance and marks, whose merges
+  // used to drop a queued row on snapshot grounds with no outbox
+  // check at all.
+  var outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {} };
   try {
     var uid46 = (account && account.sbUid) || (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
     if (uid46) {
@@ -1504,6 +1574,8 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
         if (e && e.op === 'upsert' && e.key) {
           if (e.table === 'ss_fee_records') outboxUpsert46.feeRecords[e.key] = true;
           if (e.table === 'ss_receipts') outboxUpsert46.receipts[e.key] = true;
+          if (e.table === 'ss_attendance') outboxUpsert46.attendance[e.key] = true;
+          if (e.table === 'ss_marks') outboxUpsert46.marks[e.key] = true;
         }
       });
     }
@@ -1514,9 +1586,19 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     return sbIsSeedRow(table, row, d);
   }
   function mergeById(table, localArr, serverRows, mapFn) {
-    var serverList = (serverRows || []).map(mapFn);
+    // v47: the server can hold two rows for one local id (live: the v46
+    // verification POSTed each of the 3 fee records twice — 6 server
+    // rows, 3 local ids). The mirror keeps ONE row per id: the first
+    // server row wins, the later duplicate is dropped. Without this
+    // the pull doubles the local list (and the Fee Collected total).
+    var serverList = [];
     var onServer = {};
-    serverList.forEach(function (r) { onServer[r.id] = true; });
+    (serverRows || []).forEach(function (row) {
+      var r = mapFn(row);
+      if (r.id && onServer[r.id]) return;
+      if (r.id) onServer[r.id] = true;
+      serverList.push(r);
+    });
     var merged = serverList.slice();
     (localArr || []).forEach(function (r) {
       if (!r.id || onServer[r.id]) return;
@@ -1586,7 +1668,17 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     Object.keys(recs).forEach(function (sid) {
       var parts = key.split('|');
       var snapKey = parts[0] + '|' + parts[1] + '|' + sid;
-      if (snapHas('ss_attendance', snapKey)) return;
+      // v47: a mark whose upload is still unconfirmed (a pending
+      // outbox upsert) is KEPT, never dropped on snapshot grounds —
+      // the v46 fee-records keep, extended to attendance.
+      if (snapHas('ss_attendance', snapKey)) {
+        if (outboxUpsert46.attendance[snapKey]) {
+          if (!d.attendance[key]) d.attendance[key] = {};
+          d.attendance[key][sid] = recs[sid];
+          keep('ss_attendance', snapKey);
+        }
+        return;
+      }
       // v45: attendance for a demo-seed student drops with the seed row
       // (seedStudentIds was snapshotted before the student merge).
       if (seedStudentIds[sid]) return;
@@ -1672,7 +1764,14 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   });
   oldMarks.forEach(function (m) {
     var key = m.examId + '|' + m.studentId;
-    if (serverMarkKeys[key] || snapHas('ss_marks', key)) return;
+    if (serverMarkKeys[key]) return;
+    // v47: a mark whose upload is still unconfirmed (a pending outbox
+    // upsert) is KEPT, never dropped on snapshot grounds — same keep
+    // as attendance above (v46 fee-records pattern).
+    if (snapHas('ss_marks', key)) {
+      if (outboxUpsert46.marks[key]) { d.marks.push(m); keep('ss_marks', key); }
+      return;
+    }
     // v45: marks for a demo-seed exam or student drop with the seed row.
     if (seedExamIds[m.examId] || seedStudentIds[m.studentId]) return;
     d.marks.push(m);
@@ -6162,11 +6261,16 @@ function waReceiptShare(receiptNo) {
   if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
   var rc = (db.receipts || []).find(function (x) { return x.receiptNo === receiptNo; });
   if (!rc) return false;
+  // v47: the message names the student from the receipt itself (see
+  // receiptStudent) — a stale local seed row must never rename the
+  // message. The phone still comes from the local row: the receipt
+  // carries no phone number.
+  var rs = receiptStudent(rc);
   var s = db.students.find(function (x) { return x.id === rc.studentId; });
   if (!s) return false;
   var norm = waNormalizePhone(s.phone);
   if (!norm) { toast(t('waNoNumber')); return false; }
-  var msg = waFill(t('waReceiptMsg'), { school: db.profile.name, student: s.name, cls: s.cls, receipt: rc.receiptNo, amount: inr(rc.total), month: rc.month, date: rc.date }) + waSchoolPhoneLine();
+  var msg = waFill(t('waReceiptMsg'), { school: db.profile.name, student: rs.name, cls: rs.cls, receipt: rc.receiptNo, amount: inr(rc.total), month: rc.month, date: rc.date }) + waSchoolPhoneLine();
   waOpenUrl('https://wa.me/' + norm + '?text=' + encodeURIComponent(msg));
   waLogOpen('Receipt share', s);
   toast(t('waOpened'));
@@ -6932,6 +7036,24 @@ function receiptViewFromDraft(d, s) {
   var tot = collectDraftTotal(d);
   return { receiptNo: nextReceiptNo(true), date: todayIST(), month: d.month, session: s.session || currentSession(), counterNo: d.counterNo, lines: d.lines, payMode: d.payMode, payDate: d.payDate, bank: d.bank, number: d.number, total: tot, totalWords: numberToWords(tot), collector: state.user ? state.user.name : '' };
 }
+// v47: the display student for a saved receipt, resolved from the
+// receipt's own stored fields — never from a local-student lookup by
+// id. A receipt carries its own student name, class and admission
+// number (student_name / admission_no on the server row, name /
+// admissionNo locally); the live test account proved why that
+// matters: the local list still holds the demo-seed "Aarav Verma"
+// under the same id (stu1794162292000) as the real V21 Test Kumar,
+// so every id lookup renamed the receipt to Aarav while the fee list
+// — which renders the fee record's own stored name — said V21. The
+// local row supplies only the photo (the receipt carries no photo);
+// name, class and admission number always come from the receipt
+// itself, so even a stale local seed can never rename one.
+function receiptStudent(rc) {
+  var s = (db.students || []).find(function (x) { return x.id === rc.studentId; });
+  return { id: rc.studentId, name: rc.name || (s && s.name) || '', cls: rc.cls || (s && s.cls) || '',
+    admissionNo: rc.admissionNo || (s && s.admissionNo) || '', enr: rc.admissionNo || (s && s.enr) || '',
+    photo: (s && s.photo) || null, session: rc.session || (s && s.session) || '' };
+}
 // One receipt renderer for the draft page, the saved view and print. Never
 // includes Aadhaar (the receipt has no field for it by design).
 function receiptHTML(rcpt, s, editable) {
@@ -6987,11 +7109,13 @@ function collectFeePage(sid) {
   if (state.savedReceiptId) {
     var rc = (db.receipts || []).find(function (r) { return r.receiptNo === state.savedReceiptId; });
     if (rc) {
-      // v41: the receipt view must not vanish when the student row is
-      // missing locally (a pull rebuilt the mirror, or the row was
-      // never downloaded) — the receipt carries name, class and
-      // admission number itself, so render from those.
-      var s2 = s || { id: rc.studentId, name: rc.name || '', cls: rc.cls || '', admissionNo: rc.admissionNo || '', enr: rc.admissionNo || '', photo: null };
+      // v47: the receipt resolves its student from its own stored
+      // fields (see receiptStudent) — a local row with the same id
+      // must never rename it (live: the seed "Aarav Verma" under the
+      // V21 id renamed every receipt detail). v41's fallback survives
+      // inside the helper: a missing local row still renders from the
+      // receipt's own name, class and admission number.
+      var s2 = receiptStudent(rc);
       return '<div class="page-head"><div><h2>' + t('rcptTitle') + '</h2><p>' + esc(s2.name) + ' • ' + esc(s2.cls) + ' • ' + esc(s2.admissionNo || '') + '</p></div>' +
         '<div class="toolbar"><button class="btn ghost" onclick="backFromReceipt()">← ' + t('backFees') + '</button></div></div>' +
         receiptHTML(rc, s2, false) +
@@ -7092,8 +7216,10 @@ function openSavedReceipt(receiptNo) {
 function printReceipt(receiptNo) {
   var rc = (db.receipts || []).find(function (r) { return r.receiptNo === receiptNo; });
   if (!rc) return;
-  var s = db.students.find(function (x) { return x.id === rc.studentId; });
-  if (!s) return;
+  // v47: same receiptStudent resolution as the detail view — the print
+  // must never say Aarav when the receipt says V21, and a missing
+  // local row must not blank the print (v41).
+  var s = receiptStudent(rc);
   $('printArea').innerHTML = '<div class="print-rcpt">' + receiptHTML(rc, s, false) + '</div>';
   if (window.print) window.print();
 }
