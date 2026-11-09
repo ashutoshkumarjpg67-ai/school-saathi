@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 43;
+var APP_VERSION = 44;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -1016,7 +1016,11 @@ function sbSyncUploadMissing(account, sbUid, token) {
         freshRows('ss_students', (d.students || []).filter(function (s) { return !s.numPending; }).map(function (s) { return sbMapStudent(s, schoolId); }),
           function (row) { return row.local_id; }),
         function (row) { return row.local_id; },
-        function (rows) { rows.forEach(function (r) { if (r.local_id) stuMap[r.local_id] = r.id; }); });
+        // v44: persist the id map too — the old code only kept it in
+        // memory, so a row uploaded (or re-created) by this pass left
+        // the stored map pointing at a deleted id, and every later
+        // push trusted that stale id and 409'd on admission_no.
+        function (rows) { rows.forEach(function (r) { if (r.local_id) { stuMap[r.local_id] = r.id; sbSrvIdSet(account.uid, 'ss_students', r.local_id, r.id); } }); });
     });
   }).then(function () {
     return step('ss_teachers', function () {
@@ -1031,7 +1035,9 @@ function sbSyncUploadMissing(account, sbUid, token) {
         freshRows('ss_exams', (d.exams || []).map(function (e) { return sbMapExam(e, schoolId); }),
           function (row) { return row.local_id; }),
         function (row) { return row.local_id; },
-        function (rows) { rows.forEach(function (r) { if (r.local_id) examMap[r.local_id] = r.id; }); });
+        // v44: same map persist as students — a row uploaded by this
+        // pass must not leave a stale stored id behind.
+        function (rows) { rows.forEach(function (r) { if (r.local_id) { examMap[r.local_id] = r.id; sbSrvIdSet(account.uid, 'ss_exams', r.local_id, r.id); } }); });
     });
   }).then(function () {
     return step('ss_fee_records', function () {
@@ -1189,8 +1195,17 @@ function sbRetryMigration() {
   sbGetValidToken().then(function (tok) {
     if (!tok) { sbSetStatus(sbSessionExpired ? 'session-expired' : 'offline'); toast(t(sbSessionExpired ? 'sbStatusSessionExpired' : 'sbStatusOffline')); renderApp(); return; }
     return sbMaybeMigrate(state.user, state.sb.uid, tok, true).then(function (r) {
-      toast(r.done ? t('sbBackupDone') : t('sbBackupFailed'));
-      renderApp();
+      if (!r.done) { toast(t('sbBackupFailed')); renderApp(); return; }
+      // v44: the migration only covers the upload pass — it never
+      // flushes the outbox, so a queued entry could still be failing
+      // (live: the students 409) while this toast claimed success.
+      // "Backup complete." only when the outbox is actually empty
+      // after a serialized flush; anything else says it did not finish.
+      return sbSyncFlushNow().then(function (fl) {
+        var left = sbOutboxLoad(state.sb.uid).length;
+        toast(fl && fl.done && !left ? t('sbBackupDone') : t('sbBackupFailed'));
+        renderApp();
+      });
     });
   }).catch(function () { toast(t('sbBackupFailed')); });
 }
@@ -1880,12 +1895,14 @@ function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
   // The server row for an outbox entry, for the last-write-wins check
   // and for PATCH/DELETE by id. Null when the server has no such row.
   var known = sbSrvIdGet(uid, table, entry.key);
-  if (known) {
-    return sbRest('GET', table + '?select=id,updated_at&id=eq.' + encodeURIComponent(known), token).then(function (r) {
-      if (r.ok && Array.isArray(r.data) && r.data.length) return r.data[0];
-      return null;
-    });
-  }
+  // v44: a stored server id is only a hint — the row may have been
+  // deleted and re-created under a new id (live: the V21 student row
+  // was re-created 9 Nov 12:37 UTC with a new uuid but the same
+  // local_id, while the stored map still pointed at the deleted row).
+  // A miss there must fall through to the lookups below, never return
+  // null outright — the old early return made every push POST a
+  // duplicate and 409 on the unique admission_no index, every cycle.
+  function byNaturalKey() {
   if (table === 'ss_schools') {
     return sbRest('GET', 'ss_schools?select=id,updated_at&id=eq.' + encodeURIComponent(schoolId), token).then(function (r) {
       if (r.ok && Array.isArray(r.data) && r.data.length) return r.data[0];
@@ -1917,9 +1934,49 @@ function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
   // that before patching, so a same-number collision can never
   // overwrite another device's receipt.
   var cols = table === 'ss_receipts' ? 'id,updated_at,student_id,total,receipt_date,student_name,month' : 'id,updated_at';
+  // v44: the push guard below must never rename a server row's
+  // local_id, so the students lookup also selects the server local_id.
+  if (table === 'ss_students') cols = 'id,updated_at,local_id';
   return sbRest('GET', table + '?select=' + cols + '&' + filter, token).then(function (r) {
     if (r.ok && Array.isArray(r.data) && r.data.length) return r.data[0];
-    return null;
+    // v44: students have natural unique keys — a row that exists under
+    // a different local_id (same admission_no/enr, same school) is THIS
+    // student, not a new one. Without this fallback the push POSTs a
+    // duplicate and 409s on ss_students_school_id_admission_no_key.
+    // Delete entries never adopt (students are soft-deleted only).
+    if (table !== 'ss_students' || entry.op === 'delete') return null;
+    return sbSyncFindStudentByNumber(entry, token, schoolId);
+  });
+  }
+  if (!known) return byNaturalKey();
+  return sbRest('GET', table + '?select=id,updated_at&id=eq.' + encodeURIComponent(known), token).then(function (r) {
+    if (r.ok && Array.isArray(r.data) && r.data.length) return r.data[0];
+    return byNaturalKey();
+  });
+}
+
+// v44: the server student with the same admission_no (then enr) in this
+// school. Returns the row with _adoptedByNaturalKey set, or null. The
+// push adopts such a row by PATCH (never a duplicate POST) and never
+// sends local_id, so the server row keeps its own identity.
+function sbSyncFindStudentByNumber(entry, token, schoolId) {
+  var row = entry.row || {};
+  var adm = row.admissionNo || row.admission_no || '';
+  var enr = row.enr || '';
+  function byAdm() {
+    if (!adm) return Promise.resolve(null);
+    return sbRest('GET', 'ss_students?select=id,updated_at,local_id&school_id=eq.' + encodeURIComponent(schoolId) + '&admission_no=eq.' + encodeURIComponent(adm), token).then(function (r) {
+      if (r.ok && Array.isArray(r.data) && r.data.length) { r.data[0]._adoptedByNaturalKey = true; return r.data[0]; }
+      return null;
+    });
+  }
+  return byAdm().then(function (found) {
+    if (found) return found;
+    if (!enr) return null;
+    return sbRest('GET', 'ss_students?select=id,updated_at,local_id&school_id=eq.' + encodeURIComponent(schoolId) + '&enr=eq.' + encodeURIComponent(enr), token).then(function (r2) {
+      if (r2.ok && Array.isArray(r2.data) && r2.data.length) { r2.data[0]._adoptedByNaturalKey = true; return r2.data[0]; }
+      return null;
+    });
   });
 }
 function sbSyncPushEntry(entry, token, schoolId, maps, uid) {
@@ -1973,9 +2030,22 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid) {
       if (table === 'ss_receipts' && !sbReceiptSameServer(row, payload2)) return { pushed: false, skipped: true, keep: true };
       // Last-write-wins: a newer server copy beats this local change.
       if (row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true };
-      return sbRest('PATCH', table + '?id=eq.' + encodeURIComponent(row.id), token, payload2, 'return=minimal').then(function (r) {
+      // v44: a student found by admission_no/enr (not by local_id) is
+      // THIS student under a stale local id — PATCH it, but never send
+      // local_id: overwriting the server row's local_id with the stale
+      // one would rename the server identity, and the next pull would
+      // bring the row back as a second local student. The hash stays
+      // the full payload's, so the queued local row is seen as synced
+      // (its content is on the server; the server owns the identity).
+      var patchPayload = payload2;
+      if (row._adoptedByNaturalKey) {
+        patchPayload = Object.assign({}, payload2);
+        delete patchPayload.local_id;
+      }
+      return sbRest('PATCH', table + '?id=eq.' + encodeURIComponent(row.id), token, patchPayload, 'return=minimal').then(function (r) {
         if (!r.ok) throw new Error('patch-' + table + '-' + (r.status || 'fail'));
         sbSrvIdSet(uid, table, entry.key, row.id);
+        if (row._adoptedByNaturalKey && row.local_id) sbSrvIdSet(uid, table, row.local_id, row.id);
         return { pushed: true, hash: JSON.stringify(payload2) };
       });
     }
@@ -3236,7 +3306,12 @@ function todayIST() { // IST date, not UTC (before 5:30 AM UTC date is yesterday
 var toastTimer = null;
 function toast(msg) {
   var t = $('toast'); t.textContent = msg; t.classList.add('show');
-  clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2600);
+  clearTimeout(toastTimer); toastTimer = setTimeout(function () {
+    // v44: re-query the node (a re-render may have replaced it) and
+    // clear the text when hiding, so stale text can never be read as
+    // a toast still pinned on screen.
+    var el = $('toast'); if (el) { el.classList.remove('show'); el.textContent = ''; }
+  }, 2600);
 }
 /* ================= numbers in words (Indian numbering) ================= */
 var WORD_ONES = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
@@ -4071,7 +4146,7 @@ var I18N = {
     idcPreview: 'ID कार्ड पूर्वावलोकन', idcPrint: 'छापें', idcPrintCards: 'ID कार्ड छापें', idcSelectAll: 'सभी चुनें', idcClearSel: 'चयन हटाएँ', idcReady: 'ID कार्ड छपाई के लिए तैयार', idcEmergency: 'आपातकालीन संपर्क', idcReturn: 'मिले तो कृपया लौटाएँ', idcNoQr: 'QR कोड नहीं बन सका।',
     authStudent: 'छात्र', authTeacher: 'शिक्षक', stuAdmNo: 'प्रवेश संख्या', stuPinLabel: 'छात्र PIN', stuLoginBtn: 'छात्र के रूप में लॉगिन करें', stuNote: 'छात्र लॉगिन स्कूल द्वारा दिए गए PIN से होता है। PIN न पता हो तो अपने स्कूल से पूछें।', stuSub: 'छात्र', stuDashboard: 'मेरी प्रोफ़ाइल', tInvalidStudent: 'प्रवेश संख्या या PIN गलत है।', stuPinField: 'छात्र लॉगिन PIN (वैकल्पिक)', stuPinPh: 'खाली छोड़ें — रैंडम PIN बनेगा', stuPinTitle: 'छात्र PIN', stuPinNow: 'वर्तमान छात्र PIN', stuPinNone: 'कोई PIN नहीं है — इस छात्र के लिए छात्र लॉगिन उपलब्ध नहीं है।', stuPinNew: 'नया PIN (4–6 अंक)', stuPinSetBtn: 'PIN सेट करें', stuPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'छात्र PIN सेट हो गया।', tPinShown: 'छात्र PIN: ', tPinCleared: 'छात्र PIN हटा दिया गया।', tPinAuto: 'PIN स्कूल द्वारा प्रवेश के समय दिया जाता है। छात्र भूल जाए तो यहाँ से नया PIN सेट करें।', tNotAllowed: 'आपकी लॉगिन इस सेक्शन को नहीं खोल सकती।', tOwnProfileOnly: 'आप केवल अपनी प्रोफ़ाइल देख सकते हैं।', todayW: 'आज', tchrLoginBtn: 'शिक्षक के रूप में लॉगिन करें', tchrNote: 'शिक्षक अकाउंट स्कूल एडमिन बनाता है।', tchrSub: 'शिक्षक', tchrDashboard: 'शिक्षक डैशबोर्ड', tchrNoDb: 'इस डिवाइस पर स्कूल का डेटा नहीं है — पहले स्कूल के डिवाइस पर लॉगिन करें।', teachers: 'शिक्षक', teachersSub: 'शिक्षक अकाउंट और वे जो कक्षाएँ पढ़ाते हैं।', tchrAdd: 'शिक्षक जोड़ें', tchrEdit: 'शिक्षक बदलें', tchrName: 'शिक्षक का नाम', tchrSubject: 'विषय', tchrClasses: 'पढ़ाई जाने वाली कक्षाएँ', tchrEmail: 'ईमेल', tchrPw: 'पासवर्ड', tchrPwHint: 'कम से कम 6 अक्षर। मौजूदा पासवर्ड रखने के लिए खाली छोड़ें।', tchrNoLogin: 'कोई लॉगिन नहीं', tchrSaved: 'शिक्षक सहेजा गया।', tchrNoClasses: 'कम से कम एक कक्षा चुनें।', tchrEmailTaken: 'यह ईमेल किसी और अकाउंट में इस्तेमाल हो रहा है।', tchrMyClasses: 'मेरी कक्षाएँ', tchrStudents: 'मेरी कक्षाओं के छात्र', tchrNoClassesYet: 'अभी कोई कक्षा नहीं दी गई है — स्कूल एडमिन से कक्षा देने को कहें।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।',
     collectFeeBtn: 'शुल्क वसूलें', rcptTitle: 'शुल्क रसीद', rcptReceiptNo: 'रसीद संख्या', rcptDate: 'तारीख', rcptAdmNo: 'प्रवेश संख्या', rcptSession: 'सत्र', rcptName: 'नाम', rcptClass: 'कक्षा', rcptInstallment: 'किस्त', rcptCounter: 'काउंटर संख्या', rcptSlNo: 'क्र.सं.', rcptDesc: 'विवरण', rcptDue: 'देय', rcptCon: 'छूट', rcptPaid: 'जमा', rcptAdmissionFee: 'प्रवेश शुल्क', rcptTuitionFee: 'शिक्षण शुल्क', rcptCaution: 'जमानत राशि', rcptAnnual: 'वार्षिक शुल्क', rcptBusFee: 'बस शुल्क', rcptDues: 'बकाया', rcptPayModeTitle: 'भुगतान जानकारी', rcptPayMode: 'भुगतान माध्यम', rcptBank: 'बैंक', rcptNumber: 'संख्या', rcptTotal: 'कुल', rcptTotalWords: 'कुल (शब्दों में)', rcptComputerGen: 'यह कंप्यूटर द्वारा बनाई गई रसीद है। हस्ताक्षर की आवश्यकता नहीं है।', rcptParentCopy: 'अभिभावक प्रति', rcptCollectorSign: 'वसूलकर्ता के हस्ताक्षर', rcptIncludeBus: 'बस/परिवहन शामिल करें', rcptOtherFees: 'अन्य शुल्क', rcptAnnualHint: 'शुल्क वसूली रसीद पर दिखने वाली एकमुश्त और वार्षिक राशि। छिपाने के लिए 0 रखें।', payModeCash: 'नकद', payModeCheque: 'चेक', payModeUpi: 'UPI', payModeCard: 'कार्ड', payModeBank: 'बैंक ट्रांसफर', tFeeCollected: 'शुल्क वसूल लिया गया।', tCollectZero: 'वसूलने के लिए कुछ नहीं है — जमा राशि डालें।', tCollectSaved: 'शुल्क वसूल लिया गया — रसीद ', tCollectNotActive: 'यह छात्र सक्रिय नहीं है — शुल्क नहीं वसूला जा सकता।', rcptReceipts: 'रसीदें', rcptView: 'देखें', rcptPrint: 'प्रिंट / PDF सहेजें', rcptCollectAgain: 'फिर से वसूलें', rcptNoReceipts: 'इस छात्र की अभी कोई रसीद नहीं है।', rcptDraft: 'मसौदा — अभी सहेजा नहीं गया', rcptCollectSave: 'वसूलें और सहेजें', rcptNoLines: 'इस अवधि के लिए वसूलने को कुछ नहीं है — पहले शुल्क संरचना में राशि डालें।',
-    sbNumPending: 'प्रवेश सहेजा गया। प्रवेश संख्या ऑनलाइन आने पर दी जाएगी।', sbNumPendingReceipt: 'शुल्क सहेजा गया। रसीद संख्या ऑनलाइन आने पर दी जाएगी।', sbStatusSessionExpired: 'सत्र समाप्त हो गया — कृपया दोबारा लॉग इन करें।', sbStatusNotLinked: 'अभी सर्वर से जुड़ा नहीं है — लॉग इन पर जुड़ जाएगा।', sbLinkServer: 'सर्वर से जोड़ें', sbLinkDone: 'सर्वर अकाउंट जुड़ गया।', sbLinkFailed: 'सर्वर अकाउंट जुड़ा नहीं जा सका — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkPwTitle: 'सर्वर अकाउंट जोड़ें', sbNumAssigning: 'नंबर मिल रहा है…', tWrongPasswordServer: 'सर्वर अकाउंट के लिए पासवर्ड गलत है।', tCollectCapped: 'दी गई राशि बकाया से ज़्यादा थी — सिर्फ बकाया राशि ली गई।', resetPwHintServer: 'इससे सिर्फ इस डिवाइस का डेटा मिटेगा। सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी, जब तक आप सर्वर भी न मिटाएँ।', resetConfirmMsgServer: 'सिर्फ इस डिवाइस का डेटा मिटाएँ? सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी — हर जगह से मिटाने के लिए “सर्वर से भी मिटाएँ” चुनें।', resetDeviceOnly: 'सिर्फ यह डिवाइस', resetWipeServerBtn: 'सर्वर से भी मिटाएँ', resetWipeServerDone: 'सर्वर का डेटा मिट गया।', resetWipeServerFailed: 'सर्वर का डेटा मिटा नहीं जा सका — कुछ भी रीसेट नहीं हुआ। कनेक्शन जाँचकर फिर कोशिश करें।', supportQueued: 'सहायता अनुरोध सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqQueued: 'आवेदन सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqLoadingSchools: 'स्कूल लोड हो रहे हैं…', attNotMarked: 'दर्ज नहीं',
+    sbNumPending: 'प्रवेश सहेजा गया। प्रवेश संख्या ऑनलाइन आने पर दी जाएगी।', sbNumPendingReceipt: 'शुल्क सहेजा गया। रसीद संख्या ऑनलाइन आने पर दी जाएगी।', sbStatusSessionExpired: 'सत्र समाप्त हो गया — कृपया दोबारा लॉग इन करें।', sbStatusNotLinked: 'अभी सर्वर से जुड़ा नहीं है — लॉग इन पर जुड़ जाएगा।', sbBackupDone: 'बैकअप पूरा हुआ।', sbBackupFailed: 'बैकअप पूरा नहीं हुआ — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkServer: 'सर्वर से जोड़ें', sbLinkDone: 'सर्वर अकाउंट जुड़ गया।', sbLinkFailed: 'सर्वर अकाउंट जुड़ा नहीं जा सका — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkPwTitle: 'सर्वर अकाउंट जोड़ें', sbNumAssigning: 'नंबर मिल रहा है…', tWrongPasswordServer: 'सर्वर अकाउंट के लिए पासवर्ड गलत है।', tCollectCapped: 'दी गई राशि बकाया से ज़्यादा थी — सिर्फ बकाया राशि ली गई।', resetPwHintServer: 'इससे सिर्फ इस डिवाइस का डेटा मिटेगा। सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी, जब तक आप सर्वर भी न मिटाएँ।', resetConfirmMsgServer: 'सिर्फ इस डिवाइस का डेटा मिटाएँ? सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी — हर जगह से मिटाने के लिए “सर्वर से भी मिटाएँ” चुनें।', resetDeviceOnly: 'सिर्फ यह डिवाइस', resetWipeServerBtn: 'सर्वर से भी मिटाएँ', resetWipeServerDone: 'सर्वर का डेटा मिट गया।', resetWipeServerFailed: 'सर्वर का डेटा मिटा नहीं जा सका — कुछ भी रीसेट नहीं हुआ। कनेक्शन जाँचकर फिर कोशिश करें।', supportQueued: 'सहायता अनुरोध सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqQueued: 'आवेदन सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqLoadingSchools: 'स्कूल लोड हो रहे हैं…', attNotMarked: 'दर्ज नहीं',
     createExam: 'परीक्षा बनाएँ', examName: 'परीक्षा का नाम', examTotal: 'कुल अंक', tExamCreated: 'परीक्षा बन गई।', tExamInvalid: 'कृपया परीक्षा का नाम, कक्षा और कुल अंक भरें।', tNoTeachers: 'अभी कोई शिक्षक नहीं है।',
     fullBackup: 'पूरा बैकअप और रिस्टोर', fullBackupSub: 'स्कूल का सारा डेटा एक फ़ाइल में डाउनलोड करें, या बैकअप फ़ाइल से वापस लाएँ। रिस्टोर करने से इस डिवाइस का डेटा बदल जाएगा।', backupExport: 'पूरा बैकअप डाउनलोड करें', backupImport: 'बैकअप फ़ाइल से रिस्टोर करें', tBackupExported: 'पूरा बैकअप डाउनलोड हो गया।', tBackupRestored: 'बैकअप रिस्टोर हो गया।', tBackupBadFile: 'यह फ़ाइल सही School Saathi बैकअप नहीं है — कुछ भी नहीं बदला।', backupRestoreConfirm: 'रिस्टोर करने से इस डिवाइस का मौजूदा सारा डेटा बैकअप फ़ाइल से बदल जाएगा। पहले आपके मौजूदा डेटा का सुरक्षा बैकअप डाउनलोड होगा।',
     sbStatusLocalOnly: 'सर्वर से जुड़ा नहीं है — डेटा इसी डिवाइस पर है। बैकअप के लिए लिंक करें।', sbLastAttempt: 'अंतिम प्रयास',
