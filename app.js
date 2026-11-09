@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 40;
+var APP_VERSION = 41;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -2117,11 +2117,57 @@ function sbReceiptSameServer(row, payload) {
   // is a collision, and patching it would overwrite another device's
   // receipt.
   if (!row || !payload) return false;
-  return String(row.student_id || '') === String(payload.student_id || '')
+  // v41: an UNKNOWN student_id (no id-map entry yet — the repair runs
+  // before the pull that would save the map) is not a DIFFERENT
+  // student. Every other field matching means this is the same
+  // receipt; treating null as a mismatch minted a new server number
+  // for every receipt on every cycle (live: 192 duplicate receipts,
+  // the counter climbing 3 per render). When both ids are known they
+  // must still agree.
+  var idOk = !payload.student_id || String(row.student_id || '') === String(payload.student_id || '');
+  return idOk
     && Number(row.total || 0) === Number(payload.total || 0)
     && String(row.receipt_date || '') === String(payload.receipt_date || '')
     && String(row.month || '') === String(payload.month || '')
     && String(row.student_name || '') === String(payload.student_name || '');
+}
+function sbReceiptContentMatches(srvRow, rc, stuMap, byId) {
+  // Does this server receipt hold the same collection as the local
+  // receipt — same student, month, total, date and name, and (where
+  // both sides carry lines) the same fee type? Used by the
+  // adopt-before-mint step: a receipt whose content already exists on
+  // the server under another number links to that number instead of
+  // minting a duplicate. The fee-type check matters: two genuinely
+  // different same-day collections (e.g. Tuition 800 and Transport
+  // 800) share every other field and must never be merged.
+  var s = byId[rc.studentId] || {};
+  var stuId = (stuMap && stuMap[rc.studentId]) || null;
+  var idOk = !stuId || String(srvRow.student_id || '') === String(stuId);
+  if (!idOk) return false;
+  if (Number(srvRow.total || 0) !== Number(rc.total || 0)) return false;
+  if (String(srvRow.receipt_date || '') !== String(rc.date || '')) return false;
+  if (String(srvRow.month || '') !== String(rc.month || '')) return false;
+  if (String(srvRow.student_name || '') !== String(rc.name || s.name || '')) return false;
+  var srvLines = srvRow.lines || [];
+  var rcLines = rc.lines || [];
+  if (srvLines.length && rcLines.length) {
+    var srvTypes = {};
+    srvLines.forEach(function (ln) { if (ln.type) srvTypes[ln.type] = true; });
+    if (!rcLines.some(function (ln) { return ln.type && srvTypes[ln.type]; })) return false;
+  }
+  return true;
+}
+function sbFindReceiptByContent(serverReceipts, rc, stuMap, byId) {
+  // The earliest server number holding this receipt's content, or
+  // null. Earliest, so a receipt re-numbered by a previous cycle
+  // links back to its original number, not to a later duplicate.
+  var best = null;
+  (serverReceipts || []).forEach(function (r) {
+    if (!r.receipt_no) return;
+    if (!sbReceiptContentMatches(r, rc, stuMap, byId)) return;
+    if (best === null || r.receipt_no < best) best = r.receipt_no;
+  });
+  return best;
 }
 function sbGetSchoolIdForSync(account, sbUid, token) {
   var cached = sbServerSchoolMap()[account.uid];
@@ -2134,7 +2180,7 @@ function sbFetchTakenNumbers(token, schoolId) {
   // sequences, for the counter heal.
   return Promise.all([
     sbRest('GET', 'ss_students?select=local_id,admission_no,enr&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token),
-    sbRest('GET', 'ss_receipts?select=receipt_no,student_id,total,receipt_date,student_name,month&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token),
+    sbRest('GET', 'ss_receipts?select=receipt_no,student_id,total,receipt_date,student_name,month,lines&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token),
     sbRest('GET', 'ss_schools?select=adm_counter,receipt_counter&id=eq.' + encodeURIComponent(schoolId), token)
   ]).then(function (res) {
     var students = (res[0].ok && Array.isArray(res[0].data)) ? res[0].data : [];
@@ -2304,6 +2350,20 @@ function sbSyncRepairNumbers(account, sbUid, token) {
   }).then(function () {
     var chain2 = Promise.resolve();
     var maps = sbSyncBuildMaps(d, act.uid);
+    // v41: the repair runs FIRST in the cycle — before the pull that
+    // would save the id map — so the stored map is legitimately empty
+    // on the first cycle after login (fresh device, cleared map). The
+    // repair already fetched the server's students (taken.students,
+    // with local_id), so resolve student ids from THAT fresh data;
+    // the stored map only fills gaps. Without this, every receipt's
+    // payload carried student_id null, the same-number comparison
+    // always failed, and the repair minted a new server number for
+    // every receipt on every cycle (live: 192 duplicate receipts, the
+    // counter climbing 3 per render). Students were safe already —
+    // their chain uses the fresh serverByLocal map, not the stored one.
+    var stuFromServer = {};
+    taken.students.forEach(function (r) { if (r.local_id) stuFromServer[r.local_id] = r.id; });
+    Object.keys(stuFromServer).forEach(function (k) { maps.stu[k] = stuFromServer[k]; });
     var byId = {};
     (d.students || []).forEach(function (s) { byId[s.id] = s; });
     (d.receipts || []).forEach(function (rc) {
@@ -2320,7 +2380,37 @@ function sbSyncRepairNumbers(account, sbUid, token) {
           var mapped = sbMapReceipt(rc, schoolId, maps.stu, byId);
           collides = !sbReceiptSameServer(srv, mapped);
         }
-        if (!collides && !rc.numPending && rc.receiptNo) return;
+        if (!collides && !rc.numPending && rc.receiptNo) {
+          // v41 adopt-before-mint: the number is not on the server
+          // (srv null) but this receipt's content may already exist
+          // under another number (a previous cycle re-numbered it and
+          // uploaded the copy). Link to the earliest such number
+          // instead of uploading yet another duplicate row.
+          if (srv) return;
+          var adoptNo = sbFindReceiptByContent(taken.receipts, rc, maps.stu, byId);
+          if (adoptNo) {
+            var oldNoA = rc.receiptNo;
+            rc.receiptNo = adoptNo;
+            changed = true;
+            sbOutboxAdd(act.uid, { table: 'ss_receipts', key: adoptNo, op: 'upsert', row: JSON.parse(JSON.stringify(rc)), at: new Date().toISOString() });
+            if (oldNoA) sbOutboxRemove(act.uid, { table: 'ss_receipts', key: oldNoA });
+          }
+          return;
+        }
+        if (!rc.numPending && rc.receiptNo) {
+          // v41: same-number collision — the content may still exist
+          // under another number; adopt it instead of minting a
+          // duplicate.
+          var adoptNo2 = sbFindReceiptByContent(taken.receipts, rc, maps.stu, byId);
+          if (adoptNo2 && adoptNo2 !== rc.receiptNo) {
+            var oldNoB = rc.receiptNo;
+            rc.receiptNo = adoptNo2;
+            changed = true;
+            sbOutboxAdd(act.uid, { table: 'ss_receipts', key: adoptNo2, op: 'upsert', row: JSON.parse(JSON.stringify(rc)), at: new Date().toISOString() });
+            if (oldNoB) sbOutboxRemove(act.uid, { table: 'ss_receipts', key: oldNoB });
+            return;
+          }
+        }
         return sbMintReceiptNo(token, schoolId, taken.rcp).then(function (no) {
           var oldNo = rc.receiptNo;
           rc.receiptNo = no;
@@ -5800,7 +5890,13 @@ function receiptForFeeRecord(r) {
   var ty = feeTypeOf(r);
   var typed = list.filter(function (rc) { return (rc.lines || []).some(function (ln) { return ln.type === ty; }); });
   var pick = typed.length ? typed : list;
-  pick.sort(function (a, b) { return (a.date < b.date ? 1 : a.date > b.date ? -1 : (a.receiptNo < b.receiptNo ? 1 : -1)); });
+  // Latest date first; among same-date receipts the EARLIEST number —
+  // a receipt re-numbered by a past repair cycle is a duplicate of the
+  // original, and the original number is the stable one to show (v41:
+  // the v40 loop left 64 copies of each receipt under ever-higher
+  // numbers; showing the latest number made the column change on
+  // every render).
+  pick.sort(function (a, b) { return (a.date < b.date ? 1 : a.date > b.date ? -1 : (a.receiptNo < b.receiptNo ? -1 : 1)); });
   return pick[0];
 }
 function receiptCellForRecord(r) {
@@ -6393,19 +6489,24 @@ function receiptHTML(rcpt, s, editable) {
 }
 function collectFeePage(sid) {
   var s = db.students.find(function (x) { return x.id === sid; });
-  if (!s) { state.collectStudent = null; return feesPage(); }
   if (state.savedReceiptId) {
     var rc = (db.receipts || []).find(function (r) { return r.receiptNo === state.savedReceiptId; });
     if (rc) {
-      return '<div class="page-head"><div><h2>' + t('rcptTitle') + '</h2><p>' + esc(s.name) + ' • ' + esc(s.cls) + ' • ' + esc(s.admissionNo || '') + '</p></div>' +
+      // v41: the receipt view must not vanish when the student row is
+      // missing locally (a pull rebuilt the mirror, or the row was
+      // never downloaded) — the receipt carries name, class and
+      // admission number itself, so render from those.
+      var s2 = s || { id: rc.studentId, name: rc.name || '', cls: rc.cls || '', admissionNo: rc.admissionNo || '', enr: rc.admissionNo || '', photo: null };
+      return '<div class="page-head"><div><h2>' + t('rcptTitle') + '</h2><p>' + esc(s2.name) + ' • ' + esc(s2.cls) + ' • ' + esc(s2.admissionNo || '') + '</p></div>' +
         '<div class="toolbar"><button class="btn ghost" onclick="backFromReceipt()">← ' + t('backFees') + '</button></div></div>' +
-        receiptHTML(rc, s, false) +
+        receiptHTML(rc, s2, false) +
         '<div class="actions"><button class="btn" onclick="printReceipt(\'' + esc(rc.receiptNo) + '\')">🖨 ' + t('rcptPrint') + '</button>' +
         '<button class="btn" onclick="waReceiptShare(\'' + esc(rc.receiptNo) + '\')">💬 ' + t('waShareReceiptBtn') + '</button>' +
-        '<button class="btn green" onclick="openCollectFee(\'' + s.id + '\')">' + t('rcptCollectAgain') + '</button></div>';
+        '<button class="btn green" onclick="openCollectFee(\'' + s2.id + '\')">' + t('rcptCollectAgain') + '</button></div>';
     }
     state.savedReceiptId = null;
   }
+  if (!s) { state.collectStudent = null; return feesPage(); }
   var d = collectDraft;
   if (!d || d.studentId !== sid) { d = collectDraft = newCollectDraft(sid, state.collectRecordId); }
   var view = receiptViewFromDraft(d, s);
