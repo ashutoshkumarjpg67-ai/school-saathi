@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 39;
+var APP_VERSION = 40;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -719,12 +719,27 @@ function sbMapHomework(h, schoolId, stuMap) {
 function sbMapNotice(n, schoolId) {
   return { school_id: schoolId, local_id: n.id, title: n.title || '', notice_date: sbNullIfEmpty(n.date), body: n.body || '' };
 }
+function sbCounterNo(v) {
+  // v40: ss_receipts.counter_no is an INTEGER column, but the Collect
+  // Fee form stores the counter label as free text ('COUNTER-1' by
+  // default). The live test account proved it: the app POSTed
+  // counter_no "COUNTER-1" and PostgREST rejected the whole receipt
+  // with HTTP 400 code 22P02 ("invalid input syntax for type
+  // integer"), so RCP-2026-003 never landed and every sync cycle
+  // failed with "Backup failed". Coerce here, at the upload mapping
+  // only — the local receipt keeps its label for display/print.
+  // Digits only: the hyphen in 'COUNTER-1' is a separator, not a
+  // minus sign, so '-1' must never come out of this helper.
+  if (typeof v === 'number' && isFinite(v)) return Math.floor(v);
+  var m = String(v == null ? '' : v).match(/\d+/);
+  return m ? parseInt(m[0], 10) : 0;
+}
 function sbMapReceipt(rc, schoolId, stuMap, byId) {
   var s = byId[rc.studentId] || {};
   return { school_id: schoolId, student_id: stuMap[rc.studentId] || null, receipt_no: rc.receiptNo || '',
     admission_no: rc.admissionNo || s.admissionNo || s.enr || '', student_name: rc.name || s.name || '',
     cls: rc.cls || s.cls || '', session: rc.session || '', receipt_date: sbNullIfEmpty(rc.date),
-    month: rc.month || '', counter_no: rc.counterNo || 0, lines: rc.lines || [], pay_mode: rc.payMode || 'Cash',
+    month: rc.month || '', counter_no: sbCounterNo(rc.counterNo), lines: rc.lines || [], pay_mode: rc.payMode || 'Cash',
     pay_date: sbNullIfEmpty(rc.payDate), bank: rc.bank || '', number: rc.number || '',
     total: rc.total || 0, total_words: rc.totalWords || '', collector: rc.collector || '' };
 }
@@ -790,7 +805,17 @@ function sbUploadMissing(token, schoolId, table, selectCols, rows, keyFn, onInse
     if (onInserted) onInserted(existing);
     if (!missing.length) return 0;
     return sbRest('POST', table, token, missing, 'return=representation').then(function (r2) {
-      if (!r2.ok) throw new Error('insert-' + table);
+      if (!r2.ok) {
+        // v40: the server's message IS the diagnosis. The live receipts
+        // failure was only visible as a bare "insert-ss_receipts" until
+        // the exact POST was replayed (HTTP 400, code 22P02, "invalid
+        // input syntax for type integer"). Carry code + message through
+        // so the status line can name it; sbStatusText caps the detail
+        // at 80 chars and never prints secrets.
+        var d2 = r2.data || {};
+        var msg2 = (d2.code ? d2.code + ' ' : '') + (d2.message || ('HTTP ' + r2.status));
+        throw new Error('insert-' + table + ': ' + msg2);
+      }
       var inserted = Array.isArray(r2.data) ? r2.data : [];
       if (onInserted) onInserted(existing.concat(inserted));
       return inserted.length;
