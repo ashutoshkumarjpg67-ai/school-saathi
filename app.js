@@ -15,11 +15,17 @@
    Nursery–12th; full-year Apr–Mar fee trend; full backup/restore
    (JSON, safety copy first); in-app version check so a stale SW
    shell flips to the new build within one or two plain loads;
-   local-only accounts show a stable "Not linked to server" line. */
+   local-only accounts show a stable "Not linked to server" line.
+   v38: WhatsApp via wa.me links ONLY (manual send — the app opens
+   the chat with the message prefilled, the user presses Send inside
+   WhatsApp). No API, no automation, no bot, no auto-send. Fee due
+   reminders, absent/late alerts, fee receipt share, profile chat.
+   The app logs "WhatsApp opened", never "sent" — it cannot know
+   whether the user pressed Send. */
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 37;
+var APP_VERSION = 38;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -3672,7 +3678,17 @@ var I18N = {
     sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.', sbStatusSyncing: 'Syncing with the server…', sbStatusPendingSync: 'Offline — changes will sync when you are back online.', sbSyncDone: 'Synced with the server.', sbSyncFailed: 'Sync did not finish — it will retry on your next login.', sbSyncOffline: 'Offline — your changes are saved here and will sync later.', sbSyncConflict: 'Server had a newer copy — kept the server version.', sbNumPending: 'Admission saved. The admission number will be assigned when you are back online.', sbNumPendingReceipt: 'Fee saved. The receipt number will be assigned when you are back online.', sbStatusSessionExpired: 'Session expired — please log in again.', sbStatusNotLinked: 'Not linked to the server yet — it will link when you log in.', sbLinkServer: 'Link to Server', sbLinkDone: 'Server account linked.', sbLinkFailed: 'Could not link the server account — check your connection and try again.', sbLinkPwTitle: 'Link the server account', sbNumAssigning: 'Assigning number…', tWrongPasswordServer: 'Wrong password for the server account.', tCollectCapped: 'The paid amount was more than the due — only the due amount was taken.', resetPwHintServer: 'This deletes the data on THIS device only. The server copy will come back on the next sync unless you also wipe the server.', resetConfirmMsgServer: 'Delete this device’s data only? The server copy will return on the next sync — choose “Delete on server too” to remove it everywhere.', resetDeviceOnly: 'This device only', resetWipeServerBtn: 'Delete on server too', resetWipeServerDone: 'Server data deleted.', resetWipeServerFailed: 'Could not delete the server data — nothing was reset. Check your connection and try again.', supportQueued: 'Support request saved — it will be sent when you are back online.', admReqQueued: 'Application saved — it will be sent when you are back online.', admReqLoadingSchools: 'Loading schools…', attNotMarked: 'Not marked',
     createExam: 'Create Exam', examName: 'Exam Name', examTotal: 'Total Marks', tExamCreated: 'Exam created.', tExamInvalid: 'Please fill the exam name, class and total marks.', tNoTeachers: 'No teachers yet.',
     fullBackup: 'Full Backup & Restore', fullBackupSub: 'Download all school data as one file, or restore from a backup file. Restoring replaces the data on this device.', backupExport: 'Download Full Backup', backupImport: 'Restore from Backup File', tBackupExported: 'Full backup downloaded.', tBackupRestored: 'Backup restored.', tBackupBadFile: 'This file is not a valid School Saathi backup — nothing was changed.', backupRestoreConfirm: 'Restore will REPLACE all current data on this device with the backup file. A safety backup of your current data will be downloaded first.',
-    sbStatusLocalOnly: 'Not linked to the server — your data stays on this device. Link to back up.'
+    sbStatusLocalOnly: 'Not linked to the server — your data stays on this device. Link to back up.',
+    waReminderBtn: 'WhatsApp Reminder', waNotifyBtn: 'Notify Parent', waShareReceiptBtn: 'Share on WhatsApp', waChatBtn: 'WhatsApp', waNotifyCol: 'Notify',
+    waNoNumber: 'No valid parent mobile number for this student — WhatsApp is unavailable.',
+    waOpened: 'WhatsApp opened — press Send in WhatsApp to send the message.',
+    waNotAbsent: 'Only students marked Absent or Late can be notified.',
+    waFeeReminderMsg: 'Namaste, this is {school}. Fee reminder for {student} (Class {cls}): {amount} is due for {month}. Please pay at the earliest. Thank you.',
+    waAbsentMsg: 'Namaste, this is {school}. {student} (Class {cls}) was absent from school today ({date}). Please let us know if there is a reason. Thank you.',
+    waLateMsg: 'Namaste, this is {school}. {student} (Class {cls}) arrived late to school today ({date}). Please ensure timely arrival. Thank you.',
+    waReceiptMsg: 'Namaste, this is {school}. Fee receipt {receipt} — {student} (Class {cls}), {amount} paid for {month} on {date}. Thank you.',
+    waGreetMsg: 'Namaste, this is {school}. This is regarding {student} (Class {cls}).',
+    waSchoolContact: 'School'
   },
   hi: {
     dashboard: 'डैशबोर्ड', settings: 'सेटिंग्स', reports: 'रिपोर्ट', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -3699,7 +3715,17 @@ var I18N = {
     sbNumPending: 'प्रवेश सहेजा गया। प्रवेश संख्या ऑनलाइन आने पर दी जाएगी।', sbNumPendingReceipt: 'शुल्क सहेजा गया। रसीद संख्या ऑनलाइन आने पर दी जाएगी।', sbStatusSessionExpired: 'सत्र समाप्त हो गया — कृपया दोबारा लॉग इन करें।', sbStatusNotLinked: 'अभी सर्वर से जुड़ा नहीं है — लॉग इन पर जुड़ जाएगा।', sbLinkServer: 'सर्वर से जोड़ें', sbLinkDone: 'सर्वर अकाउंट जुड़ गया।', sbLinkFailed: 'सर्वर अकाउंट जुड़ा नहीं जा सका — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkPwTitle: 'सर्वर अकाउंट जोड़ें', sbNumAssigning: 'नंबर मिल रहा है…', tWrongPasswordServer: 'सर्वर अकाउंट के लिए पासवर्ड गलत है।', tCollectCapped: 'दी गई राशि बकाया से ज़्यादा थी — सिर्फ बकाया राशि ली गई।', resetPwHintServer: 'इससे सिर्फ इस डिवाइस का डेटा मिटेगा। सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी, जब तक आप सर्वर भी न मिटाएँ।', resetConfirmMsgServer: 'सिर्फ इस डिवाइस का डेटा मिटाएँ? सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी — हर जगह से मिटाने के लिए “सर्वर से भी मिटाएँ” चुनें।', resetDeviceOnly: 'सिर्फ यह डिवाइस', resetWipeServerBtn: 'सर्वर से भी मिटाएँ', resetWipeServerDone: 'सर्वर का डेटा मिट गया।', resetWipeServerFailed: 'सर्वर का डेटा मिटा नहीं जा सका — कुछ भी रीसेट नहीं हुआ। कनेक्शन जाँचकर फिर कोशिश करें।', supportQueued: 'सहायता अनुरोध सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqQueued: 'आवेदन सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqLoadingSchools: 'स्कूल लोड हो रहे हैं…', attNotMarked: 'दर्ज नहीं',
     createExam: 'परीक्षा बनाएँ', examName: 'परीक्षा का नाम', examTotal: 'कुल अंक', tExamCreated: 'परीक्षा बन गई।', tExamInvalid: 'कृपया परीक्षा का नाम, कक्षा और कुल अंक भरें।', tNoTeachers: 'अभी कोई शिक्षक नहीं है।',
     fullBackup: 'पूरा बैकअप और रिस्टोर', fullBackupSub: 'स्कूल का सारा डेटा एक फ़ाइल में डाउनलोड करें, या बैकअप फ़ाइल से वापस लाएँ। रिस्टोर करने से इस डिवाइस का डेटा बदल जाएगा।', backupExport: 'पूरा बैकअप डाउनलोड करें', backupImport: 'बैकअप फ़ाइल से रिस्टोर करें', tBackupExported: 'पूरा बैकअप डाउनलोड हो गया।', tBackupRestored: 'बैकअप रिस्टोर हो गया।', tBackupBadFile: 'यह फ़ाइल सही School Saathi बैकअप नहीं है — कुछ भी नहीं बदला।', backupRestoreConfirm: 'रिस्टोर करने से इस डिवाइस का मौजूदा सारा डेटा बैकअप फ़ाइल से बदल जाएगा। पहले आपके मौजूदा डेटा का सुरक्षा बैकअप डाउनलोड होगा।',
-    sbStatusLocalOnly: 'सर्वर से जुड़ा नहीं है — डेटा इसी डिवाइस पर है। बैकअप के लिए लिंक करें।'
+    sbStatusLocalOnly: 'सर्वर से जुड़ा नहीं है — डेटा इसी डिवाइस पर है। बैकअप के लिए लिंक करें।',
+    waReminderBtn: 'WhatsApp रिमाइंडर', waNotifyBtn: 'अभिभावक को बताएं', waShareReceiptBtn: 'WhatsApp पर भेजें', waChatBtn: 'WhatsApp', waNotifyCol: 'सूचित करें',
+    waNoNumber: 'इस छात्र का सही अभिभावक मोबाइल नंबर नहीं है — WhatsApp उपलब्ध नहीं है।',
+    waOpened: 'WhatsApp खुल गया — संदेश भेजने के लिए WhatsApp में Send दबाएँ।',
+    waNotAbsent: 'सिर्फ अनुपस्थित या देर से आए छात्रों को ही सूचित किया जा सकता है।',
+    waFeeReminderMsg: 'नमस्ते, यह {school} है। {student} (कक्षा {cls}) की फीस {amount} {month} माह के लिए बाकी है। कृपया जल्द से जल्द जमा करें। धन्यवाद।',
+    waAbsentMsg: 'नमस्ते, यह {school} है। {student} (कक्षा {cls}) आज ({date}) स्कूल नहीं आया/आई। कोई कारण हो तो कृपया बताएं। धन्यवाद।',
+    waLateMsg: 'नमस्ते, यह {school} है। {student} (कक्षा {cls}) आज ({date}) स्कूल देर से आया/आई। कृपया समय पर भेजें। धन्यवाद।',
+    waReceiptMsg: 'नमस्ते, यह {school} है। फीस रसीद {receipt} — {student} (कक्षा {cls}), {month} के लिए {amount} का भुगतान {date} को हुआ। धन्यवाद।',
+    waGreetMsg: 'नमस्ते, यह {school} है। {student} (कक्षा {cls}) के बारे में बात करनी है।',
+    waSchoolContact: 'स्कूल'
   }
 };
 function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || I18N.en[k] || k; }
@@ -5161,11 +5187,11 @@ function studentProfilePage(id) {
   var toolbar = state.role === 'school'
     ? '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">← ' + t('backDir') + '</button>' +
     '<button class="btn" onclick="studentForm(\'' + s.id + '\')">' + t('editStudent') + '</button>' +
-    '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button>' +
+    '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button>' + waChatBtn(s.id) +
     ((stt === 'Active' || stt === 'Inactive') ? '<button class="btn ghost" onclick="promoteSingle(\'' + s.id + '\')">⬆️ ' + t('promoSingle') + '</button>' : '') + '</div>'
     : state.role === 'teacher'
     ? '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">← ' + t('backDir') + '</button>' +
-    '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button></div>'
+    '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button>' + waChatBtn(s.id) + '</div>'
     : '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">← ' + t('backDir') + '</button><button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button></div>';
   return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + esc(s.cls) + ' • ' + t('thAdmNo') + ' ' + esc(s.admissionNo || '—') + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • <span class="badge ' + badgeCls + '">' + stt + '</span></p></div></div>' +
     toolbar + '</div>' +
@@ -5260,13 +5286,24 @@ function profileTabBody(s, tab) {
   var hwPend = db.homework.filter(function (h) { return h.cls === s.cls && (h.doneBy || []).indexOf(s.id) === -1; }).length;
   var sum2 = feeSummaryFor(s.id);
   var pendAmt = sum2 ? sum2.pend : 0;
+  // v38: pending dues with a per-due WhatsApp reminder. This is also
+  // the teacher's entry point for fee reminders (teachers cannot open
+  // the Fees page) — waReminderBtn enforces the assigned-class rule,
+  // and a student never sees a button here.
+  var pendRecs38 = (db.feeRecords || []).filter(function (r) { return r.studentId === s.id && r.status === 'Pending'; });
+  var pendHtml38 = '';
+  if (pendRecs38.length && state.role !== 'student') {
+    pendHtml38 = '<div class="card" style="margin-top:16px"><h3>' + t('pendingW') + '</h3>' + pendRecs38.map(function (r) {
+      return '<div class="type-row"><b>' + esc(r.month) + ' • ' + esc(feeTypeLabel(feeTypeOf(r))) + '</b><span>' + inr(r.amount) + ' ' + waReminderBtn(r.id, s.id) + '</span></div>';
+    }).join('') + '</div>';
+  }
   return '<div class="stats">' +
     statCard('📊', 'blue', t('attPct'), studentAttPct(s), '', 'up', { suffix: '%' }) +
     statCard('💰', 'green', t('feeSt'), pendAmt, '', pendAmt ? 'down' : 'up', { prefix: '₹' }) +
     statCard('📝', 'orange', t('latestExam'), lex ? lex.pct : 0, lex ? lex.name : '', 'up', { suffix: '%' }) +
     statCard('📚', 'red', t('hwPending'), hwPend, '', 'up') +
     '</div>' +
-    '<div class="card">' + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fAdmNo'), esc(s.admissionNo || '—')) + kv(t('thEnr'), esc(s.enr || '—')) + kv(t('fAdmDate'), esc(s.admissionDate || '—')) + kv(t('fSession'), esc(s.session || '—')) + kv(t('thStatus'), esc(s.status || 'Active')) + '</div>';
+    '<div class="card">' + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fAdmNo'), esc(s.admissionNo || '—')) + kv(t('thEnr'), esc(s.enr || '—')) + kv(t('fAdmDate'), esc(s.admissionDate || '—')) + kv(t('fSession'), esc(s.session || '—')) + kv(t('thStatus'), esc(s.status || 'Active')) + '</div>' + pendHtml38;
 }
 function setStudentPin(id) {
   var s = db.students.find(function (x) { return x.id === id; });
@@ -5299,6 +5336,144 @@ function deleteStudent(id) {
     toast(t('tStudentRemoved'));
   });
 }
+
+/* ================= v38: WhatsApp via wa.me links (MANUAL send only) =================
+   HARD RULES (the user's own decisions — never break these):
+   - NO automation, NO WhatsApp API, NO unofficial bot/library, NO
+     auto-send, NO bulk send. The app only OPENS a wa.me chat with the
+     message prefilled; the user presses Send inside WhatsApp. Same
+     safe pattern as the Target Academy fee-receipt wa.me button.
+   - NEVER anything that could disconnect the school's WhatsApp
+     number: no WhatsApp login, no session, no QR — only wa.me links.
+   - HONEST wording everywhere: the app opens WhatsApp, it cannot
+     know whether the user pressed Send — buttons and logs say
+     "Open WhatsApp" / "WhatsApp opened", never "Sent".
+   - Templates never carry Aadhaar, PINs, passwords or any other
+     sensitive field — only school name, student name, class, month,
+     amount and date. */
+function waNormalizePhone(raw) {
+  // Indian mobiles only: 10-digit, 0-prefixed, +91-prefixed, spaces /
+  // dashes all normalise to 91XXXXXXXXXX. Anything else is rejected
+  // (the button is disabled and the action toasts the reason).
+  var d = digitsOnly(raw);
+  if (d.length === 12 && d.indexOf('91') === 0) d = d.slice(2);
+  else if (d.length === 11 && d.charAt(0) === '0') d = d.slice(1);
+  if (d.length !== 10) return '';
+  if ('6789'.indexOf(d.charAt(0)) === -1) return ''; // Indian mobiles start 6-9
+  return '91' + d;
+}
+function waFill(tpl, map) {
+  // Placeholder fill without regexes: {school}, {student}, {cls},
+  // {month}, {amount}, {date}, {receipt}.
+  var out = tpl;
+  Object.keys(map).forEach(function (k) { out = out.split('{' + k + '}').join(map[k]); });
+  return out;
+}
+function waSchoolPhoneLine() {
+  // The school's contact number, when the school profile has one.
+  var ph = (db.profile && db.profile.phone) ? String(db.profile.phone).trim() : '';
+  return ph ? '\n' + t('waSchoolContact') + ': ' + ph : '';
+}
+function waOpenUrl(url) {
+  // The ONE place that opens WhatsApp. wa.me only opens the chat with
+  // the message prefilled — nothing is sent by the app itself.
+  try { if (typeof window !== 'undefined' && window.open) window.open(url, '_blank'); } catch (e) {}
+  return url;
+}
+function waLogOpen(kind, s) {
+  // "WhatsApp opened", never "sent" — the app cannot know whether the
+  // user pressed Send inside WhatsApp.
+  logAudit('WhatsApp opened', kind + ' • ' + s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
+  saveDB(db);
+}
+function waCanUse(studentId) {
+  // Shared role guard for every WhatsApp action (v35 roles): a student
+  // can never open one; a teacher only for students in the classes
+  // they teach; the school admin can use them all.
+  if (state.role === 'student') return false;
+  if (state.role === 'teacher') return canViewStudent(studentId);
+  return state.role === 'school';
+}
+function waFeeReminder(recordId) {
+  var r = db.feeRecords.find(function (x) { return x.id === recordId; });
+  if (!r || r.status !== 'Pending') return false;
+  var s = db.students.find(function (x) { return x.id === r.studentId; });
+  if (!s) return false;
+  if (!waCanUse(s.id)) { toast(t('tNotAllowed')); return false; }
+  var norm = waNormalizePhone(s.phone);
+  if (!norm) { toast(t('waNoNumber')); return false; }
+  var msg = waFill(t('waFeeReminderMsg'), { school: db.profile.name, student: s.name, cls: s.cls, amount: inr(r.amount), month: r.month }) + waSchoolPhoneLine();
+  waOpenUrl('https://wa.me/' + norm + '?text=' + encodeURIComponent(msg));
+  waLogOpen('Fee reminder', s);
+  toast(t('waOpened'));
+  return true;
+}
+function waAbsentAlert(studentId) {
+  var s = db.students.find(function (x) { return x.id === studentId; });
+  if (!s) return false;
+  if (!waCanUse(s.id)) { toast(t('tNotAllowed')); return false; }
+  var date = state.attDate || todayIST();
+  var recs = db.attendance[date + '|' + s.cls] || {};
+  var mark = recs[studentId];
+  if (mark !== 'Absent' && mark !== 'Late') { toast(t('waNotAbsent')); return false; }
+  var norm = waNormalizePhone(s.phone);
+  if (!norm) { toast(t('waNoNumber')); return false; }
+  var msg = waFill(t(mark === 'Absent' ? 'waAbsentMsg' : 'waLateMsg'), { school: db.profile.name, student: s.name, cls: s.cls, date: date }) + waSchoolPhoneLine();
+  waOpenUrl('https://wa.me/' + norm + '?text=' + encodeURIComponent(msg));
+  waLogOpen(mark === 'Absent' ? 'Absent alert' : 'Late alert', s);
+  toast(t('waOpened'));
+  return true;
+}
+function waReceiptShare(receiptNo) {
+  // School only: fees are not a teacher's area, and a student never
+  // shares receipts.
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
+  var rc = (db.receipts || []).find(function (x) { return x.receiptNo === receiptNo; });
+  if (!rc) return false;
+  var s = db.students.find(function (x) { return x.id === rc.studentId; });
+  if (!s) return false;
+  var norm = waNormalizePhone(s.phone);
+  if (!norm) { toast(t('waNoNumber')); return false; }
+  var msg = waFill(t('waReceiptMsg'), { school: db.profile.name, student: s.name, cls: s.cls, receipt: rc.receiptNo, amount: inr(rc.total), month: rc.month, date: rc.date }) + waSchoolPhoneLine();
+  waOpenUrl('https://wa.me/' + norm + '?text=' + encodeURIComponent(msg));
+  waLogOpen('Receipt share', s);
+  toast(t('waOpened'));
+  return true;
+}
+function waProfileChat(studentId) {
+  var s = db.students.find(function (x) { return x.id === studentId; });
+  if (!s) return false;
+  if (!waCanUse(s.id)) { toast(t('tNotAllowed')); return false; }
+  var norm = waNormalizePhone(s.phone);
+  if (!norm) { toast(t('waNoNumber')); return false; }
+  var msg = waFill(t('waGreetMsg'), { school: db.profile.name, student: s.name, cls: s.cls }) + waSchoolPhoneLine();
+  waOpenUrl('https://wa.me/' + norm + '?text=' + encodeURIComponent(msg));
+  waLogOpen('Profile chat', s);
+  toast(t('waOpened'));
+  return true;
+}
+function waReminderBtn(recordId, studentId) {
+  // The fee-reminder button for one pending due row. A student never
+  // sees it; a teacher only for their own classes. When the parent
+  // number is missing or invalid the button is disabled (the reason
+  // is the title) — the action itself toasts the same reason.
+  var s = db.students.find(function (x) { return x.id === studentId; });
+  if (!s) return '';
+  if (state.role === 'student') return '';
+  if (state.role === 'teacher' && !canViewStudent(studentId)) return '';
+  if (!waNormalizePhone(s.phone)) return '<button class="btn ghost sm" disabled title="' + esc(t('waNoNumber')) + '">💬 ' + t('waReminderBtn') + '</button>';
+  return '<button class="btn ghost sm" onclick="waFeeReminder(\'' + recordId + '\')">💬 ' + t('waReminderBtn') + '</button>';
+}
+function waChatBtn(studentId) {
+  // The profile WhatsApp button. Same visibility rules as the reminder
+  // button; disabled with the reason when the parent number is unusable.
+  var s = db.students.find(function (x) { return x.id === studentId; });
+  if (!s) return '';
+  if (state.role === 'student') return '';
+  if (state.role === 'teacher' && !canViewStudent(studentId)) return '';
+  if (!waNormalizePhone(s.phone)) return '<button class="btn ghost" disabled title="' + esc(t('waNoNumber')) + '">💬 ' + t('waChatBtn') + '</button>';
+  return '<button class="btn ghost" onclick="waProfileChat(\'' + studentId + '\')">💬 ' + t('waChatBtn') + '</button>';
+}
 function attendancePage() {
   if (!state.attDate) state.attDate = todayIST();
   // v35: a teacher only ever sees their own assigned classes — the class
@@ -5317,10 +5492,16 @@ function attendancePage() {
   var recs = db.attendance[key] || {};
   var rows = roster.map(function (s) {
     var cur = recs[s.id] || 'Present';
+    // v38: an Absent/Late student can be notified on WhatsApp (manual
+    // wa.me chat, parent presses nothing here — the admin presses Send
+    // inside WhatsApp). The button appears only for Absent/Late marks.
+    var notifyCell = (cur === 'Absent' || cur === 'Late')
+      ? '<button class="btn ghost sm" onclick="waAbsentAlert(\'' + s.id + '\')">💬 ' + t('waNotifyBtn') + '</button>'
+      : '<span class="muted">—</span>';
     return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td><div class="mark-btns">' +
       ['Present', 'Absent', 'Late'].map(function (m) {
         return '<button class="' + m[0].toLowerCase() + (cur === m ? ' on' : '') + '" onclick="markAtt(\'' + s.id + '\',\'' + m + '\')">' + (m === 'Present' ? t('presBtn') : m === 'Absent' ? t('absBtn') : t('lateBtn')) + '</button>';
-      }).join('') + '</div></td></tr>';
+      }).join('') + '</div></td><td>' + notifyCell + '</td></tr>';
   }).join('');
   // v34 (P1-9): an unmarked student is "Not marked", not Present — the
   // Present default lives only in the marking buttons above. Counting an
@@ -5339,7 +5520,7 @@ function attendancePage() {
     '<div class="toolbar"><select onchange="state.attCls=this.value;renderPage()">' + clsOpts + '</select>' +
     '<input type="date" value="' + esc(state.attDate) + '" max="' + todayIST() + '" onchange="onAttDate(this.value)" style="min-width:160px">' +
     '<button class="btn green" onclick="saveAttendance()">✓ ' + t('saveAttendance') + '</button></div></div>' +
-    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thStatus') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thStatus') + '</th><th>' + t('waNotifyCol') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
     (state.role === 'teacher' ? '' : '<p class="muted" style="margin-top:12px">School-wide today: ' + num(ta.present) + ' Present • ' + num(ta.absent) + ' Absent • ' + num(ta.late) + ' Late (' + donutPct(ta.present, ta.total) + '% attendance).</p>') + '</div>';
 }
 function onAttDate(v) {
@@ -5398,7 +5579,7 @@ function feesPage() {
   var rows = list.slice(0, 120).map(function (r) {
     return '<tr><td><button class="linklike" onclick="return openFeeProfile(\'' + r.studentId + '\', event)">' + esc(r.student) + '</button></td><td>' + esc(enrOf(r.studentId)) + '</td><td>' + esc(r.cls) + '</td><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td>' +
       '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
-      '<td>' + (r.status === 'Pending' ? '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>' : '<span class="muted">—</span>') + '</td></tr>';
+      '<td>' + (r.status === 'Pending' ? '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, r.studentId) + ' <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>' : '<span class="muted">—</span>') + '</td></tr>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('fees') + '</h2><p>' + t('collectedW') + ' ' + inr(ft.collected) + ' • ' + t('pendingW') + ' ' + inr(ft.pending) + ' (' + feeRangeLabel() + ')</p></div>' +
     '<div class="toolbar"><div class="pill-tabs">' + ['All', 'Pending', 'Collected'].map(function (x) {
@@ -5442,7 +5623,7 @@ function studentFeeProfile(sid) {
   var rows = recs.map(function (r) {
     return '<tr><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td>' +
       '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
-      '<td>' + (r.status === 'Pending' ? '<button class="btn green sm" onclick="openCollectFee(\'' + s.id + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>' : '<span class="muted">—</span>') + '</td></tr>';
+      '<td>' + (r.status === 'Pending' ? '<button class="btn green sm" onclick="openCollectFee(\'' + s.id + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, s.id) + ' <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>' : '<span class="muted">—</span>') + '</td></tr>';
   }).join('');
   return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • ' + t('thGuardian') + ' ' + esc(s.guardian) + ' • ' + t('thPhone') + ' ' + esc(s.phone) + '</p><p class="muted">' + t('feeProfileSub') + '</p></div></div>' +
     '<div class="toolbar"><button class="btn ghost" onclick="backFromFeeProfile()">← ' + t('backFees') + '</button>' +
@@ -5463,7 +5644,8 @@ function receiptListCard(sid) {
   var rcRows = rcs.map(function (r) {
     return '<tr><td>' + esc(r.receiptNo) + '</td><td>' + esc(r.date) + '</td><td>' + esc(payModeLabel(r.payMode)) + '</td><td>' + inr(r.total) + '</td>' +
       '<td><button class="btn sm" onclick="openSavedReceipt(\'' + esc(r.receiptNo) + '\')">' + t('rcptView') + '</button> ' +
-      '<button class="btn ghost sm" onclick="printReceipt(\'' + esc(r.receiptNo) + '\')">🖨 ' + t('rcptPrint') + '</button></td></tr>';
+      '<button class="btn ghost sm" onclick="printReceipt(\'' + esc(r.receiptNo) + '\')">🖨 ' + t('rcptPrint') + '</button> ' +
+      '<button class="btn ghost sm" onclick="waReceiptShare(\'' + esc(r.receiptNo) + '\')">💬 ' + t('waShareReceiptBtn') + '</button></td></tr>';
   }).join('');
   return '<div class="card"><h3>' + t('rcptReceipts') + '</h3><p class="card-sub">' + rcs.length + ' ' + t('recordsWord') + '</p><div class="tbl-wrap"><table><thead><tr><th>' + t('rcptReceiptNo') + '</th><th>' + t('rcptDate') + '</th><th>' + t('rcptPayMode') + '</th><th>' + t('rcptTotal') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody>' + (rcRows || '<tr><td colspan="5"><div class="empty">' + t('rcptNoReceipts') + '</div></td></tr>') + '</tbody></table></div></div>';
 }
@@ -6045,6 +6227,7 @@ function collectFeePage(sid) {
         '<div class="toolbar"><button class="btn ghost" onclick="backFromReceipt()">← ' + t('backFees') + '</button></div></div>' +
         receiptHTML(rc, s, false) +
         '<div class="actions"><button class="btn" onclick="printReceipt(\'' + esc(rc.receiptNo) + '\')">🖨 ' + t('rcptPrint') + '</button>' +
+        '<button class="btn" onclick="waReceiptShare(\'' + esc(rc.receiptNo) + '\')">💬 ' + t('waShareReceiptBtn') + '</button>' +
         '<button class="btn green" onclick="openCollectFee(\'' + s.id + '\')">' + t('rcptCollectAgain') + '</button></div>';
     }
     state.savedReceiptId = null;
