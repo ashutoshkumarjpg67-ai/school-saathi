@@ -4,7 +4,13 @@
    offline changes). Local-only accounts (no server session) still work
    exactly as before: everything lives in localStorage on this device.
    v35: parent login is REMOVED; student login (admission no. + PIN) and
-   teacher login (email + password, local device accounts) replace it. */
+   teacher login (email + password, local device accounts) replace it.
+   v36: uniqueId() everywhere (no more Date.now() record ids); salted
+   SHA-256 password hashes with djb2 upgrade-on-login; new students get
+   a random PIN (never a phone-derived default); only the last 4 digits
+   of an Aadhaar are stored; the demo DB no longer seeds on fresh
+   devices; logout no longer lets an in-flight sync write "Backup
+   failed" after the session is cleared. */
 'use strict';
 
 /* ================= constants ================= */
@@ -25,7 +31,131 @@ var FEE_MONTHS = [ // monthly ledger — sums MUST equal 8,45,000 collected / 1,
    and a Supabase account with no school
    tied to it gets a no-school message, never an admin view. */
 var ACC_KEY = 'schoolSaathiAccounts';
-function hashPw(s) { var h = 5381, i; for (i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0; return 'h' + h.toString(36); }
+function hashPw(s) { var h = 5381, i; for (i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0; return 'h' + h.toString(36); } // v36: LEGACY djb2 — kept only so accounts created before v36 still verify; verifyPw() below upgrades them on next login. Never use for new hashes.
+/* v36: collision-proof record ids (audit item 1) + salted password
+   hashing (audit item 14) + random PINs (audit item 15). The uniqueId
+   shape is PR #3's approach (timestamp + counter + random suffix),
+   implemented natively on v35 — the PR branch itself is never merged
+   (base v31; its attendance fix conflicts with v34's "Not marked"
+   design and its parent-login fix is superseded by v35). */
+var __uidCounter = 0;
+function randomHex(nBytes) {
+  // Random bytes as hex, without the built-in random helper (the
+  // harness bans that helper in app.js): crypto.getRandomValues on
+  // LCG fallback for contexts without WebCrypto (never the path a real
+  // browser takes — the app is served over HTTPS, so WebCrypto is there).
+  var out = '', i;
+  try {
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+      var buf = new Uint8Array(nBytes);
+      crypto.getRandomValues(buf);
+      for (i = 0; i < buf.length; i++) out += ('0' + buf[i].toString(16)).slice(-2);
+      return out;
+    }
+  } catch (e) {}
+  if (!__randState) __randState = (Date.now() % 2147483647) || 1;
+  for (i = 0; i < nBytes; i++) {
+    __randState = (__randState * 1103515245 + 12345) % 2147483648;
+    out += ('0' + ((__randState >>> 16) % 256).toString(16)).slice(-2);
+  }
+  return out;
+}
+var __randState = 0;
+function uniqueId(prefix) {
+  // Timestamp + per-session counter + 6 hex chars of randomness: two
+  // records minted in the same millisecond still differ (the counter
+  // alone guarantees it; the random suffix covers a counter reset).
+  __uidCounter = (__uidCounter + 1) % 1000000;
+  return (prefix || '') + Date.now().toString(36) + '-' + __uidCounter.toString(36) + '-' + randomHex(3);
+}
+function randomPin() {
+  // A 4-digit student PIN, 1000-9999, from crypto randomness (v36: new
+  // students never get a phone-derived default PIN).
+  return String(parseInt(randomHex(2), 16) % 9000 + 1000);
+}
+/* v36: SHA-256 in plain JS (sync). The login paths are synchronous and
+   WebCrypto's digest is async, so a hand-rolled SHA-256 keeps every
+   login path sync while replacing the djb2 hash. Verified against the
+   FIPS 180-4 vectors in the harness ('' and 'abc'). */
+var __SHA256_K = [0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
+function sha256Hex(input) {
+  var bytes = [], i, c;
+  for (i = 0; i < input.length; i++) {
+    c = input.charCodeAt(i);
+    if (c < 128) bytes.push(c);
+    else if (c < 2048) { bytes.push(192 | (c >> 6)); bytes.push(128 | (c & 63)); }
+    else if (c >= 55296 && c < 57344) {
+      var c2 = input.charCodeAt(++i);
+      var cp = 65536 + (((c & 1023) << 10) | (c2 & 1023));
+      bytes.push(240 | (cp >> 18)); bytes.push(128 | ((cp >> 12) & 63)); bytes.push(128 | ((cp >> 6) & 63)); bytes.push(128 | (cp & 63));
+    } else { bytes.push(224 | (c >> 12)); bytes.push(128 | ((c >> 6) & 63)); bytes.push(128 | (c & 63)); }
+  }
+  var bitLen = bytes.length * 8;
+  bytes.push(128);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  bytes.push(0, 0, 0, 0, (bitLen >>> 24) & 255, (bitLen >>> 16) & 255, (bitLen >>> 8) & 255, bitLen & 255);
+  var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+  function rotr(x, n) { return (x >>> n) | (x << (32 - n)); }
+  var b, t, w = [], s0, s1, S0, S1, ch, maj, t1, t2, a, bb, cc, d, e, f, g, h;
+  for (b = 0; b < bytes.length; b += 64) {
+    for (t = 0; t < 16; t++) w[t] = (bytes[b + t * 4] << 24) | (bytes[b + t * 4 + 1] << 16) | (bytes[b + t * 4 + 2] << 8) | bytes[b + t * 4 + 3];
+    for (t = 16; t < 64; t++) {
+      s0 = rotr(w[t - 15], 7) ^ rotr(w[t - 15], 18) ^ (w[t - 15] >>> 3);
+      s1 = rotr(w[t - 2], 17) ^ rotr(w[t - 2], 19) ^ (w[t - 2] >>> 10);
+      w[t] = (w[t - 16] + s0 + w[t - 7] + s1) | 0;
+    }
+    a = H[0]; bb = H[1]; cc = H[2]; d = H[3]; e = H[4]; f = H[5]; g = H[6]; h = H[7];
+    for (t = 0; t < 64; t++) {
+      S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      ch = (e & f) ^ (~e & g);
+      t1 = (h + S1 + ch + __SHA256_K[t] + w[t]) | 0;
+      S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      maj = (a & bb) ^ (a & cc) ^ (bb & cc);
+      t2 = (S0 + maj) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0; d = cc; cc = bb; bb = a; a = (t1 + t2) | 0;
+    }
+    H[0] = (H[0] + a) | 0; H[1] = (H[1] + bb) | 0; H[2] = (H[2] + cc) | 0; H[3] = (H[3] + d) | 0;
+    H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+  }
+  var out = '';
+  for (i = 0; i < 8; i++) out += ('00000000' + (H[i] >>> 0).toString(16)).slice(-8);
+  return out;
+}
+function hashPwNew(pw) {
+  // v36: salted SHA-256, stored self-describing as s256$<salt>$<hash>.
+  // The salt is per-account, so two accounts with the same password
+  // hash differently and a rainbow table is useless.
+  var salt = randomHex(16);
+  return 's256$' + salt + '$' + sha256Hex(salt + '|' + pw);
+}
+function verifyPw(pw, a) {
+  // Verifies against either scheme. Returns { ok, legacy }: legacy is
+  // true when the stored hash is the pre-v36 djb2 — the caller upgrades
+  // it to the new scheme after a successful login (never locks anyone
+  // out: the old hash verifies first).
+  if (!a || !a.pwHash) return { ok: false };
+  var h = a.pwHash;
+  if (h.indexOf('s256$') === 0) {
+    var parts = h.split('$');
+    if (parts.length !== 3) return { ok: false };
+    return { ok: sha256Hex(parts[1] + '|' + pw) === parts[2], legacy: false };
+  }
+  return { ok: hashPw(pw) === h, legacy: true };
+}
+function upgradePwHash(a, pw) {
+  // After a successful legacy login: re-hash with the new scheme and
+  // persist. The account object is mutated in place (state.user keeps
+  // working) and the stored list is rewritten by email.
+  a.pwHash = hashPwNew(pw);
+  a.hashScheme = 'sha256';
+  var list = loadAccounts();
+  for (var i = 0; i < list.length; i++) if (list[i].email === a.email) list[i] = a;
+  saveAccounts(list);
+}
+/* v36: only the LAST 4 digits of an Aadhaar are ever stored — locally
+   or on the server. The full 12-digit number is never persisted
+   anywhere (audit item 16). */
+function aadhaarLast4(v) { var d = digitsOnly(v); return d.length ? d.slice(-4) : ''; }
 function loadAccounts() { try { var r = localStorage.getItem(ACC_KEY); if (r) { var a = JSON.parse(r); if (Array.isArray(a)) return a; } } catch (e) {} return []; }
 function saveAccounts(list) { try { localStorage.setItem(ACC_KEY, JSON.stringify(list)); } catch (e) {} }
 function findAccount(email) {
@@ -164,8 +294,17 @@ function sbGetValidToken() {
     return s2 ? s2.access_token : null;
   }).catch(function () { return null; });
 }
-function sbSetStatus(state, detail) {
-  try { localStorage.setItem(SB_STATUS_KEY, JSON.stringify({ state: state, at: new Date().toISOString(), detail: detail || '' })); } catch (e) {}
+function sbSetStatus(st, detail) {
+  // v36 (logout-backup race): a sync cycle that was in flight at logout
+  // keeps running after the session is cleared — its failure (no token /
+  // network) used to overwrite the status with "Backup failed" on the
+  // login screen, although the data was safe in the outbox and retries
+  // on the next login. Failure states are only ever written while a
+  // school is logged in; after logout they are dropped and the last
+  // truthful status stands. (The parameter is named `st` so it does not
+  // shadow the global `state` this guard reads.)
+  if ((st === 'failed' || st === 'offline' || st === 'session-expired') && (typeof state === 'undefined' || !state || !state.user || state.user.role !== 'school')) return;
+  try { localStorage.setItem(SB_STATUS_KEY, JSON.stringify({ state: st, at: new Date().toISOString(), detail: detail || '' })); } catch (e) {}
 }
 function sbLoadStatus() {
   try { var r = localStorage.getItem(SB_STATUS_KEY); return r ? JSON.parse(r) : null; } catch (e) { return null; }
@@ -211,7 +350,7 @@ function sbLoginNewSchool(meta, email, pw, uid, token, serverSchool) {
   // metadata (fresh signup, not yet migrated), then log in and migrate.
   var school = (serverSchool && serverSchool.name) || meta.school || '';
   var name = (serverSchool && serverSchool.principal) || meta.name || email;
-  var a = { uid: 'u' + Date.now().toString(36), name: name, school: school, email: email, pwHash: pw ? hashPw(pw) : '', role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: uid };
+  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: pw ? hashPwNew(pw) : '', hashScheme: pw ? 'sha256' : '', role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: uid };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   state.sb = { uid: uid, email: email };
   $('loginErr').classList.add('hidden');
@@ -277,7 +416,9 @@ function sbFinishSupabaseLogin(data, email, pw) {
 }
 function sbLocalLogin(id, pw, err) {
   var a = findAccount(id);
-  var ok = a ? hashPw(pw) === a.pwHash : false;
+  var chk = verifyPw(pw, a);
+  var ok = chk.ok;
+  if (ok && chk.legacy) upgradePwHash(a, pw); // v36: old djb2 hash verifies, then upgrades to salted SHA-256 on this login
   if (!a || !ok) {
     err.textContent = t('tInvalidCreds');
     err.classList.remove('hidden');
@@ -368,7 +509,7 @@ function submitLinkServer(e) {
   if (!pw) { err.textContent = t('tFillAll'); err.classList.remove('hidden'); return false; }
   // The server account is created with THIS password — it must be the
   // account's own password, not a typo, or the two accounts would diverge.
-  if (!state.user || hashPw(pw) !== state.user.pwHash) {
+  if (!state.user || !verifyPw(pw, state.user).ok) {
     err.textContent = t('tInvalidCreds');
     err.classList.remove('hidden');
     return false;
@@ -431,7 +572,8 @@ function doResetPassword(e) {
       if (em) {
         var a = findAccount(em);
         if (a) {
-          a.pwHash = hashPw(pw);
+          a.pwHash = hashPwNew(pw);
+          a.hashScheme = 'sha256';
           var l2 = loadAccounts();
           for (var i = 0; i < l2.length; i++) if (l2[i].email === em) l2[i] = a;
           saveAccounts(l2);
@@ -506,7 +648,7 @@ function sbMapStudent(s, schoolId) {
     session: s.session || '', status: s.status || 'Active', result: (s.result === undefined || s.result === null) ? null : s.result,
     parent_pin: s.parentPin || null, photo_data_url: s.photo || null,
     documents: s.documents || { birthCert: false, tc: false, tcNumber: '', other: '' },
-    aadhaar: sbNullIfEmpty(s.aadhaar) };
+    aadhaar: sbNullIfEmpty(aadhaarLast4(s.aadhaar)) }; // v36: only the last 4 digits ever leave the device
 }
 function sbMapFeeStructure(f, schoolId) {
   return { school_id: schoolId, cls: f.cls || '', fee_type: f.type || 'Tuition', amount: f.amount || 0 };
@@ -865,7 +1007,7 @@ function sbRowToStudent(row) {
     session: row.session || '', status: row.status || 'Active', result: (row.result === undefined || row.result === null) ? null : row.result,
     parentPin: row.parent_pin || null, photo: row.photo_data_url || null,
     documents: row.documents || { birthCert: false, tc: false, tcNumber: '', other: '' },
-    aadhaar: row.aadhaar || '' };
+    aadhaar: aadhaarLast4(row.aadhaar) }; // v36: a full number from an old server row is reduced on pull too
 }
 function sbRowToFeeRecord(row, stuMap) {
   return { id: row.local_id || ('srv-' + row.id), studentId: stuMap[row.student_id] || '',
@@ -2396,10 +2538,10 @@ function seedDB() {
    behind: NOTHING but the school's identity and its fee-structure
    settings. No demo students, teachers, fees, attendance, exams,
    marks, homework, notices, receipts or audit entries. The seed
-   function above stays in the code for TESTS ONLY (harness fixtures)
-   and for the pre-login boot DB — no real account path may call it to
-   populate a school anymore, and in v28 no UI reaches the platform
-   network it seeds. */
+   function above stays in the code for TESTS ONLY (harness fixtures).
+   In v36 no real account path may call it to populate a school, and
+   the boot path no longer seeds it either — a fresh device starts
+   empty (audit item 17). */
 function emptyDb(profile, schools) {
   var p = profile || { name: '', city: '', principal: '', phone: '', email: '', session: '2025–26', address: '' };
   return {
@@ -2491,8 +2633,9 @@ function migrateStudentsV9(d) {
    Static scope: no server. A parent logs in with Admission No. + PIN on the
    device where the school's data lives; the PIN is the last 4 digits of the
    primary mobile unless the school set a custom one. Real password accounts
-   arrive with the server phase. */
-function parentPinFromPhone(phone) { var d = digitsOnly(phone); return d.length >= 4 ? d.slice(-4) : ''; }
+   arrive with the server phase. (v35: the parent portal is gone — student
+   login replaced it. The PIN now belongs to the STUDENT login.) */
+function parentPinFromPhone(phone) { var d = digitsOnly(phone); return d.length >= 4 ? d.slice(-4) : ''; } // v36: LEGACY only — migrateV12 below fills it for records that predate the PIN feature, so existing students keep logging in. No NEW student ever gets a phone-derived PIN (saveStudent / import generate a random one).
 function migrateV12(d) {
   // Phase 4 migration for existing v2 DBs: parent PINs + admission requests.
   // Idempotent; never changes existing values, amounts or statuses.
@@ -2500,6 +2643,21 @@ function migrateV12(d) {
     if (s.parentPin === undefined) s.parentPin = parentPinFromPhone(s.phone);
   });
   if (!Array.isArray(d.admissionRequests)) d.admissionRequests = [];
+  return d;
+}
+function migrateV16(d) {
+  // v36: strip any stored full Aadhaar down to its last 4 digits.
+  // Idempotent — a second run finds nothing over 4 digits. The audit
+  // entry records the COUNT, never the numbers.
+  var n = 0;
+  (d.students || []).forEach(function (s) {
+    var dd = digitsOnly(s.aadhaar);
+    if (dd.length > 4) { s.aadhaar = dd.slice(-4); n++; }
+  });
+  if (n) {
+    if (!Array.isArray(d.auditLog)) d.auditLog = [];
+    d.auditLog.unshift({ ts: new Date().toISOString(), actor: 'system', action: 'Aadhaar cleanup', details: n + ' student Aadhaar numbers reduced to last 4 digits (v36)' });
+  }
   return d;
 }
 function migrateV15(d) {
@@ -2540,16 +2698,18 @@ function loadDB(override) {
     var raw = localStorage.getItem(DB_KEY);
     if (raw) {
       var d = JSON.parse(raw);
-      if (d && d.v === 2) { var m = migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))))); saveDB(m); return m; }
+      if (d && d.v === 2) { var m = migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))); saveDB(m); return m; }
       // Unknown version: keep a backup, never wipe silently.
       try { localStorage.setItem(DB_KEY + '.bak', raw); } catch (e2) { /* ignore */ }
     }
   } catch (e) { /* storage unavailable — fall back to memory */ }
-  // v20: a brand-new school starts EMPTY — no demo students or fees.
-  // The boot path (no override) still seeds the platform demo DB, as
-  // the harness fixtures expect — but in v28 no UI reaches that
-  // platform network anymore (there is no Super Admin view).
-  var fresh = override ? emptyDb() : seedDB();
+  // v36: a fresh device starts EMPTY — the demo DB no longer seeds on
+  // boot (audit item 17). The seed function stays in the code for TESTS
+  // ONLY (harness fixtures); no account path may call it to populate a
+  // school, and no UI reaches the boot DB anymore (every account opens
+  // its own DB key). Existing stored DBs are untouched — only devices
+  // that never stored anything get the empty start.
+  var fresh = emptyDb();
   if (override) applySchoolProfile(fresh, override);
   saveDB(fresh);
   return fresh;
@@ -2842,8 +3002,9 @@ function sectionOf(cls) { return (cls || '').split('-')[1] || ''; }
 function digitsOnly(v) { return String(v || '').replace(/[^0-9]/g, ''); }
 function maskAadhaar(a) {
   var d = digitsOnly(a);
-  if (d.length !== 12) return '—';
-  return '**** **** ' + d.slice(8);
+  if (d.length === 4) return '**** **** ' + d; // v36: only the last 4 are stored
+  if (d.length === 12) return '**** **** ' + d.slice(8); // legacy in-memory value
+  return '—';
 }
 // Session containing a YYYY-MM-DD date (Apr-Mar academic year). Timezone-proof:
 // parses the ISO date directly instead of new Date(), whose UTC-midnight parse
@@ -3168,7 +3329,7 @@ function validateImportRow(row, seenValid) {
       session: session || db.profile.session, admissionDate: admDate || todayIST(),
       previousSchool: String(row.previousSchool || '').trim(), previousClass: String(row.previousClass || '').trim(),
       fatherName: String(row.fatherName || '').trim(), motherName: String(row.motherName || '').trim(),
-      mobile2: phone2, parentEmail: email, occupation: String(row.occupation || '').trim(), aadhaar: aadhaar,
+      mobile2: phone2, parentEmail: email, occupation: String(row.occupation || '').trim(), aadhaar: aadhaarLast4(aadhaar),
       documents: { birthCert: !!bc, tc: !!tcB, tcNumber: String(row.tcNumber || '').trim(), other: '' } };
     var dup = findDupStudent(data, null); // same rules as the admission form
     if (dup) return { ok: false, status: 'duplicate', errors: [t('impErrDup') + ' ' + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' • ' + dup.cls + ')'], data: null };
@@ -3267,7 +3428,6 @@ function confirmImport() {
 }
 function confirmImportRun(rows, numberSource) {
   var imported = 0, skipped = 0;
-  var now = Date.now();
   var numIdx = 0;
   rows.forEach(function (r, i) {
     if (r.status !== 'valid' || !r.data) { if (r.status === 'error' || r.status === 'duplicate') skipped++; return; }
@@ -3281,10 +3441,10 @@ function confirmImportRun(rows, numberSource) {
     else if (numberSource === 'pending') nums = { admissionNo: '', enr: '', numPending: true };
     else nums = { admissionNo: nextAdmNo(), enr: nextEnr() };
     var admNo = nums.admissionNo;
-    var rec = { id: 'stu' + now + '_' + i, att: 100, result: 0, fee: '—', enr: nums.enr, admissionNo: admNo, status: 'Active' };
+    var rec = { id: uniqueId('stu'), att: 100, result: 0, fee: '—', enr: nums.enr, admissionNo: admNo, status: 'Active' };
     if (nums.numPending) rec.numPending = true;
     Object.keys(d).forEach(function (k) { rec[k] = d[k]; });
-    rec.parentPin = parentPinFromPhone(rec.phone || '');
+    rec.parentPin = randomPin(); // v36: imported students get a random PIN, never the phone's last 4 digits (visible on each student's profile)
     rec.roll = d.roll || nextRoll(d.cls);
     // No fee record is created on import: dues are created by Generate Fees.
     // (The single-admission form adds a ₹6,000 placeholder record; a bulk
@@ -3465,11 +3625,11 @@ var I18N = {
     dlStudents: 'Download Students CSV', dlFees: 'Download Fees CSV', dlAtt: 'Download Attendance CSV', repStudentsSub: 'Name, class, roll, guardian, phone, attendance, fee status', repFeesSub: 'Student, class, month, amount, status — Apr to Aug',
     subSettingsS: 'School profile', settingsSub: 'Edit and save — changes sync to the server when you are online.',
     studentsW: 'Students', perSchool: '2 per school',
-    raiseSupport: 'Raise a Support Request', supportNoted: 'Support request noted — we will call you back.', collectedW: 'Collected', pendingW: 'Pending', allW: 'All', editStudent: 'Edit Student', feeTypeTuition: 'Tuition', feeTypeAdmission: 'Admission', feeTypeTransport: 'Transport', feeTypeExam: 'Exam', feeTypeLibrary: 'Library', feeTypeActivity: 'Activity', feeTypeComputer: 'Computer Lab', feeTypeOther: 'Other', allTypes: 'All Types', searchFee: 'Search name, enrollment no. or class…', thEnr: 'Enr. No.', thType: 'Type', feeByType: 'Fee by Type', feeByTypeSub: 'Collected and pending per fee type, computed live.', addFee: 'Add Fee', addFeeSub: 'Add one fee record manually for any student.', feeStruct: 'Fee Structure', feeStructSub: 'Monthly amount per class. Generate uses this to create fee records.', genFees: 'Generate Fees', saveStruct: 'Save Structure', addRow: 'Add Row', customType: 'Custom…', typeCustomPh: 'Type a custom fee type', fStudent: 'Student', fMonth: 'Month', fType: 'Fee Type', fAmount: 'Amount (₹)', fStatus: 'Status', fDate: 'Date', printList: 'Print List', printStmt: 'Print Statement', backFees: 'Back to All Fees', totalBilled: 'Total Billed', totalPaid: 'Paid', totalPending: 'Pending', feeRecsH: 'Fee Records', feeProfileSub: 'All fee records for this student in one place.', tFeeAdded: 'Fee record added.', delFeeMsg: 'Delete this pending fee record?', tFeeDeleted: 'Fee record deleted.', tPickStudent: 'Please choose a student.', tAmtPositive: 'Amount must be more than 0.', tTypeRequired: 'Please type the custom fee type.', tStructSaved: 'Fee structure saved.', tStructAdded: 'Structure row added.', tStructRemoved: 'Structure row removed.', tGenRecords: 'fee records generated for', tGenSkipped: 'already existed', tNoFeeRecs: 'No fee records yet for this student.', printTitle: 'Fee Statement', printListTitle: 'Fee List', printGenOn: 'Generated on', closeW: 'Close', saveFeeBtn: 'Save Fee', photoLabel: 'Student Photo', photoHint: 'Photo is compressed automatically (max 512px, ~120KB).', removePhoto: 'Remove photo', logoLabel: 'School Logo', logoHint: 'Logo is compressed automatically (max 256px, PNG keeps transparency).', removeLogo: 'Remove logo', tPhotoTooBig: 'That photo is too large even after compression. Please choose a smaller photo.', tLogoTooBig: 'That logo is too large even after compression. Please choose a smaller logo.', tPhotoError: 'Could not read that image. Please choose another file.', aadhaarHint: 'Optional. Stored securely and never shown in full.', actActivate: 'Activate Student', actAtt: 'View Attendance', actDeactivate: 'Deactivate Student', actDownload: 'Download Details', actEdit: 'Edit Student', actFees: 'View Fees', actIdCard: 'Print ID Card', actResults: 'View Results', actTransfer: 'Transfer Student', actView: 'View Profile', actionsW: 'Actions', admNoAuto: 'Auto-generated', allClasses: 'All Classes', allFeeSt: 'All Fee Status', allGenders: 'All Genders', allSections: 'All Sections', allSessions: 'All Sessions', allStatus: 'All Statuses', attPct: 'Attendance', backDir: 'Back to Directory', cancelAdm: 'Cancel Admission', cancelAdmMsg: 'Cancel this admission? The student record will be kept with status Cancelled.', docMissing: 'Not received', docStatus: 'Received', docsNote: 'Document files will be uploaded in the server phase. This checklist records what has been received.', exportCsv: 'Export CSV', fAadhaar: 'Aadhaar Number (optional)', fAdmDate: 'Admission Date', fAdmNo: 'Admission Number', fBirthCert: 'Birth Certificate', fBlood: 'Blood Group', fCategory: 'Category', fDistrict: 'District', fDob: 'Date of Birth', fDocsOther: 'Other Documents (notes)', fFather: 'Father\'s Name', fGender: 'Gender', fMother: 'Mother\'s Name', fOccupation: 'Occupation', fParentEmail: 'Parent Email', fPhone2: 'Secondary Mobile', fPin: 'PIN Code', fPrevClass: 'Previous Class', fPrevSchool: 'Previous School', fSection: 'Section', fState: 'State', fTc: 'Transfer Certificate (TC)', fTcNo: 'Transfer Certificate No.', feeSt: 'Fee Status', hwDone: 'Done', hwPend: 'Pending', hwPending: 'Homework Pending', latestExam: 'Latest Exam', nextW: 'Next', noActivity: 'No activity recorded yet.', noAttRecs: 'No attendance records yet for this student.', noExamRecs: 'No examination results yet.', noHwRecs: 'No homework records for this class.', openFees: 'Open Fee Page', pgOf: 'of', pgPage: 'Page', phase3W: 'Phase 3', prevW: 'Previous', saveAddAnother: 'Save & Add Another', saveDraft: 'Save as Draft', secAcademic: 'Academic Details', secDocs: 'Documents', secParent: 'Parent / Guardian Details', secPersonal: 'Personal Details', stActive: 'Active Students', stAvgAtt: 'Average Attendance', stBoys: 'Boys', stByClass: 'Students by Class', stByClassSub: 'Number of students in each class-section.', stGenderDist: 'Boys & Girls', stGenderSub: 'Gender distribution across the school.', stGirls: 'Girls', stInactive: 'Inactive Students', stNewAdm: 'New Admissions', stNotSpec: 'Not specified', stPendFee: 'Students with Pending Fees', stTotal: 'Total Students', stuSearchPh: 'Search name, admission no. or mobile…', tActMsg: 'Activate student', tActivated: 'Student activated.', tAdmCancelled: 'Admission cancelled. The record is kept.', tAdmCreated: 'Admission saved. Admission No. ', tCsvExported: 'Student list exported.', tDeactMsg: 'Deactivate student', tDeactivated: 'Student deactivated.', tDraftSaved: 'Draft saved.', tDupFound: 'A matching student already exists: ', tInvalidAadhaar: 'Aadhaar must be 12 digits (optional).', tInvalidMobile: 'Enter a valid 10-digit mobile number.', tInvalidPin: 'PIN code must be 6 digits.', tPickClass: 'Please choose a class.', tReqFields: 'Please fill Student Name, Primary Mobile, Class and Section.', tStuCsvOne: 'Student details downloaded.', tTransferred: 'Student transferred.', tabAcademic: 'Academic Records', tabActivity: 'Activity History', tabAttendance: 'Attendance History', tabDocs: 'Documents', tabFees: 'Fee History', tabHomework: 'Homework Records', tabOverview: 'Overview', tabParent: 'Parent Information', tabPersonal: 'Personal Information', tabResults: 'Examination Results', thAdmNo: 'Admission No.', thExam: 'Exam', thFather: 'Father\'s Name', transferTitle: 'Transfer Student', transferTo: 'New Class & Section', idCardSoon: 'ID Card generator comes in Phase 3.',
+    raiseSupport: 'Raise a Support Request', supportNoted: 'Support request noted — we will call you back.', collectedW: 'Collected', pendingW: 'Pending', allW: 'All', editStudent: 'Edit Student', feeTypeTuition: 'Tuition', feeTypeAdmission: 'Admission', feeTypeTransport: 'Transport', feeTypeExam: 'Exam', feeTypeLibrary: 'Library', feeTypeActivity: 'Activity', feeTypeComputer: 'Computer Lab', feeTypeOther: 'Other', allTypes: 'All Types', searchFee: 'Search name, enrollment no. or class…', thEnr: 'Enr. No.', thType: 'Type', feeByType: 'Fee by Type', feeByTypeSub: 'Collected and pending per fee type, computed live.', addFee: 'Add Fee', addFeeSub: 'Add one fee record manually for any student.', feeStruct: 'Fee Structure', feeStructSub: 'Monthly amount per class. Generate uses this to create fee records.', genFees: 'Generate Fees', saveStruct: 'Save Structure', addRow: 'Add Row', customType: 'Custom…', typeCustomPh: 'Type a custom fee type', fStudent: 'Student', fMonth: 'Month', fType: 'Fee Type', fAmount: 'Amount (₹)', fStatus: 'Status', fDate: 'Date', printList: 'Print List', printStmt: 'Print Statement', backFees: 'Back to All Fees', totalBilled: 'Total Billed', totalPaid: 'Paid', totalPending: 'Pending', feeRecsH: 'Fee Records', feeProfileSub: 'All fee records for this student in one place.', tFeeAdded: 'Fee record added.', delFeeMsg: 'Delete this pending fee record?', tFeeDeleted: 'Fee record deleted.', tPickStudent: 'Please choose a student.', tAmtPositive: 'Amount must be more than 0.', tTypeRequired: 'Please type the custom fee type.', tStructSaved: 'Fee structure saved.', tStructAdded: 'Structure row added.', tStructRemoved: 'Structure row removed.', tGenRecords: 'fee records generated for', tGenSkipped: 'already existed', tNoFeeRecs: 'No fee records yet for this student.', printTitle: 'Fee Statement', printListTitle: 'Fee List', printGenOn: 'Generated on', closeW: 'Close', saveFeeBtn: 'Save Fee', photoLabel: 'Student Photo', photoHint: 'Photo is compressed automatically (max 512px, ~120KB).', removePhoto: 'Remove photo', logoLabel: 'School Logo', logoHint: 'Logo is compressed automatically (max 256px, PNG keeps transparency).', removeLogo: 'Remove logo', tPhotoTooBig: 'That photo is too large even after compression. Please choose a smaller photo.', tLogoTooBig: 'That logo is too large even after compression. Please choose a smaller logo.', tPhotoError: 'Could not read that image. Please choose another file.', aadhaarHint: 'Optional. Only the last 4 digits are stored — the full number is never saved.', actActivate: 'Activate Student', actAtt: 'View Attendance', actDeactivate: 'Deactivate Student', actDownload: 'Download Details', actEdit: 'Edit Student', actFees: 'View Fees', actIdCard: 'Print ID Card', actResults: 'View Results', actTransfer: 'Transfer Student', actView: 'View Profile', actionsW: 'Actions', admNoAuto: 'Auto-generated', allClasses: 'All Classes', allFeeSt: 'All Fee Status', allGenders: 'All Genders', allSections: 'All Sections', allSessions: 'All Sessions', allStatus: 'All Statuses', attPct: 'Attendance', backDir: 'Back to Directory', cancelAdm: 'Cancel Admission', cancelAdmMsg: 'Cancel this admission? The student record will be kept with status Cancelled.', docMissing: 'Not received', docStatus: 'Received', docsNote: 'Document files will be uploaded in the server phase. This checklist records what has been received.', exportCsv: 'Export CSV', fAadhaar: 'Aadhaar Number (optional)', fAdmDate: 'Admission Date', fAdmNo: 'Admission Number', fBirthCert: 'Birth Certificate', fBlood: 'Blood Group', fCategory: 'Category', fDistrict: 'District', fDob: 'Date of Birth', fDocsOther: 'Other Documents (notes)', fFather: 'Father\'s Name', fGender: 'Gender', fMother: 'Mother\'s Name', fOccupation: 'Occupation', fParentEmail: 'Parent Email', fPhone2: 'Secondary Mobile', fPin: 'PIN Code', fPrevClass: 'Previous Class', fPrevSchool: 'Previous School', fSection: 'Section', fState: 'State', fTc: 'Transfer Certificate (TC)', fTcNo: 'Transfer Certificate No.', feeSt: 'Fee Status', hwDone: 'Done', hwPend: 'Pending', hwPending: 'Homework Pending', latestExam: 'Latest Exam', nextW: 'Next', noActivity: 'No activity recorded yet.', noAttRecs: 'No attendance records yet for this student.', noExamRecs: 'No examination results yet.', noHwRecs: 'No homework records for this class.', openFees: 'Open Fee Page', pgOf: 'of', pgPage: 'Page', phase3W: 'Phase 3', prevW: 'Previous', saveAddAnother: 'Save & Add Another', saveDraft: 'Save as Draft', secAcademic: 'Academic Details', secDocs: 'Documents', secParent: 'Parent / Guardian Details', secPersonal: 'Personal Details', stActive: 'Active Students', stAvgAtt: 'Average Attendance', stBoys: 'Boys', stByClass: 'Students by Class', stByClassSub: 'Number of students in each class-section.', stGenderDist: 'Boys & Girls', stGenderSub: 'Gender distribution across the school.', stGirls: 'Girls', stInactive: 'Inactive Students', stNewAdm: 'New Admissions', stNotSpec: 'Not specified', stPendFee: 'Students with Pending Fees', stTotal: 'Total Students', stuSearchPh: 'Search name, admission no. or mobile…', tActMsg: 'Activate student', tActivated: 'Student activated.', tAdmCancelled: 'Admission cancelled. The record is kept.', tAdmCreated: 'Admission saved. Admission No. ', tCsvExported: 'Student list exported.', tDeactMsg: 'Deactivate student', tDeactivated: 'Student deactivated.', tDraftSaved: 'Draft saved.', tDupFound: 'A matching student already exists: ', tInvalidAadhaar: 'Aadhaar must be 12 digits (or the last 4) — optional.', tInvalidMobile: 'Enter a valid 10-digit mobile number.', tInvalidPin: 'PIN code must be 6 digits.', tPickClass: 'Please choose a class.', tReqFields: 'Please fill Student Name, Primary Mobile, Class and Section.', tStuCsvOne: 'Student details downloaded.', tTransferred: 'Student transferred.', tabAcademic: 'Academic Records', tabActivity: 'Activity History', tabAttendance: 'Attendance History', tabDocs: 'Documents', tabFees: 'Fee History', tabHomework: 'Homework Records', tabOverview: 'Overview', tabParent: 'Parent Information', tabPersonal: 'Personal Information', tabResults: 'Examination Results', thAdmNo: 'Admission No.', thExam: 'Exam', thFather: 'Father\'s Name', transferTitle: 'Transfer Student', transferTo: 'New Class & Section', idCardSoon: 'ID Card generator comes in Phase 3.',
     impTitle: 'Bulk Import Students', impImportBtn: 'Import Students', impTemplate: 'Download Sample Template', impTemplateSub: 'CSV format only — Excel (.xlsx) files cannot be read here. Use the template columns.', impChooseFile: 'Choose CSV File', impPreview: 'Import Preview', impSummary: 'Import Summary', impValid: 'Valid', impError: 'Error', impDuplicate: 'Duplicate', impReason: 'Reason', impConfirm: 'Import Valid Rows', impDone: 'Done', impNoRows: 'No rows found in this file. Please check the template.', impBadHeader: 'This file does not look like the student template — the Name column is missing.', impNoFile: 'Please choose a CSV file first.', impNoValid: 'No valid rows to import.', impImported: 'imported', impSkipped: 'skipped', impErrName: 'Name is required', impErrMobile: 'Mobile must be 10 digits', impErrMobile2: 'Secondary mobile must be 10 digits', impErrClass: 'Class is not valid', impErrSection: 'Section must be A, B or C', impErrPin: 'PIN must be 6 digits', impErrAadhaar: 'Aadhaar must be 12 digits', impErrDob: 'Date of birth is not a valid date', impErrAdmDate: 'Admission date is not a valid date', impErrSession: 'Session is not valid (e.g. 2025–26)', impErrGender: 'Gender must be Boy, Girl or Other', impErrBlood: 'Blood group is not valid', impErrCategory: 'Category must be General, OBC, SC, ST or Other', impErrEmail: 'Parent email is not valid', impErrRoll: 'Roll must be a positive number', impErrBool: 'Must be Yes or No', impErrDup: 'Duplicate of', impErrDupFile: 'Duplicate in this file', tImpDone: 'Bulk import complete.', tImpTemplate: 'Sample template downloaded.',
     promoTitle: 'Promote Students', promoBtn: 'Promote Students', promoSingle: 'Promote Student', promoFromSession: 'Current Session', promoFromClass: 'Current Class', promoToSession: 'Target Session', promoToClass: 'Target Class', promoToSection: 'Target Section', promoSelectAll: 'Select All', promoSelectNone: 'Select None', promoSelected: 'selected', promoPromote: 'Promote Selected', promoRetain: 'Retain Selected', promoNoStudents: 'No students in this class and session.', promoNoSelect: 'Please select at least one student.', promoNoop: 'Target class and session are the same as current — nothing to change.', promoNoopRetain: 'Target session is the same as the current session — nothing to change.', promoDone: 'Promotion complete.', promoPromoted: 'promoted', promoRetained: 'retained', promoNote: 'Attendance, fees, exam marks and homework history are preserved.', promoSingleNote: 'Single student promotion', promoSkipped: 'skipped (already moved)', promoNotEligible: 'Only Active or Inactive students can be promoted.',
     idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.',
-    authStudent: 'Student', authTeacher: 'Teacher', stuAdmNo: 'Admission Number', stuPinLabel: 'Student PIN', stuLoginBtn: 'Login as Student', stuNote: 'Student login uses the PIN set by the school. Ask your school if you do not know it.', stuSub: 'Student', stuDashboard: 'My Profile', tInvalidStudent: 'Invalid admission number or PIN.', stuPinField: 'Student login PIN (optional)', stuPinPh: 'Default: last 4 digits of mobile', stuPinTitle: 'Student PIN', stuPinNow: 'Current Student PIN', stuPinNone: 'No PIN set — student login unavailable for this student.', stuPinNew: 'New PIN (4–6 digits)', stuPinSetBtn: 'Set PIN', stuPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Student PIN set.', tPinCleared: 'Student PIN cleared.', tPinAuto: 'Default PIN is the last 4 digits of the parent\'s mobile.', tNotAllowed: 'Your login cannot open this section.', tOwnProfileOnly: 'You can only view your own profile.', todayW: 'Today', tchrLoginBtn: 'Login as Teacher', tchrNote: 'Teacher accounts are created by the school admin.', tchrSub: 'Teacher', tchrDashboard: 'Teacher Dashboard', tchrNoDb: 'School data is not on this device — log in on the school device first.', teachers: 'Teachers', teachersSub: 'Teacher accounts and the classes they teach.', tchrAdd: 'Add Teacher', tchrEdit: 'Edit Teacher', tchrName: 'Teacher Name', tchrSubject: 'Subject', tchrClasses: 'Classes Taught', tchrEmail: 'Email', tchrPw: 'Password', tchrPwHint: 'At least 6 characters. Leave blank to keep the current password.', tchrNoLogin: 'No login', tchrSaved: 'Teacher saved.', tchrNoClasses: 'Choose at least one class.', tchrEmailTaken: 'This email is already used by another account.', tchrMyClasses: 'My Classes', tchrStudents: 'Students in my classes', tchrNoClassesYet: 'No classes assigned yet — ask the school admin to assign classes.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
+    authStudent: 'Student', authTeacher: 'Teacher', stuAdmNo: 'Admission Number', stuPinLabel: 'Student PIN', stuLoginBtn: 'Login as Student', stuNote: 'Student login uses the PIN set by the school. Ask your school if you do not know it.', stuSub: 'Student', stuDashboard: 'My Profile', tInvalidStudent: 'Invalid admission number or PIN.', stuPinField: 'Student login PIN (optional)', stuPinPh: 'Leave blank — a random PIN is generated', stuPinTitle: 'Student PIN', stuPinNow: 'Current Student PIN', stuPinNone: 'No PIN set — student login unavailable for this student.', stuPinNew: 'New PIN (4–6 digits)', stuPinSetBtn: 'Set PIN', stuPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Student PIN set.', tPinShown: 'Student PIN: ', tPinCleared: 'Student PIN cleared.', tPinAuto: 'The PIN is set by the school at admission. If the student forgets it, set a new one here.', tNotAllowed: 'Your login cannot open this section.', tOwnProfileOnly: 'You can only view your own profile.', todayW: 'Today', tchrLoginBtn: 'Login as Teacher', tchrNote: 'Teacher accounts are created by the school admin.', tchrSub: 'Teacher', tchrDashboard: 'Teacher Dashboard', tchrNoDb: 'School data is not on this device — log in on the school device first.', teachers: 'Teachers', teachersSub: 'Teacher accounts and the classes they teach.', tchrAdd: 'Add Teacher', tchrEdit: 'Edit Teacher', tchrName: 'Teacher Name', tchrSubject: 'Subject', tchrClasses: 'Classes Taught', tchrEmail: 'Email', tchrPw: 'Password', tchrPwHint: 'At least 6 characters. Leave blank to keep the current password.', tchrNoLogin: 'No login', tchrSaved: 'Teacher saved.', tchrNoClasses: 'Choose at least one class.', tchrEmailTaken: 'This email is already used by another account.', tchrMyClasses: 'My Classes', tchrStudents: 'Students in my classes', tchrNoClassesYet: 'No classes assigned yet — ask the school admin to assign classes.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
     collectFeeBtn: 'Collect Fee', rcptTitle: 'FEE RECEIPT', rcptReceiptNo: 'Receipt No', rcptDate: 'Date', rcptAdmNo: 'Adm No', rcptSession: 'Session', rcptName: 'Name', rcptClass: 'Class', rcptInstallment: 'Installment', rcptCounter: 'Counter No', rcptSlNo: 'Sl.No', rcptDesc: 'Description', rcptDue: 'Due', rcptCon: 'Con', rcptPaid: 'Paid', rcptAdmissionFee: 'Admission Fee', rcptTuitionFee: 'Tuition Fee', rcptCaution: 'Caution Money', rcptAnnual: 'Annual Charges', rcptBusFee: 'Bus Fee', rcptDues: 'Dues', rcptPayModeTitle: 'PAY MODE INFORMATION', rcptPayMode: 'Pay Mode', rcptBank: 'Bank', rcptNumber: 'Number', rcptTotal: 'Total', rcptTotalWords: 'Total in Words', rcptComputerGen: 'This is a computer generated Receipt. Does not required signature.', rcptParentCopy: 'PARENT COPY', rcptCollectorSign: 'Collector\'s Signature', rcptIncludeBus: 'Include Bus/Transport', rcptOtherFees: 'Other Fees', rcptAnnualHint: 'One-time and annual amounts used on the Collect Fee receipt. Set 0 to hide a row.', payModeCash: 'Cash', payModeCheque: 'Cheque', payModeUpi: 'UPI', payModeCard: 'Card', payModeBank: 'Bank Transfer', tFeeCollected: 'Fee collected.', tCollectZero: 'Nothing to collect — enter a Paid amount.', tCollectSaved: 'Fee collected — Receipt ', tCollectNotActive: 'This student is not active — fee cannot be collected.', rcptReceipts: 'Receipts', rcptView: 'View', rcptPrint: 'Print / Save PDF', rcptCollectAgain: 'Collect Again', rcptNoReceipts: 'No receipts yet for this student.', rcptDraft: 'Draft — not saved yet', rcptCollectSave: 'Collect & Save', rcptNoLines: 'Nothing to collect for this period — set the fee amounts in Fee Structure first.',
     sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.', sbStatusSyncing: 'Syncing with the server…', sbStatusPendingSync: 'Offline — changes will sync when you are back online.', sbSyncDone: 'Synced with the server.', sbSyncFailed: 'Sync did not finish — it will retry on your next login.', sbSyncOffline: 'Offline — your changes are saved here and will sync later.', sbSyncConflict: 'Server had a newer copy — kept the server version.', sbNumPending: 'Admission saved. The admission number will be assigned when you are back online.', sbNumPendingReceipt: 'Fee saved. The receipt number will be assigned when you are back online.', sbStatusSessionExpired: 'Session expired — please log in again.', sbStatusNotLinked: 'Not linked to the server yet — it will link when you log in.', sbLinkServer: 'Link to Server', sbLinkDone: 'Server account linked.', sbLinkFailed: 'Could not link the server account — check your connection and try again.', sbLinkPwTitle: 'Link the server account', sbNumAssigning: 'Assigning number…', tWrongPasswordServer: 'Wrong password for the server account.', tCollectCapped: 'The paid amount was more than the due — only the due amount was taken.', resetPwHintServer: 'This deletes the data on THIS device only. The server copy will come back on the next sync unless you also wipe the server.', resetConfirmMsgServer: 'Delete this device’s data only? The server copy will return on the next sync — choose “Delete on server too” to remove it everywhere.', resetDeviceOnly: 'This device only', resetWipeServerBtn: 'Delete on server too', resetWipeServerDone: 'Server data deleted.', resetWipeServerFailed: 'Could not delete the server data — nothing was reset. Check your connection and try again.', supportQueued: 'Support request saved — it will be sent when you are back online.', admReqQueued: 'Application saved — it will be sent when you are back online.', admReqLoadingSchools: 'Loading schools…', attNotMarked: 'Not marked'
   },
@@ -3489,11 +3649,11 @@ var I18N = {
     dlStudents: 'छात्र CSV डाउनलोड करें', dlFees: 'शुल्क CSV डाउनलोड करें', dlAtt: 'उपस्थिति CSV डाउनलोड करें', repStudentsSub: 'नाम, कक्षा, रोल, अभिभावक, फ़ोन, उपस्थिति, शुल्क स्थिति', repFeesSub: 'छात्र, कक्षा, महीना, राशि, स्थिति — अप्रैल से अगस्त',
     subSettingsS: 'स्कूल प्रोफ़ाइल', settingsSub: 'बदलें और सहेजें — ऑनलाइन होने पर बदलाव सर्वर पर सिंक होते हैं।',
     studentsW: 'छात्र', perSchool: 'प्रति स्कूल 2',
-    raiseSupport: 'सहायता अनुरोध भेजें', supportNoted: 'सहायता अनुरोध दर्ज हुआ — हम आपको कॉल करेंगे।', collectedW: 'संग्रह', pendingW: 'बकाया', allW: 'सभी', editStudent: 'छात्र बदलें', feeTypeTuition: 'ट्यूशन', feeTypeAdmission: 'प्रवेश', feeTypeTransport: 'परिवहन', feeTypeExam: 'परीक्षा', feeTypeLibrary: 'पुस्तकालय', feeTypeActivity: 'गतिविधि', feeTypeComputer: 'कंप्यूटर लैब', feeTypeOther: 'अन्य', allTypes: 'सभी प्रकार', searchFee: 'नाम, नामांकन संख्या या कक्षा खोजें…', thEnr: 'नामांकन सं.', thType: 'प्रकार', feeByType: 'प्रकार के अनुसार शुल्क', feeByTypeSub: 'प्रति प्रकार संग्रह और बकाया, लाइव गणना।', addFee: 'शुल्क जोड़ें', addFeeSub: 'किसी भी छात्र के लिए एक शुल्क रिकॉर्ड जोड़ें।', feeStruct: 'शुल्क संरचना', feeStructSub: 'प्रति कक्षा मासिक राशि। Generate इसी से रिकॉर्ड बनाता है।', genFees: 'शुल्क बनाएँ', saveStruct: 'संरचना सहेजें', addRow: 'पंक्ति जोड़ें', customType: 'कस्टम…', typeCustomPh: 'शुल्क का प्रकार लिखें', fStudent: 'छात्र', fMonth: 'महीना', fType: 'शुल्क प्रकार', fAmount: 'राशि (₹)', fStatus: 'स्थिति', fDate: 'तारीख', printList: 'सूची छापें', printStmt: 'विवरण छापें', backFees: 'सभी शुल्क पर वापस', totalBilled: 'कुल बिल', totalPaid: 'जमा', totalPending: 'बकाया', feeRecsH: 'शुल्क रिकॉर्ड', feeProfileSub: 'इस छात्र के सभी शुल्क रिकॉर्ड एक ही जगह।', tFeeAdded: 'शुल्क रिकॉर्ड जुड़ गया।', delFeeMsg: 'यह बकाया शुल्क रिकॉर्ड हटाएँ?', tFeeDeleted: 'शुल्क रिकॉर्ड हटा दिया गया।', tPickStudent: 'कृपया छात्र चुनें।', tAmtPositive: 'राशि 0 से अधिक होनी चाहिए।', tTypeRequired: 'कृपया शुल्क का प्रकार लिखें।', tStructSaved: 'शुल्क संरचना सहेजी गई।', tStructAdded: 'संरचना पंक्ति जुड़ी।', tStructRemoved: 'संरचना पंक्ति हटाई गई।', tGenRecords: 'शुल्क रिकॉर्ड बने', tGenSkipped: 'पहले से थे', tNoFeeRecs: 'इस छात्र के लिए अभी कोई शुल्क रिकॉर्ड नहीं है।', printTitle: 'शुल्क विवरण', printListTitle: 'शुल्क सूची', printGenOn: 'बनाया गया', closeW: 'बंद करें', saveFeeBtn: 'शुल्क सहेजें', photoLabel: 'छात्र की फ़ोटो', photoHint: 'फ़ोटो अपने आप छोटी हो जाती है (अधिकतम 512px, ~120KB)।', removePhoto: 'फ़ोटो हटाएँ', logoLabel: 'स्कूल का लोगो', logoHint: 'लोगो अपने आप छोटा हो जाता है (अधिकतम 256px, PNG में पारदर्शिता रहती है)।', removeLogo: 'लोगो हटाएँ', tPhotoTooBig: 'यह फ़ोटो छोटी करने के बाद भी बड़ी है। कृपया छोटी फ़ोटो चुनें।', tLogoTooBig: 'यह लोगो छोटा करने के बाद भी बड़ा है। कृपया छोटा लोगो चुनें।', tPhotoError: 'यह तस्वीर पढ़ी नहीं जा सकी। कृपया दूसरी फ़ाइल चुनें।', aadhaarHint: 'वैकल्पिक। सुरक्षित रूप से सहेजा जाता है, पूरा कभी नहीं दिखाया जाता।', actActivate: 'छात्र सक्रिय करें', actAtt: 'उपस्थिति देखें', actDeactivate: 'छात्र निष्क्रिय करें', actDownload: 'विवरण डाउनलोड करें', actEdit: 'छात्र बदलें', actFees: 'शुल्क देखें', actIdCard: 'ID कार्ड छापें', actResults: 'परिणाम देखें', actTransfer: 'छात्र स्थानांतरित करें', actView: 'प्रोफ़ाइल देखें', actionsW: 'कार्रवाई', admNoAuto: 'स्वतः निर्मित', allClasses: 'सभी कक्षाएँ', allFeeSt: 'सभी शुल्क स्थितियाँ', allGenders: 'सभी लिंग', allSections: 'सभी अनुभाग', allSessions: 'सभी सत्र', allStatus: 'सभी स्थितियाँ', attPct: 'उपस्थिति', backDir: 'सूची पर वापस', cancelAdm: 'प्रवेश रद्द करें', cancelAdmMsg: 'यह प्रवेश रद्द करें? छात्र का रिकॉर्ड Cancelled स्थिति के साथ रखा जाएगा।', docMissing: 'प्राप्त नहीं', docStatus: 'प्राप्त', docsNote: 'दस्तावेज़ फ़ाइलें सर्वर चरण में अपलोड होंगी। यह सूची बताती है कि क्या प्राप्त हुआ है।', exportCsv: 'CSV निर्यात करें', fAadhaar: 'आधार संख्या (वैकल्पिक)', fAdmDate: 'प्रवेश तिथि', fAdmNo: 'प्रवेश संख्या', fBirthCert: 'जन्म प्रमाण पत्र', fBlood: 'रक्त समूह', fCategory: 'श्रेणी', fDistrict: 'जिला', fDob: 'जन्म तिथि', fDocsOther: 'अन्य दस्तावेज़ (नोट)', fFather: 'पिता का नाम', fGender: 'लिंग', fMother: 'माता का नाम', fOccupation: 'व्यवसाय', fParentEmail: 'अभिभावक ईमेल', fPhone2: 'दूसरा मोबाइल', fPin: 'पिन कोड', fPrevClass: 'पिछली कक्षा', fPrevSchool: 'पिछला स्कूल', fSection: 'अनुभाग', fState: 'राज्य', fTc: 'स्थानांतरण प्रमाण पत्र (TC)', fTcNo: 'TC संख्या', feeSt: 'शुल्क स्थिति', hwDone: 'पूर्ण', hwPend: 'बाकी', hwPending: 'होमवर्क बाकी', latestExam: 'हाल की परीक्षा', nextW: 'अगला', noActivity: 'अभी कोई गतिविधि दर्ज नहीं है।', noAttRecs: 'इस छात्र के लिए अभी कोई उपस्थिति रिकॉर्ड नहीं है।', noExamRecs: 'अभी कोई परीक्षा परिणाम नहीं है।', noHwRecs: 'इस कक्षा के लिए कोई होमवर्क रिकॉर्ड नहीं है।', openFees: 'शुल्क पेज खोलें', pgOf: 'का', pgPage: 'पृष्ठ', phase3W: 'Phase 3', prevW: 'पिछला', saveAddAnother: 'सहेजें और नया जोड़ें', saveDraft: 'ड्राफ़्ट सहेजें', secAcademic: 'शैक्षणिक विवरण', secDocs: 'दस्तावेज़', secParent: 'माता-पिता / अभिभावक विवरण', secPersonal: 'व्यक्तिगत विवरण', stActive: 'सक्रिय छात्र', stAvgAtt: 'औसत उपस्थिति', stBoys: 'लड़के', stByClass: 'कक्षा अनुसार छात्र', stByClassSub: 'प्रत्येक कक्षा-अनुभाग में छात्रों की संख्या।', stGenderDist: 'लड़के और लड़कियाँ', stGenderSub: 'पूरे स्कूल में लिंग वितरण।', stGirls: 'लड़कियाँ', stInactive: 'निष्क्रिय छात्र', stNewAdm: 'नए प्रवेश', stNotSpec: 'निर्दिष्ट नहीं', stPendFee: 'बकाया शुल्क वाले छात्र', stTotal: 'कुल छात्र', stuSearchPh: 'नाम, प्रवेश संख्या या मोबाइल खोजें…', tActMsg: 'छात्र सक्रिय करें', tActivated: 'छात्र सक्रिय हुआ।', tAdmCancelled: 'प्रवेश रद्द हुआ। रिकॉर्ड रखा गया है।', tAdmCreated: 'प्रवेश सहेजा गया। प्रवेश संख्या ', tCsvExported: 'छात्र सूची निर्यात हुई।', tDeactMsg: 'छात्र निष्क्रिय करें', tDeactivated: 'छात्र निष्क्रिय हुआ।', tDraftSaved: 'ड्राफ़्ट सहेजा गया।', tDupFound: 'मेल खाता छात्र पहले से मौजूद है: ', tInvalidAadhaar: 'आधार 12 अंकों का होना चाहिए (वैकल्पिक)।', tInvalidMobile: 'सही 10 अंकों का मोबाइल नंबर डालें।', tInvalidPin: 'पिन कोड 6 अंकों का होना चाहिए।', tPickClass: 'कृपया कक्षा चुनें।', tReqFields: 'कृपया छात्र का नाम, मुख्य मोबाइल, कक्षा और अनुभाग भरें।', tStuCsvOne: 'छात्र का विवरण डाउनलोड हुआ।', tTransferred: 'छात्र स्थानांतरित हुआ।', tabAcademic: 'शैक्षणिक रिकॉर्ड', tabActivity: 'गतिविधि इतिहास', tabAttendance: 'उपस्थिति इतिहास', tabDocs: 'दस्तावेज़', tabFees: 'शुल्क इतिहास', tabHomework: 'होमवर्क रिकॉर्ड', tabOverview: 'सारांश', tabParent: 'अभिभावक जानकारी', tabPersonal: 'व्यक्तिगत जानकारी', tabResults: 'परीक्षा परिणाम', thAdmNo: 'प्रवेश सं.', thExam: 'परीक्षा', thFather: 'पिता का नाम', transferTitle: 'छात्र स्थानांतरण', transferTo: 'नई कक्षा और अनुभाग', idCardSoon: 'ID कार्ड जनरेटर Phase 3 में आएगा।',
+    raiseSupport: 'सहायता अनुरोध भेजें', supportNoted: 'सहायता अनुरोध दर्ज हुआ — हम आपको कॉल करेंगे।', collectedW: 'संग्रह', pendingW: 'बकाया', allW: 'सभी', editStudent: 'छात्र बदलें', feeTypeTuition: 'ट्यूशन', feeTypeAdmission: 'प्रवेश', feeTypeTransport: 'परिवहन', feeTypeExam: 'परीक्षा', feeTypeLibrary: 'पुस्तकालय', feeTypeActivity: 'गतिविधि', feeTypeComputer: 'कंप्यूटर लैब', feeTypeOther: 'अन्य', allTypes: 'सभी प्रकार', searchFee: 'नाम, नामांकन संख्या या कक्षा खोजें…', thEnr: 'नामांकन सं.', thType: 'प्रकार', feeByType: 'प्रकार के अनुसार शुल्क', feeByTypeSub: 'प्रति प्रकार संग्रह और बकाया, लाइव गणना।', addFee: 'शुल्क जोड़ें', addFeeSub: 'किसी भी छात्र के लिए एक शुल्क रिकॉर्ड जोड़ें।', feeStruct: 'शुल्क संरचना', feeStructSub: 'प्रति कक्षा मासिक राशि। Generate इसी से रिकॉर्ड बनाता है।', genFees: 'शुल्क बनाएँ', saveStruct: 'संरचना सहेजें', addRow: 'पंक्ति जोड़ें', customType: 'कस्टम…', typeCustomPh: 'शुल्क का प्रकार लिखें', fStudent: 'छात्र', fMonth: 'महीना', fType: 'शुल्क प्रकार', fAmount: 'राशि (₹)', fStatus: 'स्थिति', fDate: 'तारीख', printList: 'सूची छापें', printStmt: 'विवरण छापें', backFees: 'सभी शुल्क पर वापस', totalBilled: 'कुल बिल', totalPaid: 'जमा', totalPending: 'बकाया', feeRecsH: 'शुल्क रिकॉर्ड', feeProfileSub: 'इस छात्र के सभी शुल्क रिकॉर्ड एक ही जगह।', tFeeAdded: 'शुल्क रिकॉर्ड जुड़ गया।', delFeeMsg: 'यह बकाया शुल्क रिकॉर्ड हटाएँ?', tFeeDeleted: 'शुल्क रिकॉर्ड हटा दिया गया।', tPickStudent: 'कृपया छात्र चुनें।', tAmtPositive: 'राशि 0 से अधिक होनी चाहिए।', tTypeRequired: 'कृपया शुल्क का प्रकार लिखें।', tStructSaved: 'शुल्क संरचना सहेजी गई।', tStructAdded: 'संरचना पंक्ति जुड़ी।', tStructRemoved: 'संरचना पंक्ति हटाई गई।', tGenRecords: 'शुल्क रिकॉर्ड बने', tGenSkipped: 'पहले से थे', tNoFeeRecs: 'इस छात्र के लिए अभी कोई शुल्क रिकॉर्ड नहीं है।', printTitle: 'शुल्क विवरण', printListTitle: 'शुल्क सूची', printGenOn: 'बनाया गया', closeW: 'बंद करें', saveFeeBtn: 'शुल्क सहेजें', photoLabel: 'छात्र की फ़ोटो', photoHint: 'फ़ोटो अपने आप छोटी हो जाती है (अधिकतम 512px, ~120KB)।', removePhoto: 'फ़ोटो हटाएँ', logoLabel: 'स्कूल का लोगो', logoHint: 'लोगो अपने आप छोटा हो जाता है (अधिकतम 256px, PNG में पारदर्शिता रहती है)।', removeLogo: 'लोगो हटाएँ', tPhotoTooBig: 'यह फ़ोटो छोटी करने के बाद भी बड़ी है। कृपया छोटी फ़ोटो चुनें।', tLogoTooBig: 'यह लोगो छोटा करने के बाद भी बड़ा है। कृपया छोटा लोगो चुनें।', tPhotoError: 'यह तस्वीर पढ़ी नहीं जा सकी। कृपया दूसरी फ़ाइल चुनें।', aadhaarHint: 'वैकल्पिक। केवल आखिरी 4 अंक सहेजे जाते हैं — पूरा नंबर कभी सहेजा नहीं जाता।', actActivate: 'छात्र सक्रिय करें', actAtt: 'उपस्थिति देखें', actDeactivate: 'छात्र निष्क्रिय करें', actDownload: 'विवरण डाउनलोड करें', actEdit: 'छात्र बदलें', actFees: 'शुल्क देखें', actIdCard: 'ID कार्ड छापें', actResults: 'परिणाम देखें', actTransfer: 'छात्र स्थानांतरित करें', actView: 'प्रोफ़ाइल देखें', actionsW: 'कार्रवाई', admNoAuto: 'स्वतः निर्मित', allClasses: 'सभी कक्षाएँ', allFeeSt: 'सभी शुल्क स्थितियाँ', allGenders: 'सभी लिंग', allSections: 'सभी अनुभाग', allSessions: 'सभी सत्र', allStatus: 'सभी स्थितियाँ', attPct: 'उपस्थिति', backDir: 'सूची पर वापस', cancelAdm: 'प्रवेश रद्द करें', cancelAdmMsg: 'यह प्रवेश रद्द करें? छात्र का रिकॉर्ड Cancelled स्थिति के साथ रखा जाएगा।', docMissing: 'प्राप्त नहीं', docStatus: 'प्राप्त', docsNote: 'दस्तावेज़ फ़ाइलें सर्वर चरण में अपलोड होंगी। यह सूची बताती है कि क्या प्राप्त हुआ है।', exportCsv: 'CSV निर्यात करें', fAadhaar: 'आधार संख्या (वैकल्पिक)', fAdmDate: 'प्रवेश तिथि', fAdmNo: 'प्रवेश संख्या', fBirthCert: 'जन्म प्रमाण पत्र', fBlood: 'रक्त समूह', fCategory: 'श्रेणी', fDistrict: 'जिला', fDob: 'जन्म तिथि', fDocsOther: 'अन्य दस्तावेज़ (नोट)', fFather: 'पिता का नाम', fGender: 'लिंग', fMother: 'माता का नाम', fOccupation: 'व्यवसाय', fParentEmail: 'अभिभावक ईमेल', fPhone2: 'दूसरा मोबाइल', fPin: 'पिन कोड', fPrevClass: 'पिछली कक्षा', fPrevSchool: 'पिछला स्कूल', fSection: 'अनुभाग', fState: 'राज्य', fTc: 'स्थानांतरण प्रमाण पत्र (TC)', fTcNo: 'TC संख्या', feeSt: 'शुल्क स्थिति', hwDone: 'पूर्ण', hwPend: 'बाकी', hwPending: 'होमवर्क बाकी', latestExam: 'हाल की परीक्षा', nextW: 'अगला', noActivity: 'अभी कोई गतिविधि दर्ज नहीं है।', noAttRecs: 'इस छात्र के लिए अभी कोई उपस्थिति रिकॉर्ड नहीं है।', noExamRecs: 'अभी कोई परीक्षा परिणाम नहीं है।', noHwRecs: 'इस कक्षा के लिए कोई होमवर्क रिकॉर्ड नहीं है।', openFees: 'शुल्क पेज खोलें', pgOf: 'का', pgPage: 'पृष्ठ', phase3W: 'Phase 3', prevW: 'पिछला', saveAddAnother: 'सहेजें और नया जोड़ें', saveDraft: 'ड्राफ़्ट सहेजें', secAcademic: 'शैक्षणिक विवरण', secDocs: 'दस्तावेज़', secParent: 'माता-पिता / अभिभावक विवरण', secPersonal: 'व्यक्तिगत विवरण', stActive: 'सक्रिय छात्र', stAvgAtt: 'औसत उपस्थिति', stBoys: 'लड़के', stByClass: 'कक्षा अनुसार छात्र', stByClassSub: 'प्रत्येक कक्षा-अनुभाग में छात्रों की संख्या।', stGenderDist: 'लड़के और लड़कियाँ', stGenderSub: 'पूरे स्कूल में लिंग वितरण।', stGirls: 'लड़कियाँ', stInactive: 'निष्क्रिय छात्र', stNewAdm: 'नए प्रवेश', stNotSpec: 'निर्दिष्ट नहीं', stPendFee: 'बकाया शुल्क वाले छात्र', stTotal: 'कुल छात्र', stuSearchPh: 'नाम, प्रवेश संख्या या मोबाइल खोजें…', tActMsg: 'छात्र सक्रिय करें', tActivated: 'छात्र सक्रिय हुआ।', tAdmCancelled: 'प्रवेश रद्द हुआ। रिकॉर्ड रखा गया है।', tAdmCreated: 'प्रवेश सहेजा गया। प्रवेश संख्या ', tCsvExported: 'छात्र सूची निर्यात हुई।', tDeactMsg: 'छात्र निष्क्रिय करें', tDeactivated: 'छात्र निष्क्रिय हुआ।', tDraftSaved: 'ड्राफ़्ट सहेजा गया।', tDupFound: 'मेल खाता छात्र पहले से मौजूद है: ', tInvalidAadhaar: 'आधार 12 अंकों का होना चाहिए (या आखिरी 4) — वैकल्पिक।', tInvalidMobile: 'सही 10 अंकों का मोबाइल नंबर डालें।', tInvalidPin: 'पिन कोड 6 अंकों का होना चाहिए।', tPickClass: 'कृपया कक्षा चुनें।', tReqFields: 'कृपया छात्र का नाम, मुख्य मोबाइल, कक्षा और अनुभाग भरें।', tStuCsvOne: 'छात्र का विवरण डाउनलोड हुआ।', tTransferred: 'छात्र स्थानांतरित हुआ।', tabAcademic: 'शैक्षणिक रिकॉर्ड', tabActivity: 'गतिविधि इतिहास', tabAttendance: 'उपस्थिति इतिहास', tabDocs: 'दस्तावेज़', tabFees: 'शुल्क इतिहास', tabHomework: 'होमवर्क रिकॉर्ड', tabOverview: 'सारांश', tabParent: 'अभिभावक जानकारी', tabPersonal: 'व्यक्तिगत जानकारी', tabResults: 'परीक्षा परिणाम', thAdmNo: 'प्रवेश सं.', thExam: 'परीक्षा', thFather: 'पिता का नाम', transferTitle: 'छात्र स्थानांतरण', transferTo: 'नई कक्षा और अनुभाग', idCardSoon: 'ID कार्ड जनरेटर Phase 3 में आएगा।',
     impTitle: 'छात्रों का बल्क आयात', impImportBtn: 'छात्र आयात करें', impTemplate: 'नमूना टेम्पलेट डाउनलोड करें', impTemplateSub: 'सिर्फ CSV प्रारूप — Excel (.xlsx) फ़ाइल यहाँ पढ़ी नहीं जा सकती। टेम्पलेट के कॉलम इस्तेमाल करें।', impChooseFile: 'CSV फ़ाइल चुनें', impPreview: 'आयात पूर्वावलोकन', impSummary: 'आयात सारांश', impValid: 'सही', impError: 'त्रुटि', impDuplicate: 'दोहरा', impReason: 'कारण', impConfirm: 'सही पंक्तियाँ आयात करें', impDone: 'पूर्ण', impNoRows: 'इस फ़ाइल में कोई पंक्ति नहीं मिली। कृपया टेम्पलेट जाँचें।', impBadHeader: 'यह फ़ाइल छात्र टेम्पलेट जैसी नहीं लगती — नाम वाला कॉलम नहीं मिला।', impNoFile: 'कृपया पहले CSV फ़ाइल चुनें।', impNoValid: 'आयात के लिए कोई सही पंक्ति नहीं है।', impImported: 'आयात हुए', impSkipped: 'छोड़े गए', impErrName: 'नाम आवश्यक है', impErrMobile: 'मोबाइल 10 अंकों का होना चाहिए', impErrMobile2: 'दूसरा मोबाइल 10 अंकों का होना चाहिए', impErrClass: 'कक्षा सही नहीं है', impErrSection: 'अनुभाग A, B या C होना चाहिए', impErrPin: 'पिन 6 अंकों का होना चाहिए', impErrAadhaar: 'आधार 12 अंकों का होना चाहिए', impErrDob: 'जन्म तिथि सही तारीख नहीं है', impErrAdmDate: 'प्रवेश तिथि सही तारीख नहीं है', impErrSession: 'सत्र सही नहीं है (जैसे 2025–26)', impErrGender: 'लिंग Boy, Girl या Other होना चाहिए', impErrBlood: 'रक्त समूह सही नहीं है', impErrCategory: 'श्रेणी General, OBC, SC, ST या Other होनी चाहिए', impErrEmail: 'अभिभावक ईमेल सही नहीं है', impErrRoll: 'रोल धनात्मक संख्या होनी चाहिए', impErrBool: 'Yes या No होना चाहिए', impErrDup: 'इसकी प्रतिलिपि', impErrDupFile: 'इस फ़ाइल में दोहरा', tImpDone: 'बल्क आयात पूर्ण हुआ।', tImpTemplate: 'नमूना टेम्पलेट डाउनलोड हुआ।',
     promoTitle: 'छात्रों को प्रोन्नत करें', promoBtn: 'छात्र प्रोन्नत करें', promoSingle: 'छात्र प्रोन्नत करें', promoFromSession: 'वर्तमान सत्र', promoFromClass: 'वर्तमान कक्षा', promoToSession: 'लक्ष्य सत्र', promoToClass: 'लक्ष्य कक्षा', promoToSection: 'लक्ष्य अनुभाग', promoSelectAll: 'सभी चुनें', promoSelectNone: 'कोई नहीं', promoSelected: 'चयनित', promoPromote: 'चयनित को प्रोन्नत करें', promoRetain: 'चयनित को रोकें', promoNoStudents: 'इस कक्षा और सत्र में कोई छात्र नहीं है।', promoNoSelect: 'कृपया कम से कम एक छात्र चुनें।', promoNoop: 'लक्ष्य कक्षा और सत्र वर्तमान जैसे ही हैं — बदलने को कुछ नहीं।', promoNoopRetain: 'लक्ष्य सत्र वर्तमान सत्र जैसा ही है — बदलने को कुछ नहीं।', promoDone: 'प्रोन्नति पूर्ण हुई।', promoPromoted: 'प्रोन्नत हुए', promoRetained: 'रोके गए', promoNote: 'उपस्थिति, शुल्क, परीक्षा अंक और होमवर्क इतिहास सुरक्षित रहता है।', promoSingleNote: 'एक छात्र की प्रोन्नति', promoSkipped: 'छोड़े गए (पहले ही स्थानांतरित)', promoNotEligible: 'केवल सक्रिय या निष्क्रिय छात्र ही प्रोन्नत हो सकते हैं।',
     idcPreview: 'ID कार्ड पूर्वावलोकन', idcPrint: 'छापें', idcPrintCards: 'ID कार्ड छापें', idcSelectAll: 'सभी चुनें', idcClearSel: 'चयन हटाएँ', idcReady: 'ID कार्ड छपाई के लिए तैयार', idcEmergency: 'आपातकालीन संपर्क', idcReturn: 'मिले तो कृपया लौटाएँ', idcNoQr: 'QR कोड नहीं बन सका।',
-    authStudent: 'छात्र', authTeacher: 'शिक्षक', stuAdmNo: 'प्रवेश संख्या', stuPinLabel: 'छात्र PIN', stuLoginBtn: 'छात्र के रूप में लॉगिन करें', stuNote: 'छात्र लॉगिन स्कूल द्वारा दिए गए PIN से होता है। PIN न पता हो तो अपने स्कूल से पूछें।', stuSub: 'छात्र', stuDashboard: 'मेरी प्रोफ़ाइल', tInvalidStudent: 'प्रवेश संख्या या PIN गलत है।', stuPinField: 'छात्र लॉगिन PIN (वैकल्पिक)', stuPinPh: 'डिफ़ॉल्ट: मोबाइल के आखिरी 4 अंक', stuPinTitle: 'छात्र PIN', stuPinNow: 'वर्तमान छात्र PIN', stuPinNone: 'कोई PIN नहीं है — इस छात्र के लिए छात्र लॉगिन उपलब्ध नहीं है।', stuPinNew: 'नया PIN (4–6 अंक)', stuPinSetBtn: 'PIN सेट करें', stuPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'छात्र PIN सेट हो गया।', tPinCleared: 'छात्र PIN हटा दिया गया।', tPinAuto: 'डिफ़ॉल्ट PIN अभिभावक के मोबाइल के आखिरी 4 अंक होते हैं।', tNotAllowed: 'आपकी लॉगिन इस सेक्शन को नहीं खोल सकती।', tOwnProfileOnly: 'आप केवल अपनी प्रोफ़ाइल देख सकते हैं।', todayW: 'आज', tchrLoginBtn: 'शिक्षक के रूप में लॉगिन करें', tchrNote: 'शिक्षक अकाउंट स्कूल एडमिन बनाता है।', tchrSub: 'शिक्षक', tchrDashboard: 'शिक्षक डैशबोर्ड', tchrNoDb: 'इस डिवाइस पर स्कूल का डेटा नहीं है — पहले स्कूल के डिवाइस पर लॉगिन करें।', teachers: 'शिक्षक', teachersSub: 'शिक्षक अकाउंट और वे जो कक्षाएँ पढ़ाते हैं।', tchrAdd: 'शिक्षक जोड़ें', tchrEdit: 'शिक्षक बदलें', tchrName: 'शिक्षक का नाम', tchrSubject: 'विषय', tchrClasses: 'पढ़ाई जाने वाली कक्षाएँ', tchrEmail: 'ईमेल', tchrPw: 'पासवर्ड', tchrPwHint: 'कम से कम 6 अक्षर। मौजूदा पासवर्ड रखने के लिए खाली छोड़ें।', tchrNoLogin: 'कोई लॉगिन नहीं', tchrSaved: 'शिक्षक सहेजा गया।', tchrNoClasses: 'कम से कम एक कक्षा चुनें।', tchrEmailTaken: 'यह ईमेल किसी और अकाउंट में इस्तेमाल हो रहा है।', tchrMyClasses: 'मेरी कक्षाएँ', tchrStudents: 'मेरी कक्षाओं के छात्र', tchrNoClassesYet: 'अभी कोई कक्षा नहीं दी गई है — स्कूल एडमिन से कक्षा देने को कहें।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।',
+    authStudent: 'छात्र', authTeacher: 'शिक्षक', stuAdmNo: 'प्रवेश संख्या', stuPinLabel: 'छात्र PIN', stuLoginBtn: 'छात्र के रूप में लॉगिन करें', stuNote: 'छात्र लॉगिन स्कूल द्वारा दिए गए PIN से होता है। PIN न पता हो तो अपने स्कूल से पूछें।', stuSub: 'छात्र', stuDashboard: 'मेरी प्रोफ़ाइल', tInvalidStudent: 'प्रवेश संख्या या PIN गलत है।', stuPinField: 'छात्र लॉगिन PIN (वैकल्पिक)', stuPinPh: 'खाली छोड़ें — रैंडम PIN बनेगा', stuPinTitle: 'छात्र PIN', stuPinNow: 'वर्तमान छात्र PIN', stuPinNone: 'कोई PIN नहीं है — इस छात्र के लिए छात्र लॉगिन उपलब्ध नहीं है।', stuPinNew: 'नया PIN (4–6 अंक)', stuPinSetBtn: 'PIN सेट करें', stuPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'छात्र PIN सेट हो गया।', tPinShown: 'छात्र PIN: ', tPinCleared: 'छात्र PIN हटा दिया गया।', tPinAuto: 'PIN स्कूल द्वारा प्रवेश के समय दिया जाता है। छात्र भूल जाए तो यहाँ से नया PIN सेट करें।', tNotAllowed: 'आपकी लॉगिन इस सेक्शन को नहीं खोल सकती।', tOwnProfileOnly: 'आप केवल अपनी प्रोफ़ाइल देख सकते हैं।', todayW: 'आज', tchrLoginBtn: 'शिक्षक के रूप में लॉगिन करें', tchrNote: 'शिक्षक अकाउंट स्कूल एडमिन बनाता है।', tchrSub: 'शिक्षक', tchrDashboard: 'शिक्षक डैशबोर्ड', tchrNoDb: 'इस डिवाइस पर स्कूल का डेटा नहीं है — पहले स्कूल के डिवाइस पर लॉगिन करें।', teachers: 'शिक्षक', teachersSub: 'शिक्षक अकाउंट और वे जो कक्षाएँ पढ़ाते हैं।', tchrAdd: 'शिक्षक जोड़ें', tchrEdit: 'शिक्षक बदलें', tchrName: 'शिक्षक का नाम', tchrSubject: 'विषय', tchrClasses: 'पढ़ाई जाने वाली कक्षाएँ', tchrEmail: 'ईमेल', tchrPw: 'पासवर्ड', tchrPwHint: 'कम से कम 6 अक्षर। मौजूदा पासवर्ड रखने के लिए खाली छोड़ें।', tchrNoLogin: 'कोई लॉगिन नहीं', tchrSaved: 'शिक्षक सहेजा गया।', tchrNoClasses: 'कम से कम एक कक्षा चुनें।', tchrEmailTaken: 'यह ईमेल किसी और अकाउंट में इस्तेमाल हो रहा है।', tchrMyClasses: 'मेरी कक्षाएँ', tchrStudents: 'मेरी कक्षाओं के छात्र', tchrNoClassesYet: 'अभी कोई कक्षा नहीं दी गई है — स्कूल एडमिन से कक्षा देने को कहें।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।',
     collectFeeBtn: 'शुल्क वसूलें', rcptTitle: 'शुल्क रसीद', rcptReceiptNo: 'रसीद संख्या', rcptDate: 'तारीख', rcptAdmNo: 'प्रवेश संख्या', rcptSession: 'सत्र', rcptName: 'नाम', rcptClass: 'कक्षा', rcptInstallment: 'किस्त', rcptCounter: 'काउंटर संख्या', rcptSlNo: 'क्र.सं.', rcptDesc: 'विवरण', rcptDue: 'देय', rcptCon: 'छूट', rcptPaid: 'जमा', rcptAdmissionFee: 'प्रवेश शुल्क', rcptTuitionFee: 'शिक्षण शुल्क', rcptCaution: 'जमानत राशि', rcptAnnual: 'वार्षिक शुल्क', rcptBusFee: 'बस शुल्क', rcptDues: 'बकाया', rcptPayModeTitle: 'भुगतान जानकारी', rcptPayMode: 'भुगतान माध्यम', rcptBank: 'बैंक', rcptNumber: 'संख्या', rcptTotal: 'कुल', rcptTotalWords: 'कुल (शब्दों में)', rcptComputerGen: 'यह कंप्यूटर द्वारा बनाई गई रसीद है। हस्ताक्षर की आवश्यकता नहीं है।', rcptParentCopy: 'अभिभावक प्रति', rcptCollectorSign: 'वसूलकर्ता के हस्ताक्षर', rcptIncludeBus: 'बस/परिवहन शामिल करें', rcptOtherFees: 'अन्य शुल्क', rcptAnnualHint: 'शुल्क वसूली रसीद पर दिखने वाली एकमुश्त और वार्षिक राशि। छिपाने के लिए 0 रखें।', payModeCash: 'नकद', payModeCheque: 'चेक', payModeUpi: 'UPI', payModeCard: 'कार्ड', payModeBank: 'बैंक ट्रांसफर', tFeeCollected: 'शुल्क वसूल लिया गया।', tCollectZero: 'वसूलने के लिए कुछ नहीं है — जमा राशि डालें।', tCollectSaved: 'शुल्क वसूल लिया गया — रसीद ', tCollectNotActive: 'यह छात्र सक्रिय नहीं है — शुल्क नहीं वसूला जा सकता।', rcptReceipts: 'रसीदें', rcptView: 'देखें', rcptPrint: 'प्रिंट / PDF सहेजें', rcptCollectAgain: 'फिर से वसूलें', rcptNoReceipts: 'इस छात्र की अभी कोई रसीद नहीं है।', rcptDraft: 'मसौदा — अभी सहेजा नहीं गया', rcptCollectSave: 'वसूलें और सहेजें', rcptNoLines: 'इस अवधि के लिए वसूलने को कुछ नहीं है — पहले शुल्क संरचना में राशि डालें।',
     sbNumPending: 'प्रवेश सहेजा गया। प्रवेश संख्या ऑनलाइन आने पर दी जाएगी।', sbNumPendingReceipt: 'शुल्क सहेजा गया। रसीद संख्या ऑनलाइन आने पर दी जाएगी।', sbStatusSessionExpired: 'सत्र समाप्त हो गया — कृपया दोबारा लॉग इन करें।', sbStatusNotLinked: 'अभी सर्वर से जुड़ा नहीं है — लॉग इन पर जुड़ जाएगा।', sbLinkServer: 'सर्वर से जोड़ें', sbLinkDone: 'सर्वर अकाउंट जुड़ गया।', sbLinkFailed: 'सर्वर अकाउंट जुड़ा नहीं जा सका — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkPwTitle: 'सर्वर अकाउंट जोड़ें', sbNumAssigning: 'नंबर मिल रहा है…', tWrongPasswordServer: 'सर्वर अकाउंट के लिए पासवर्ड गलत है।', tCollectCapped: 'दी गई राशि बकाया से ज़्यादा थी — सिर्फ बकाया राशि ली गई।', resetPwHintServer: 'इससे सिर्फ इस डिवाइस का डेटा मिटेगा। सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी, जब तक आप सर्वर भी न मिटाएँ।', resetConfirmMsgServer: 'सिर्फ इस डिवाइस का डेटा मिटाएँ? सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी — हर जगह से मिटाने के लिए “सर्वर से भी मिटाएँ” चुनें।', resetDeviceOnly: 'सिर्फ यह डिवाइस', resetWipeServerBtn: 'सर्वर से भी मिटाएँ', resetWipeServerDone: 'सर्वर का डेटा मिट गया।', resetWipeServerFailed: 'सर्वर का डेटा मिटा नहीं जा सका — कुछ भी रीसेट नहीं हुआ। कनेक्शन जाँचकर फिर कोशिश करें।', supportQueued: 'सहायता अनुरोध सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqQueued: 'आवेदन सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqLoadingSchools: 'स्कूल लोड हो रहे हैं…', attNotMarked: 'दर्ज नहीं'
   }
@@ -3668,7 +3828,9 @@ function doTeacherLogin(e) {
   // Local-only login (v35): teacher accounts live in schoolSaathiAccounts
   // on this device, with no server account — no Supabase attempt.
   var a = findAccount(id);
-  var ok = a && a.role === 'teacher' && !!a.pwHash && hashPw(pw) === a.pwHash;
+  var chk = verifyPw(pw, a);
+  var ok = a && a.role === 'teacher' && !!a.pwHash && chk.ok;
+  if (ok && chk.legacy) upgradePwHash(a, pw); // v36: old djb2 hash verifies, then upgrades to salted SHA-256 on this login
   if (!ok) {
     err.textContent = t('tInvalidCreds');
     err.classList.remove('hidden');
@@ -3788,7 +3950,7 @@ function doSignup(e) {
   if (pw.length < 6) return fail(t('tPwShort'));
   if (pw !== pw2) return fail(t('tPwMismatch'));
   if (findAccount(email)) return fail(t('tEmailTaken'));
-  var a = { uid: 'u' + Date.now().toString(36), name: name, school: school, email: email, pwHash: hashPw(pw), role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: null };
+  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: hashPwNew(pw), hashScheme: 'sha256', role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: null };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   err.classList.add('hidden');
   toast(t('tAccountCreated') + name);
@@ -3811,6 +3973,7 @@ function doSignup(e) {
   return false;
 }
 function logout() {
+  var sbUidBefore = state.sb && state.sb.uid; // v36: needed for the outbox check below, before the session is cleared
   state.role = null; state.user = null; state.view = 'dashboard';
   state.feeStudent = null; state.feeSearch = ''; state.feeType = 'All'; state.feeFilter = 'All'; state.feeFormOpen = false; state.feePreselect = null;
   state.profileStudent = null; state.profileTab = 'overview'; state.stuPage = 1;
@@ -3827,6 +3990,19 @@ function logout() {
   state.sb = null;
   sbSyncResetMemory(); // v31: drop the in-memory snapshot + pending flush timer (the persisted outbox/snapshot stay for the next login)
   sbSyncAutoStop(); // v32: stop the auto-pull interval (restarts on the next login)
+  // v36 (logout-backup race): a cycle killed mid-flight by this logout
+  // must not leave a transient "Syncing…" status on the login screen.
+  // Pending outbox rows mean the backup will run on the next login; an
+  // empty outbox means the cycle died after flushing, so "Backed up" is
+  // the truthful state. A settled status (synced / failed / pending) is
+  // left exactly as it was.
+  try {
+    var st0 = sbLoadStatus();
+    if (st0 && (st0.state === 'syncing' || st0.state === 'uploading')) {
+      var left = sbUidBefore ? sbOutboxLoad(sbUidBefore).length : 0;
+      sbSetStatus(left ? 'pending' : 'synced');
+    }
+  } catch (e3) {}
   lastBackAt = 0; histExiting = false;
   histReset('login'); // back after logout cannot re-enter the app
   $('loginId').value = ''; $('loginPw').value = '';
@@ -4132,7 +4308,7 @@ function resetPwCheck(pw) {
   if (!state.role || !state.user) return false;
   if (state.role === 'school') {
     var a = findAccount(state.user.email);
-    return !!a && !!a.pwHash && hashPw(pw) === a.pwHash;
+    return !!a && verifyPw(pw, a).ok;
   }
   return false; // student / teacher roles never reset
 }
@@ -4299,7 +4475,7 @@ function submitSupportRequest(e) {
   // was "noted". There is still no Super Admin list or dashboard card in
   // the app; the owner reads the requests on the server until the Play
   // Store admin UI.
-  var req = { id: 'sr' + Date.now().toString(36), ts: new Date().toISOString(), name: name, message: msg, status: 'Open', by: state.user ? state.user.name : '' };
+  var req = { id: uniqueId('sr'), ts: new Date().toISOString(), name: name, message: msg, status: 'Open', by: state.user ? state.user.name : '' };
   var list = [];
   try { list = JSON.parse(localStorage.getItem('schoolSaathiSupportRequests') || '[]'); } catch (e2) { list = []; }
   if (!Array.isArray(list)) list = [];
@@ -4543,7 +4719,10 @@ function saveStudent(e, id, mode) {
   var pinLogin = digitsOnly(fval('fStPinLogin'));
   if (pinLogin && (pinLogin.length < 4 || pinLogin.length > 6)) return fail(t('tPinLen'));
   var aadhaar = digitsOnly(fval('fStAadhaar'));
-  if (aadhaar && aadhaar.length !== 12) return fail(t('tInvalidAadhaar'));
+  // v36: a fresh 12-digit number is accepted but only its last 4 are
+  // stored; a 4-digit value (the stored last 4, shown on edit) saves
+  // as-is. The full number is never persisted anywhere.
+  if (aadhaar && aadhaar.length !== 12 && aadhaar.length !== 4) return fail(t('tInvalidAadhaar'));
   var admDateVal = fval('fStAdmDate');
   var dob = fval('fStDob');
   var data = { name: name, cls: cls, roll: parseInt(fval('fStRoll'), 10) || 1,
@@ -4560,7 +4739,7 @@ function saveStudent(e, id, mode) {
     mobile2: fval('fStPh2').trim(),
     parentEmail: fval('fStParentEmail').trim(),
     occupation: fval('fStOccupation').trim(),
-    aadhaar: aadhaar,
+    aadhaar: aadhaarLast4(aadhaar),
     documents: { birthCert: $('fStBirthCert') ? !!$('fStBirthCert').checked : false,
       tc: $('fStTc') ? !!$('fStTc').checked : false,
       tcNumber: fval('fStTcNo').trim(),
@@ -4579,10 +4758,12 @@ function saveStudent(e, id, mode) {
     var s = db.students.find(function (x) { return x.id === id; });
     if (!s) return false;
     Object.assign(s, data);
-    // The form shows the current PIN, so an edit round-trips it; a blank
-    // field resets it to the default (last 4 digits of the mobile). A
-    // custom PIN is never silently overwritten by a phone change.
-    s.parentPin = pinLogin || parentPinFromPhone(s.phone);
+    // v36: the form shows the current PIN, so an edit round-trips it; a
+    // BLANK field now keeps the existing PIN (it used to reset it to the
+    // phone's last 4 digits). To remove a PIN, use the profile's Clear
+    // PIN button. A custom PIN is never silently overwritten by a phone
+    // change.
+    if (pinLogin) s.parentPin = pinLogin;
     s.status = mode === 'draft' ? 'Draft' : 'Active';
     if (pendingPhoto !== null) { if (pendingPhoto) s.photo = pendingPhoto; else delete s.photo; }
     logAudit('Student updated', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
@@ -4590,9 +4771,15 @@ function saveStudent(e, id, mode) {
     finishSave();
     return false;
   }
-  var nid = 'stu' + Date.now();
+  var nid = uniqueId('stu');
+  // v36: a blank PIN field no longer defaults to the phone's last 4
+  // digits (guessable). The admin types a PIN, or a random 4-digit PIN
+  // is generated and shown once in the toast (and always visible on the
+  // student's profile) for the admin to share with the student.
+  var newPin = pinLogin || randomPin();
+  var pinAuto = !pinLogin;
   function createWith(admNo, enr, numPending) {
-    var newStu = Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: enr, admissionNo: admNo, status: mode === 'draft' ? 'Draft' : 'Active', parentPin: pinLogin || parentPinFromPhone(phone) }, data);
+    var newStu = Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: enr, admissionNo: admNo, status: mode === 'draft' ? 'Draft' : 'Active', parentPin: newPin }, data);
     if (numPending) newStu.numPending = true;
     if (pendingPhoto) newStu.photo = pendingPhoto;
     db.students.push(newStu);
@@ -4605,8 +4792,8 @@ function saveStudent(e, id, mode) {
       }
     }
     logAudit(mode === 'draft' ? 'Admission saved as draft' : 'Admission created', name + ' • ' + (admNo || 'pending') + ' • ' + cls);
-    if (numPending) toast(t('sbNumPending'));
-    else toast(mode === 'draft' ? t('tDraftSaved') : t('tAdmCreated') + admNo);
+    if (numPending) toast(t('sbNumPending') + (pinAuto ? ' • ' + t('tPinShown') + newPin : ''));
+    else toast((mode === 'draft' ? t('tDraftSaved') : t('tAdmCreated') + admNo) + (pinAuto ? ' • ' + t('tPinShown') + newPin : ''));
     finishSave();
   }
   // v33: for a server account the number comes from the server, never
@@ -5273,7 +5460,7 @@ function saveFeeRecord(e) {
     ty = $('fFeeCustom').value.trim();
     if (!ty) { toast(t('tTypeRequired')); return false; }
   }
-  db.feeRecords.push({ id: 'fee' + Date.now(), studentId: sid, student: s.name, cls: s.cls,
+  db.feeRecords.push({ id: uniqueId('fee'), studentId: sid, student: s.name, cls: s.cls,
     month: $('fFeeMonth').value, type: ty, amount: amt, status: $('fFeeStatus').value, date: $('fFeeDate').value || todayIST() });
   refreshStudentFee(sid);
   state.feePreselect = null;
@@ -5859,11 +6046,11 @@ function finishCollectFee(d, s, total, receiptNo, numPending) {
       if (paid >= net) { rec.status = 'Collected'; rec.amount = net; rec.date = today; }
       else {
         rec.amount = net - paid; // remainder stays Pending
-        db.feeRecords.push({ id: 'fee' + Date.now() + '_' + i, studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: paid, status: 'Collected', date: today });
+        db.feeRecords.push({ id: uniqueId('fee'), studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: paid, status: 'Collected', date: today });
       }
     } else {
-      db.feeRecords.push({ id: 'fee' + Date.now() + '_' + i, studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: paid, status: 'Collected', date: today });
-      if (paid < net) db.feeRecords.push({ id: 'fee' + Date.now() + '_p' + i, studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: net - paid, status: 'Pending', date: today });
+      db.feeRecords.push({ id: uniqueId('fee'), studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: paid, status: 'Collected', date: today });
+      if (paid < net) db.feeRecords.push({ id: uniqueId('fee'), studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: net - paid, status: 'Pending', date: today });
     }
   });
   var rc = { receiptNo: receiptNo, studentId: s.id, admissionNo: s.admissionNo || s.enr || '', name: s.name, cls: s.cls, session: s.session || currentSession(), date: today, month: d.month, counterNo: d.counterNo, lines: savedLines, payMode: d.payMode, payDate: d.payDate, bank: d.bank, number: d.number, total: total, totalWords: numberToWords(total), collector: state.user ? state.user.name : '' };
@@ -5984,7 +6171,7 @@ function openAdmissionApply() {
 }
 function saveAdmissionRequest(e) {
   e.preventDefault();
-  var req = { id: 'ar' + Date.now(), name: ($('fArName') ? $('fArName').value : '').trim(),
+  var req = { id: uniqueId('ar'), name: ($('fArName') ? $('fArName').value : '').trim(),
     dob: $('fArDob') ? $('fArDob').value : '', gender: $('fArGender') ? $('fArGender').value : '',
     classApply: $('fArClass') ? $('fArClass').value : '', guardianName: ($('fArGuardian') ? $('fArGuardian').value : '').trim(),
     phone: ($('fArPhone') ? $('fArPhone').value : '').trim(), previousSchool: ($('fArPrevSchool') ? $('fArPrevSchool').value : '').trim(),
@@ -6210,7 +6397,7 @@ function saveHomework(e) {
   if ($('fHwDue').value < todayIST()) { toast(t('tDueFuture')); return false; }
   // v35: a teacher posts homework only to their own assigned class.
   if (state.role === 'teacher' && teacherClasses().indexOf($('fHwCls').value) === -1) { toast(t('tNotAllowed')); return false; }
-  db.homework.unshift({ id: 'hw' + Date.now(), cls: $('fHwCls').value, subject: $('fHwSub').value, title: $('fHwTitle').value.trim(), due: $('fHwDue').value, doneBy: [] });
+  db.homework.unshift({ id: uniqueId('hw'), cls: $('fHwCls').value, subject: $('fHwSub').value, title: $('fHwTitle').value.trim(), due: $('fHwDue').value, doneBy: [] });
   addActivity('📚', 'orange', 'Homework assigned', $('fHwSub').value + ' • Class ' + $('fHwCls').value);
   saveDB(db); closeModal(); renderApp();
   toast(t('tHwAssigned'));
@@ -6234,7 +6421,7 @@ function noticeForm() {
 function saveNotice(e) {
   e.preventDefault();
   if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
-  db.notices.unshift({ id: 'n' + Date.now(), title: $('fNtTitle').value.trim(), date: todayIST(), body: $('fNtBody').value.trim() });
+  db.notices.unshift({ id: uniqueId('n'), title: $('fNtTitle').value.trim(), date: todayIST(), body: $('fNtBody').value.trim() });
   addActivity('📢', 'orange', 'New notice published', $('fNtTitle').value.trim());
   saveDB(db); closeModal(); renderApp();
   toast(t('tNoticePub'));
@@ -6365,16 +6552,16 @@ function saveTeacher(e, id) {
   if (!ownAcct && pw.length < 6) return fail(t('tPwShort'));
   if (ownAcct && pw && pw.length < 6) return fail(t('tPwShort'));
   if (!te) {
-    te = { id: 't' + Date.now().toString(36), name: name, subject: subject, cls: tchrFormClasses[0], classes: tchrFormClasses.slice() };
+    te = { id: uniqueId('t'), name: name, subject: subject, cls: tchrFormClasses[0], classes: tchrFormClasses.slice() };
     db.teachers.push(te);
   } else {
     te.name = name; te.subject = subject; te.classes = tchrFormClasses.slice(); te.cls = tchrFormClasses[0] || '';
   }
   if (ownAcct) {
     ownAcct.name = name; ownAcct.email = email; ownAcct.sub = t('tchrSub') + ' • ' + db.profile.name;
-    if (pw) ownAcct.pwHash = hashPw(pw);
+    if (pw) { ownAcct.pwHash = hashPwNew(pw); ownAcct.hashScheme = 'sha256'; }
   } else {
-    list.push({ uid: 'u' + Date.now().toString(36), name: name, school: db.profile.name, email: email, pwHash: hashPw(pw), role: 'teacher', sub: t('tchrSub') + ' • ' + db.profile.name, teacherId: te.id, schoolUid: state.user.uid, created: new Date().toISOString().slice(0, 10) });
+    list.push({ uid: uniqueId('u'), name: name, school: db.profile.name, email: email, pwHash: hashPwNew(pw), hashScheme: 'sha256', role: 'teacher', sub: t('tchrSub') + ' • ' + db.profile.name, teacherId: te.id, schoolUid: state.user.uid, created: new Date().toISOString().slice(0, 10) });
   }
   saveAccounts(list);
   logAudit(ownAcct ? 'Teacher updated' : 'Teacher added', name + ' • ' + (te.classes || []).join(', '));
