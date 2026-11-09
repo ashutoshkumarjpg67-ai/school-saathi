@@ -58,10 +58,26 @@ var SB_STATUS_KEY = 'schoolSaathiSbStatus'; // { state, at, detail }
 var sbRecoveryToken = null;
 var sbMigPromise = null; // one migration run at a time
 
+var SB_FETCH_TIMEOUT_MS = 30000; // v34 (P1-2): every server call gets a 30s timeout.
+var sbFetchTimeoutMs = SB_FETCH_TIMEOUT_MS;
+var sbSessionExpired = false; // v34 (P1-3): the stored refresh token was rejected (not merely offline).
+var SB_LINK_RETRY_KEY = 'schoolSaathiLinkRetryAt'; // v34 (P0-1): GoTrue 429 backoff.
 function sbIsOnline() {
   if (typeof fetch !== 'function') return false;
   try { if (typeof navigator !== 'undefined' && navigator.onLine === false) return false; } catch (e) {}
   return true;
+}
+// v34 (P1-2): fetch with an AbortController timeout. A request that hangs
+// (slow network, dead connection) rejects after sbFetchTimeoutMs so the
+// sync lock is released instead of holding "Syncing…" forever.
+function sbFetchWithTimeout(url, init) {
+  if (typeof fetch !== 'function') return Promise.reject(new Error('no-fetch'));
+  if (typeof AbortController !== 'function') return fetch(url, init);
+  var ctrl = new AbortController();
+  var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, sbFetchTimeoutMs);
+  init = init || {};
+  init.signal = ctrl.signal;
+  return fetch(url, init).then(function (res) { clearTimeout(timer); return res; }, function (err) { clearTimeout(timer); throw err; });
 }
 function sbAuthFetch(path, opts) {
   opts = opts || {};
@@ -69,7 +85,7 @@ function sbAuthFetch(path, opts) {
   var headers = { 'apikey': SB_ANON_KEY, 'Authorization': 'Bearer ' + (opts.token || SB_ANON_KEY), 'Content-Type': 'application/json' };
   var init = { method: opts.method || 'GET', headers: headers };
   if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
-  return fetch(SB_URL + path, init).then(function (res) {
+  return sbFetchWithTimeout(SB_URL + path, init).then(function (res) {
     if (res.status === 204) return { ok: res.ok, status: res.status, data: null };
     return res.json().catch(function () { return null; }).then(function (data) {
       return { ok: res.ok, status: res.status, data: data };
@@ -82,7 +98,7 @@ function sbRest(method, path, token, body, prefer) {
   if (prefer) headers['Prefer'] = prefer;
   var init = { method: method, headers: headers };
   if (body !== undefined) init.body = JSON.stringify(body);
-  return fetch(SB_URL + '/rest/v1/' + path, init).then(function (res) {
+  return sbFetchWithTimeout(SB_URL + '/rest/v1/' + path, init).then(function (res) {
     if (res.status === 204) return { ok: res.ok, status: res.status, data: null };
     return res.json().catch(function () { return null; }).then(function (data) {
       return { ok: res.ok, status: res.status, data: data };
@@ -114,6 +130,7 @@ function sbStoreSession(d) {
   try {
     var s = { access_token: d.access_token, refresh_token: d.refresh_token || '', expires_at: Date.now() + ((d.expires_in || 3600) * 1000), user_id: (d.user && d.user.id) || '', email: (d.user && d.user.email) || '' };
     localStorage.setItem(SB_SESSION_KEY, JSON.stringify(s));
+    sbSessionExpired = false; // v34 (P1-3): a fresh session is never expired
     return s;
   } catch (e) { return null; }
 }
@@ -127,7 +144,14 @@ function sbGetValidToken() {
   if (s.expires_at && s.expires_at - Date.now() > 60000) return Promise.resolve(s.access_token);
   if (!s.refresh_token) return Promise.resolve(null);
   return sbRefresh(s.refresh_token).then(function (r) {
-    if (!r.ok || !r.data || !r.data.access_token) { sbClearSession(); return null; }
+    if (!r.ok || !r.data || !r.data.access_token) {
+      // v34 (P1-3): the SERVER rejected the refresh (expired / revoked
+      // token). That is not "offline" — the user must log in again.
+      // A network failure lands in the .catch below and stays offline.
+      sbSessionExpired = true;
+      sbClearSession();
+      return null;
+    }
     var s2 = sbStoreSession(r.data);
     return s2 ? s2.access_token : null;
   }).catch(function () { return null; });
@@ -141,6 +165,8 @@ function sbLoadStatus() {
 function sbStatusText() {
   var st = sbLoadStatus();
   if (!st) return t('sbStatusPending');
+  if (st.state === 'session-expired') return t('sbStatusSessionExpired'); // v34 (P1-3)
+  if (st.state === 'not-linked') return t('sbStatusNotLinked'); // v34 (P0-1)
   if (st.state === 'synced') return t('sbStatusSynced') + (st.at ? ' ' + st.at.slice(0, 10) : '');
   if (st.state === 'uploading') return t('sbStatusUploading');
   if (st.state === 'syncing') return t('sbStatusSyncing');
@@ -251,7 +277,103 @@ function sbLocalLogin(id, pw, err) {
   }
   err.classList.add('hidden');
   loginAs(a);
+  // v34 (P0-1): a school account that never got its server account (the
+  // v27 signup was best-effort) is linked now, in the background, with
+  // the password that just unlocked the local account.
+  if (a.role === 'school' && !a.sbUid && sbIsOnline()) {
+    sbLinkServerAccount(a, pw).then(function (r) {
+      if (r.done) { toast(t('sbLinkDone')); renderApp(); }
+    });
+  }
   return true;
+}
+function sbLinkServerAccount(account, pw) {
+  // v34 (P0-1): link a local school account to its server account. The
+  // v27 signup was best-effort, so a failure (offline, GoTrue 429) left
+  // the account local-only forever with re-signup blocked by the local
+  // email-taken check. This retries the signup on login and from
+  // Settings → Server Backup. A 429 backs off 5 minutes and is never
+  // spammed. If the server says the email is already registered
+  // (created on another device), sign in instead of signing up.
+  if (!account || account.role !== 'school' || account.sbUid) return Promise.resolve({ done: false, reason: 'already-linked' });
+  if (!sbIsOnline()) return Promise.resolve({ done: false, reason: 'offline' });
+  var retryAt = 0;
+  try { retryAt = parseInt(localStorage.getItem(SB_LINK_RETRY_KEY) || '0', 10) || 0; } catch (e) {}
+  if (Date.now() < retryAt) return Promise.resolve({ done: false, reason: 'backoff' });
+  var email = (account.email || '').trim().toLowerCase();
+  if (!email || !pw) return Promise.resolve({ done: false, reason: 'no-credentials' });
+  function saveLinked(uid) {
+    account.sbUid = uid;
+    var l2 = loadAccounts();
+    for (var i = 0; i < l2.length; i++) if (l2[i].email === email) l2[i] = account;
+    saveAccounts(l2);
+    if (state.user && state.user.email === email) state.user.sbUid = uid;
+  }
+  return sbSignUp(email, pw, account.school, account.name).then(function (res) {
+    if (res.status === 429) {
+      try { localStorage.setItem(SB_LINK_RETRY_KEY, String(Date.now() + 5 * 60 * 1000)); } catch (e2) {}
+      sbSetStatus('not-linked', 'rate-limited');
+      return { done: false, reason: 'rate-limited' };
+    }
+    if (res.ok && res.data && res.data.user && res.data.user.id) {
+      saveLinked(res.data.user.id);
+      if (res.data.access_token) {
+        sbStoreSession(res.data); state.sb = { uid: res.data.user.id, email: email };
+        sbSetStatus('synced');
+      } else {
+        sbSetStatus('pending');
+      }
+      return { done: true, reason: 'signed-up' };
+    }
+    if (res.status === 422 || res.status === 400) {
+      return sbSignIn(email, pw).then(function (r2) {
+        if (r2.ok && r2.data && r2.data.access_token && r2.data.user && r2.data.user.id) {
+          saveLinked(r2.data.user.id);
+          sbStoreSession(r2.data); state.sb = { uid: r2.data.user.id, email: email };
+          sbSetStatus('synced');
+          return { done: true, reason: 'signed-in' };
+        }
+        sbSetStatus('not-linked', 'sign-in-failed');
+        return { done: false, reason: 'sign-in-failed' };
+      });
+    }
+    sbSetStatus('not-linked', 'signup-failed');
+    return { done: false, reason: 'signup-failed' };
+  }).catch(function () {
+    sbSetStatus('not-linked', 'offline');
+    return { done: false, reason: 'offline' };
+  });
+}
+function openLinkServerModal() {
+  openModal('<h3>' + t('sbLinkPwTitle') + '</h3><p class="card-sub">' + t('sbStatusNotLinked') + '</p>' +
+    '<form onsubmit="return submitLinkServer(event)">' +
+    '<div class="field"><label>' + t('loginPassword') + '</label><input id="linkPwInput" type="password" autocomplete="current-password"></div>' +
+    '<div id="linkPwErr" class="err hidden"></div>' +
+    '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    '<button class="btn" type="submit">' + t('sbLinkServer') + '</button></div></form>');
+  $('linkPwInput').focus();
+}
+function submitLinkServer(e) {
+  e.preventDefault();
+  var pw = $('linkPwInput') ? $('linkPwInput').value : '';
+  var err = $('linkPwErr');
+  if (!pw) { err.textContent = t('tFillAll'); err.classList.remove('hidden'); return false; }
+  // The server account is created with THIS password — it must be the
+  // account's own password, not a typo, or the two accounts would diverge.
+  if (!state.user || hashPw(pw) !== state.user.pwHash) {
+    err.textContent = t('tInvalidCreds');
+    err.classList.remove('hidden');
+    return false;
+  }
+  err.classList.add('hidden');
+  closeModal();
+  sbLinkServerAccount(state.user, pw).then(function (r) {
+    if (r.done) toast(t('sbLinkDone'));
+    else if (r.reason === 'rate-limited') toast(t('sbTooMany'));
+    else toast(t('sbLinkFailed'));
+    renderApp();
+  });
+  return false;
 }
 function showRecoverForm() {
   switchAuth('login');
@@ -474,6 +596,18 @@ function sbEnsureServerSchool(account, sbUid, token, d) {
       admission_fee: e.admissionFee || 0, caution_money: e.cautionMoney || 0,
       annual_charges: e.annualCharges || 0, transport_fee: e.transportFee || 0 };
     return sbRest('POST', 'ss_schools', token, row, 'return=representation').then(function (r2) {
+      if (r2.status === 409) {
+        // v34 (P1-11): another device created the school row a moment
+        // ago — the unique index on ss_schools(owner_id) rejected the
+        // second insert. Re-read the existing row instead of failing.
+        return sbRest('GET', 'ss_schools?select=id&owner_id=eq.' + encodeURIComponent(sbUid), token).then(function (r3) {
+          if (r3.ok && Array.isArray(r3.data) && r3.data.length) {
+            sbSaveServerSchool(account.uid, r3.data[0].id);
+            return r3.data[0].id;
+          }
+          throw new Error('create-school');
+        });
+      }
       if (!r2.ok || !Array.isArray(r2.data) || !r2.data.length) throw new Error('create-school');
       sbSaveServerSchool(account.uid, r2.data[0].id);
       return r2.data[0].id;
@@ -691,7 +825,7 @@ function sbRetryMigration() {
   if (!state.sb || !state.sb.uid) { toast(t('sbStatusPending')); return; }
   toast(t('sbStatusUploading'));
   sbGetValidToken().then(function (tok) {
-    if (!tok) { sbSetStatus('offline'); toast(t('sbStatusOffline')); renderApp(); return; }
+    if (!tok) { sbSetStatus(sbSessionExpired ? 'session-expired' : 'offline'); toast(t(sbSessionExpired ? 'sbStatusSessionExpired' : 'sbStatusOffline')); renderApp(); return; }
     return sbMaybeMigrate(state.user, state.sb.uid, tok, true).then(function (r) {
       toast(r.done ? t('sbBackupDone') : t('sbBackupFailed'));
       renderApp();
@@ -758,11 +892,9 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     d.receiptCounter = schoolRow.receipt_counter || 1;
     if (account) sbSaveServerSchool(account.uid, sid);
   }
-  // Fee structure only when the server has one — otherwise the local
-  // defaults stay.
-  if ((byTable.ss_fee_structure || []).length) {
-    d.feeStructure = byTable.ss_fee_structure.map(function (row) { return { cls: row.cls || '', type: row.fee_type || 'Tuition', amount: row.amount || 0 }; });
-  }
+  // Fee structure is merged below (after the snapshot helpers) — a
+  // locally-added row that has not uploaded yet must survive the pull
+  // (v34, P1-1); the old wholesale replacement wiped it.
   // v33: MERGE, never replace wholesale. A local row that has NOT
   // reached the server yet — not on the server AND not in the last
   // synced snapshot — is KEPT, and the caller keeps it out of the
@@ -790,6 +922,25 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     });
     return merged;
   }
+  // Fee structure merge (v34, P1-1): the server's rows win for a
+  // class/type it has, but a locally-added row that has not uploaded yet
+  // (not on the server AND not in the snapshot) is kept. A row that IS
+  // in the snapshot but absent on the server was deleted elsewhere and
+  // still drops. When the server has no structure at all, the local
+  // defaults stay.
+  if ((byTable.ss_fee_structure || []).length) {
+    var srvFs = byTable.ss_fee_structure.map(function (row) { return { cls: row.cls || '', type: row.fee_type || 'Tuition', amount: row.amount || 0 }; });
+    var srvFsKeys = {};
+    srvFs.forEach(function (f) { srvFsKeys[(f.cls || '') + '|' + (f.type || 'Tuition')] = true; });
+    var mergedFs = srvFs.slice();
+    (d.feeStructure || []).forEach(function (f) {
+      var k = (f.cls || '') + '|' + (f.type || 'Tuition');
+      if (srvFsKeys[k] || snapHas('ss_fee_structure', k)) return;
+      mergedFs.push(f);
+      keep('ss_fee_structure', k);
+    });
+    d.feeStructure = mergedFs;
+  }
   // Students first: everything else maps through their server ids.
   var stuMap = {}, examMap = {};
   var oldStudents = d.students || [];
@@ -798,7 +949,11 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   d.exams = mergeById('ss_exams', d.exams || [], byTable.ss_exams || [], function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; examMap[row.id] = e.id; return e; });
   d.feeRecords = mergeById('ss_fee_records', d.feeRecords || [], byTable.ss_fee_records || [], function (row) { return sbRowToFeeRecord(row, stuMap); });
   // Attendance: server rows fold back into the 'date|cls' map, then
-  // local attendance for kept (not-yet-uploaded) students is kept.
+  // local attendance that has NOT uploaded yet is kept — for ANY
+  // student, not just kept students (v34, P1-1: an offline mark for an
+  // already-synced student was wiped because the old code kept only
+  // marks of kept students). A mark that IS in the snapshot but absent
+  // on the server was deleted elsewhere and still drops.
   var oldAtt = d.attendance || {};
   d.attendance = {};
   (byTable.ss_attendance || []).forEach(function (row) {
@@ -808,12 +963,9 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     if (!d.attendance[key]) d.attendance[key] = {};
     d.attendance[key][localId] = row.status || 'Present';
   });
-  var keptStu = {};
-  Object.keys(kept.ss_students || {}).forEach(function (id) { keptStu[id] = true; });
   Object.keys(oldAtt).forEach(function (key) {
     var recs = oldAtt[key] || {};
     Object.keys(recs).forEach(function (sid) {
-      if (!keptStu[sid]) return;
       var parts = key.split('|');
       var snapKey = parts[0] + '|' + parts[1] + '|' + sid;
       if (snapHas('ss_attendance', snapKey)) return;
@@ -1457,8 +1609,11 @@ function sbSyncFlushWithToken(act, tok) {
       chain = chain.then(function () {
         // The row vanished locally since it was queued and its table
         // never propagates deletes: drop the stale entry (the next pull
-        // restores the row from the server).
-        if (entry.op === 'upsert' && !sbSyncLocalRow(entry)) { sbOutboxRemove(act.uid, entry); return; }
+        // restores the row from the server). v34 (P1-1): the entry's own
+        // queued copy is good enough — a pull that wiped the local row
+        // (e.g. an upload failure) must NOT also drop the queued entry
+        // that would have re-uploaded it.
+        if (entry.op === 'upsert' && !sbSyncLocalRow(entry) && !entry.row) { sbOutboxRemove(act.uid, entry); return; }
         currentEntry = entry;
         return sbSyncPushEntry(entry, tok, schoolId, maps, act.uid).then(function (r) {
           if (r.pushed) {
@@ -1514,7 +1669,7 @@ function sbSyncFlushNow() {
   if (!sbIsOnline()) { sbSetStatus('pending'); return Promise.resolve({ done: false, reason: 'offline' }); }
   return sbSyncWithLock(function () {
     return sbGetValidToken().then(function (tok) {
-      if (!tok) { sbSetStatus('offline'); return { done: false, reason: 'no-token' }; }
+      if (!tok) { sbSetStatus(sbSessionExpired ? 'session-expired' : 'offline'); return { done: false, reason: 'no-token' }; }
       return sbSyncFlushWithToken(act, tok);
     });
   });
@@ -1765,31 +1920,59 @@ function sbSyncRepairNumbers(account, sbUid, token) {
     serverByLocal = {};
     taken.students.forEach(function (r) { if (r.local_id) serverByLocal[r.local_id] = r; });
     snap = sbSnapLoad(act.account.uid);
-    var chain = Promise.resolve();
+    // v34 (P1-12): heal the counters BEFORE minting, not after. When the
+    // live counter sits far behind the highest used number, the old order
+    // burned the 8-attempt mint cap just walking past taken numbers, so a
+    // row could wait several cycles for a number. Healing first means the
+    // first RPC call returns the first free number. A failed heal never
+    // blocks minting (the loop still walks past taken numbers).
+    var highestAdm = taken.maxAdm, highestRcp = taken.maxRcp;
     (d.students || []).forEach(function (s) {
-      chain = chain.then(function () {
-        if (serverByLocal[s.id]) return; // already on the server: its numbers are the server's
-        // Deleted elsewhere (in the snapshot but absent on the server):
-        // the pull drops this row — never spend a server number on it.
-        if (snap.ss_students && snap.ss_students[s.id] !== undefined) return;
-        var collides = (s.admissionNo && taken.adm[s.admissionNo] && taken.adm[s.admissionNo] !== s.id)
-          || (s.enr && taken.enr[s.enr] && taken.enr[s.enr] !== s.id);
-        if (!collides && !s.numPending && s.admissionNo) return;
-        return sbMintAdmNo(token, schoolId, taken).then(function (nums) {
-          s.admissionNo = nums.admissionNo;
-          s.enr = nums.enr;
-          if (s.numPending) { delete s.numPending; minted++; }
-          else repaired++;
-          changed = true;
-          // Keep denormalised copies in step: fee records and receipts
-          // carry the student's admission number.
-          (d.feeRecords || []).forEach(function (r) { if (r.studentId === s.id && r.admissionNo) r.admissionNo = nums.admissionNo; });
-          (d.receipts || []).forEach(function (rc) { if (rc.studentId === s.id && rc.admissionNo) rc.admissionNo = nums.admissionNo; });
-          sbOutboxAdd(act.uid, { table: 'ss_students', key: s.id, op: 'upsert', row: JSON.parse(JSON.stringify(s)), at: new Date().toISOString() });
+      // A row the pull is about to drop (deleted elsewhere) does not
+      // count as used — its number is free again.
+      if (snap.ss_students && snap.ss_students[s.id] !== undefined && !serverByLocal[s.id]) return;
+      highestAdm = Math.max(highestAdm, sbNumSeq(s.admissionNo));
+    });
+    (d.receipts || []).forEach(function (rc) {
+      if (rc.receiptNo && snap.ss_receipts && snap.ss_receipts[rc.receiptNo] !== undefined && !taken.rcp[rc.receiptNo]) return;
+      highestRcp = Math.max(highestRcp, sbNumSeq(rc.receiptNo));
+    });
+    var patch = {};
+    if (taken.admCounter <= highestAdm) patch.adm_counter = highestAdm + 1;
+    if (taken.receiptCounter <= highestRcp) patch.receipt_counter = highestRcp + 1;
+    var healP = Promise.resolve();
+    if (Object.keys(patch).length) {
+      healP = sbRest('PATCH', 'ss_schools?id=eq.' + encodeURIComponent(schoolId), token, patch, 'return=minimal').then(function (r) {
+        if (r.ok) { if (patch.adm_counter) taken.admCounter = patch.adm_counter; if (patch.receipt_counter) taken.receiptCounter = patch.receipt_counter; }
+      }).catch(function () {});
+    }
+    return healP.then(function () {
+      var chain = Promise.resolve();
+      (d.students || []).forEach(function (s) {
+        chain = chain.then(function () {
+          if (serverByLocal[s.id]) return; // already on the server: its numbers are the server's
+          // Deleted elsewhere (in the snapshot but absent on the server):
+          // the pull drops this row — never spend a server number on it.
+          if (snap.ss_students && snap.ss_students[s.id] !== undefined) return;
+          var collides = (s.admissionNo && taken.adm[s.admissionNo] && taken.adm[s.admissionNo] !== s.id)
+            || (s.enr && taken.enr[s.enr] && taken.enr[s.enr] !== s.id);
+          if (!collides && !s.numPending && s.admissionNo) return;
+          return sbMintAdmNo(token, schoolId, taken).then(function (nums) {
+            s.admissionNo = nums.admissionNo;
+            s.enr = nums.enr;
+            if (s.numPending) { delete s.numPending; minted++; }
+            else repaired++;
+            changed = true;
+            // Keep denormalised copies in step: fee records and receipts
+            // carry the student's admission number.
+            (d.feeRecords || []).forEach(function (r) { if (r.studentId === s.id && r.admissionNo) r.admissionNo = nums.admissionNo; });
+            (d.receipts || []).forEach(function (rc) { if (rc.studentId === s.id && rc.admissionNo) rc.admissionNo = nums.admissionNo; });
+            sbOutboxAdd(act.uid, { table: 'ss_students', key: s.id, op: 'upsert', row: JSON.parse(JSON.stringify(s)), at: new Date().toISOString() });
+          });
         });
       });
+      return chain;
     });
-    return chain;
   }).then(function () {
     var chain2 = Promise.resolve();
     var maps = sbSyncBuildMaps(d, act.uid);
@@ -1823,32 +2006,9 @@ function sbSyncRepairNumbers(account, sbUid, token) {
     });
     return chain2;
   }).then(function () {
-    // Counter heal: the counters must sit past the highest used number.
-    // The mint loop already advanced them past every number it minted,
-    // but a locally-minted number uploaded earlier can still sit above
-    // them — bump to max(current, highest + 1), never backwards. The
-    // patch value is always >= the live counter (each RPC call advanced
-    // it by one and the accepted number is the last one returned), so
-    // this can never move a counter down.
-    var highestAdm = taken.maxAdm, highestRcp = taken.maxRcp;
-    (d.students || []).forEach(function (s) {
-      // A row the pull is about to drop (deleted elsewhere) does not
-      // count as used — its number is free again.
-      if (snap.ss_students && snap.ss_students[s.id] !== undefined && !serverByLocal[s.id]) return;
-      highestAdm = Math.max(highestAdm, sbNumSeq(s.admissionNo));
-    });
-    (d.receipts || []).forEach(function (rc) {
-      if (rc.receiptNo && snap.ss_receipts && snap.ss_receipts[rc.receiptNo] !== undefined && !taken.rcp[rc.receiptNo]) return;
-      highestRcp = Math.max(highestRcp, sbNumSeq(rc.receiptNo));
-    });
-    var patch = {};
-    if (taken.admCounter <= highestAdm) patch.adm_counter = highestAdm + 1;
-    if (taken.receiptCounter <= highestRcp) patch.receipt_counter = highestRcp + 1;
-    if (!Object.keys(patch).length) return { done: true, repaired: repaired, minted: minted };
-    return sbRest('PATCH', 'ss_schools?id=eq.' + encodeURIComponent(schoolId), token, patch, 'return=minimal').then(function (r) {
-      if (!r.ok) throw new Error('patch-counters-' + (r.status || 'fail'));
-      return { done: true, repaired: repaired, minted: minted };
-    });
+    // v34 (P1-12): the counter heal moved BEFORE the mint chains above;
+    // this step just reports the pass result.
+    return { done: true, repaired: repaired, minted: minted };
   }).then(function (r) {
     if (changed) saveDB(d);
     return r;
@@ -1877,13 +2037,23 @@ function sbSyncCycleRun(account, sbUid, token) {
   sbSetStatus('syncing');
   var tokP = token ? Promise.resolve(token) : sbGetValidToken();
   return tokP.then(function (tok) {
-    if (!tok) { sbSetStatus('offline'); return { done: false, reason: 'no-token' }; }
+    if (!tok) { sbSetStatus(sbSessionExpired ? 'session-expired' : 'offline'); return { done: false, reason: 'no-token' }; } // v34 (P1-3)
     // v33: repair FIRST — re-number colliding rows and mint numbers
     // for offline-saved rows — so the upload pass below never hits a
     // unique-constraint failure on a number another device already owns.
     return sbSyncRepairNumbers(account, sbUid, tok).then(function () {
       return sbSyncUploadMissing(account, sbUid, tok);
-    }).then(function () {
+    }).then(function (up) {
+      if (!up.done) {
+        // v34 (P1-1): the upload failed — the local rows are not on the
+        // server yet. Skipping the pull keeps them safe (the v33 merge
+        // keeps students, but fee structure is replaced wholesale and
+        // attendance is rebuilt from server rows + kept-student cells
+        // only, so an offline mark for an already-synced student would
+        // still be wiped by a pull). Flush the outbox so queued work is
+        // not stuck behind the failed upload.
+        return sbSyncFlushWithToken(act, tok).then(function () { return { done: false, reason: 'upload-failed', detail: up.detail || up.reason || '' }; });
+      }
       return sbSyncPullRun(account, sbUid, tok, null);
     }).then(function (pull) {
       if (pull.reason === 'needs-migration') {
@@ -1900,6 +2070,7 @@ function sbSyncCycleRun(account, sbUid, token) {
         // A failed pull leaves the local mirror untouched; still flush
         // the outbox so offline work is not stuck behind a read error.
         if (pull.reason === 'no-server-school') return pull;
+        if (pull.reason === 'upload-failed') return pull; // v34 (P1-1): already flushed above
         return sbSyncFlushWithToken(act, tok).then(function () { return pull; });
       }
       return sbSyncFlushWithToken(act, tok).then(function (fl) {
@@ -1917,11 +2088,18 @@ function sbSyncCycleRun(account, sbUid, token) {
       // the outbox really is empty (a pull that succeeded while entries
       // are still queued must not claim to be synced).
       if (!sbOutboxLoad(sbUid).length) sbSetStatus('synced');
-    } else if (r.reason === 'no-server-school') {
-      // The only failure path where the flush never ran: do not leave
-      // the status stuck on 'syncing'. Other failures already had their
-      // status set by the flush (failed / pending / offline).
+    } else if (r.reason === 'no-server-school' || r.reason === 'upload-failed') {
+      // The only failure paths where the flush never ran (or the upload
+      // itself failed): do not leave the status stuck on 'syncing'.
+      // Other failures already had their status set by the flush
+      // (failed / pending / offline).
       sbSetStatus('failed', r.detail || '');
+    }
+    // v34 (P1-7/P1-8): retry queued support requests and admission
+    // applications once a cycle has run (they are fire-and-forget).
+    if (r.done || r.reason === 'upload-failed') {
+      try { sbFlushSupportQueue().catch(function () {}); } catch (e) {}
+      try { sbFlushAdmReqQueue().catch(function () {}); } catch (e) {}
     }
     return r;
   });
@@ -1954,6 +2132,36 @@ function sbSyncStart(account, sbUid, token) {
 // Public Apply form -> server (anon). MUST use return=minimal: anon has no
 // SELECT on ss_admission_requests, so asking for the row back fails with
 // 401 even though the insert itself succeeds (verified 9 Nov 2026).
+// v34 (P1-8): admission applications are retried, not fire-and-forget.
+// A failed or offline anon post is queued in localStorage and re-posted
+// on the next cycle / when the device comes back online. An application
+// leaves the queue only after the server confirms it.
+var SB_ADMREQ_PENDING_KEY = 'schoolSaathiAdmReqPending';
+function sbAdmReqPendingLoad() {
+  try { var r = localStorage.getItem(SB_ADMREQ_PENDING_KEY); var a = r ? JSON.parse(r) : []; return Array.isArray(a) ? a : []; } catch (e) { return []; }
+}
+function sbAdmReqPendingSave(list) { try { localStorage.setItem(SB_ADMREQ_PENDING_KEY, JSON.stringify(list)); } catch (e) {} }
+function sbAdmReqQueue(schoolId, req) {
+  var list = sbAdmReqPendingLoad();
+  if (!list.some(function (x) { return x.req && x.req.id === req.id; })) { list.push({ schoolId: schoolId, req: req }); sbAdmReqPendingSave(list); }
+}
+function sbFlushAdmReqQueue() {
+  var list = sbAdmReqPendingLoad();
+  if (!list.length || !sbIsOnline()) return Promise.resolve(0);
+  var sent = 0;
+  var chain = Promise.resolve();
+  list.slice().forEach(function (item) {
+    chain = chain.then(function () {
+      return sbPostAdmission(item.schoolId, item.req).then(function (r) {
+        if (r && r.ok) {
+          sent++;
+          sbAdmReqPendingSave(sbAdmReqPendingLoad().filter(function (x) { return !(x.req && x.req.id === item.req.id); }));
+        }
+      }).catch(function () {});
+    });
+  });
+  return chain.then(function () { return sent; });
+}
 function sbPostAdmission(serverSchoolId, req) {
   var body = { school_id: serverSchoolId, local_id: req.id, name: req.name, dob: sbNullIfEmpty(req.dob),
     gender: req.gender || '', class_apply: req.classApply, guardian_name: req.guardianName || '',
@@ -1967,20 +2175,54 @@ function sbPostAdmission(serverSchoolId, req) {
 // never shows a scary error — the request simply stays local until the
 // next successful login/backup. return=minimal so a missing SELECT on the
 // table can never fail the insert (same lesson as the anon Apply form).
+// v34 (P1-7): support requests are retried, not fire-and-forget. A
+// request that cannot reach the server is queued in localStorage and
+// re-posted on the next sync cycle (or when the device comes back
+// online). A request leaves the queue only after the server confirms it.
+var SB_SUPPORT_PENDING_KEY = 'schoolSaathiSupportPending';
+function sbSupportPendingLoad() {
+  try { var r = localStorage.getItem(SB_SUPPORT_PENDING_KEY); var a = r ? JSON.parse(r) : []; return Array.isArray(a) ? a : []; } catch (e) { return []; }
+}
+function sbSupportPendingSave(list) { try { localStorage.setItem(SB_SUPPORT_PENDING_KEY, JSON.stringify(list)); } catch (e) {} }
+function sbSupportQueue(req) {
+  var list = sbSupportPendingLoad();
+  if (!list.some(function (x) { return x.id === req.id; })) { list.push(req); sbSupportPendingSave(list); }
+}
+function sbFlushSupportQueue() {
+  var list = sbSupportPendingLoad();
+  if (!list.length) return Promise.resolve(0);
+  if (!state.user || state.user.role !== 'school' || !state.sb || !state.sb.uid || !sbIsOnline()) return Promise.resolve(0);
+  var sent = 0;
+  var chain = Promise.resolve();
+  list.slice().forEach(function (req) {
+    chain = chain.then(function () {
+      return sbPostSupportRequest(req).then(function (ok) {
+        if (!ok) return;
+        sent++;
+        sbSupportPendingSave(sbSupportPendingLoad().filter(function (x) { return x.id !== req.id; }));
+      });
+    });
+  });
+  return chain.then(function () { return sent; });
+}
 function sbPostSupportRequest(req) {
-  if (!state.user || state.user.role !== 'school' || !state.sb || !state.sb.uid) return;
-  sbGetValidToken().then(function (tok) {
-    if (!tok) return;
+  // Returns a promise of true when the request reached the server.
+  // A failure (offline, no session, no school row yet) resolves false —
+  // the caller queues it for the next cycle instead of dropping it.
+  if (!state.user || state.user.role !== 'school' || !state.sb || !state.sb.uid) return Promise.resolve(false);
+  return sbGetValidToken().then(function (tok) {
+    if (!tok) return false;
     var post = function (schoolId) {
-      if (!schoolId) return;
-      sbRest('POST', 'ss_support_requests', tok, { school_id: schoolId, local_id: req.id, name: req.name, message: req.message, status: 'Pending' }, 'return=minimal').catch(function () {});
+      if (!schoolId) return Promise.resolve(false);
+      return sbRest('POST', 'ss_support_requests', tok, { school_id: schoolId, local_id: req.id, name: req.name, message: req.message, status: 'Pending' }, 'return=minimal').then(function (r) { return !!r.ok; }).catch(function () { return false; });
     };
     var sid = sbServerSchoolMap()[state.user.uid];
-    if (sid) { post(sid); return; }
-    sbGetServerSchoolId(state.sb.uid, tok).then(function (row) {
-      if (row && row.id) { sbSaveServerSchool(state.user.uid, row.id); post(row.id); }
-    }).catch(function () {});
-  }).catch(function () {});
+    if (sid) return post(sid);
+    return sbGetServerSchoolId(state.sb.uid, tok).then(function (row) {
+      if (row && row.id) { sbSaveServerSchool(state.user.uid, row.id); return post(row.id); }
+      return false;
+    }).catch(function () { return false; });
+  }).catch(function () { return false; });
 }
 
 
@@ -2615,6 +2857,11 @@ var SESSIONS = ['2025–26', '2024–25', '2026–27'];
 var SECTIONS = ['A', 'B', 'C'];
 var STU_PAGE_SIZE = 10;
 var STU_STATUSES = ['Active', 'Inactive', 'Draft', 'Cancelled'];
+// v34 (P0-3/P1-10): the roster rule — dues, attendance and marks are only
+// for enrolled students. Draft (admission not finished) and Cancelled
+// never get dues and never appear on a roster. Inactive students DO keep
+// dues (they are still enrolled; only their attendance/marks stop).
+function isEnrolledStudent(s) { var stt = (s && s.status) || 'Active'; return stt === 'Active' || stt === 'Inactive'; }
 function classParts() {
   var out = [];
   CLASSES.forEach(function (c) { var p = c.split('-')[0]; if (out.indexOf(p) === -1) out.push(p); });
@@ -3238,7 +3485,7 @@ var I18N = {
     loginWelcome: 'Log in or sign up<br>to continue', loginEmail: 'Email', loginPassword: 'Password', loginEmailPh: 'you@school.edu.in', loginPwPh: '••••••••', loginBtn: 'Login', authLogin: 'Log In', authSignup: 'Sign Up', authNote: 'One account per school. When you log in with your server account, your data syncs across devices automatically — and works offline too.', suSchool: 'School Name', suYourName: 'Your Name', suEmail: 'Email', suPw: 'Password', suPw2: 'Confirm Password', suBtn: 'Create Account', loginOr: 'Or continue with', demoTitle: '— One-tap demo login —', loginBack: '← Back to website',
     schoolDashboard: 'School Admin Dashboard', studentDashboard: 'Student Dashboard',
     confirmTitle: 'Confirm', cancel: 'Cancel', confirmYes: 'Yes, continue', saveBtn: 'Save',
-    addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', resetNameTitle: 'Type the school name to confirm', resetNameHint: 'This is the last step before everything is deleted. Type the exact school name.', resetNameLabel: 'School name', resetNameWrong: 'That name does not match — nothing was reset.', resetNameGo: 'Confirm Reset', publishBtn: 'Publish', assignHw: 'Assign Homework', saveStudentBtn: 'Save Student',
+    addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmTitle: 'Reset — choose what to delete', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', resetNameTitle: 'Type the school name to confirm', resetNameHint: 'This is the last step before everything is deleted. Type the exact school name.', resetNameLabel: 'School name', resetNameWrong: 'That name does not match — nothing was reset.', resetNameGo: 'Confirm Reset', publishBtn: 'Publish', assignHw: 'Assign Homework', saveStudentBtn: 'Save Student',
     attOverview: 'Attendance Overview', todayAtt: 'Today\'s Attendance', feeTrend: 'Fee Collection Trend', feeTrendSub: 'Apr – Aug (Collected vs Pending)', feeTrendSub2: 'Apr to Aug (Collected vs Pending)', recentAct: 'Recent Activities', activityLog: 'Activity Log', actLogSub: 'Full audit history — newest first.', thDetails: 'Details', actBy: 'By', supYourName: 'Your name', quickLinks: 'Quick Links', jumpTask: 'Jump to a task', enterMarks: 'Enter Marks', myHomework: 'My Homework', noticesH: 'Notices', latestNotices: 'Latest from school', contactSub: 'We reply within one working day', studentsReport: 'Students Report', feesReport: 'Fees Report', attReport: 'Attendance Report', thName: 'Name', thClass: 'Class', thRoll: 'Roll', thGuardian: 'Guardian', thPhone: 'Phone', thAtt: 'Att.', thFee: 'Fee', thAction: 'Action', thStudent: 'Student', thMonth: 'Month', thAmount: 'Amount', thDate: 'Date', thStatus: 'Status', thMarks: 'Marks', thResult: 'Result', thRole: 'Role',
     subReports: 'Download CSV reports', subStudents: 'St. Xavier School, Patna', subAttendance: 'Mark & view attendance', subFees: 'Fee collection & pending dues', subExams: 'Exams & marks entry', subHomework: 'Assign & track homework', subNotices: 'Notice board',
     fSchoolName: 'School Name', fCity: 'City', fStudentName: 'Student Name', fClass: 'Class', fRoll: 'Roll No', fGuardian: 'Guardian', fPhone: 'Phone', fTitle: 'Title', fSubject: 'Subject', fDue: 'Due Date', fMessage: 'Message', fPrincipal: 'Principal / Admin', fEmail: 'Email', fAddress: 'Address', fSession: 'Academic Session',
@@ -3254,7 +3501,7 @@ var I18N = {
     idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.',
     authParent: 'Parent', parentAdmNo: 'Admission Number', parentPinLabel: 'Parent PIN', parentLoginBtn: 'Login as Parent', parentNote: 'Parent access on this device uses a PIN set by the school. Real password accounts arrive with the server version.', parentSub: 'Parent', parentDashboard: 'My Child', tInvalidParent: 'Invalid admission number or PIN.', tParentScope: 'You can only view your own child\'s profile.', parentAccess: 'Parent Access', parentPinNow: 'Current Parent PIN', parentPinNone: 'No PIN set — parent login unavailable for this student.', parentPinNew: 'New PIN (4–6 digits)', parentPinSetBtn: 'Set PIN', parentPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Parent PIN set.', tPinCleared: 'Parent PIN cleared.', tPinAuto: 'Default PIN is the last 4 digits of the parent\'s mobile.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
     collectFeeBtn: 'Collect Fee', rcptTitle: 'FEE RECEIPT', rcptReceiptNo: 'Receipt No', rcptDate: 'Date', rcptAdmNo: 'Adm No', rcptSession: 'Session', rcptName: 'Name', rcptClass: 'Class', rcptInstallment: 'Installment', rcptCounter: 'Counter No', rcptSlNo: 'Sl.No', rcptDesc: 'Description', rcptDue: 'Due', rcptCon: 'Con', rcptPaid: 'Paid', rcptAdmissionFee: 'Admission Fee', rcptTuitionFee: 'Tuition Fee', rcptCaution: 'Caution Money', rcptAnnual: 'Annual Charges', rcptBusFee: 'Bus Fee', rcptDues: 'Dues', rcptPayModeTitle: 'PAY MODE INFORMATION', rcptPayMode: 'Pay Mode', rcptBank: 'Bank', rcptNumber: 'Number', rcptTotal: 'Total', rcptTotalWords: 'Total in Words', rcptComputerGen: 'This is a computer generated Receipt. Does not required signature.', rcptParentCopy: 'PARENT COPY', rcptCollectorSign: 'Collector\'s Signature', rcptIncludeBus: 'Include Bus/Transport', rcptOtherFees: 'Other Fees', rcptAnnualHint: 'One-time and annual amounts used on the Collect Fee receipt. Set 0 to hide a row.', payModeCash: 'Cash', payModeCheque: 'Cheque', payModeUpi: 'UPI', payModeCard: 'Card', payModeBank: 'Bank Transfer', tFeeCollected: 'Fee collected.', tCollectZero: 'Nothing to collect — enter a Paid amount.', tCollectSaved: 'Fee collected — Receipt ', tCollectNotActive: 'This student is not active — fee cannot be collected.', rcptReceipts: 'Receipts', rcptView: 'View', rcptPrint: 'Print / Save PDF', rcptCollectAgain: 'Collect Again', rcptNoReceipts: 'No receipts yet for this student.', rcptDraft: 'Draft — not saved yet', rcptCollectSave: 'Collect & Save', rcptNoLines: 'Nothing to collect for this period — set the fee amounts in Fee Structure first.',
-    sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.', sbStatusSyncing: 'Syncing with the server…', sbStatusPendingSync: 'Offline — changes will sync when you are back online.', sbSyncDone: 'Synced with the server.', sbSyncFailed: 'Sync did not finish — it will retry on your next login.', sbSyncOffline: 'Offline — your changes are saved here and will sync later.', sbSyncConflict: 'Server had a newer copy — kept the server version.', sbNumPending: 'Admission saved. The admission number will be assigned when you are back online.', sbNumPendingReceipt: 'Fee saved. The receipt number will be assigned when you are back online.'
+    sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.', sbStatusSyncing: 'Syncing with the server…', sbStatusPendingSync: 'Offline — changes will sync when you are back online.', sbSyncDone: 'Synced with the server.', sbSyncFailed: 'Sync did not finish — it will retry on your next login.', sbSyncOffline: 'Offline — your changes are saved here and will sync later.', sbSyncConflict: 'Server had a newer copy — kept the server version.', sbNumPending: 'Admission saved. The admission number will be assigned when you are back online.', sbNumPendingReceipt: 'Fee saved. The receipt number will be assigned when you are back online.', sbStatusSessionExpired: 'Session expired — please log in again.', sbStatusNotLinked: 'Not linked to the server yet — it will link when you log in.', sbLinkServer: 'Link to Server', sbLinkDone: 'Server account linked.', sbLinkFailed: 'Could not link the server account — check your connection and try again.', sbLinkPwTitle: 'Link the server account', sbNumAssigning: 'Assigning number…', tWrongPasswordServer: 'Wrong password for the server account.', tCollectCapped: 'The paid amount was more than the due — only the due amount was taken.', resetPwHintServer: 'This deletes the data on THIS device only. The server copy will come back on the next sync unless you also wipe the server.', resetConfirmMsgServer: 'Delete this device’s data only? The server copy will return on the next sync — choose “Delete on server too” to remove it everywhere.', resetDeviceOnly: 'This device only', resetWipeServerBtn: 'Delete on server too', resetWipeServerDone: 'Server data deleted.', resetWipeServerFailed: 'Could not delete the server data — nothing was reset. Check your connection and try again.', supportQueued: 'Support request saved — it will be sent when you are back online.', admReqQueued: 'Application saved — it will be sent when you are back online.', admReqLoadingSchools: 'Loading schools…', attNotMarked: 'Not marked'
   },
   hi: {
     dashboard: 'डैशबोर्ड', settings: 'सेटिंग्स', reports: 'रिपोर्ट', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -3262,7 +3509,7 @@ var I18N = {
     loginWelcome: 'लॉग इन करें या साइन अप करें<br>जारी रखने के लिए', loginEmail: 'ईमेल', loginPassword: 'पासवर्ड', loginEmailPh: 'आप@school.edu.in', loginPwPh: '••••••••', loginBtn: 'लॉगिन', authLogin: 'लॉग इन', authSignup: 'साइन अप', authNote: 'एक स्कूल, एक अकाउंट। सर्वर अकाउंट से लॉग इन करने पर आपका डेटा अपने आप सभी डिवाइस पर सिंक होता है — और ऑफ़लाइन भी काम करता है।', suSchool: 'स्कूल का नाम', suYourName: 'आपका नाम', suEmail: 'ईमेल', suPw: 'पासवर्ड', suPw2: 'पासवर्ड दोबारा डालें', suBtn: 'अकाउंट बनाएँ', loginOr: 'या जारी रखें', demoTitle: '— एक टैप में डेमो लॉगिन —', loginBack: '← वेबसाइट पर वापस',
     schoolDashboard: 'स्कूल एडमिन डैशबोर्ड', studentDashboard: 'छात्र डैशबोर्ड',
     confirmTitle: 'पुष्टि करें', cancel: 'रद्द करें', confirmYes: 'हाँ, जारी रखें', saveBtn: 'सहेजें',
-    addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', resetNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', resetNameHint: 'सब कुछ मिटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', resetNameLabel: 'स्कूल का नाम', resetNameWrong: 'यह नाम मेल नहीं खाता — कुछ भी रीसेट नहीं हुआ।', resetNameGo: 'रीसेट की पुष्टि करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveStudentBtn: 'छात्र सहेजें',
+    addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmTitle: 'रीसेट — क्या मिटाना है चुनें', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', resetNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', resetNameHint: 'सब कुछ मिटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', resetNameLabel: 'स्कूल का नाम', resetNameWrong: 'यह नाम मेल नहीं खाता — कुछ भी रीसेट नहीं हुआ।', resetNameGo: 'रीसेट की पुष्टि करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveStudentBtn: 'छात्र सहेजें',
     attOverview: 'उपस्थिति अवलोकन', todayAtt: 'आज की उपस्थिति', feeTrend: 'शुल्क संग्रह प्रवृत्ति', feeTrendSub: 'अप्रैल – अगस्त (संग्रह बनाम बकाया)', feeTrendSub2: 'अप्रैल से अगस्त (संग्रह बनाम बकाया)', recentAct: 'हाल की गतिविधियाँ', activityLog: 'गतिविधि लॉग', actLogSub: 'पूरी ऑडिट हिस्ट्री — नई पहले।', thDetails: 'विवरण', actBy: 'द्वारा', supYourName: 'आपका नाम', quickLinks: 'त्वरित लिंक', jumpTask: 'किसी कार्य पर जाएँ', enterMarks: 'अंक भरें', myHomework: 'मेरा होमवर्क', noticesH: 'नोटिस', latestNotices: 'स्कूल से नवीनतम', contactSub: 'हम एक कार्य दिवस के भीतर जवाब देते हैं', studentsReport: 'छात्र रिपोर्ट', feesReport: 'शुल्क रिपोर्ट', attReport: 'उपस्थिति रिपोर्ट', thName: 'नाम', thClass: 'कक्षा', thRoll: 'रोल', thGuardian: 'अभिभावक', thPhone: 'फ़ोन', thAtt: 'उप.', thFee: 'शुल्क', thAction: 'कार्रवाई', thStudent: 'छात्र', thMonth: 'महीना', thAmount: 'राशि', thDate: 'तारीख', thStatus: 'स्थिति', thMarks: 'अंक', thResult: 'परिणाम', thRole: 'भूमिका',
     subReports: 'CSV रिपोर्ट डाउनलोड करें', subStudents: 'सेंट ज़ेवियर स्कूल, पटना', subAttendance: 'उपस्थिति दर्ज करें और देखें', subFees: 'शुल्क संग्रह और बकाया', subExams: 'परीक्षा और अंक प्रविष्टि', subHomework: 'होमवर्क सौंपें और देखें', subNotices: 'नोटिस बोर्ड',
     fSchoolName: 'स्कूल का नाम', fCity: 'शहर', fStudentName: 'छात्र का नाम', fClass: 'कक्षा', fRoll: 'रोल नंबर', fGuardian: 'अभिभावक', fPhone: 'फ़ोन', fTitle: 'शीर्षक', fSubject: 'विषय', fDue: 'देय तारीख', fMessage: 'संदेश', fPrincipal: 'प्रधानाचार्य / एडमिन', fEmail: 'ईमेल', fAddress: 'पता', fSession: 'शैक्षणिक सत्र',
@@ -3278,7 +3525,7 @@ var I18N = {
     idcPreview: 'ID कार्ड पूर्वावलोकन', idcPrint: 'छापें', idcPrintCards: 'ID कार्ड छापें', idcSelectAll: 'सभी चुनें', idcClearSel: 'चयन हटाएँ', idcReady: 'ID कार्ड छपाई के लिए तैयार', idcEmergency: 'आपातकालीन संपर्क', idcReturn: 'मिले तो कृपया लौटाएँ', idcNoQr: 'QR कोड नहीं बन सका।',
     authParent: 'अभिभावक', parentAdmNo: 'प्रवेश संख्या', parentPinLabel: 'अभिभावक PIN', parentLoginBtn: 'अभिभावक के रूप में लॉगिन करें', parentNote: 'इस डिवाइस पर अभिभावक लॉगिन स्कूल द्वारा दिए गए PIN से होता है। सर्वर संस्करण में असली पासवर्ड अकाउंट आएँगे।', parentSub: 'अभिभावक', parentDashboard: 'मेरा बच्चा', tInvalidParent: 'प्रवेश संख्या या PIN गलत है।', tParentScope: 'आप केवल अपने बच्चे की प्रोफ़ाइल देख सकते हैं।', parentAccess: 'अभिभावक पहुँच', parentPinNow: 'वर्तमान अभिभावक PIN', parentPinNone: 'कोई PIN नहीं है — इस छात्र के लिए अभिभावक लॉगिन उपलब्ध नहीं है।', parentPinNew: 'नया PIN (4–6 अंक)', parentPinSetBtn: 'PIN सेट करें', parentPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'अभिभावक PIN सेट हो गया।', tPinCleared: 'अभिभावक PIN हटा दिया गया।', tPinAuto: 'डिफ़ॉल्ट PIN अभिभावक के मोबाइल के आखिरी 4 अंक होते हैं।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।',
     collectFeeBtn: 'शुल्क वसूलें', rcptTitle: 'शुल्क रसीद', rcptReceiptNo: 'रसीद संख्या', rcptDate: 'तारीख', rcptAdmNo: 'प्रवेश संख्या', rcptSession: 'सत्र', rcptName: 'नाम', rcptClass: 'कक्षा', rcptInstallment: 'किस्त', rcptCounter: 'काउंटर संख्या', rcptSlNo: 'क्र.सं.', rcptDesc: 'विवरण', rcptDue: 'देय', rcptCon: 'छूट', rcptPaid: 'जमा', rcptAdmissionFee: 'प्रवेश शुल्क', rcptTuitionFee: 'शिक्षण शुल्क', rcptCaution: 'जमानत राशि', rcptAnnual: 'वार्षिक शुल्क', rcptBusFee: 'बस शुल्क', rcptDues: 'बकाया', rcptPayModeTitle: 'भुगतान जानकारी', rcptPayMode: 'भुगतान माध्यम', rcptBank: 'बैंक', rcptNumber: 'संख्या', rcptTotal: 'कुल', rcptTotalWords: 'कुल (शब्दों में)', rcptComputerGen: 'यह कंप्यूटर द्वारा बनाई गई रसीद है। हस्ताक्षर की आवश्यकता नहीं है।', rcptParentCopy: 'अभिभावक प्रति', rcptCollectorSign: 'वसूलकर्ता के हस्ताक्षर', rcptIncludeBus: 'बस/परिवहन शामिल करें', rcptOtherFees: 'अन्य शुल्क', rcptAnnualHint: 'शुल्क वसूली रसीद पर दिखने वाली एकमुश्त और वार्षिक राशि। छिपाने के लिए 0 रखें।', payModeCash: 'नकद', payModeCheque: 'चेक', payModeUpi: 'UPI', payModeCard: 'कार्ड', payModeBank: 'बैंक ट्रांसफर', tFeeCollected: 'शुल्क वसूल लिया गया।', tCollectZero: 'वसूलने के लिए कुछ नहीं है — जमा राशि डालें।', tCollectSaved: 'शुल्क वसूल लिया गया — रसीद ', tCollectNotActive: 'यह छात्र सक्रिय नहीं है — शुल्क नहीं वसूला जा सकता।', rcptReceipts: 'रसीदें', rcptView: 'देखें', rcptPrint: 'प्रिंट / PDF सहेजें', rcptCollectAgain: 'फिर से वसूलें', rcptNoReceipts: 'इस छात्र की अभी कोई रसीद नहीं है।', rcptDraft: 'मसौदा — अभी सहेजा नहीं गया', rcptCollectSave: 'वसूलें और सहेजें', rcptNoLines: 'इस अवधि के लिए वसूलने को कुछ नहीं है — पहले शुल्क संरचना में राशि डालें।',
-    sbNumPending: 'प्रवेश सहेजा गया। प्रवेश संख्या ऑनलाइन आने पर दी जाएगी।', sbNumPendingReceipt: 'शुल्क सहेजा गया। रसीद संख्या ऑनलाइन आने पर दी जाएगी।'
+    sbNumPending: 'प्रवेश सहेजा गया। प्रवेश संख्या ऑनलाइन आने पर दी जाएगी।', sbNumPendingReceipt: 'शुल्क सहेजा गया। रसीद संख्या ऑनलाइन आने पर दी जाएगी।', sbStatusSessionExpired: 'सत्र समाप्त हो गया — कृपया दोबारा लॉग इन करें।', sbStatusNotLinked: 'अभी सर्वर से जुड़ा नहीं है — लॉग इन पर जुड़ जाएगा।', sbLinkServer: 'सर्वर से जोड़ें', sbLinkDone: 'सर्वर अकाउंट जुड़ गया।', sbLinkFailed: 'सर्वर अकाउंट जुड़ा नहीं जा सका — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkPwTitle: 'सर्वर अकाउंट जोड़ें', sbNumAssigning: 'नंबर मिल रहा है…', tWrongPasswordServer: 'सर्वर अकाउंट के लिए पासवर्ड गलत है।', tCollectCapped: 'दी गई राशि बकाया से ज़्यादा थी — सिर्फ बकाया राशि ली गई।', resetPwHintServer: 'इससे सिर्फ इस डिवाइस का डेटा मिटेगा। सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी, जब तक आप सर्वर भी न मिटाएँ।', resetConfirmMsgServer: 'सिर्फ इस डिवाइस का डेटा मिटाएँ? सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी — हर जगह से मिटाने के लिए “सर्वर से भी मिटाएँ” चुनें।', resetDeviceOnly: 'सिर्फ यह डिवाइस', resetWipeServerBtn: 'सर्वर से भी मिटाएँ', resetWipeServerDone: 'सर्वर का डेटा मिट गया।', resetWipeServerFailed: 'सर्वर का डेटा मिटा नहीं जा सका — कुछ भी रीसेट नहीं हुआ। कनेक्शन जाँचकर फिर कोशिश करें।', supportQueued: 'सहायता अनुरोध सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqQueued: 'आवेदन सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqLoadingSchools: 'स्कूल लोड हो रहे हैं…', attNotMarked: 'दर्ज नहीं'
   }
 };
 function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || I18N.en[k] || k; }
@@ -3384,14 +3631,46 @@ function switchAuth(tab) {
   });
   $('recoverForm').classList.add('hidden');
   $('resetForm').classList.add('hidden');
+  // v34 (P1-6): the parent form now picks the school first — every
+  // school's first student is ADM-2025-001, so a bare admission number
+  // matches the wrong school.
+  if (tab === 'parent') fillParentSchoolPicker();
   setTimeout(function () { $(tabs[tab][3]).focus(); }, 50);
+}
+function fillParentSchoolPicker() {
+  var sel = $('parentSchool');
+  if (!sel) return;
+  var schools = loadAccounts().filter(function (a) { return a.role === 'school'; }).filter(function (a) { return !!readDbByKey(dbKeyFor(a)); });
+  var cur = sel.value;
+  sel.innerHTML = schools.map(function (a) { return '<option value="' + esc(a.uid) + '">' + esc(a.school) + '</option>'; }).join('');
+  if (cur && schools.some(function (a) { return a.uid === cur; })) sel.value = cur;
+}
+function findStudentByAdmNoInSchool(admNo, accountUid) {
+  // v34 (P1-6): search ONE school's DB only. The global scan
+  // (findStudentByAdmNo) returns the first ADM-2025-001 on the device,
+  // which is a different school's child.
+  var want = String(admNo || '').trim().toLowerCase();
+  if (!want) return null;
+  var a = loadAccounts().filter(function (x) { return x.uid === accountUid; })[0];
+  if (!a) return null;
+  var key = dbKeyFor(a);
+  var d = readDbByKey(key);
+  if (!d) return null;
+  migrateV12(d);
+  var found = null;
+  (d.students || []).some(function (s) {
+    if (String(s.admissionNo || '').trim().toLowerCase() === want) { found = { student: s, dbKey: key, db: d }; return true; }
+    return false;
+  });
+  return found;
 }
 function doParentLogin(e) {
   e.preventDefault();
   var adm = $('parentAdmNo').value.trim();
   var pin = $('parentPin').value.trim();
   var err = $('parentErr');
-  var found = findStudentByAdmNo(adm);
+  var schoolUid = $('parentSchool') ? $('parentSchool').value : '';
+  var found = schoolUid ? findStudentByAdmNoInSchool(adm, schoolUid) : findStudentByAdmNo(adm);
   // One generic error: never reveal whether the number or the PIN was wrong.
   var ok = found && found.student.parentPin && digitsOnly(pin).length >= 4 && digitsOnly(pin) === digitsOnly(found.student.parentPin);
   if (!found || !ok) {
@@ -3439,6 +3718,23 @@ function doLogin(e) {
     // return as "submit the form" and the page would reload.
     sbSignIn(id, pw).then(function (res) {
       if (res.ok && res.data && res.data.access_token) { sbFinishSupabaseLogin(res.data, id, pw); return; }
+      // v34 (P1-4): the server is reachable and REJECTED these
+      // credentials. For an account that already has a server account
+      // (sbUid), a 400 means the password is wrong — do NOT fall back to
+      // the local account silently, or sync stays off without the user
+      // knowing. Fall back only for local-only accounts (which have no
+      // server account for the server to check) and for network errors.
+      var acct = findAccount(id);
+      if (acct && acct.sbUid && res.status === 400) {
+        err.textContent = t('tWrongPasswordServer');
+        err.classList.remove('hidden');
+        return;
+      }
+      if (acct && acct.sbUid && res.status === 429) {
+        err.textContent = t('sbTooMany');
+        err.classList.remove('hidden');
+        return;
+      }
       sbLocalLogin(id, pw, err);
     }).catch(function () { sbLocalLogin(id, pw, err); });
   } else {
@@ -3466,15 +3762,15 @@ function doSignup(e) {
   // (offline, rate-limited) never blocks signup.
   if (sbIsOnline()) {
     sbSignUp(email, pw, school, name).then(function (res) {
-      if (res.status === 429) { toast(t('sbTooMany')); return; }
-      if (!res.ok || !res.data || !res.data.user || !res.data.user.id) return;
+      if (res.status === 429) { toast(t('sbTooMany')); sbSetStatus('not-linked', 'rate-limited'); return; }
+      if (!res.ok || !res.data || !res.data.user || !res.data.user.id) { sbSetStatus('not-linked', 'signup-failed'); return; }
       a.sbUid = res.data.user.id;
       var l2 = loadAccounts();
       for (var i = 0; i < l2.length; i++) if (l2[i].email === email) l2[i] = a;
       saveAccounts(l2);
       if (res.data.access_token) { sbStoreSession(res.data); state.sb = { uid: res.data.user.id, email: email }; }
       else toast(t('sbEmailConfirm'));
-    }).catch(function () { /* offline mid-flight — local account stands */ });
+    }).catch(function () { sbSetStatus('not-linked', 'offline'); /* offline mid-flight — local account stands */ });
   }
   loginAs(a, { silent: true });
   return false;
@@ -3798,7 +4094,11 @@ function resetPwCheck(pw) {
 }
 function resetAllData() {
   if (!state.role || !state.user || state.role !== 'school') return;
-  openModal('<h3>' + t('resetPwTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('resetPwHint') + '</p>' +
+  // v34 (P1-5): on a server account the old wording lied — the data
+  // returns on the next sync. Say so, and offer the server wipe after
+  // the double gate.
+  var onServer = !!(state.sb && state.sb.uid);
+  openModal('<h3>' + t('resetPwTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t(onServer ? 'resetPwHintServer' : 'resetPwHint') + '</p>' +
     '<form onsubmit="return submitResetPw(event)"><div class="form-grid"><div class="full"><label>' + t('resetPwLabel') + '</label>' +
     '<input id="resetPwInput" type="password" autocomplete="current-password" placeholder="••••••••"></div></div>' +
     '<div id="resetPwErr" class="err hidden"></div>' +
@@ -3840,8 +4140,67 @@ function submitResetName(e) {
     return false;
   }
   closeModal();
+  // v34 (P1-5): a server account gets a choice — wipe this device only
+  // (the server copy returns on the next sync) or wipe the server too.
+  if (state.sb && state.sb.uid) { openResetServerChoice(); return false; }
   confirmModal(t('resetConfirmMsg'), resetAllConfirmed);
   return false;
+}
+function openResetServerChoice() {
+  openModal('<h3>' + t('resetConfirmTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('resetConfirmMsgServer') + '</p>' +
+    '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    '<button type="button" class="btn" onclick="closeModal();confirmModal(t(\'resetConfirmMsg\'), resetAllConfirmed)">' + t('resetDeviceOnly') + '</button>' +
+    '<button type="button" class="btn danger" onclick="closeModal();resetAllServerWipe()">' + t('resetWipeServerBtn') + '</button></div>');
+}
+function sbClearServerSchool(localUid) {
+  var m = sbServerSchoolMap();
+  delete m[localUid];
+  try { localStorage.setItem(SB_SCHOOL_MAP_KEY, JSON.stringify(m)); } catch (e) {}
+}
+function sbWipeServerSchool(token) {
+  // v34 (P1-5): the server-side wipe for Reset All Data. Calls the
+  // SECURITY DEFINER ss_wipe_school RPC (the owner cannot DELETE the
+  // ss_schools row directly — that policy is admin-only). Resolves
+  // { done: true } when there is nothing on the server to wipe either.
+  var act = sbSyncActive();
+  if (!act) return Promise.resolve({ done: false, reason: 'no-session' });
+  var schoolId = sbServerSchoolMap()[act.account.uid];
+  var idP = schoolId ? Promise.resolve(schoolId) : sbGetServerSchoolId(act.uid, token).then(function (row) { return row ? row.id : null; });
+  return idP.then(function (sid) {
+    if (!sid) return { done: true, reason: 'no-server-school' };
+    return sbRest('POST', 'rpc/ss_wipe_school', token, { p_school_id: sid }).then(function (r) {
+      if (!r.ok) throw new Error('wipe-' + (r.status || 'fail'));
+      return { done: true, reason: 'ok' };
+    });
+  });
+}
+function resetAllServerWipe() {
+  // Behind the same double gate (password + exact school name) as the
+  // device-only reset. The server wipe runs FIRST: if it fails, nothing
+  // is reset locally either, so the two copies never disagree.
+  if (!state.sb || !state.sb.uid) { resetAllConfirmed(); return; }
+  sbSyncAutoStop();
+  sbSyncWithLock(function () {
+    return sbGetValidToken().then(function (tok) {
+      if (!tok) throw new Error('no-token');
+      return sbWipeServerSchool(tok);
+    });
+  }).then(function (r) {
+    if (r && r.done) {
+      try { localStorage.removeItem(SB_MIGRATED_KEY + ':' + state.sb.uid); } catch (e) {}
+      sbClearServerSchool(state.user.uid);
+      resetAllConfirmed();
+      toast(t('resetWipeServerDone'));
+    } else {
+      toast(t('resetWipeServerFailed'));
+      sbSyncAutoStart();
+      renderApp();
+    }
+  }).catch(function () {
+    toast(t('resetWipeServerFailed'));
+    sbSyncAutoStart();
+    renderApp();
+  });
 }
 function resetAllConfirmed() {
   // v20: reset means a REAL reset — wipe EVERYTHING to zero. What survives:
@@ -3855,8 +4214,9 @@ function resetAllConfirmed() {
   // v31: a reset wipes THIS DEVICE only. Clear the pending outbox, the
   // server-id map and the sync snapshot for this account, so stale queued
   // changes cannot re-upload the deleted data. The server copy is NOT
-  // wiped: the next sync (server wins) restores it. A server-side wipe is
-  // a separate, explicit step — not part of Reset All Data.
+  // wiped by this path: the next sync (server wins) restores it. A
+  // server-side wipe is offered separately (resetAllServerWipe) behind
+  // the same double gate — it runs first and only then calls this.
   if (state.sb && state.sb.uid) { sbOutboxClear(state.sb.uid); sbSrvIdsClear(state.sb.uid); }
   if (state.user) sbSnapClear(state.user.uid);
   sbSyncResetMemory();
@@ -3870,6 +4230,9 @@ function resetAllConfirmed() {
   renderApp();
   persistSession();
   toast(t('tAllReset'));
+  // v34 (P1-5): the server-wipe path stops the auto interval before
+  // wiping — restart it here so the 30s auto-pull keeps running.
+  if (state.sb && state.sb.uid) sbSyncAutoStart();
 }
 function openSupportForm() {
   openModal('<h3>' + t('raiseSupport') + '</h3><p style="color:var(--muted);font-size:14px">' + t('contactSub') + '</p>' +
@@ -3886,10 +4249,12 @@ function submitSupportRequest(e) {
   var msg = ($('fSupMsg') ? $('fSupMsg').value : '').trim();
   if (!name || !msg) { var err = $('supErr'); if (err) { err.textContent = t('tFillAll'); err.classList.remove('hidden'); } return false; }
   // v30: the request is stored on this device first, always. When the
-  // school has a server session it is ALSO posted to ss_support_requests
-  // (best-effort — a failed post never blocks the confirmation). There is
-  // still no Super Admin list or dashboard card in the app; the owner
-  // reads the requests on the server until the Play Store admin UI.
+  // school has a server session it is ALSO posted to ss_support_requests.
+  // v34 (P1-7): a failed or offline post is QUEUED and retried on the
+  // next cycle — the user is told it will send when online, not that it
+  // was "noted". There is still no Super Admin list or dashboard card in
+  // the app; the owner reads the requests on the server until the Play
+  // Store admin UI.
   var req = { id: 'sr' + Date.now().toString(36), ts: new Date().toISOString(), name: name, message: msg, status: 'Open', by: state.user ? state.user.name : '' };
   var list = [];
   try { list = JSON.parse(localStorage.getItem('schoolSaathiSupportRequests') || '[]'); } catch (e2) { list = []; }
@@ -3897,7 +4262,14 @@ function submitSupportRequest(e) {
   list.unshift(req);
   if (list.length > 50) list.length = 50;
   localStorage.setItem('schoolSaathiSupportRequests', JSON.stringify(list));
-  sbPostSupportRequest(req);
+  if (!sbIsOnline() || !state.sb || !state.sb.uid) {
+    sbSupportQueue(req);
+    closeModal();
+    toast(t('supportQueued'));
+    renderApp();
+    return false;
+  }
+  sbPostSupportRequest(req).then(function (ok) { if (!ok) sbSupportQueue(req); });
   closeModal();
   toast(t('supportNoted'));
   renderApp();
@@ -3969,7 +4341,7 @@ function studentsPage() {
     var stt = s.status || 'Active';
     var badgeCls = stt === 'Active' ? 'green' : stt === 'Inactive' ? 'grey' : stt === 'Draft' ? 'blue' : 'red';
     return '<tr><td class="sel-col"><input type="checkbox" ' + ((state.stuSel || {})[s.id] ? 'checked' : '') + ' onchange="toggleStuSel(\'' + s.id + '\', this.checked)" aria-label="' + esc(s.name) + '"></td><td>' + avatarHTML(s.photo, s.name, 'mini-avatar') + '<button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td>' +
-      '<td>' + esc(s.admissionNo || '—') + '</td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.fatherName || s.guardian) + '</td><td>' + esc(s.phone) + '</td><td>' + studentAttPct(s) + '%</td>' +
+      '<td>' + esc(s.numPending ? t('sbNumAssigning') : (s.admissionNo || '—')) + '</td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.fatherName || s.guardian) + '</td><td>' + esc(s.phone) + '</td><td>' + studentAttPct(s) + '%</td>' +
       '<td><span class="badge ' + (fs === 'Paid' ? 'green' : fs === 'Pending' ? 'orange' : 'grey') + '">' + fs + '</span></td>' +
       '<td><span class="badge ' + badgeCls + '">' + stt + '</span></td>' +
       '<td><button class="btn ghost sm" onclick="stuActions(\'' + s.id + '\')">⋮ ' + t('actionsW') + '</button></td></tr>';
@@ -4054,7 +4426,7 @@ function studentForm(id) {
   // v33: for a server account the number is minted from the server on
   // save — the local peek could show a number another device already
   // owns, so the form shows Auto-generated instead.
-  var admNo = s ? (s.admissionNo || '') : (sbSyncActive() ? t('admNoAuto') : nextAdmNo(true));
+  var admNo = s ? (s.numPending ? t('sbNumAssigning') : (s.admissionNo || '')) : (sbSyncActive() ? t('admNoAuto') : nextAdmNo(true));
   var admDate = s ? (s.admissionDate || '') : todayIST();
   var rollVal = s ? s.roll : nextRoll(clsPart + '-' + secPart);
   openModal('<h3>' + (s ? t('editStudent') : t('addStudent')) + '</h3>' +
@@ -4625,7 +4997,9 @@ function deleteStudent(id) {
 function attendancePage() {
   if (!state.attDate) state.attDate = todayIST();
   var cls = state.attCls;
-  var roster = db.students.filter(function (s) { return s.cls === cls; });
+  // v34 (P1-10): rosters are enrolled students only — Cancelled/Draft
+  // never appear on the register.
+  var roster = db.students.filter(function (s) { return s.cls === cls && isEnrolledStudent(s); });
   var key = state.attDate + '|' + cls;
   var recs = db.attendance[key] || {};
   var rows = roster.map(function (s) {
@@ -4635,11 +5009,20 @@ function attendancePage() {
         return '<button class="' + m[0].toLowerCase() + (cur === m ? ' on' : '') + '" onclick="markAtt(\'' + s.id + '\',\'' + m + '\')">' + (m === 'Present' ? t('presBtn') : m === 'Absent' ? t('absBtn') : t('lateBtn')) + '</button>';
       }).join('') + '</div></td></tr>';
   }).join('');
-  var counts = { Present: 0, Absent: 0, Late: 0 };
-  roster.forEach(function (s) { counts[recs[s.id] || 'Present']++; });
+  // v34 (P1-9): an unmarked student is "Not marked", not Present — the
+  // Present default lives only in the marking buttons above. Counting an
+  // unmarked student as Present inflated the day's attendance.
+  var counts = { Present: 0, Absent: 0, Late: 0, NotMarked: 0 };
+  roster.forEach(function (s) {
+    var m = recs[s.id];
+    if (!m) counts.NotMarked++;
+    else if (m === 'Present') counts.Present++;
+    else if (m === 'Absent') counts.Absent++;
+    else counts.Late++;
+  });
   var clsOpts = CLASSES.map(function (c) { return '<option ' + (cls === c ? 'selected' : '') + '>' + c + '</option>'; }).join('');
   var ta = todayAtt();
-  return '<div class="page-head"><div><h2>' + t('attendance') + '</h2><p>Class ' + esc(cls) + ' • ' + esc(state.attDate) + ' — ' + counts.Present + ' ' + t('presBtn') + ', ' + counts.Absent + ' ' + t('absBtn') + ', ' + counts.Late + ' ' + t('lateBtn') + '</p></div>' +
+  return '<div class="page-head"><div><h2>' + t('attendance') + '</h2><p>Class ' + esc(cls) + ' • ' + esc(state.attDate) + ' — ' + counts.Present + ' ' + t('presBtn') + ', ' + counts.Absent + ' ' + t('absBtn') + ', ' + counts.Late + ' ' + t('lateBtn') + (counts.NotMarked ? ', ' + counts.NotMarked + ' ' + t('attNotMarked') : '') + '</p></div>' +
     '<div class="toolbar"><select onchange="state.attCls=this.value;renderPage()">' + clsOpts + '</select>' +
     '<input type="date" value="' + esc(state.attDate) + '" max="' + todayIST() + '" onchange="onAttDate(this.value)" style="min-width:160px">' +
     '<button class="btn green" onclick="saveAttendance()">✓ ' + t('saveAttendance') + '</button></div></div>' +
@@ -4664,13 +5047,18 @@ function saveAttendance() {
   // v25: attendance saves go to the audit log too, so the full Activity
   // Log shows them. Recent Activities keeps its own db.activities entry
   // (addActivity below) — one save = one entry in each list, never two
-  // in either. Counts use the same Present-default as the page itself.
-  var counts = { Present: 0, Absent: 0, Late: 0 };
-  db.students.filter(function (s) { return s.cls === state.attCls; }).forEach(function (s) {
-    var m = recs[s.id] || 'Present';
-    if (m === 'Present') counts.Present++; else if (m === 'Absent') counts.Absent++; else counts.Late++;
+  // in either. v34 (P1-9): counts treat unmarked as "Not marked" (a
+  // separate count), matching the page header; v34 (P1-10): Cancelled/
+  // Draft students are not on the roster and not in the counts.
+  var counts = { Present: 0, Absent: 0, Late: 0, NotMarked: 0 };
+  db.students.filter(function (s) { return s.cls === state.attCls && isEnrolledStudent(s); }).forEach(function (s) {
+    var m = recs[s.id];
+    if (!m) counts.NotMarked++;
+    else if (m === 'Present') counts.Present++;
+    else if (m === 'Absent') counts.Absent++;
+    else counts.Late++;
   });
-  logAudit('Attendance updated', 'Class ' + state.attCls + ' • ' + state.attDate + ' • ' + counts.Present + ' Present, ' + counts.Absent + ' Absent, ' + counts.Late + ' Late');
+  logAudit('Attendance updated', 'Class ' + state.attCls + ' • ' + state.attDate + ' • ' + counts.Present + ' Present, ' + counts.Absent + ' Absent, ' + counts.Late + ' Late' + (counts.NotMarked ? ', ' + counts.NotMarked + ' Not marked' : ''));
   addActivity('✅', 'blue', 'Attendance updated', 'Class ' + state.attCls);
   saveDB(db);
   toast('✓ ' + t('tAttSaved') + ' — Class ' + state.attCls + ' (' + state.attDate + ').');
@@ -4904,11 +5292,21 @@ function generateFees() {
   db.feeRecords.forEach(function (r) { if (r.month === month) existing[r.studentId + '|' + feeTypeOf(r)] = 1; });
   var made = 0, skipped = 0;
   db.students.forEach(function (s) {
+    // v34 (P0-3): dues only for enrolled students — Draft (admission not
+    // finished) and Cancelled never get a due.
+    if (!isEnrolledStudent(s)) return;
     (db.feeStructure || []).forEach(function (row) {
       if (row.cls !== s.cls) return;
       var key = s.id + '|' + row.type;
       if (existing[key]) { skipped++; return; }
-      db.feeRecords.push({ id: 'fee' + Date.now() + '_' + made, studentId: s.id, student: s.name, cls: s.cls,
+      // v34 (P0-3): a deterministic id — 'fee-gen-<student>-<month>-<type>'.
+      // Two devices generating the same month create the SAME local_id, so
+      // the upload pass dedupes by local_id and only one Pending row ever
+      // lands on the server. (A unique constraint on ss_fee_records would
+      // break partial payments, which create a second Collected record for
+      // the same student/month/type — so the dedupe is by id, not by
+      // constraint.)
+      db.feeRecords.push({ id: 'fee-gen-' + s.id + '-' + month + '-' + row.type, studentId: s.id, student: s.name, cls: s.cls,
         month: month, type: row.type, amount: row.amount, status: 'Pending', date: monthStartDate(month) });
       existing[key] = 1; made++;
     });
@@ -5134,11 +5532,26 @@ function buildCollectLines(sid, prefRecordId, month, includeBus) {
     });
   return lines;
 }
+// v34 (P0-2): a Paid amount above the net due (Due - Con) is never
+// taken. Cap it and report the excess, so the fee records and the
+// receipt total always agree — the old code stored rec.amount = net
+// while the receipt total kept the full paid amount, so feeTotals()
+// undercounted against receipts. Returns the excess amount capped.
+function clampCollectLines(d) {
+  var excess = 0;
+  (d.lines || []).forEach(function (ln) {
+    var net = Math.max(0, (+ln.due || 0) - (+ln.con || 0));
+    var paid = +ln.paid || 0;
+    if (paid > net) { excess += paid - net; ln.paid = net; }
+  });
+  return excess;
+}
 function reapplyLineEdits(oldLines, newLines) {
   newLines.forEach(function (nl) {
     var o = (oldLines || []).find(function (x) { return x.key === nl.key; });
     if (o) { nl.due = o.due; nl.con = o.con; nl.paid = o.paid; }
   });
+  clampCollectLines({ lines: newLines }); // v34 (P0-2): a copied paid can exceed the new net
 }
 function newCollectDraft(sid, recordId) {
   var month = collectMonthDefault();
@@ -5179,6 +5592,12 @@ function readCollectInputs() {
     if (cv) { v = parseFloat(cv.value); if (!isNaN(v) && v >= 0) ln.con = v; }
     if (pv) { v = parseFloat(pv.value); if (!isNaN(v) && v >= 0) ln.paid = v; }
   });
+  // v34 (P0-2): cap Paid at the net due here too (readCollectInputs reads
+  // the raw inputs, unlike collectLineEdit which caps on every keystroke)
+  // and write the capped values back so the screen shows what is taken.
+  var capped = clampCollectLines(d);
+  if (capped > 0) d.lines.forEach(function (ln) { var pv = $('rcptPaid-' + ln.key); if (pv) pv.value = ln.paid; });
+  d.cappedExcess = capped;
 }
 function collectDraftTotal(d) { var tot = 0; (d.lines || []).forEach(function (ln) { tot += +ln.paid || 0; }); return tot; }
 function collectTotalsUpdate() {
@@ -5338,6 +5757,11 @@ function saveCollectFee(e) {
 }
 function finishCollectFee(d, s, total, receiptNo, numPending) {
   var today = d.payDate || todayIST();
+  // v34 (P0-2): cap Paid at the net due and recompute the total from the
+  // capped lines, so the fee records and the receipt total always agree.
+  var cappedExcess = clampCollectLines(d);
+  total = 0;
+  d.lines.forEach(function (ln) { total += +ln.paid || 0; });
   var savedLines = [];
   d.lines.forEach(function (ln, i) {
     var paid = +ln.paid || 0, due = +ln.due || 0, con = +ln.con || 0;
@@ -5370,13 +5794,13 @@ function finishCollectFee(d, s, total, receiptNo, numPending) {
     state.savedReceiptId = null; state.feeStudent = s.id; collectDraft = null;
     histReplaceTop({ view: 'fees', sub: 'profile:' + s.id });
     renderApp();
-    toast(t('sbNumPendingReceipt'));
+    toast(t('sbNumPendingReceipt') + (cappedExcess > 0 ? ' ' + t('tCollectCapped') : ''));
     return false;
   }
   state.savedReceiptId = receiptNo; collectDraft = null;
   histReplaceTop({ view: 'fees', sub: 'receipt:' + receiptNo }); // Back from the saved receipt goes to the fee profile, not the spent collect form
   renderApp();
-  toast('✓ ' + t('tCollectSaved') + receiptNo + ' • ' + inr(total));
+  toast('✓ ' + t('tCollectSaved') + receiptNo + ' • ' + inr(total) + (cappedExcess > 0 ? ' • ' + t('tCollectCapped') : ''));
   return false;
 }
 function openSavedReceipt(receiptNo) {
@@ -5419,13 +5843,31 @@ function saveAdmissionRequestToSchool(dbKey, req) {
   if (DB_KEY === dbKey) db = d; // keep the in-memory DB in sync
   return true;
 }
+var admReqPublicCache = null; // server schools from ss_list_public_schools()
+function admReqSchoolOptions() {
+  // Server schools first (from the RPC), then local-only schools that are
+  // not on the server yet. Values: 'srv:<uuid>' or 'local:<dbKey>'.
+  var opts = '';
+  var map = sbServerSchoolMap();
+  var seenSrv = {};
+  (admReqPublicCache || []).forEach(function (s) {
+    seenSrv[s.id] = true;
+    opts += '<option value="srv:' + esc(s.id) + '">' + esc(s.name) + (s.city ? ' • ' + esc(s.city) : '') + '</option>';
+  });
+  loadAccounts().filter(function (a) { return a.role === 'school'; }).filter(function (a) { return !!readDbByKey(dbKeyFor(a)); }).forEach(function (a) {
+    var sid = map[a.uid];
+    if (sid && seenSrv[sid]) return; // already listed from the server
+    opts += '<option value="local:' + esc(dbKeyFor(a)) + '">' + esc(a.school) + '</option>';
+  });
+  return opts;
+}
 function openAdmissionApply() {
   var schools = loadAccounts().filter(function (a) { return a.role === 'school'; }).filter(function (a) { return !!readDbByKey(dbKeyFor(a)); });
-  var schOpts = schools.map(function (a) { return '<option value="' + esc(dbKeyFor(a)) + '">' + esc(a.school) + '</option>'; }).join('');
+  var schOpts = admReqSchoolOptions();
   var clsOpts = classParts().map(function (c) { return '<option>' + c + '</option>'; }).join('');
   var genOpts = [''].concat(GENDERS).map(function (g) { return '<option value="' + g + '">' + (g || '—') + '</option>'; }).join('');
   openModal('<h3>' + t('admReqFormTitle') + '</h3>' +
-    (schools.length ? '' : '<p class="err">' + t('admReqNoSchool') + '</p>') +
+    (schools.length ? '' : '<p class="err" id="admReqNoSchoolMsg">' + t('admReqNoSchool') + '</p>') +
     '<form onsubmit="return saveAdmissionRequest(event)"><div class="form-grid">' +
     '<div class="full"><label>' + t('admReqSchool') + '</label><select id="fArSchool">' + schOpts + '</select></div>' +
     '<div><label>' + t('fStudentName') + ' *</label><input id="fArName" required placeholder="e.g. Aarav Kumar"></div>' +
@@ -5436,7 +5878,23 @@ function openAdmissionApply() {
     '<div><label>' + t('fPhone') + ' *</label><input id="fArPhone" inputmode="numeric" placeholder="98XXXXXXXX"></div>' +
     '<div class="full"><label>' + t('fPrevSchool') + '</label><input id="fArPrevSchool" placeholder="Previous school (if any)"></div>' +
     '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
-    '<button class="btn" type="submit" ' + (schools.length ? '' : 'disabled') + '>' + t('admReqApply') + '</button></div></form>', true);
+    '<button class="btn" type="submit" id="admReqSubmitBtn" ' + (schools.length ? '' : 'disabled') + '>' + t('admReqApply') + '</button></div></form>', true);
+  // v34 (P1-8): the school list is not only the accounts on THIS device
+  // — fetch the public list from the server so any parent can apply to
+  // any school. When it returns, refresh the picker and enable the form.
+  if (sbIsOnline()) {
+    sbRest('POST', 'rpc/ss_list_public_schools', SB_ANON_KEY, {}).then(function (r) {
+      if (!r.ok || !Array.isArray(r.data)) return;
+      admReqPublicCache = r.data;
+      var sel = $('fArSchool');
+      if (!sel) return; // modal closed
+      sel.innerHTML = admReqSchoolOptions();
+      var msg = $('admReqNoSchoolMsg');
+      if (msg) msg.classList.add('hidden');
+      var btn = $('admReqSubmitBtn');
+      if (btn) btn.disabled = false;
+    }).catch(function () {});
+  }
 }
 function saveAdmissionRequest(e) {
   e.preventDefault();
@@ -5447,16 +5905,38 @@ function saveAdmissionRequest(e) {
     status: 'Pending', reason: '', submitted: todayIST(), studentId: '' };
   var errs = validateAdmissionRequest(req);
   if (errs.length) { toast(errs.join(' ')); return false; }
-  var key = $('fArSchool') ? $('fArSchool').value : '';
+  var sel = $('fArSchool') ? $('fArSchool').value : '';
+  if (!sel) { toast(t('tAdmReqFailed')); return false; }
+  if (sel.indexOf('srv:') === 0) {
+    // A server school (chosen from the public list): the application
+    // lives on the server only — there is no local DB for it on this
+    // device. A failed post is queued and retried, never lost silently.
+    var sid = sel.slice(4);
+    sbPostAdmission(sid, req).then(function (r) {
+      if (!r.ok) sbAdmReqQueue(sid, req);
+    }).catch(function () { sbAdmReqQueue(sid, req); });
+    closeModal();
+    toast(t('admReqSubmitted'));
+    return false;
+  }
+  // Local school: 'local:<dbKey>' (a bare dbKey also works).
+  var key = sel.indexOf('local:') === 0 ? sel.slice(6) : sel;
   if (!key || !saveAdmissionRequestToSchool(key, req)) { toast(t('tAdmReqFailed')); return false; }
   // Also send to the server when this school is already backed up there.
-  // Fire-and-forget: the local save above is the source of truth, so a
-  // failed server post never blocks the application.
+  // v34 (P1-8): a failed or offline post is QUEUED and retried — the
+  // local save above is the source of truth, so a failed server post
+  // never blocks the application.
   try {
     var map = sbServerSchoolMap();
     var acct = loadAccounts().filter(function (x) { return dbKeyFor(x) === key; })[0];
-    var sid = acct && map[acct.uid];
-    if (sid && sbIsOnline()) sbPostAdmission(sid, req).catch(function () {});
+    var sid2 = acct && map[acct.uid];
+    if (sid2) {
+      if (sbIsOnline()) {
+        sbPostAdmission(sid2, req).then(function (r) { if (!r.ok) sbAdmReqQueue(sid2, req); }).catch(function () { sbAdmReqQueue(sid2, req); });
+      } else {
+        sbAdmReqQueue(sid2, req);
+      }
+    }
   } catch (e2) {}
   closeModal();
   toast(t('admReqSubmitted'));
@@ -5532,7 +6012,9 @@ function doRejectAdmissionRequest(e, id) {
 function examsPage() {
   var ex = db.exams.find(function (e) { return e.id === state.examId; }) || db.exams[0];
   if (!ex) return '<div class="page-head"><div><h2>' + t('exams') + '</h2></div></div><div class="card"><div class="empty">' + t('tNoExams') + '</div></div>';
-  var roster = db.students.filter(function (s) { return s.cls === ex.cls; });
+  // v34 (P1-10): marks roster is enrolled students only — Cancelled/
+  // Draft never get a marks row.
+  var roster = db.students.filter(function (s) { return s.cls === ex.cls && isEnrolledStudent(s); });
   var rows = roster.map(function (s) {
     var mk = db.marks.find(function (m) { return m.examId === ex.id && m.studentId === s.id; });
     return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td>' +
@@ -5552,6 +6034,10 @@ function saveMarks(examId) {
   var ex = db.exams.find(function (e) { return e.id === examId; });
   if (!ex) return;
   var saved = 0, bad = [];
+  // v34 (P1-10): new/updated marks are only saved for enrolled students
+  // (Active/Inactive). An empty input still clears an EXISTING mark for
+  // any student in the class — that is cleanup of a stale record, not a
+  // new mark — so the roster filter never strands an old mark.
   db.students.filter(function (s) { return s.cls === ex.cls; }).forEach(function (s) {
     var inp = $('mk-' + s.id);
     if (!inp) return;
@@ -5561,6 +6047,7 @@ function saveMarks(examId) {
       if (mkIdx !== -1) { db.marks.splice(mkIdx, 1); saved++; } // empty = remove marks
       return;
     }
+    if (!isEnrolledStudent(s)) return; // Cancelled/Draft: no new marks
     var v = parseFloat(inp.value);
     if (isNaN(v) || v < 0) { bad.push(s.name + ' (invalid)'); return; }
     if (v > ex.total) { bad.push(s.name + ' (over ' + ex.total + ')'); return; } // never silently clamp
@@ -5667,8 +6154,8 @@ function downloadReportCSV(kind) {
     var aDate = state.attDate || todayIST();
     var recs = db.attendance[aDate + '|' + state.attCls] || {};
     downloadCSV('school-saathi-attendance.csv', [['Student', 'Class', 'Roll', 'Date', 'Status']]
-      .concat(db.students.filter(function (s) { return s.cls === state.attCls; })
-        .map(function (s) { return [s.name, s.cls, s.roll, aDate, recs[s.id] || 'Present']; })));
+      .concat(db.students.filter(function (s) { return s.cls === state.attCls && isEnrolledStudent(s); })
+        .map(function (s) { return [s.name, s.cls, s.roll, aDate, recs[s.id] || t('attNotMarked')]; })));
   }
   toast('✓ ' + t('tReportDl'));
 }
@@ -5695,7 +6182,7 @@ function settingsPage() {
   '<p class="muted">' + t('logoHint') + '</p></div>' +
   '</div><div class="actions" style="justify-content:flex-start"><button class="btn" type="submit">' + t('saveSettingsBtn') + '</button>' +
   '<button type="button" class="btn danger" onclick="resetAllData()">' + t('resetAllData') + '</button></div></form></div>' +
-  '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub">' + sbStatusText() + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration()">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload()">' + t('sbDownloadNow') + '</button></div></div>' +
+  '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub">' + sbStatusText() + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration()">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload()">' + t('sbDownloadNow') + '</button>' + (state.user && state.user.role === 'school' && !state.user.sbUid ? '<button type="button" class="btn ghost" onclick="openLinkServerModal()">' + t('sbLinkServer') + '</button>' : '') + (sbSessionExpired ? '<button type="button" class="btn ghost" onclick="logout()">' + t('authLogin') + '</button>' : '') + '</div></div>' +
   '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('raiseSupport') + '</h3><p class="card-sub">' + t('contactSub') + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="openSupportForm()">' + t('raiseSupport') + '</button></div></div>';
 }
 function saveSettings(e) {
@@ -5751,6 +6238,10 @@ document.addEventListener('DOMContentLoaded', function () {
     // Fire-and-forget; a failed cycle retries on the next trigger.
     window.addEventListener('online', function () {
       if (state.user && state.user.role === 'school' && state.sb) sbSyncCycle(state.user, state.sb.uid, null).catch(function () {});
+      // v34 (P1-7/P1-8): queued support requests and admission
+      // applications retry the moment the device is back online.
+      try { sbFlushSupportQueue().catch(function () {}); } catch (e) {}
+      try { sbFlushAdmReqQueue().catch(function () {}); } catch (e) {}
     });
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState === 'visible' && state.user && state.user.role === 'school' && state.sb) sbSyncCycle(state.user, state.sb.uid, null).catch(function () {});

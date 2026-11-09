@@ -13,9 +13,9 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=33">
-<script src="qrgen.js?v=33" defer></script>
-<script src="app.js?v=33" defer></script>
+<link rel="stylesheet" href="styles.css?v=34">
+<script src="qrgen.js?v=34" defer></script>
+<script src="app.js?v=34" defer></script>
 </head>
 <body>
 
@@ -60,6 +60,7 @@
       </form>
       <div id="parentErr" class="err hidden"></div>
       <form id="parentForm" class="hidden" onsubmit="return doParentLogin(event)">
+        <div class="field"><label data-i18n="admReqSchool">School</label><select id="parentSchool"></select></div>
         <div class="field"><label data-i18n="parentAdmNo">Admission Number</label><input id="parentAdmNo" type="text" placeholder="e.g. ADM-2025-001" autocomplete="off"></div>
         <div class="field"><label data-i18n="parentPinLabel">Parent PIN</label><input id="parentPin" type="password" inputmode="numeric" maxlength="6" placeholder="4–6 digits" autocomplete="off"></div>
         <button class="btn" type="submit" style="width:100%" data-i18n="parentLoginBtn">Login as Parent</button>
@@ -83,7 +84,7 @@
         <div id="sideSchoolInfo"></div>
         <label style="color:#94A3B8;margin-top:10px">Academic Session</label>
         <select id="sessionSel" onchange="changeSession(this.value)"></select>
-        <div style="margin-top:12px">v33<br>© 2026 School Saathi</div>
+        <div style="margin-top:12px">v34<br>© 2026 School Saathi</div>
       </div>
     </aside>
     <div class="main">
