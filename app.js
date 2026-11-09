@@ -1,4 +1,8 @@
-/* School Saathi — static build. All data lives in localStorage (seeded once, never overwritten). */
+/* School Saathi — static build. v31: SERVER-FIRST for schools logged in
+   via Supabase — the server is the source of truth, the local store is a
+   cache/mirror that syncs on login, on save and on reconnect (outbox for
+   offline changes). Local-only accounts (no server session) still work
+   exactly as before: everything lives in localStorage on this device. */
 'use strict';
 
 /* ================= constants ================= */
@@ -139,6 +143,8 @@ function sbStatusText() {
   if (!st) return t('sbStatusPending');
   if (st.state === 'synced') return t('sbStatusSynced') + (st.at ? ' ' + st.at.slice(0, 10) : '');
   if (st.state === 'uploading') return t('sbStatusUploading');
+  if (st.state === 'syncing') return t('sbStatusSyncing');
+  if (st.state === 'pending') return t('sbStatusPendingSync');
   if (st.state === 'failed') return t('sbStatusFailed');
   if (st.state === 'offline') return t('sbStatusOffline');
   return t('sbStatusPending');
@@ -181,7 +187,13 @@ function sbLoginNewSchool(meta, email, pw, uid, token, serverSchool) {
   // its data down into the fresh empty workspace. Skipped for a fresh
   // signup (no server row yet: nothing to download) and skipped entirely
   // when the local store is not empty (download never overwrites).
-  if (serverSchool && serverSchool.id) sbDownloadSchoolData(a, uid, token, serverSchool.id);
+  // v31: after the download, start the server-first sync (pull + flush),
+  // so this device keeps matching the server from here on.
+  if (serverSchool && serverSchool.id) {
+    sbDownloadSchoolData(a, uid, token, serverSchool.id).then(function () { sbSyncStart(a, uid, token).catch(function () {}); }).catch(function () {});
+  } else {
+    sbSyncStart(a, uid, token).catch(function () {});
+  }
 }
 function sbShowNoSchool() {
   // v28: a Supabase account with no school tied to it (no local school
@@ -212,6 +224,11 @@ function sbFinishSupabaseLogin(data, email, pw) {
     $('loginErr').classList.add('hidden');
     loginAs(a);
     sbMaybeMigrate(a, uid, data.access_token); // fire-and-forget: never blocks login
+    // v31: server-first — pull the server state (server wins) and flush
+    // the outbox, so this device matches every other device on this
+    // school account. Runs after the migration call; the sync's own
+    // guard handles the never-migrated case.
+    sbSyncStart(a, uid, data.access_token).catch(function () {});
     return;
   }
   // No local account for this Supabase user. A school is recognised in
@@ -335,10 +352,17 @@ function sbBoot() {
   // Resume a stored server session: refresh it if needed and retry a
   // pending backup. Never blocks the local session.
   if (!state.user || !state.sb) return;
-  if (state.user.role !== 'school' || sbLoadMig(state.sb.uid)) return;
+  if (state.user.role !== 'school') return;
+  if (sbLoadMig(state.sb.uid)) {
+    // v31: already backed up — pull the server state and flush the outbox.
+    sbSyncStart(state.user, state.sb.uid, null).catch(function () {});
+    return;
+  }
   sbGetValidToken().then(function (tok) {
     if (!tok) return;
-    sbMaybeMigrate(state.user, state.sb.uid, tok);
+    sbMaybeMigrate(state.user, state.sb.uid, tok).then(function () {
+      sbSyncStart(state.user, state.sb.uid, tok).catch(function () {});
+    });
   }).catch(function () { /* offline — retry on next login */ });
 }
 
@@ -348,10 +372,10 @@ function sbBoot() {
    first and rows already on the server are skipped. After upload the
    counts are read back and compared with the local counts; only then is
    the account marked migrated. Local data is NEVER deleted. The app keeps
-   localStorage as its working store after migration (v28+ moves screens
-   to the server); a second device signing in starts empty locally —
-   download/sync is a later phase, not v27. Migration never runs for
-   non-school roles (parents). */
+   localStorage as its working store after migration; v31 is server-first
+   (login pulls the server state and saves sync through the outbox), so a
+   second device signing in sees the same data after its first sync.
+   Migration never runs for non-school roles (parents). */
 function sbNullIfEmpty(v) { return (v === '' || v === undefined || v === null) ? null : v; }
 function sbMapStudent(s, schoolId) {
   return { school_id: schoolId, local_id: s.id, name: s.name || '', cls: s.cls || '', roll: s.roll || 0,
@@ -622,6 +646,73 @@ function sbRowToFeeRecord(row, stuMap) {
     student: row.student_name || '', cls: row.cls || '', month: row.month || '', type: row.fee_type || 'Tuition',
     amount: row.amount || 0, status: row.status || 'Pending', date: row.record_date || '' };
 }
+// v31: apply a full set of server rows onto a local DB (server wins).
+// Shared by the v30 empty-store download and the v31 server-first pull.
+// Replaces every synced list wholesale — callers must have passed the
+// safety guards first (empty store, or the pull guard + outbox). Returns
+// the server->local id maps (students, exams) so callers can rebuild the
+// local->server map. Admission requests are included here: the download
+// never fetched them (its table list lacks the table), so the guard keeps
+// the local list when the server sends none.
+function sbRowToAdmissionRequest(row, stuMap) {
+  return { id: row.local_id || ('srv-' + row.id), name: row.name || '', dob: row.dob || '',
+    gender: row.gender || '', classApply: row.class_apply || '', guardianName: row.guardian_name || '',
+    phone: row.phone || '', previousSchool: row.previous_school || '', status: row.status || 'Pending',
+    reason: row.reason || '', submitted: row.submitted || '', studentId: stuMap[row.student_id] || '' };
+}
+function sbMapAdmissionRequest(r, schoolId, stuMap) {
+  return { school_id: schoolId, local_id: r.id, name: r.name || '', dob: sbNullIfEmpty(r.dob),
+    gender: r.gender || '', class_apply: r.classApply || '', guardian_name: r.guardianName || '',
+    phone: r.phone || '', previous_school: r.previousSchool || '', status: r.status || 'Pending',
+    reason: r.reason || '', submitted: r.submitted || todayIST(), student_id: stuMap[r.studentId] || null };
+}
+function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
+  // School row first: profile, fee extras, counters.
+  if (schoolRow) {
+    d.profile = { name: schoolRow.name || d.profile.name || '', city: schoolRow.city || '', principal: schoolRow.principal || '', phone: schoolRow.phone || '', email: schoolRow.email || '', session: schoolRow.session || '2025–26', address: schoolRow.address || '' };
+    if (schoolRow.logo_data_url) d.profile.logo = schoolRow.logo_data_url;
+    d.feeExtras = { admissionFee: schoolRow.admission_fee || 0, cautionMoney: schoolRow.caution_money || 0, annualCharges: schoolRow.annual_charges || 0, transportFee: schoolRow.transport_fee || 0 };
+    d.admCounter = schoolRow.adm_counter || 1;
+    d.receiptCounter = schoolRow.receipt_counter || 1;
+    if (account) sbSaveServerSchool(account.uid, sid);
+  }
+  // Fee structure only when the server has one — otherwise the local
+  // defaults stay.
+  if ((byTable.ss_fee_structure || []).length) {
+    d.feeStructure = byTable.ss_fee_structure.map(function (row) { return { cls: row.cls || '', type: row.fee_type || 'Tuition', amount: row.amount || 0 }; });
+  }
+  // Students first: everything else maps through their server ids.
+  var stuMap = {}, examMap = {};
+  d.students = (byTable.ss_students || []).map(function (row) { var s = sbRowToStudent(row); stuMap[row.id] = s.id; return s; });
+  d.teachers = (byTable.ss_teachers || []).map(function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '' }; });
+  d.exams = (byTable.ss_exams || []).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; examMap[row.id] = e.id; return e; });
+  d.feeRecords = (byTable.ss_fee_records || []).map(function (row) { return sbRowToFeeRecord(row, stuMap); });
+  // Attendance: server rows fold back into the 'date|cls' map.
+  d.attendance = {};
+  (byTable.ss_attendance || []).forEach(function (row) {
+    var localId = stuMap[row.student_id];
+    if (!localId) return;
+    var key = (row.att_date || '') + '|' + (row.cls || '');
+    if (!d.attendance[key]) d.attendance[key] = {};
+    d.attendance[key][localId] = row.status || 'Present';
+  });
+  d.receipts = (byTable.ss_receipts || []).map(function (row) {
+    return { receiptNo: row.receipt_no || '', studentId: stuMap[row.student_id] || '', admissionNo: row.admission_no || '', name: row.student_name || '', cls: row.cls || '', session: row.session || '', date: row.receipt_date || '', month: row.month || '', counterNo: row.counter_no || 0, lines: row.lines || [], payMode: row.pay_mode || 'Cash', payDate: row.pay_date || '', bank: row.bank || '', number: row.number || '', total: row.total || 0, totalWords: row.total_words || '', collector: row.collector || '' };
+  });
+  d.marks = [];
+  (byTable.ss_marks || []).forEach(function (row) {
+    if (!examMap[row.exam_id] || !stuMap[row.student_id]) return;
+    d.marks.push({ examId: examMap[row.exam_id], studentId: stuMap[row.student_id], marks: row.marks });
+  });
+  d.homework = (byTable.ss_homework || []).map(function (row) {
+    return { id: row.local_id || ('srv-' + row.id), cls: row.cls || '', subject: row.subject || '', title: row.title || '', due: row.due || '', doneBy: (row.done_by || []).map(function (id) { return stuMap[id]; }).filter(function (x) { return !!x; }) };
+  });
+  d.notices = (byTable.ss_notices || []).map(function (row) { return { id: row.local_id || ('srv-' + row.id), title: row.title || '', date: row.notice_date || '', body: row.body || '' }; });
+  if (byTable.ss_admission_requests) {
+    d.admissionRequests = byTable.ss_admission_requests.map(function (row) { return sbRowToAdmissionRequest(row, stuMap); });
+  }
+  return { stuMap: stuMap, examMap: examMap };
+}
 function sbDownloadSchoolData(account, sbUid, token, serverSchoolId) {
   if (!account || account.role !== 'school') return Promise.resolve({ done: false, reason: 'not-school' });
   if (!token) return Promise.resolve({ done: false, reason: 'no-token' });
@@ -645,47 +736,11 @@ function sbDownloadSchoolData(account, sbUid, token, serverSchoolId) {
       var schoolRow = (res[0].data && res[0].data[0]) || null;
       var byTable = {};
       tables.forEach(function (t, j) { byTable[t] = res[j + 1].data; });
-      // School row first: profile, fee extras, counters.
-      if (schoolRow) {
-        d.profile = { name: schoolRow.name || d.profile.name || '', city: schoolRow.city || '', principal: schoolRow.principal || '', phone: schoolRow.phone || '', email: schoolRow.email || '', session: schoolRow.session || '2025–26', address: schoolRow.address || '' };
-        if (schoolRow.logo_data_url) d.profile.logo = schoolRow.logo_data_url;
-        d.feeExtras = { admissionFee: schoolRow.admission_fee || 0, cautionMoney: schoolRow.caution_money || 0, annualCharges: schoolRow.annual_charges || 0, transportFee: schoolRow.transport_fee || 0 };
-        d.admCounter = schoolRow.adm_counter || 1;
-        d.receiptCounter = schoolRow.receipt_counter || 1;
-        sbSaveServerSchool(account.uid, sid);
-      }
-      // Fee structure only when the server has one — otherwise the local
-      // defaults stay.
-      if (byTable.ss_fee_structure.length) {
-        d.feeStructure = byTable.ss_fee_structure.map(function (row) { return { cls: row.cls || '', type: row.fee_type || 'Tuition', amount: row.amount || 0 }; });
-      }
-      // Students first: everything else maps through their server ids.
-      var stuMap = {}, examMap = {};
-      d.students = byTable.ss_students.map(function (row) { var s = sbRowToStudent(row); stuMap[row.id] = s.id; return s; });
-      d.teachers = byTable.ss_teachers.map(function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '' }; });
-      d.exams = byTable.ss_exams.map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; examMap[row.id] = e.id; return e; });
-      d.feeRecords = byTable.ss_fee_records.map(function (row) { return sbRowToFeeRecord(row, stuMap); });
-      // Attendance: server rows fold back into the 'date|cls' map.
-      d.attendance = {};
-      byTable.ss_attendance.forEach(function (row) {
-        var localId = stuMap[row.student_id];
-        if (!localId) return;
-        var key = (row.att_date || '') + '|' + (row.cls || '');
-        if (!d.attendance[key]) d.attendance[key] = {};
-        d.attendance[key][localId] = row.status || 'Present';
-      });
-      d.receipts = byTable.ss_receipts.map(function (row) {
-        return { receiptNo: row.receipt_no || '', studentId: stuMap[row.student_id] || '', admissionNo: row.admission_no || '', name: row.student_name || '', cls: row.cls || '', session: row.session || '', date: row.receipt_date || '', month: row.month || '', counterNo: row.counter_no || 0, lines: row.lines || [], payMode: row.pay_mode || 'Cash', payDate: row.pay_date || '', bank: row.bank || '', number: row.number || '', total: row.total || 0, totalWords: row.total_words || '', collector: row.collector || '' };
-      });
-      d.marks = [];
-      byTable.ss_marks.forEach(function (row) {
-        if (!examMap[row.exam_id] || !stuMap[row.student_id]) return;
-        d.marks.push({ examId: examMap[row.exam_id], studentId: stuMap[row.student_id], marks: row.marks });
-      });
-      d.homework = byTable.ss_homework.map(function (row) {
-        return { id: row.local_id || ('srv-' + row.id), cls: row.cls || '', subject: row.subject || '', title: row.title || '', due: row.due || '', doneBy: (row.done_by || []).map(function (id) { return stuMap[id]; }).filter(function (x) { return !!x; }) };
-      });
-      d.notices = byTable.ss_notices.map(function (row) { return { id: row.local_id || ('srv-' + row.id), title: row.title || '', date: row.notice_date || '', body: row.body || '' }; });
+      var applied = sbApplyServerRows(d, schoolRow, byTable, account, sid);
+      // v31: the downloaded state is now the synced state — snapshot it
+      // (and the server ids) so the next local save does not re-queue
+      // every downloaded row as a change.
+      sbSyncSnapshotRefresh(d, account, applied);
       saveDB(db);
       renderApp();
       return { done: true, reason: 'ok', schoolId: sid, counts: sbLocalCounts(d) };
@@ -697,17 +752,659 @@ function sbDownloadSchoolData(account, sbUid, token, serverSchoolId) {
 function sbRetryDownload() {
   if (!state.user || state.user.role !== 'school') { toast(t('sbStatusNotSchool')); return; }
   if (!state.sb || !state.sb.uid) { toast(t('sbStatusPending')); return; }
+  // v31: the Download button is now the manual refresh — a server-wins
+  // pull (same guards as login) followed by an outbox flush. The old
+  // empty-store-only download still lives in sbDownloadSchoolData and is
+  // used for a fresh second-device login.
   toast(t('sbDownloadStart'));
-  sbGetValidToken().then(function (tok) {
-    if (!tok) { toast(t('sbDownloadOffline')); return; }
-    return sbDownloadSchoolData(state.user, state.sb.uid, tok, null).then(function (r) {
-      if (r.done) { toast(t('sbDownloadDone')); renderApp(); }
-      else if (r.reason === 'not-empty') toast(t('sbDownloadSkipped'));
-      else if (r.reason === 'no-server-school') toast(t('sbDownloadNoServer'));
-      else toast(t('sbDownloadFailed'));
-    });
+  sbSyncStart(state.user, state.sb.uid, null).then(function (r) {
+    if (r.done) { toast(t('sbDownloadDone')); renderApp(); }
+    else if (r.reason === 'no-server-school') toast(t('sbDownloadNoServer'));
+    else if (r.reason === 'offline' || r.reason === 'no-token') toast(t('sbDownloadOffline'));
+    else toast(t('sbDownloadFailed'));
   }).catch(function () { toast(t('sbDownloadFailed')); });
 }
+
+/* ================= v31: server-first sync ("Target app ki tarah") =================
+   For a school logged in via Supabase, the SERVER is the source of truth:
+   login / app start pulls the server state into the local mirror (server
+   wins), every local save queues its changes into an outbox and pushes
+   them, and offline changes flush on reconnect. Local-only accounts (no
+   server session) never call the server and behave exactly as v30.
+   Safety: the pull NEVER wipes local data when the school has never
+   migrated and the server is empty for a table that has local rows — it
+   runs the migration upload instead. A row that disappears locally is
+   only deleted on the server for fee records, fee structure, attendance
+   and marks (the ones the app hard-deletes); anything else is restored
+   by the next pull. Conflicts are last-write-wins by updated_at
+   (04_server_first.sql adds the column + touch trigger to every synced
+   table): a push first reads the server row, and when the server copy is
+   newer than the local change the push is skipped and the next pull
+   restores the server version. Concurrency: one sync run at a time
+   (sbSyncWithLock). The diff/queue step is synchronous and lock-free;
+   push and pull are serialised through the lock so they can never
+   interleave. The outbox carries the full local row (not just a key), so
+   a pull that replaces the mirror mid-flight cannot lose an offline edit:
+   the flush pushes the queued row, then a second pull restores it. */
+var SB_OUTBOX_KEY = 'schoolSaathiOutbox'; // per Supabase uid: [{table,key,op,row,at}]
+var SB_SRVID_KEY = 'schoolSaathiSrvIds'; // per Supabase uid: {table: {localKey: serverUuid}}
+var SB_SNAP_KEY = 'schoolSaathiSyncSnap'; // per local account uid: {table: {key: hash}}
+var sbSyncPromise = null; // one sync run at a time (the lock)
+var sbSyncTimer = null; // debounced post-save flush
+var sbSyncDebounceMs = 600; // tests set this to 0 for a deterministic flush
+var sbSyncSnapshot = null; // in-memory snapshot for the current account
+var sbSyncSnapUid = null; // local account uid the in-memory snapshot belongs to
+var sbSyncApplying = false; // true while server rows are being applied locally (the saveDB hook skips the diff then)
+
+function sbOutboxKey(uid) { return SB_OUTBOX_KEY + ':' + uid; }
+function sbOutboxLoad(uid) {
+  try { var r = localStorage.getItem(sbOutboxKey(uid)); var a = r ? JSON.parse(r) : []; return Array.isArray(a) ? a : []; } catch (e) { return []; }
+}
+function sbOutboxSave(uid, list) { try { localStorage.setItem(sbOutboxKey(uid), JSON.stringify(list)); } catch (e) {} }
+function sbOutboxAdd(uid, entry) {
+  // One pending entry per (table, key): a newer change to the same row
+  // replaces the older one, so the outbox never replays stale payloads.
+  // The `at` timestamp keeps the EARLIEST queue time, so last-write-wins
+  // is judged against the first local change, not a re-queue.
+  var list = sbOutboxLoad(uid);
+  var done = false;
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].table === entry.table && list[i].key === entry.key) {
+      if (list[i].at && (!entry.at || list[i].at < entry.at)) entry.at = list[i].at;
+      list[i] = entry; done = true; break;
+    }
+  }
+  if (!done) list.push(entry);
+  sbOutboxSave(uid, list);
+  return list;
+}
+function sbOutboxRemove(uid, entry) {
+  var list = sbOutboxLoad(uid).filter(function (e) { return !(e.table === entry.table && e.key === entry.key); });
+  sbOutboxSave(uid, list);
+  return list;
+}
+function sbOutboxClear(uid) { try { localStorage.removeItem(sbOutboxKey(uid)); } catch (e) {} }
+function sbSrvIdsLoad(uid) {
+  try { var r = localStorage.getItem(SB_SRVID_KEY + ':' + uid); var o = r ? JSON.parse(r) : {}; return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; }
+}
+function sbSrvIdsSave(uid, map) { try { localStorage.setItem(SB_SRVID_KEY + ':' + uid, JSON.stringify(map)); } catch (e) {} }
+function sbSrvIdsClear(uid) { try { localStorage.removeItem(SB_SRVID_KEY + ':' + uid); } catch (e) {} }
+function sbSrvIdGet(uid, table, key) { var m = sbSrvIdsLoad(uid); return (m[table] && m[table][key]) || null; }
+function sbSrvIdSet(uid, table, key, serverId) {
+  var m = sbSrvIdsLoad(uid); if (!m[table]) m[table] = {}; m[table][key] = serverId; sbSrvIdsSave(uid, m);
+}
+function sbSnapLoad(uid) {
+  try { var r = localStorage.getItem(SB_SNAP_KEY + ':' + uid); var o = r ? JSON.parse(r) : null; return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; }
+}
+function sbSnapSave(uid, snap) { try { localStorage.setItem(SB_SNAP_KEY + ':' + uid, JSON.stringify(snap)); } catch (e) {} }
+function sbSnapClear(uid) { try { localStorage.removeItem(SB_SNAP_KEY + ':' + uid); } catch (e) {} }
+function sbSyncResetMemory() {
+  if (sbSyncTimer) { clearTimeout(sbSyncTimer); sbSyncTimer = null; }
+  sbSyncSnapshot = null; sbSyncSnapUid = null;
+}
+function sbSyncActive() {
+  // Server-first sync applies only to a school with a live Supabase
+  // session. Local-only accounts, parents and logged-out states get
+  // exactly the v30 behaviour (no server calls at all). The typeof
+  // guard covers boot: loadDB() saves before `state` is assigned.
+  if (typeof state === 'undefined' || !state || !state.user || state.user.role !== 'school' || !state.sb || !state.sb.uid) return null;
+  return { uid: state.sb.uid, email: state.sb.email || state.user.email || '', account: state.user };
+}
+function sbSyncWithLock(fn) {
+  // One sync run at a time. A caller that arrives mid-run waits behind
+  // the in-flight run and retries once the lock clears.
+  if (sbSyncPromise) return sbSyncPromise.then(function () { return sbSyncWithLock(fn); });
+  sbSyncPromise = Promise.resolve().then(fn);
+  return sbSyncPromise.then(function (r) { sbSyncPromise = null; return r; }, function (e) { sbSyncPromise = null; throw e; });
+}
+function sbSyncBuildMaps(d, uid) {
+  // Local -> server id maps, from the stored map (populated on POST
+  // returns and on every pull). Rows without a server id yet map to null
+  // and are resolved on the next pass.
+  var m = sbSrvIdsLoad(uid);
+  return { stu: m.ss_students || {}, exam: m.ss_exams || {} };
+}
+function sbSyncSchoolPayloadFromParts(profile, feeExtras, admCounter, receiptCounter) {
+  // The school row fields the local DB owns. plan/status are server-side
+  // and are never clobbered by a sync push.
+  var p = profile || {};
+  var e = feeExtras || {};
+  return { name: p.name || '', city: p.city || '', principal: p.principal || '', phone: p.phone || '',
+    email: p.email || '', session: p.session || '2025–26', address: p.address || '',
+    logo_data_url: p.logo || null,
+    adm_counter: admCounter || 1, receipt_counter: receiptCounter || 1,
+    admission_fee: e.admissionFee || 0, caution_money: e.cautionMoney || 0,
+    annual_charges: e.annualCharges || 0, transport_fee: e.transportFee || 0 };
+}
+function sbSyncSchoolPayload(d) {
+  return sbSyncSchoolPayloadFromParts(d.profile, d.feeExtras, d.admCounter, d.receiptCounter);
+}
+function sbSyncMapRow(table, row, schoolId, maps, d) {
+  // Local row -> server payload. Foreign keys resolve through the id
+  // maps; a not-yet-pushed student/exam maps to null and the row is
+  // re-queued (with the right id) once its parent is pushed.
+  if (table === 'ss_students') return sbMapStudent(row, schoolId);
+  if (table === 'ss_teachers') return sbMapTeacher(row, schoolId);
+  if (table === 'ss_exams') return sbMapExam(row, schoolId);
+  if (table === 'ss_fee_records') return sbMapFeeRecord(row, schoolId, maps.stu);
+  if (table === 'ss_homework') return sbMapHomework(row, schoolId, maps.stu);
+  if (table === 'ss_notices') return sbMapNotice(row, schoolId);
+  if (table === 'ss_admission_requests') return sbMapAdmissionRequest(row, schoolId, maps.stu);
+  if (table === 'ss_receipts') {
+    var byId = {};
+    (d.students || []).forEach(function (s) { byId[s.id] = s; });
+    return sbMapReceipt(row, schoolId, maps.stu, byId);
+  }
+  if (table === 'ss_fee_structure') return sbMapFeeStructure(row, schoolId);
+  if (table === 'ss_attendance') return { school_id: schoolId, att_date: row.date, cls: row.cls, student_id: maps.stu[row.studentId] || null, status: row.status };
+  if (table === 'ss_marks') return { school_id: schoolId, exam_id: maps.exam[row.examId] || null, student_id: maps.stu[row.studentId] || null, marks: row.marks };
+  if (table === 'ss_audit_log') return sbMapAudit(row, schoolId);
+  if (table === 'ss_activities') return sbMapActivity(row, schoolId);
+  return null;
+}
+function sbSyncPayloadReady(table, payload) {
+  // NOT NULL foreign keys on the server: a row whose parent has no
+  // server id yet cannot be pushed (the server would reject it). It
+  // stays queued and goes out on the next pass, once the parent exists.
+  if (table === 'ss_marks') return !!(payload.exam_id && payload.student_id);
+  if (table === 'ss_attendance') return !!payload.student_id;
+  return true;
+}
+var SB_SYNC_TABLES = {
+  ss_students: { local: 'students', key: 'id' }, ss_teachers: { local: 'teachers', key: 'id' },
+  ss_exams: { local: 'exams', key: 'id' }, ss_fee_records: { local: 'feeRecords', key: 'id' },
+  ss_homework: { local: 'homework', key: 'id' }, ss_notices: { local: 'notices', key: 'id' },
+  ss_admission_requests: { local: 'admissionRequests', key: 'id' }, ss_receipts: { local: 'receipts', key: 'receiptNo' }
+};
+var SB_SYNC_DELETABLE = ['ss_fee_records', 'ss_fee_structure', 'ss_attendance', 'ss_marks'];
+function sbSyncTableHashes(d, schoolId, maps) {
+  // Canonical hash per row = the exact server payload it would push.
+  // Local rows and server-derived rows hash identically when their
+  // content matches, so a pull refresh produces no phantom changes.
+  var out = {};
+  Object.keys(SB_SYNC_TABLES).forEach(function (table) {
+    var cfg = SB_SYNC_TABLES[table];
+    var m = {};
+    (d[cfg.local] || []).forEach(function (row) {
+      var key = row[cfg.key];
+      if (key === undefined || key === null || key === '') return;
+      var payload = sbSyncMapRow(table, row, schoolId, maps, d);
+      if (!payload) return;
+      m[String(key)] = { hash: JSON.stringify(payload), row: row };
+    });
+    out[table] = m;
+  });
+  var fs = {};
+  (d.feeStructure || []).forEach(function (f) {
+    var key = (f.cls || '') + '|' + (f.type || 'Tuition');
+    fs[key] = { hash: JSON.stringify(sbMapFeeStructure(f, schoolId)), row: f };
+  });
+  out.ss_fee_structure = fs;
+  var att = {};
+  sbFlattenAttendance(d).forEach(function (a) {
+    var key = a.date + '|' + a.cls + '|' + a.studentId;
+    att[key] = { hash: JSON.stringify(sbSyncMapRow('ss_attendance', a, schoolId, maps, d)), row: a };
+  });
+  out.ss_attendance = att;
+  var mk = {};
+  (d.marks || []).forEach(function (mrow) {
+    var key = mrow.examId + '|' + mrow.studentId;
+    mk[key] = { hash: JSON.stringify(sbSyncMapRow('ss_marks', mrow, schoolId, maps, d)), row: mrow };
+  });
+  out.ss_marks = mk;
+  var au = {};
+  (d.auditLog || []).forEach(function (a) {
+    var key = sbNormTs(a.ts) + '|' + (a.actor || '') + '|' + (a.action || '') + '|' + (a.details || '');
+    au[key] = { hash: JSON.stringify(sbMapAudit(a, schoolId)), row: a };
+  });
+  out.ss_audit_log = au;
+  var ac = {};
+  (d.activities || []).forEach(function (a) {
+    var key = (a.title || '') + '|' + (a.sub || '');
+    ac[key] = { hash: JSON.stringify(sbMapActivity(a, schoolId)), row: a };
+  });
+  out.ss_activities = ac;
+  out.ss_schools = { school: { hash: JSON.stringify(sbSyncSchoolPayload(d)), row: { profile: d.profile, feeExtras: d.feeExtras, admCounter: d.admCounter, receiptCounter: d.receiptCounter } } };
+  return out;
+}
+function sbSyncSnapshotRefresh(d, account, applied) {
+  // Rebuild the snapshot from the current local DB (which now mirrors
+  // the server) and the server->local maps from the pull/download.
+  var uid = (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
+  var schoolId = (sbServerSchoolMap()[account.uid]) || null;
+  var maps = { stu: {}, exam: {} };
+  if (applied) {
+    Object.keys(applied.stuMap || {}).forEach(function (srvId) { maps.stu[applied.stuMap[srvId]] = srvId; });
+    Object.keys(applied.examMap || {}).forEach(function (srvId) { maps.exam[applied.examMap[srvId]] = srvId; });
+    var m = sbSrvIdsLoad(uid);
+    m.ss_students = maps.stu; m.ss_exams = maps.exam;
+    sbSrvIdsSave(uid, m);
+  } else {
+    maps = sbSyncBuildMaps(d, uid);
+  }
+  var hashes = sbSyncTableHashes(d, schoolId, maps);
+  var snap = {};
+  Object.keys(hashes).forEach(function (table) {
+    snap[table] = {};
+    Object.keys(hashes[table]).forEach(function (key) { snap[table][key] = hashes[table][key].hash; });
+  });
+  sbSyncSnapshot = snap; sbSyncSnapUid = account.uid;
+  sbSnapSave(account.uid, snap);
+  return snap;
+}
+function sbSyncSnapSet(accountUid, table, key, hash) {
+  var snap = (sbSyncSnapUid === accountUid && sbSyncSnapshot) ? sbSyncSnapshot : sbSnapLoad(accountUid);
+  if (!snap[table]) snap[table] = {};
+  snap[table][key] = hash;
+  sbSyncSnapshot = snap; sbSyncSnapUid = accountUid;
+  sbSnapSave(accountUid, snap);
+}
+function sbSyncSnapDelete(accountUid, table, key) {
+  var snap = (sbSyncSnapUid === accountUid && sbSyncSnapshot) ? sbSyncSnapshot : sbSnapLoad(accountUid);
+  if (snap[table]) delete snap[table][key];
+  sbSyncSnapshot = snap; sbSyncSnapUid = accountUid;
+  sbSnapSave(accountUid, snap);
+}
+function sbSyncSnapSetFromLocalRow(accountUid, entry, schoolId, maps) {
+  // After a last-write-wins conflict, the local row still differs from
+  // the snapshot — without this the next diff would re-queue the losing
+  // change forever. Mark the row quiet at its current local hash: the
+  // next pull restores the server version (and refreshes the snapshot
+  // properly), and any NEW local edit still queues because its hash
+  // will differ again.
+  var row = sbSyncLocalRow(entry);
+  if (!row) return;
+  var payload = null;
+  if (entry.table === 'ss_schools') payload = sbSyncSchoolPayloadFromParts(row.profile, row.feeExtras, row.admCounter, row.receiptCounter);
+  else payload = sbSyncMapRow(entry.table, row, schoolId, maps, db);
+  if (payload) sbSyncSnapSet(accountUid, entry.table, entry.key, JSON.stringify(payload));
+}
+function sbSyncQueueDiff() {
+  // Compare the local DB against the last synced snapshot and queue
+  // every new/changed row into the outbox (with its full local row, so
+  // a later pull cannot lose the edit). Runs synchronously on every
+  // saveDB — even offline, so the outbox is complete when the device
+  // reconnects. A first run after the v31 upgrade has an empty snapshot,
+  // so every pre-v31 row is queued once (the push dedupes by local_id).
+  var act = sbSyncActive();
+  if (!act || sbSyncApplying) return 0;
+  var schoolId = (sbServerSchoolMap()[act.account.uid]) || null;
+  if (!schoolId) return 0; // no server school yet: migration uploads on login
+  var d = db;
+  var uid = act.uid;
+  if (sbSyncSnapUid !== act.account.uid) { sbSyncSnapshot = sbSnapLoad(act.account.uid); sbSyncSnapUid = act.account.uid; }
+  var snap = sbSyncSnapshot || {};
+  var maps = sbSyncBuildMaps(d, uid);
+  var hashes = sbSyncTableHashes(d, schoolId, maps);
+  var queued = 0;
+  Object.keys(hashes).forEach(function (table) {
+    var snapTable = snap[table] || {};
+    var cur = hashes[table];
+    var seen = {};
+    Object.keys(cur).forEach(function (key) {
+      seen[key] = true;
+      if (snapTable[key] !== cur[key].hash) {
+        var rowCopy = table === 'ss_schools' ? cur[key].row : JSON.parse(JSON.stringify(cur[key].row));
+        sbOutboxAdd(uid, { table: table, key: key, op: 'upsert', row: rowCopy, at: new Date().toISOString() });
+        queued++;
+      }
+    });
+    // Rows that vanished locally: only the tables the app hard-deletes
+    // propagate the delete. Anything else is restored by the next pull.
+    if (SB_SYNC_DELETABLE.indexOf(table) !== -1) {
+      Object.keys(snapTable).forEach(function (key) {
+        if (!seen[key]) {
+          sbOutboxAdd(uid, { table: table, key: key, op: 'delete', at: new Date().toISOString() });
+          queued++;
+        }
+      });
+    }
+  });
+  return queued;
+}
+function sbSyncOnSave() {
+  // Called from saveDB after every local write. Queues the change and
+  // schedules a push when a server session is active. Local-only
+  // accounts: no-op. Sync must never break a local save.
+  if (!sbSyncActive()) return;
+  try {
+    var n = sbSyncQueueDiff();
+    if (n && sbIsOnline()) sbSyncScheduleFlush();
+    else if (n) sbSetStatus('pending');
+  } catch (e) { /* never break a local save */ }
+}
+function sbSyncScheduleFlush() {
+  if (sbSyncTimer) clearTimeout(sbSyncTimer);
+  sbSyncTimer = setTimeout(function () { sbSyncTimer = null; sbSyncFlushNow().catch(function () {}); }, sbSyncDebounceMs);
+}
+function sbSyncLocalRow(entry) {
+  // The current local row for an outbox entry (null when it vanished).
+  if (entry.table === 'ss_schools') return db.profile ? { profile: db.profile, feeExtras: db.feeExtras, admCounter: db.admCounter, receiptCounter: db.receiptCounter } : null;
+  if (entry.table === 'ss_fee_structure') {
+    var p = entry.key.split('|');
+    return (db.feeStructure || []).filter(function (f) { return (f.cls || '') === p[0] && (f.type || 'Tuition') === (p[1] || 'Tuition'); })[0] || null;
+  }
+  if (entry.table === 'ss_attendance') {
+    var a = entry.key.split('|');
+    var recs = (db.attendance || {})[(a[0] || '') + '|' + (a[1] || '')];
+    return (recs && recs[a[2]] !== undefined) ? { date: a[0], cls: a[1], studentId: a[2], status: recs[a[2]] } : null;
+  }
+  if (entry.table === 'ss_marks') {
+    var q = entry.key.split('|');
+    return (db.marks || []).filter(function (m) { return m.examId === q[0] && m.studentId === q[1]; })[0] || null;
+  }
+  if (entry.table === 'ss_audit_log') {
+    return (db.auditLog || []).filter(function (x) { return (sbNormTs(x.ts) + '|' + (x.actor || '') + '|' + (x.action || '') + '|' + (x.details || '')) === entry.key; })[0] || null;
+  }
+  if (entry.table === 'ss_activities') {
+    return (db.activities || []).filter(function (x) { return ((x.title || '') + '|' + (x.sub || '')) === entry.key; })[0] || null;
+  }
+  var cfg = SB_SYNC_TABLES[entry.table];
+  if (!cfg) return null;
+  var arr = db[cfg.local] || [];
+  return arr.filter(function (r) { return String(r[cfg.key]) === entry.key; })[0] || null;
+}
+function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
+  // The server row for an outbox entry, for the last-write-wins check
+  // and for PATCH/DELETE by id. Null when the server has no such row.
+  var known = sbSrvIdGet(uid, table, entry.key);
+  if (known) {
+    return sbRest('GET', table + '?select=id,updated_at&id=eq.' + encodeURIComponent(known), token).then(function (r) {
+      if (r.ok && Array.isArray(r.data) && r.data.length) return r.data[0];
+      return null;
+    });
+  }
+  if (table === 'ss_schools') {
+    return sbRest('GET', 'ss_schools?select=id,updated_at&id=eq.' + encodeURIComponent(schoolId), token).then(function (r) {
+      if (r.ok && Array.isArray(r.data) && r.data.length) return r.data[0];
+      return null;
+    });
+  }
+  if (table === 'ss_audit_log' || table === 'ss_activities') return Promise.resolve(null); // dedupe handled by sbUploadMissing
+  var filter = null;
+  if (table === 'ss_fee_structure') {
+    var p = entry.key.split('|');
+    filter = 'school_id=eq.' + encodeURIComponent(schoolId) + '&cls=eq.' + encodeURIComponent(p[0]) + '&fee_type=eq.' + encodeURIComponent(p[1] || 'Tuition');
+  } else if (table === 'ss_attendance') {
+    var a = entry.row;
+    var sid = a && maps.stu[a.studentId];
+    if (!sid) return Promise.resolve(null);
+    filter = 'school_id=eq.' + encodeURIComponent(schoolId) + '&att_date=eq.' + encodeURIComponent(a.date) + '&cls=eq.' + encodeURIComponent(a.cls) + '&student_id=eq.' + encodeURIComponent(sid);
+  } else if (table === 'ss_marks') {
+    var m = entry.row;
+    var eid = m && maps.exam[m.examId], sid2 = m && maps.stu[m.studentId];
+    if (!eid || !sid2) return Promise.resolve(null);
+    filter = 'school_id=eq.' + encodeURIComponent(schoolId) + '&exam_id=eq.' + encodeURIComponent(eid) + '&student_id=eq.' + encodeURIComponent(sid2);
+  } else if (table === 'ss_receipts') {
+    filter = 'school_id=eq.' + encodeURIComponent(schoolId) + '&receipt_no=eq.' + encodeURIComponent(entry.key);
+  } else {
+    filter = 'school_id=eq.' + encodeURIComponent(schoolId) + '&local_id=eq.' + encodeURIComponent(entry.key);
+  }
+  return sbRest('GET', table + '?select=id,updated_at&' + filter, token).then(function (r) {
+    if (r.ok && Array.isArray(r.data) && r.data.length) return r.data[0];
+    return null;
+  });
+}
+function sbSyncPushEntry(entry, token, schoolId, maps, uid) {
+  // Pushes ONE outbox entry. Returns {pushed, conflict, skipped, keep, hash}.
+  // conflict: the server copy is newer — the entry is dropped and the
+  // next pull restores the server version. keep: the row cannot be
+  // pushed yet (a parent has no server id) — it stays queued.
+  var table = entry.table;
+  if (entry.op === 'delete') {
+    return sbSyncFindServerRow(table, entry, token, schoolId, maps, uid).then(function (row) {
+      if (!row) return { pushed: false, skipped: true };
+      return sbRest('DELETE', table + '?id=eq.' + encodeURIComponent(row.id), token, undefined, 'return=minimal').then(function (r) {
+        if (!r.ok) throw new Error('delete-' + table);
+        return { pushed: true };
+      });
+    });
+  }
+  // Append-only logs dedupe by their natural key, exactly like migration.
+  if (table === 'ss_audit_log' || table === 'ss_activities') {
+    var logRow = sbSyncMapRow(table, entry.row, schoolId, maps, db);
+    var cols = table === 'ss_audit_log' ? 'ts,actor,action,details' : 'title,sub';
+    var keyFn = table === 'ss_audit_log'
+      ? function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; }
+      : function (row) { return row.title + '|' + row.sub; };
+    return sbUploadMissing(token, schoolId, table, cols, [logRow], keyFn).then(function () {
+      return { pushed: true, hash: JSON.stringify(logRow) };
+    });
+  }
+  // School row: PATCH by id (it always exists by the time we sync).
+  if (table === 'ss_schools') {
+    var payload = sbSyncSchoolPayloadFromParts(entry.row.profile, entry.row.feeExtras, entry.row.admCounter, entry.row.receiptCounter);
+    return sbSyncFindServerRow(table, entry, token, schoolId, maps, uid).then(function (row) {
+      if (row && row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true };
+      return sbRest('PATCH', 'ss_schools?id=eq.' + encodeURIComponent(schoolId), token, payload, 'return=minimal').then(function (r) {
+        if (!r.ok) throw new Error('patch-ss_schools');
+        return { pushed: true, hash: JSON.stringify(payload) };
+      });
+    });
+  }
+  // Map the queued local row fresh: foreign keys resolve against the
+  // current id maps, so a student pushed earlier in this same flush
+  // already has its server id.
+  var payload2 = sbSyncMapRow(table, entry.row, schoolId, maps, db);
+  if (!payload2) return Promise.resolve({ pushed: false, skipped: true });
+  if (!sbSyncPayloadReady(table, payload2)) return Promise.resolve({ pushed: false, skipped: true, keep: true });
+  return sbSyncFindServerRow(table, entry, token, schoolId, maps, uid).then(function (row) {
+    if (row) {
+      // Last-write-wins: a newer server copy beats this local change.
+      if (row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true };
+      return sbRest('PATCH', table + '?id=eq.' + encodeURIComponent(row.id), token, payload2, 'return=minimal').then(function (r) {
+        if (!r.ok) throw new Error('patch-' + table);
+        sbSrvIdSet(uid, table, entry.key, row.id);
+        return { pushed: true, hash: JSON.stringify(payload2) };
+      });
+    }
+    return sbRest('POST', table, token, payload2, 'return=representation').then(function (r) {
+      if (!r.ok) throw new Error('post-' + table);
+      var created = Array.isArray(r.data) && r.data[0];
+      if (created && created.id) sbSrvIdSet(uid, table, entry.key, created.id);
+      return { pushed: true, hash: JSON.stringify(payload2) };
+    });
+  });
+}
+function sbSyncFlushWithToken(act, tok) {
+  // Pushes the whole outbox, in queue order, in dependency-safe passes:
+  // a pass can unlock rows whose foreign keys only resolved in this same
+  // flush (a fee record queued before its student got a server id).
+  // A failed entry stops the pass; the rest stays queued for the next
+  // login / reconnect. Nothing is ever dropped except pushed, skipped
+  // (already gone / superseded) and conflict (server wins) entries.
+  var passes = 0;
+  var pushedTotal = 0, conflicts = 0;
+  function pass() {
+    passes++;
+    var outbox = sbOutboxLoad(act.uid);
+    if (!outbox.length) return Promise.resolve({ done: true, pushed: pushedTotal, conflicts: conflicts });
+    if (passes > 3) return Promise.resolve({ done: true, pushed: pushedTotal, conflicts: conflicts, leftover: outbox.length });
+    var schoolId = (sbServerSchoolMap()[act.account.uid]) || null;
+    if (!schoolId) return Promise.resolve({ done: false, reason: 'no-server-school' });
+    var maps = sbSyncBuildMaps(db, act.uid);
+    var chain = Promise.resolve();
+    var pushedThisPass = 0;
+    outbox.forEach(function (entry) {
+      chain = chain.then(function () {
+        // The row vanished locally since it was queued and its table
+        // never propagates deletes: drop the stale entry (the next pull
+        // restores the row from the server).
+        if (entry.op === 'upsert' && !sbSyncLocalRow(entry)) { sbOutboxRemove(act.uid, entry); return; }
+        return sbSyncPushEntry(entry, tok, schoolId, maps, act.uid).then(function (r) {
+          if (r.pushed) {
+            pushedThisPass++; pushedTotal++;
+            if (r.hash) sbSyncSnapSet(act.account.uid, entry.table, entry.key, r.hash);
+            if (entry.op === 'delete') sbSyncSnapDelete(act.account.uid, entry.table, entry.key);
+            sbOutboxRemove(act.uid, entry);
+            maps = sbSyncBuildMaps(db, act.uid); // fresh ids for the next entry
+          } else if (r.conflict) {
+            conflicts++;
+            sbSyncSnapSetFromLocalRow(act.account.uid, entry, schoolId, maps);
+            sbOutboxRemove(act.uid, entry);
+          } else if (r.skipped && !r.keep) {
+            sbOutboxRemove(act.uid, entry);
+          }
+        });
+      });
+    });
+    return chain.then(function () {
+      if (!pushedThisPass && !conflicts) return { done: true, pushed: pushedTotal, conflicts: conflicts };
+      // New rows may have become mappable: re-diff and loop.
+      var n = sbSyncQueueDiff();
+      if (n) return pass();
+      return { done: true, pushed: pushedTotal, conflicts: conflicts };
+    }).catch(function (err) {
+      return { done: false, reason: 'error', detail: (err && err.message) || 'error', pushed: pushedTotal };
+    });
+  }
+  return pass().then(function (r) {
+    if (r.done) {
+      var left = sbOutboxLoad(act.uid).length;
+      sbSetStatus(left ? 'pending' : 'synced');
+    } else {
+      sbSetStatus('failed', r.detail || '');
+    }
+    return r;
+  });
+}
+function sbSyncFlushNow() {
+  // Push-only flush (no pull): what the debounced post-save timer and
+  // the tests call. Serialised through the sync lock.
+  var act = sbSyncActive();
+  if (!act) return Promise.resolve({ done: false, reason: 'no-session' });
+  if (!sbIsOnline()) { sbSetStatus('pending'); return Promise.resolve({ done: false, reason: 'offline' }); }
+  return sbSyncWithLock(function () {
+    return sbGetValidToken().then(function (tok) {
+      if (!tok) { sbSetStatus('offline'); return { done: false, reason: 'no-token' }; }
+      return sbSyncFlushWithToken(act, tok);
+    });
+  });
+}
+function sbSyncGuardHit(d, byTable) {
+  // Guard (a): the school never migrated and the server is empty for a
+  // table that has local rows. Returns the first such table, or null.
+  // Fee structure is excluded: local defaults always exist and are not
+  // user data, so an empty server structure is normal for a fresh school.
+  var checks = [
+    ['ss_students', (d.students || []).length], ['ss_teachers', (d.teachers || []).length],
+    ['ss_exams', (d.exams || []).length], ['ss_fee_records', (d.feeRecords || []).length],
+    ['ss_attendance', sbFlattenAttendance(d).length], ['ss_receipts', (d.receipts || []).length],
+    ['ss_marks', (d.marks || []).length], ['ss_homework', (d.homework || []).length],
+    ['ss_notices', (d.notices || []).length], ['ss_admission_requests', (d.admissionRequests || []).length]
+  ];
+  for (var i = 0; i < checks.length; i++) {
+    if (checks[i][1] > 0 && !(byTable[checks[i][0]] || []).length) return checks[i][0];
+  }
+  return null;
+}
+function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
+  // Server-wins pull: replaces the local mirror with the server state.
+  // The guard refuses the pull when the school never migrated and the
+  // server is empty for a table with local rows (the caller then runs
+  // the migration upload instead). Audit log / activities are NOT pulled
+  // (append-only; the push uploads new entries, the server keeps them).
+  if (!account || account.role !== 'school') return Promise.resolve({ done: false, reason: 'not-school' });
+  if (!token) return Promise.resolve({ done: false, reason: 'no-token' });
+  if (!sbIsOnline()) return Promise.resolve({ done: false, reason: 'offline' });
+  var d = db;
+  var idP = serverSchoolId ? Promise.resolve(serverSchoolId)
+    : sbGetServerSchoolId(sbUid, token).then(function (row) { return row ? row.id : null; });
+  return idP.then(function (sid) {
+    if (!sid) return { done: false, reason: 'no-server-school' };
+    var tables = ['ss_fee_structure', 'ss_students', 'ss_teachers', 'ss_exams', 'ss_fee_records', 'ss_attendance', 'ss_receipts', 'ss_marks', 'ss_homework', 'ss_notices', 'ss_admission_requests'];
+    var gets = [sbRest('GET', 'ss_schools?select=*&id=eq.' + encodeURIComponent(sid), token)];
+    tables.forEach(function (t) { gets.push(sbRest('GET', t + '?select=*&school_id=eq.' + encodeURIComponent(sid) + '&limit=5000', token)); });
+    return Promise.all(gets).then(function (res) {
+      var i;
+      for (i = 0; i < res.length; i++) if (!res[i].ok || !Array.isArray(res[i].data)) throw new Error('read-failed');
+      var schoolRow = (res[0].data && res[0].data[0]) || null;
+      var byTable = {};
+      tables.forEach(function (t, j) { byTable[t] = res[j + 1].data; });
+      if (!sbLoadMig(sbUid)) {
+        var guardHit = sbSyncGuardHit(d, byTable);
+        if (guardHit) return { done: false, reason: 'needs-migration', detail: guardHit };
+      }
+      sbSyncApplying = true;
+      var applied;
+      try {
+        applied = sbApplyServerRows(d, schoolRow, byTable, account, sid);
+        sbSyncSnapshotRefresh(d, account, applied);
+      } finally {
+        sbSyncApplying = false;
+      }
+      saveDB(d);
+      renderApp();
+      return { done: true, reason: 'ok', schoolId: sid, counts: sbLocalCounts(d) };
+    });
+  }).catch(function (err) {
+    return { done: false, reason: 'error', detail: (err && err.message) || 'error' };
+  });
+}
+function sbSyncPull(account, sbUid, token, serverSchoolId) {
+  return sbSyncWithLock(function () { return sbSyncPullRun(account, sbUid, token, serverSchoolId); });
+}
+function sbSyncStartRun(account, sbUid, token) {
+  // Full sync: pull (server wins, guarded) -> flush the outbox -> pull
+  // again when the flush pushed anything (restores flushed rows into
+  // the mirror and picks up concurrent changes from other devices).
+  var act = sbSyncActive();
+  if (!act) return Promise.resolve({ done: false, reason: 'no-session' });
+  account = account || act.account;
+  sbUid = sbUid || act.uid;
+  if (!sbIsOnline()) {
+    var left = sbOutboxLoad(sbUid).length;
+    sbSetStatus(left ? 'pending' : 'offline');
+    return Promise.resolve({ done: false, reason: 'offline' });
+  }
+  sbSetStatus('syncing');
+  var tokP = token ? Promise.resolve(token) : sbGetValidToken();
+  return tokP.then(function (tok) {
+    if (!tok) { sbSetStatus('offline'); return { done: false, reason: 'no-token' }; }
+    return sbSyncPullRun(account, sbUid, tok, null).then(function (pull) {
+      if (pull.reason === 'needs-migration') {
+        // Never migrated + local data + empty server: upload first,
+        // then pull the (now populated) server state.
+        return sbMaybeMigrate(account, sbUid, tok, true).then(function () {
+          return sbSyncPullRun(account, sbUid, tok, null);
+        });
+      }
+      return pull;
+    }).then(function (pull) {
+      if (!pull.done) {
+        // A failed pull leaves the local mirror untouched; still flush
+        // the outbox so offline work is not stuck behind a read error.
+        if (pull.reason === 'no-server-school') return pull;
+        return sbSyncFlushWithToken(act, tok).then(function () { return pull; });
+      }
+      return sbSyncFlushWithToken(act, tok).then(function (fl) {
+        if (fl.done && fl.pushed) return sbSyncPullRun(account, sbUid, tok, null);
+        return pull;
+      });
+    });
+  }).catch(function (err) {
+    sbSetStatus('failed', (err && err.message) || 'error');
+    return { done: false, reason: 'error', detail: (err && err.message) || 'error' };
+  }).then(function (r) {
+    if (!r) return r;
+    if (r.done) {
+      // The flush already set pending/synced; only confirm synced when
+      // the outbox really is empty (a pull that succeeded while entries
+      // are still queued must not claim to be synced).
+      if (!sbOutboxLoad(sbUid).length) sbSetStatus('synced');
+    } else if (r.reason === 'no-server-school') {
+      // The only failure path where the flush never ran: do not leave
+      // the status stuck on 'syncing'. Other failures already had their
+      // status set by the flush (failed / pending / offline).
+      sbSetStatus('failed', r.detail || '');
+    }
+    return r;
+  });
+}
+function sbSyncStart(account, sbUid, token) {
+  return sbSyncWithLock(function () { return sbSyncStartRun(account, sbUid, token); });
+}
+
 // Public Apply form -> server (anon). MUST use return=minimal: anon has no
 // SELECT on ss_admission_requests, so asking for the row back fails with
 // 401 even though the insert itself succeeds (verified 9 Nov 2026).
@@ -1104,6 +1801,7 @@ function saveDB(db) {
   try { localStorage.setItem(DB_KEY, JSON.stringify(db)); }
   catch (e) { MEM_FALLBACK = db; }
   MEM_FALLBACK = db;
+  sbSyncOnSave(); // v31: server-first — queue + push local changes (no-op for local-only accounts)
 }
 var db = loadDB();
 
@@ -1963,7 +2661,7 @@ var I18N = {
   en: {
     dashboard: 'Dashboard', settings: 'Settings', reports: 'Reports', students: 'Student Management', attendance: 'Attendance', fees: 'Fees', exams: 'Examinations', homework: 'Homework', notices: 'Notices', totalStudents: 'Total Students', totalTeachers: 'Total Teachers', feeCollected: 'Fee Collected', pendingFee: 'Pending Fee', logout: 'Logout',
     landFooter: '<b>School Saathi</b> — Smart Education. Better Tomorrow.<br>Built for Bihar • Free for Schools • Made with ❤️ in Gopalganj, Bihar',
-    loginWelcome: 'Log in or sign up<br>to continue', loginEmail: 'Email', loginPassword: 'Password', loginEmailPh: 'you@school.edu.in', loginPwPh: '••••••••', loginBtn: 'Login', authLogin: 'Log In', authSignup: 'Sign Up', authNote: 'One account per school. Your data stays on this device and backs up to the server when you are online.', suSchool: 'School Name', suYourName: 'Your Name', suEmail: 'Email', suPw: 'Password', suPw2: 'Confirm Password', suBtn: 'Create Account', loginOr: 'Or continue with', demoTitle: '— One-tap demo login —', loginBack: '← Back to website',
+    loginWelcome: 'Log in or sign up<br>to continue', loginEmail: 'Email', loginPassword: 'Password', loginEmailPh: 'you@school.edu.in', loginPwPh: '••••••••', loginBtn: 'Login', authLogin: 'Log In', authSignup: 'Sign Up', authNote: 'One account per school. When you log in with your server account, your data syncs across devices automatically — and works offline too.', suSchool: 'School Name', suYourName: 'Your Name', suEmail: 'Email', suPw: 'Password', suPw2: 'Confirm Password', suBtn: 'Create Account', loginOr: 'Or continue with', demoTitle: '— One-tap demo login —', loginBack: '← Back to website',
     schoolDashboard: 'School Admin Dashboard', studentDashboard: 'Student Dashboard',
     confirmTitle: 'Confirm', cancel: 'Cancel', confirmYes: 'Yes, continue', saveBtn: 'Save',
     addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', resetNameTitle: 'Type the school name to confirm', resetNameHint: 'This is the last step before everything is deleted. Type the exact school name.', resetNameLabel: 'School name', resetNameWrong: 'That name does not match — nothing was reset.', resetNameGo: 'Confirm Reset', publishBtn: 'Publish', assignHw: 'Assign Homework', saveStudentBtn: 'Save Student',
@@ -1974,7 +2672,7 @@ var I18N = {
     searchStudent: 'Search student…', viewAll: 'View All →', classAvg: 'Class average', studentsMarked: 'students marked', ofWord: 'of', showingRec: 'Showing', ofRec: 'of', recordsWord: 'records.', tapDone: 'tap the box when done', myHwSub: 'Tap the box when you finish', tileAtt: 'Attendance', tileFees: 'Fees', tileResults: 'Results', tileHw: 'Homework', doneSuffix: 'done', presBtn: 'Present', absBtn: 'Absent', lateBtn: 'Late',
     qaAddStudent: 'Add Student', qaAddStudentD: 'New admission', qaMarkAtt: 'Mark Attendance', qaMarkAttD: 'Today\'s register', qaEnterMarks: 'Enter Marks', qaEnterMarksD: 'Exam results', qaGenReport: 'Generate Report', qaGenReportD: 'CSV download',
     dlStudents: 'Download Students CSV', dlFees: 'Download Fees CSV', dlAtt: 'Download Attendance CSV', repStudentsSub: 'Name, class, roll, guardian, phone, attendance, fee status', repFeesSub: 'Student, class, month, amount, status — Apr to Aug',
-    subSettingsS: 'School profile', settingsSub: 'Edit and save — changes persist on this device.',
+    subSettingsS: 'School profile', settingsSub: 'Edit and save — changes sync to the server when you are online.',
     studentsW: 'Students', perSchool: '2 per school',
     raiseSupport: 'Raise a Support Request', supportNoted: 'Support request noted — we will call you back.', collectedW: 'Collected', pendingW: 'Pending', allW: 'All', editStudent: 'Edit Student', feeTypeTuition: 'Tuition', feeTypeAdmission: 'Admission', feeTypeTransport: 'Transport', feeTypeExam: 'Exam', feeTypeLibrary: 'Library', feeTypeActivity: 'Activity', feeTypeComputer: 'Computer Lab', feeTypeOther: 'Other', allTypes: 'All Types', searchFee: 'Search name, enrollment no. or class…', thEnr: 'Enr. No.', thType: 'Type', feeByType: 'Fee by Type', feeByTypeSub: 'Collected and pending per fee type, computed live.', addFee: 'Add Fee', addFeeSub: 'Add one fee record manually for any student.', feeStruct: 'Fee Structure', feeStructSub: 'Monthly amount per class. Generate uses this to create fee records.', genFees: 'Generate Fees', saveStruct: 'Save Structure', addRow: 'Add Row', customType: 'Custom…', typeCustomPh: 'Type a custom fee type', fStudent: 'Student', fMonth: 'Month', fType: 'Fee Type', fAmount: 'Amount (₹)', fStatus: 'Status', fDate: 'Date', printList: 'Print List', printStmt: 'Print Statement', backFees: 'Back to All Fees', totalBilled: 'Total Billed', totalPaid: 'Paid', totalPending: 'Pending', feeRecsH: 'Fee Records', feeProfileSub: 'All fee records for this student in one place.', tFeeAdded: 'Fee record added.', delFeeMsg: 'Delete this pending fee record?', tFeeDeleted: 'Fee record deleted.', tPickStudent: 'Please choose a student.', tAmtPositive: 'Amount must be more than 0.', tTypeRequired: 'Please type the custom fee type.', tStructSaved: 'Fee structure saved.', tStructAdded: 'Structure row added.', tStructRemoved: 'Structure row removed.', tGenRecords: 'fee records generated for', tGenSkipped: 'already existed', tNoFeeRecs: 'No fee records yet for this student.', printTitle: 'Fee Statement', printListTitle: 'Fee List', printGenOn: 'Generated on', closeW: 'Close', saveFeeBtn: 'Save Fee', photoLabel: 'Student Photo', photoHint: 'Photo is compressed automatically (max 512px, ~120KB).', removePhoto: 'Remove photo', logoLabel: 'School Logo', logoHint: 'Logo is compressed automatically (max 256px, PNG keeps transparency).', removeLogo: 'Remove logo', tPhotoTooBig: 'That photo is too large even after compression. Please choose a smaller photo.', tLogoTooBig: 'That logo is too large even after compression. Please choose a smaller logo.', tPhotoError: 'Could not read that image. Please choose another file.', aadhaarHint: 'Optional. Stored securely and never shown in full.', actActivate: 'Activate Student', actAtt: 'View Attendance', actDeactivate: 'Deactivate Student', actDownload: 'Download Details', actEdit: 'Edit Student', actFees: 'View Fees', actIdCard: 'Print ID Card', actResults: 'View Results', actTransfer: 'Transfer Student', actView: 'View Profile', actionsW: 'Actions', admNoAuto: 'Auto-generated', allClasses: 'All Classes', allFeeSt: 'All Fee Status', allGenders: 'All Genders', allSections: 'All Sections', allSessions: 'All Sessions', allStatus: 'All Statuses', attPct: 'Attendance', backDir: 'Back to Directory', cancelAdm: 'Cancel Admission', cancelAdmMsg: 'Cancel this admission? The student record will be kept with status Cancelled.', docMissing: 'Not received', docStatus: 'Received', docsNote: 'Document files will be uploaded in the server phase. This checklist records what has been received.', exportCsv: 'Export CSV', fAadhaar: 'Aadhaar Number (optional)', fAdmDate: 'Admission Date', fAdmNo: 'Admission Number', fBirthCert: 'Birth Certificate', fBlood: 'Blood Group', fCategory: 'Category', fDistrict: 'District', fDob: 'Date of Birth', fDocsOther: 'Other Documents (notes)', fFather: 'Father\'s Name', fGender: 'Gender', fMother: 'Mother\'s Name', fOccupation: 'Occupation', fParentEmail: 'Parent Email', fPhone2: 'Secondary Mobile', fPin: 'PIN Code', fPrevClass: 'Previous Class', fPrevSchool: 'Previous School', fSection: 'Section', fState: 'State', fTc: 'Transfer Certificate (TC)', fTcNo: 'Transfer Certificate No.', feeSt: 'Fee Status', hwDone: 'Done', hwPend: 'Pending', hwPending: 'Homework Pending', latestExam: 'Latest Exam', nextW: 'Next', noActivity: 'No activity recorded yet.', noAttRecs: 'No attendance records yet for this student.', noExamRecs: 'No examination results yet.', noHwRecs: 'No homework records for this class.', openFees: 'Open Fee Page', pgOf: 'of', pgPage: 'Page', phase3W: 'Phase 3', prevW: 'Previous', saveAddAnother: 'Save & Add Another', saveDraft: 'Save as Draft', secAcademic: 'Academic Details', secDocs: 'Documents', secParent: 'Parent / Guardian Details', secPersonal: 'Personal Details', stActive: 'Active Students', stAvgAtt: 'Average Attendance', stBoys: 'Boys', stByClass: 'Students by Class', stByClassSub: 'Number of students in each class-section.', stGenderDist: 'Boys & Girls', stGenderSub: 'Gender distribution across the school.', stGirls: 'Girls', stInactive: 'Inactive Students', stNewAdm: 'New Admissions', stNotSpec: 'Not specified', stPendFee: 'Students with Pending Fees', stTotal: 'Total Students', stuSearchPh: 'Search name, admission no. or mobile…', tActMsg: 'Activate student', tActivated: 'Student activated.', tAdmCancelled: 'Admission cancelled. The record is kept.', tAdmCreated: 'Admission saved. Admission No. ', tCsvExported: 'Student list exported.', tDeactMsg: 'Deactivate student', tDeactivated: 'Student deactivated.', tDraftSaved: 'Draft saved.', tDupFound: 'A matching student already exists: ', tInvalidAadhaar: 'Aadhaar must be 12 digits (optional).', tInvalidMobile: 'Enter a valid 10-digit mobile number.', tInvalidPin: 'PIN code must be 6 digits.', tPickClass: 'Please choose a class.', tReqFields: 'Please fill Student Name, Primary Mobile, Class and Section.', tStuCsvOne: 'Student details downloaded.', tTransferred: 'Student transferred.', tabAcademic: 'Academic Records', tabActivity: 'Activity History', tabAttendance: 'Attendance History', tabDocs: 'Documents', tabFees: 'Fee History', tabHomework: 'Homework Records', tabOverview: 'Overview', tabParent: 'Parent Information', tabPersonal: 'Personal Information', tabResults: 'Examination Results', thAdmNo: 'Admission No.', thExam: 'Exam', thFather: 'Father\'s Name', transferTitle: 'Transfer Student', transferTo: 'New Class & Section', idCardSoon: 'ID Card generator comes in Phase 3.',
     impTitle: 'Bulk Import Students', impImportBtn: 'Import Students', impTemplate: 'Download Sample Template', impTemplateSub: 'CSV format only — Excel (.xlsx) files cannot be read here. Use the template columns.', impChooseFile: 'Choose CSV File', impPreview: 'Import Preview', impSummary: 'Import Summary', impValid: 'Valid', impError: 'Error', impDuplicate: 'Duplicate', impReason: 'Reason', impConfirm: 'Import Valid Rows', impDone: 'Done', impNoRows: 'No rows found in this file. Please check the template.', impBadHeader: 'This file does not look like the student template — the Name column is missing.', impNoFile: 'Please choose a CSV file first.', impNoValid: 'No valid rows to import.', impImported: 'imported', impSkipped: 'skipped', impErrName: 'Name is required', impErrMobile: 'Mobile must be 10 digits', impErrMobile2: 'Secondary mobile must be 10 digits', impErrClass: 'Class is not valid', impErrSection: 'Section must be A, B or C', impErrPin: 'PIN must be 6 digits', impErrAadhaar: 'Aadhaar must be 12 digits', impErrDob: 'Date of birth is not a valid date', impErrAdmDate: 'Admission date is not a valid date', impErrSession: 'Session is not valid (e.g. 2025–26)', impErrGender: 'Gender must be Boy, Girl or Other', impErrBlood: 'Blood group is not valid', impErrCategory: 'Category must be General, OBC, SC, ST or Other', impErrEmail: 'Parent email is not valid', impErrRoll: 'Roll must be a positive number', impErrBool: 'Must be Yes or No', impErrDup: 'Duplicate of', impErrDupFile: 'Duplicate in this file', tImpDone: 'Bulk import complete.', tImpTemplate: 'Sample template downloaded.',
@@ -1982,12 +2680,12 @@ var I18N = {
     idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.',
     authParent: 'Parent', parentAdmNo: 'Admission Number', parentPinLabel: 'Parent PIN', parentLoginBtn: 'Login as Parent', parentNote: 'Parent access on this device uses a PIN set by the school. Real password accounts arrive with the server version.', parentSub: 'Parent', parentDashboard: 'My Child', tInvalidParent: 'Invalid admission number or PIN.', tParentScope: 'You can only view your own child\'s profile.', parentAccess: 'Parent Access', parentPinNow: 'Current Parent PIN', parentPinNone: 'No PIN set — parent login unavailable for this student.', parentPinNew: 'New PIN (4–6 digits)', parentPinSetBtn: 'Set PIN', parentPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Parent PIN set.', tPinCleared: 'Parent PIN cleared.', tPinAuto: 'Default PIN is the last 4 digits of the parent\'s mobile.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
     collectFeeBtn: 'Collect Fee', rcptTitle: 'FEE RECEIPT', rcptReceiptNo: 'Receipt No', rcptDate: 'Date', rcptAdmNo: 'Adm No', rcptSession: 'Session', rcptName: 'Name', rcptClass: 'Class', rcptInstallment: 'Installment', rcptCounter: 'Counter No', rcptSlNo: 'Sl.No', rcptDesc: 'Description', rcptDue: 'Due', rcptCon: 'Con', rcptPaid: 'Paid', rcptAdmissionFee: 'Admission Fee', rcptTuitionFee: 'Tuition Fee', rcptCaution: 'Caution Money', rcptAnnual: 'Annual Charges', rcptBusFee: 'Bus Fee', rcptDues: 'Dues', rcptPayModeTitle: 'PAY MODE INFORMATION', rcptPayMode: 'Pay Mode', rcptBank: 'Bank', rcptNumber: 'Number', rcptTotal: 'Total', rcptTotalWords: 'Total in Words', rcptComputerGen: 'This is a computer generated Receipt. Does not required signature.', rcptParentCopy: 'PARENT COPY', rcptCollectorSign: 'Collector\'s Signature', rcptIncludeBus: 'Include Bus/Transport', rcptOtherFees: 'Other Fees', rcptAnnualHint: 'One-time and annual amounts used on the Collect Fee receipt. Set 0 to hide a row.', payModeCash: 'Cash', payModeCheque: 'Cheque', payModeUpi: 'UPI', payModeCard: 'Card', payModeBank: 'Bank Transfer', tFeeCollected: 'Fee collected.', tCollectZero: 'Nothing to collect — enter a Paid amount.', tCollectSaved: 'Fee collected — Receipt ', tCollectNotActive: 'This student is not active — fee cannot be collected.', rcptReceipts: 'Receipts', rcptView: 'View', rcptPrint: 'Print / Save PDF', rcptCollectAgain: 'Collect Again', rcptNoReceipts: 'No receipts yet for this student.', rcptDraft: 'Draft — not saved yet', rcptCollectSave: 'Collect & Save', rcptNoLines: 'Nothing to collect for this period — set the fee amounts in Fee Structure first.',
-    sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.'
+    sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.', sbStatusSyncing: 'Syncing with the server…', sbStatusPendingSync: 'Offline — changes will sync when you are back online.', sbSyncDone: 'Synced with the server.', sbSyncFailed: 'Sync did not finish — it will retry on your next login.', sbSyncOffline: 'Offline — your changes are saved here and will sync later.', sbSyncConflict: 'Server had a newer copy — kept the server version.'
   },
   hi: {
     dashboard: 'डैशबोर्ड', settings: 'सेटिंग्स', reports: 'रिपोर्ट', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
     landFooter: '<b>School Saathi</b> — Smart Education. Better Tomorrow.<br>बिहार के लिए बना • स्कूलों के लिए मुफ़्त • गोपालगंज, बिहार में बना ❤️',
-    loginWelcome: 'लॉग इन करें या साइन अप करें<br>जारी रखने के लिए', loginEmail: 'ईमेल', loginPassword: 'पासवर्ड', loginEmailPh: 'आप@school.edu.in', loginPwPh: '••••••••', loginBtn: 'लॉगिन', authLogin: 'लॉग इन', authSignup: 'साइन अप', authNote: 'एक स्कूल, एक अकाउंट। सर्वर वर्शन आने तक आपके स्कूल का डेटा इसी डिवाइस पर रहेगा।', suSchool: 'स्कूल का नाम', suYourName: 'आपका नाम', suEmail: 'ईमेल', suPw: 'पासवर्ड', suPw2: 'पासवर्ड दोबारा डालें', suBtn: 'अकाउंट बनाएँ', loginOr: 'या जारी रखें', demoTitle: '— एक टैप में डेमो लॉगिन —', loginBack: '← वेबसाइट पर वापस',
+    loginWelcome: 'लॉग इन करें या साइन अप करें<br>जारी रखने के लिए', loginEmail: 'ईमेल', loginPassword: 'पासवर्ड', loginEmailPh: 'आप@school.edu.in', loginPwPh: '••••••••', loginBtn: 'लॉगिन', authLogin: 'लॉग इन', authSignup: 'साइन अप', authNote: 'एक स्कूल, एक अकाउंट। सर्वर अकाउंट से लॉग इन करने पर आपका डेटा अपने आप सभी डिवाइस पर सिंक होता है — और ऑफ़लाइन भी काम करता है।', suSchool: 'स्कूल का नाम', suYourName: 'आपका नाम', suEmail: 'ईमेल', suPw: 'पासवर्ड', suPw2: 'पासवर्ड दोबारा डालें', suBtn: 'अकाउंट बनाएँ', loginOr: 'या जारी रखें', demoTitle: '— एक टैप में डेमो लॉगिन —', loginBack: '← वेबसाइट पर वापस',
     schoolDashboard: 'स्कूल एडमिन डैशबोर्ड', studentDashboard: 'छात्र डैशबोर्ड',
     confirmTitle: 'पुष्टि करें', cancel: 'रद्द करें', confirmYes: 'हाँ, जारी रखें', saveBtn: 'सहेजें',
     addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', resetNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', resetNameHint: 'सब कुछ मिटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', resetNameLabel: 'स्कूल का नाम', resetNameWrong: 'यह नाम मेल नहीं खाता — कुछ भी रीसेट नहीं हुआ।', resetNameGo: 'रीसेट की पुष्टि करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveStudentBtn: 'छात्र सहेजें',
@@ -1998,7 +2696,7 @@ var I18N = {
     searchStudent: 'छात्र खोजें…', viewAll: 'सभी देखें →', classAvg: 'कक्षा औसत', studentsMarked: 'छात्रों के अंक भरे गए', ofWord: 'में से', showingRec: 'दिखाए जा रहे हैं', ofRec: 'में से', recordsWord: 'रिकॉर्ड।', tapDone: 'पूरा होने पर बॉक्स पर टैप करें', myHwSub: 'पूरा होने पर बॉक्स पर टैप करें', tileAtt: 'उपस्थिति', tileFees: 'शुल्क', tileResults: 'परिणाम', tileHw: 'होमवर्क', doneSuffix: 'पूर्ण', presBtn: 'उपस्थित', absBtn: 'अनुपस्थित', lateBtn: 'देर से',
     qaAddStudent: 'छात्र जोड़ें', qaAddStudentD: 'नया प्रवेश', qaMarkAtt: 'उपस्थिति दर्ज करें', qaMarkAttD: 'आज का रजिस्टर', qaEnterMarks: 'अंक भरें', qaEnterMarksD: 'परीक्षा परिणाम', qaGenReport: 'रिपोर्ट बनाएँ', qaGenReportD: 'CSV डाउनलोड',
     dlStudents: 'छात्र CSV डाउनलोड करें', dlFees: 'शुल्क CSV डाउनलोड करें', dlAtt: 'उपस्थिति CSV डाउनलोड करें', repStudentsSub: 'नाम, कक्षा, रोल, अभिभावक, फ़ोन, उपस्थिति, शुल्क स्थिति', repFeesSub: 'छात्र, कक्षा, महीना, राशि, स्थिति — अप्रैल से अगस्त',
-    subSettingsS: 'स्कूल प्रोफ़ाइल', settingsSub: 'बदलें और सहेजें — बदलाव इस डिवाइस पर सहेजे जाते हैं।',
+    subSettingsS: 'स्कूल प्रोफ़ाइल', settingsSub: 'बदलें और सहेजें — ऑनलाइन होने पर बदलाव सर्वर पर सिंक होते हैं।',
     studentsW: 'छात्र', perSchool: 'प्रति स्कूल 2',
     raiseSupport: 'सहायता अनुरोध भेजें', supportNoted: 'सहायता अनुरोध दर्ज हुआ — हम आपको कॉल करेंगे।', collectedW: 'संग्रह', pendingW: 'बकाया', allW: 'सभी', editStudent: 'छात्र बदलें', feeTypeTuition: 'ट्यूशन', feeTypeAdmission: 'प्रवेश', feeTypeTransport: 'परिवहन', feeTypeExam: 'परीक्षा', feeTypeLibrary: 'पुस्तकालय', feeTypeActivity: 'गतिविधि', feeTypeComputer: 'कंप्यूटर लैब', feeTypeOther: 'अन्य', allTypes: 'सभी प्रकार', searchFee: 'नाम, नामांकन संख्या या कक्षा खोजें…', thEnr: 'नामांकन सं.', thType: 'प्रकार', feeByType: 'प्रकार के अनुसार शुल्क', feeByTypeSub: 'प्रति प्रकार संग्रह और बकाया, लाइव गणना।', addFee: 'शुल्क जोड़ें', addFeeSub: 'किसी भी छात्र के लिए एक शुल्क रिकॉर्ड जोड़ें।', feeStruct: 'शुल्क संरचना', feeStructSub: 'प्रति कक्षा मासिक राशि। Generate इसी से रिकॉर्ड बनाता है।', genFees: 'शुल्क बनाएँ', saveStruct: 'संरचना सहेजें', addRow: 'पंक्ति जोड़ें', customType: 'कस्टम…', typeCustomPh: 'शुल्क का प्रकार लिखें', fStudent: 'छात्र', fMonth: 'महीना', fType: 'शुल्क प्रकार', fAmount: 'राशि (₹)', fStatus: 'स्थिति', fDate: 'तारीख', printList: 'सूची छापें', printStmt: 'विवरण छापें', backFees: 'सभी शुल्क पर वापस', totalBilled: 'कुल बिल', totalPaid: 'जमा', totalPending: 'बकाया', feeRecsH: 'शुल्क रिकॉर्ड', feeProfileSub: 'इस छात्र के सभी शुल्क रिकॉर्ड एक ही जगह।', tFeeAdded: 'शुल्क रिकॉर्ड जुड़ गया।', delFeeMsg: 'यह बकाया शुल्क रिकॉर्ड हटाएँ?', tFeeDeleted: 'शुल्क रिकॉर्ड हटा दिया गया।', tPickStudent: 'कृपया छात्र चुनें।', tAmtPositive: 'राशि 0 से अधिक होनी चाहिए।', tTypeRequired: 'कृपया शुल्क का प्रकार लिखें।', tStructSaved: 'शुल्क संरचना सहेजी गई।', tStructAdded: 'संरचना पंक्ति जुड़ी।', tStructRemoved: 'संरचना पंक्ति हटाई गई।', tGenRecords: 'शुल्क रिकॉर्ड बने', tGenSkipped: 'पहले से थे', tNoFeeRecs: 'इस छात्र के लिए अभी कोई शुल्क रिकॉर्ड नहीं है।', printTitle: 'शुल्क विवरण', printListTitle: 'शुल्क सूची', printGenOn: 'बनाया गया', closeW: 'बंद करें', saveFeeBtn: 'शुल्क सहेजें', photoLabel: 'छात्र की फ़ोटो', photoHint: 'फ़ोटो अपने आप छोटी हो जाती है (अधिकतम 512px, ~120KB)।', removePhoto: 'फ़ोटो हटाएँ', logoLabel: 'स्कूल का लोगो', logoHint: 'लोगो अपने आप छोटा हो जाता है (अधिकतम 256px, PNG में पारदर्शिता रहती है)।', removeLogo: 'लोगो हटाएँ', tPhotoTooBig: 'यह फ़ोटो छोटी करने के बाद भी बड़ी है। कृपया छोटी फ़ोटो चुनें।', tLogoTooBig: 'यह लोगो छोटा करने के बाद भी बड़ा है। कृपया छोटा लोगो चुनें।', tPhotoError: 'यह तस्वीर पढ़ी नहीं जा सकी। कृपया दूसरी फ़ाइल चुनें।', aadhaarHint: 'वैकल्पिक। सुरक्षित रूप से सहेजा जाता है, पूरा कभी नहीं दिखाया जाता।', actActivate: 'छात्र सक्रिय करें', actAtt: 'उपस्थिति देखें', actDeactivate: 'छात्र निष्क्रिय करें', actDownload: 'विवरण डाउनलोड करें', actEdit: 'छात्र बदलें', actFees: 'शुल्क देखें', actIdCard: 'ID कार्ड छापें', actResults: 'परिणाम देखें', actTransfer: 'छात्र स्थानांतरित करें', actView: 'प्रोफ़ाइल देखें', actionsW: 'कार्रवाई', admNoAuto: 'स्वतः निर्मित', allClasses: 'सभी कक्षाएँ', allFeeSt: 'सभी शुल्क स्थितियाँ', allGenders: 'सभी लिंग', allSections: 'सभी अनुभाग', allSessions: 'सभी सत्र', allStatus: 'सभी स्थितियाँ', attPct: 'उपस्थिति', backDir: 'सूची पर वापस', cancelAdm: 'प्रवेश रद्द करें', cancelAdmMsg: 'यह प्रवेश रद्द करें? छात्र का रिकॉर्ड Cancelled स्थिति के साथ रखा जाएगा।', docMissing: 'प्राप्त नहीं', docStatus: 'प्राप्त', docsNote: 'दस्तावेज़ फ़ाइलें सर्वर चरण में अपलोड होंगी। यह सूची बताती है कि क्या प्राप्त हुआ है।', exportCsv: 'CSV निर्यात करें', fAadhaar: 'आधार संख्या (वैकल्पिक)', fAdmDate: 'प्रवेश तिथि', fAdmNo: 'प्रवेश संख्या', fBirthCert: 'जन्म प्रमाण पत्र', fBlood: 'रक्त समूह', fCategory: 'श्रेणी', fDistrict: 'जिला', fDob: 'जन्म तिथि', fDocsOther: 'अन्य दस्तावेज़ (नोट)', fFather: 'पिता का नाम', fGender: 'लिंग', fMother: 'माता का नाम', fOccupation: 'व्यवसाय', fParentEmail: 'अभिभावक ईमेल', fPhone2: 'दूसरा मोबाइल', fPin: 'पिन कोड', fPrevClass: 'पिछली कक्षा', fPrevSchool: 'पिछला स्कूल', fSection: 'अनुभाग', fState: 'राज्य', fTc: 'स्थानांतरण प्रमाण पत्र (TC)', fTcNo: 'TC संख्या', feeSt: 'शुल्क स्थिति', hwDone: 'पूर्ण', hwPend: 'बाकी', hwPending: 'होमवर्क बाकी', latestExam: 'हाल की परीक्षा', nextW: 'अगला', noActivity: 'अभी कोई गतिविधि दर्ज नहीं है।', noAttRecs: 'इस छात्र के लिए अभी कोई उपस्थिति रिकॉर्ड नहीं है।', noExamRecs: 'अभी कोई परीक्षा परिणाम नहीं है।', noHwRecs: 'इस कक्षा के लिए कोई होमवर्क रिकॉर्ड नहीं है।', openFees: 'शुल्क पेज खोलें', pgOf: 'का', pgPage: 'पृष्ठ', phase3W: 'Phase 3', prevW: 'पिछला', saveAddAnother: 'सहेजें और नया जोड़ें', saveDraft: 'ड्राफ़्ट सहेजें', secAcademic: 'शैक्षणिक विवरण', secDocs: 'दस्तावेज़', secParent: 'माता-पिता / अभिभावक विवरण', secPersonal: 'व्यक्तिगत विवरण', stActive: 'सक्रिय छात्र', stAvgAtt: 'औसत उपस्थिति', stBoys: 'लड़के', stByClass: 'कक्षा अनुसार छात्र', stByClassSub: 'प्रत्येक कक्षा-अनुभाग में छात्रों की संख्या।', stGenderDist: 'लड़के और लड़कियाँ', stGenderSub: 'पूरे स्कूल में लिंग वितरण।', stGirls: 'लड़कियाँ', stInactive: 'निष्क्रिय छात्र', stNewAdm: 'नए प्रवेश', stNotSpec: 'निर्दिष्ट नहीं', stPendFee: 'बकाया शुल्क वाले छात्र', stTotal: 'कुल छात्र', stuSearchPh: 'नाम, प्रवेश संख्या या मोबाइल खोजें…', tActMsg: 'छात्र सक्रिय करें', tActivated: 'छात्र सक्रिय हुआ।', tAdmCancelled: 'प्रवेश रद्द हुआ। रिकॉर्ड रखा गया है।', tAdmCreated: 'प्रवेश सहेजा गया। प्रवेश संख्या ', tCsvExported: 'छात्र सूची निर्यात हुई।', tDeactMsg: 'छात्र निष्क्रिय करें', tDeactivated: 'छात्र निष्क्रिय हुआ।', tDraftSaved: 'ड्राफ़्ट सहेजा गया।', tDupFound: 'मेल खाता छात्र पहले से मौजूद है: ', tInvalidAadhaar: 'आधार 12 अंकों का होना चाहिए (वैकल्पिक)।', tInvalidMobile: 'सही 10 अंकों का मोबाइल नंबर डालें।', tInvalidPin: 'पिन कोड 6 अंकों का होना चाहिए।', tPickClass: 'कृपया कक्षा चुनें।', tReqFields: 'कृपया छात्र का नाम, मुख्य मोबाइल, कक्षा और अनुभाग भरें।', tStuCsvOne: 'छात्र का विवरण डाउनलोड हुआ।', tTransferred: 'छात्र स्थानांतरित हुआ।', tabAcademic: 'शैक्षणिक रिकॉर्ड', tabActivity: 'गतिविधि इतिहास', tabAttendance: 'उपस्थिति इतिहास', tabDocs: 'दस्तावेज़', tabFees: 'शुल्क इतिहास', tabHomework: 'होमवर्क रिकॉर्ड', tabOverview: 'सारांश', tabParent: 'अभिभावक जानकारी', tabPersonal: 'व्यक्तिगत जानकारी', tabResults: 'परीक्षा परिणाम', thAdmNo: 'प्रवेश सं.', thExam: 'परीक्षा', thFather: 'पिता का नाम', transferTitle: 'छात्र स्थानांतरण', transferTo: 'नई कक्षा और अनुभाग', idCardSoon: 'ID कार्ड जनरेटर Phase 3 में आएगा।',
     impTitle: 'छात्रों का बल्क आयात', impImportBtn: 'छात्र आयात करें', impTemplate: 'नमूना टेम्पलेट डाउनलोड करें', impTemplateSub: 'सिर्फ CSV प्रारूप — Excel (.xlsx) फ़ाइल यहाँ पढ़ी नहीं जा सकती। टेम्पलेट के कॉलम इस्तेमाल करें।', impChooseFile: 'CSV फ़ाइल चुनें', impPreview: 'आयात पूर्वावलोकन', impSummary: 'आयात सारांश', impValid: 'सही', impError: 'त्रुटि', impDuplicate: 'दोहरा', impReason: 'कारण', impConfirm: 'सही पंक्तियाँ आयात करें', impDone: 'पूर्ण', impNoRows: 'इस फ़ाइल में कोई पंक्ति नहीं मिली। कृपया टेम्पलेट जाँचें।', impBadHeader: 'यह फ़ाइल छात्र टेम्पलेट जैसी नहीं लगती — नाम वाला कॉलम नहीं मिला।', impNoFile: 'कृपया पहले CSV फ़ाइल चुनें।', impNoValid: 'आयात के लिए कोई सही पंक्ति नहीं है।', impImported: 'आयात हुए', impSkipped: 'छोड़े गए', impErrName: 'नाम आवश्यक है', impErrMobile: 'मोबाइल 10 अंकों का होना चाहिए', impErrMobile2: 'दूसरा मोबाइल 10 अंकों का होना चाहिए', impErrClass: 'कक्षा सही नहीं है', impErrSection: 'अनुभाग A, B या C होना चाहिए', impErrPin: 'पिन 6 अंकों का होना चाहिए', impErrAadhaar: 'आधार 12 अंकों का होना चाहिए', impErrDob: 'जन्म तिथि सही तारीख नहीं है', impErrAdmDate: 'प्रवेश तिथि सही तारीख नहीं है', impErrSession: 'सत्र सही नहीं है (जैसे 2025–26)', impErrGender: 'लिंग Boy, Girl या Other होना चाहिए', impErrBlood: 'रक्त समूह सही नहीं है', impErrCategory: 'श्रेणी General, OBC, SC, ST या Other होनी चाहिए', impErrEmail: 'अभिभावक ईमेल सही नहीं है', impErrRoll: 'रोल धनात्मक संख्या होनी चाहिए', impErrBool: 'Yes या No होना चाहिए', impErrDup: 'इसकी प्रतिलिपि', impErrDupFile: 'इस फ़ाइल में दोहरा', tImpDone: 'बल्क आयात पूर्ण हुआ।', tImpTemplate: 'नमूना टेम्पलेट डाउनलोड हुआ।',
@@ -2221,6 +2919,7 @@ function logout() {
   } catch (e2) {}
   sbClearSession();
   state.sb = null;
+  sbSyncResetMemory(); // v31: drop the in-memory snapshot + pending flush timer (the persisted outbox/snapshot stay for the next login)
   lastBackAt = 0; histExiting = false;
   histReset('login'); // back after logout cannot re-enter the app
   $('loginId').value = ''; $('loginPw').value = '';
@@ -2577,6 +3276,14 @@ function resetAllConfirmed() {
   // must be re-entered in Fee Structure.
   var keepProfile = db.profile;
   db = emptyDb(keepProfile, []); // v28: no platform network list to preserve anymore
+  // v31: a reset wipes THIS DEVICE only. Clear the pending outbox, the
+  // server-id map and the sync snapshot for this account, so stale queued
+  // changes cannot re-upload the deleted data. The server copy is NOT
+  // wiped: the next sync (server wins) restores it. A server-side wipe is
+  // a separate, explicit step — not part of Reset All Data.
+  if (state.sb && state.sb.uid) { sbOutboxClear(state.sb.uid); sbSrvIdsClear(state.sb.uid); }
+  if (state.user) sbSnapClear(state.user.uid);
+  sbSyncResetMemory();
   saveDB(db);
   state.view = 'dashboard';
   state.feeStudent = null; state.feeSearch = ''; state.feeType = 'All'; state.feeFilter = 'All'; state.feeFormOpen = false; state.feePreselect = null;
@@ -4416,6 +5123,11 @@ document.addEventListener('DOMContentLoaded', function () {
   sbBoot(); // password-reset links + stored server session / pending backup
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('popstate', onPopState); // Android back button
+    // v31: reconnect — flush the outbox and pull changes from other
+    // devices. Fire-and-forget; a failed sync retries on next login.
+    window.addEventListener('online', function () {
+      if (state.user && state.user.role === 'school' && state.sb) sbSyncStart(state.user, state.sb.uid, null).catch(function () {});
+    });
   }
   if ('serviceWorker' in navigator && window.location.protocol.indexOf('http') === 0) {
     try {
