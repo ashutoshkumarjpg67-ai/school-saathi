@@ -30,6 +30,543 @@ function findAccount(email) {
 function dbKeyFor(a) { if (a.role === 'parent') return DB_KEY; return a.role === 'super' ? 'schoolSaathiDBv1' : 'schoolSaathiDB_' + a.uid; }
 function applySchoolProfile(d, a) { d.profile.name = a.school; d.profile.principal = a.name; d.profile.email = a.email; return d; }
 
+/* ================= Supabase Auth (v27) =================
+   Server login via GoTrue REST with plain fetch — NO external JS library,
+   the app stays self-contained. The anon (publishable) key below is safe to
+   ship in client code; it is NOT a service_role key (there is none anywhere
+   in this app — never add one). Project: School Saathi,
+   https://bsjqeeeemwimzldrehpw.supabase.co (ref has FOUR e's after bsjq).
+   Login order: Supabase first when online, local djb2 accounts as the
+   offline fallback. The local super@school-saathi.in / admin123 account
+   stays working offline only — that address cannot exist in Supabase Auth
+   (the domain does not resolve), so the Supabase owner is the Gmail
+   account created for him and the local super account is the
+   offline fallback for the same person. Never hard-code an email for the
+   Super Admin check: it is a lookup on ss_platform_admins by user id. */
+var SB_URL = 'https://bsjqeeeemwimzldrehpw.supabase.co';
+var SB_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJzanFlZWVlbXdpbXpsZHJlaHB3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQxODA0ODIsImV4cCI6MjEwOTc1NjQ4Mn0.KUV5jF6he8suH_lHUrLvXixPVdzIwHVqcPJXHh1jVkM';
+var SB_SESSION_KEY = 'schoolSaathiSupabaseSession';
+var SB_SCHOOL_MAP_KEY = 'schoolSaathiServerSchools'; // { localAccountUid: serverSchoolUuid }
+var SB_MIGRATED_KEY = 'schoolSaathiMigrated'; // per Supabase uid: { at, schoolId, counts }
+var SB_STATUS_KEY = 'schoolSaathiSbStatus'; // { state, at, detail }
+var sbRecoveryToken = null;
+var sbMigPromise = null; // one migration run at a time
+
+function sbIsOnline() {
+  if (typeof fetch !== 'function') return false;
+  try { if (typeof navigator !== 'undefined' && navigator.onLine === false) return false; } catch (e) {}
+  return true;
+}
+function sbAuthFetch(path, opts) {
+  opts = opts || {};
+  if (typeof fetch !== 'function') return Promise.reject(new Error('no-fetch'));
+  var headers = { 'apikey': SB_ANON_KEY, 'Authorization': 'Bearer ' + (opts.token || SB_ANON_KEY), 'Content-Type': 'application/json' };
+  var init = { method: opts.method || 'GET', headers: headers };
+  if (opts.body !== undefined) init.body = JSON.stringify(opts.body);
+  return fetch(SB_URL + path, init).then(function (res) {
+    if (res.status === 204) return { ok: res.ok, status: res.status, data: null };
+    return res.json().catch(function () { return null; }).then(function (data) {
+      return { ok: res.ok, status: res.status, data: data };
+    });
+  });
+}
+function sbRest(method, path, token, body, prefer) {
+  if (typeof fetch !== 'function') return Promise.reject(new Error('no-fetch'));
+  var headers = { 'apikey': SB_ANON_KEY, 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
+  if (prefer) headers['Prefer'] = prefer;
+  var init = { method: method, headers: headers };
+  if (body !== undefined) init.body = JSON.stringify(body);
+  return fetch(SB_URL + '/rest/v1/' + path, init).then(function (res) {
+    if (res.status === 204) return { ok: res.ok, status: res.status, data: null };
+    return res.json().catch(function () { return null; }).then(function (data) {
+      return { ok: res.ok, status: res.status, data: data };
+    });
+  });
+}
+function sbSignUp(email, pw, school, name) {
+  return sbAuthFetch('/auth/v1/signup', { method: 'POST', body: { email: email, password: pw, data: { school: school, name: name } } });
+}
+function sbSignIn(email, pw) {
+  return sbAuthFetch('/auth/v1/token?grant_type=password', { method: 'POST', body: { email: email, password: pw } });
+}
+function sbSignOut(token) {
+  return sbAuthFetch('/auth/v1/logout', { method: 'POST', token: token, body: {} });
+}
+function sbRefresh(refreshToken) {
+  return sbAuthFetch('/auth/v1/token?grant_type=refresh_token', { method: 'POST', body: { refresh_token: refreshToken } });
+}
+function sbRecover(email) {
+  return sbAuthFetch('/auth/v1/recover', { method: 'POST', body: { email: email } });
+}
+function sbGetUser(token) {
+  return sbAuthFetch('/auth/v1/user', { method: 'GET', token: token });
+}
+function sbSetNewPassword(recoveryToken, pw) {
+  return sbAuthFetch('/auth/v1/user', { method: 'PUT', token: recoveryToken, body: { password: pw } });
+}
+function sbStoreSession(d) {
+  try {
+    var s = { access_token: d.access_token, refresh_token: d.refresh_token || '', expires_at: Date.now() + ((d.expires_in || 3600) * 1000), user_id: (d.user && d.user.id) || '', email: (d.user && d.user.email) || '' };
+    localStorage.setItem(SB_SESSION_KEY, JSON.stringify(s));
+    return s;
+  } catch (e) { return null; }
+}
+function sbLoadSession() {
+  try { var r = localStorage.getItem(SB_SESSION_KEY); return r ? JSON.parse(r) : null; } catch (e) { return null; }
+}
+function sbClearSession() { try { localStorage.removeItem(SB_SESSION_KEY); } catch (e) {} }
+function sbGetValidToken() {
+  var s = sbLoadSession();
+  if (!s || !s.access_token) return Promise.resolve(null);
+  if (s.expires_at && s.expires_at - Date.now() > 60000) return Promise.resolve(s.access_token);
+  if (!s.refresh_token) return Promise.resolve(null);
+  return sbRefresh(s.refresh_token).then(function (r) {
+    if (!r.ok || !r.data || !r.data.access_token) { sbClearSession(); return null; }
+    var s2 = sbStoreSession(r.data);
+    return s2 ? s2.access_token : null;
+  }).catch(function () { return null; });
+}
+function sbCheckSuperAdmin(uid, token) {
+  return sbRest('GET', 'ss_platform_admins?select=user_id&user_id=eq.' + encodeURIComponent(uid), token).then(function (r) {
+    return r.ok && Array.isArray(r.data) && r.data.length > 0;
+  });
+}
+function sbSetStatus(state, detail) {
+  try { localStorage.setItem(SB_STATUS_KEY, JSON.stringify({ state: state, at: new Date().toISOString(), detail: detail || '' })); } catch (e) {}
+}
+function sbLoadStatus() {
+  try { var r = localStorage.getItem(SB_STATUS_KEY); return r ? JSON.parse(r) : null; } catch (e) { return null; }
+}
+function sbStatusText() {
+  var st = sbLoadStatus();
+  if (!st) return t('sbStatusPending');
+  if (st.state === 'synced') return t('sbStatusSynced') + (st.at ? ' ' + st.at.slice(0, 10) : '');
+  if (st.state === 'uploading') return t('sbStatusUploading');
+  if (st.state === 'failed') return t('sbStatusFailed');
+  if (st.state === 'offline') return t('sbStatusOffline');
+  return t('sbStatusPending');
+}
+function sbLoadMig(uid) {
+  try { var r = localStorage.getItem(SB_MIGRATED_KEY + ':' + uid); return r ? JSON.parse(r) : null; } catch (e) { return null; }
+}
+function sbSaveMig(uid, v) {
+  try { localStorage.setItem(SB_MIGRATED_KEY + ':' + uid, JSON.stringify(v)); } catch (e) {}
+}
+function sbServerSchoolMap() {
+  try { var r = localStorage.getItem(SB_SCHOOL_MAP_KEY); return r ? JSON.parse(r) : {}; } catch (e) { return {}; }
+}
+function sbSaveServerSchool(localUid, serverId) {
+  var m = sbServerSchoolMap(); m[localUid] = serverId;
+  try { localStorage.setItem(SB_SCHOOL_MAP_KEY, JSON.stringify(m)); } catch (e) {}
+}
+function sbFinishSupabaseLogin(data, email, pw) {
+  var uid = data.user && data.user.id;
+  if (!uid) { sbLocalLogin(email, pw, $('loginErr')); return; }
+  sbStoreSession(data);
+  var meta = (data.user && data.user.user_metadata) || {};
+  sbCheckSuperAdmin(uid, data.access_token).then(function (isSuper) {
+    if (isSuper) {
+      // Platform owner. Never migrate the platform demo DB to the server.
+      state.sb = { uid: uid, email: email, isSuper: true };
+      $('loginErr').classList.add('hidden');
+      loginAs(OWNER);
+      return;
+    }
+    var a = findAccount(email);
+    if (!a) {
+      // Signed in on the server but no account on this device yet: create
+      // the local workspace from the signup metadata so offline login works.
+      a = { uid: 'u' + Date.now().toString(36), name: meta.name || email, school: meta.school || '', email: email, pwHash: pw ? hashPw(pw) : '', role: 'school', sub: 'School Admin • ' + (meta.school || ''), created: new Date().toISOString().slice(0, 10), sbUid: uid };
+      var list = loadAccounts(); list.push(a); saveAccounts(list);
+    } else {
+      a.sbUid = uid;
+      var list2 = loadAccounts();
+      for (var i = 0; i < list2.length; i++) if (list2[i].email === email) list2[i] = a;
+      saveAccounts(list2);
+    }
+    state.sb = { uid: uid, email: email, isSuper: false };
+    $('loginErr').classList.add('hidden');
+    loginAs(a);
+    sbMaybeMigrate(a, uid, data.access_token); // fire-and-forget: never blocks login
+  }).catch(function () {
+    // Admin check failed mid-flight (network dropped): log in locally.
+    sbLocalLogin(email, pw, $('loginErr'));
+  });
+}
+function sbLocalLogin(id, pw, err) {
+  var a = findAccount(id);
+  var ok = a ? (a.role === 'super' ? pw === OWNER.pw : hashPw(pw) === a.pwHash) : false;
+  if (!a || !ok) {
+    err.textContent = t('tInvalidCreds');
+    err.classList.remove('hidden');
+    return false;
+  }
+  err.classList.add('hidden');
+  loginAs(a);
+  return true;
+}
+function showRecoverForm() {
+  switchAuth('login');
+  $('loginForm').classList.add('hidden');
+  $('recoverForm').classList.remove('hidden');
+  $('resetForm').classList.add('hidden');
+  $('recoverEmail').focus();
+}
+function doRecover(e) {
+  e.preventDefault();
+  var email = ($('recoverEmail').value || '').trim().toLowerCase();
+  var err = $('recoverErr');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    err.textContent = t('tInvalidEmail');
+    err.classList.remove('hidden');
+    return false;
+  }
+  err.classList.add('hidden');
+  if (!sbIsOnline()) {
+    err.textContent = t('sbOfflineLogin');
+    err.classList.remove('hidden');
+    return false;
+  }
+  sbRecover(email).then(function () {
+    err.textContent = t('sbRecoverSent');
+    err.classList.remove('hidden');
+  }).catch(function () {
+    err.textContent = t('sbRecoverFailed');
+    err.classList.remove('hidden');
+  });
+  return false;
+}
+function doResetPassword(e) {
+  e.preventDefault();
+  var pw = $('resetPw').value, pw2 = $('resetPw2').value;
+  var err = $('resetErr');
+  function fail(msg) { err.textContent = msg; err.classList.remove('hidden'); return false; }
+  if (pw.length < 6) return fail(t('tPwShort'));
+  if (pw !== pw2) return fail(t('tPwMismatch'));
+  if (!sbRecoveryToken) return fail(t('sbResetFailed'));
+  var tok = sbRecoveryToken;
+  sbSetNewPassword(tok, pw).then(function (r) {
+    if (!r.ok) { err.textContent = t('sbResetFailed'); err.classList.remove('hidden'); return; }
+    // Keep the device account in sync so offline login keeps working.
+    sbGetUser(tok).then(function (u) {
+      var em = u && u.data && u.data.email;
+      if (em) {
+        var a = findAccount(em);
+        if (a && a.role !== 'super') {
+          a.pwHash = hashPw(pw);
+          var l2 = loadAccounts();
+          for (var i = 0; i < l2.length; i++) if (l2[i].email === em) l2[i] = a;
+          saveAccounts(l2);
+        }
+      }
+    }).catch(function () { /* email lookup failed — server password still set */ });
+    sbRecoveryToken = null;
+    try { history.replaceState(null, '', location.pathname); } catch (e2) {}
+    $('resetForm').classList.add('hidden');
+    $('loginForm').classList.remove('hidden');
+    err.classList.add('hidden');
+    toast(t('sbResetDone'));
+    switchAuth('login');
+  }).catch(function () {
+    err.textContent = t('sbResetFailed');
+    err.classList.remove('hidden');
+  });
+  return false;
+}
+function sbBoot() {
+  // Password-reset / email-confirm links land back here with a hash.
+  try {
+    var h = (typeof location !== 'undefined' && location.hash) || '';
+    if (h && h.indexOf('access_token=') !== -1) {
+      var params = {};
+      h.slice(1).split('&').forEach(function (p) { var kv = p.split('='); params[kv[0]] = decodeURIComponent(kv[1] || ''); });
+      if (params.type === 'recovery' && params.access_token) {
+        sbRecoveryToken = params.access_token;
+        showView('login'); switchAuth('login');
+        $('loginForm').classList.add('hidden');
+        $('resetForm').classList.remove('hidden');
+        return;
+      }
+      if ((params.type === 'signup' || params.type === 'invite') && params.access_token) {
+        try { history.replaceState(null, '', location.pathname); } catch (e2) {}
+        toast(t('sbEmailConfirmed'));
+        return;
+      }
+    }
+  } catch (e) {}
+  // Resume a stored server session: refresh it if needed and retry a
+  // pending backup. Never blocks the local session.
+  if (!state.user || !state.sb) return;
+  if (state.user.role !== 'school' || sbLoadMig(state.sb.uid)) return;
+  sbGetValidToken().then(function (tok) {
+    if (!tok) return;
+    sbMaybeMigrate(state.user, state.sb.uid, tok);
+  }).catch(function () { /* offline — retry on next login */ });
+}
+
+/* ================= One-time migration upload (v27) =================
+   On first Supabase login for a school account, the account's local data
+   is uploaded once into the ss_ tables. Idempotent: every table is read
+   first and rows already on the server are skipped. After upload the
+   counts are read back and compared with the local counts; only then is
+   the account marked migrated. Local data is NEVER deleted. The app keeps
+   localStorage as its working store after migration (v28+ moves screens
+   to the server); a second device signing in starts empty locally —
+   download/sync is a later phase, not v27. Migration never runs for the
+   Super Admin (the platform demo DB is not a school) or for parents. */
+function sbNullIfEmpty(v) { return (v === '' || v === undefined || v === null) ? null : v; }
+function sbMapStudent(s, schoolId) {
+  return { school_id: schoolId, local_id: s.id, name: s.name || '', cls: s.cls || '', roll: s.roll || 0,
+    enr: sbNullIfEmpty(s.enr), guardian: s.guardian || '', phone: s.phone || '', mobile2: s.mobile2 || '',
+    parent_email: s.parentEmail || '', father_name: s.fatherName || '', mother_name: s.motherName || '',
+    occupation: s.occupation || '', dob: sbNullIfEmpty(s.dob),
+    gender: (s.gender === 'Boy' || s.gender === 'Girl') ? s.gender : '',
+    blood_group: s.bloodGroup || '', category: s.category || '', address: s.address || '',
+    state: s.state || '', district: s.district || '', pin: s.pin || '',
+    previous_school: s.previousSchool || '', previous_class: s.previousClass || '',
+    admission_no: sbNullIfEmpty(s.admissionNo), admission_date: sbNullIfEmpty(s.admissionDate),
+    session: s.session || '', status: s.status || 'Active', result: (s.result === undefined || s.result === null) ? null : s.result,
+    parent_pin: s.parentPin || null, photo_data_url: s.photo || null,
+    documents: s.documents || { birthCert: false, tc: false, tcNumber: '', other: '' },
+    aadhaar: sbNullIfEmpty(s.aadhaar) };
+}
+function sbMapFeeStructure(f, schoolId) {
+  return { school_id: schoolId, cls: f.cls || '', fee_type: f.type || 'Tuition', amount: f.amount || 0 };
+}
+function sbMapFeeRecord(r, schoolId, stuMap) {
+  return { school_id: schoolId, local_id: r.id, student_id: stuMap[r.studentId] || null,
+    student_name: r.student || '', cls: r.cls || '', month: r.month || '', fee_type: r.type || 'Tuition',
+    amount: r.amount || 0, status: r.status || 'Pending', record_date: sbNullIfEmpty(r.date) };
+}
+function sbMapTeacher(te, schoolId) {
+  return { school_id: schoolId, local_id: te.id, name: te.name || '', subject: te.subject || '', cls: te.cls || '' };
+}
+function sbMapExam(e, schoolId) {
+  return { school_id: schoolId, local_id: e.id, name: e.name || '', cls: e.cls || '', subject: e.subject || '',
+    exam_date: sbNullIfEmpty(e.date), total: e.total || 100 };
+}
+function sbMapHomework(h, schoolId, stuMap) {
+  return { school_id: schoolId, local_id: h.id, cls: h.cls || '', subject: h.subject || '', title: h.title || '',
+    due: sbNullIfEmpty(h.due), done_by: (h.doneBy || []).map(function (id) { return stuMap[id]; }).filter(function (x) { return !!x; }) };
+}
+function sbMapNotice(n, schoolId) {
+  return { school_id: schoolId, local_id: n.id, title: n.title || '', notice_date: sbNullIfEmpty(n.date), body: n.body || '' };
+}
+function sbMapReceipt(rc, schoolId, stuMap, byId) {
+  var s = byId[rc.studentId] || {};
+  return { school_id: schoolId, student_id: stuMap[rc.studentId] || null, receipt_no: rc.receiptNo || '',
+    admission_no: rc.admissionNo || s.admissionNo || s.enr || '', student_name: rc.name || s.name || '',
+    cls: rc.cls || s.cls || '', session: rc.session || '', receipt_date: sbNullIfEmpty(rc.date),
+    month: rc.month || '', counter_no: rc.counterNo || 0, lines: rc.lines || [], pay_mode: rc.payMode || 'Cash',
+    pay_date: sbNullIfEmpty(rc.payDate), bank: rc.bank || '', number: rc.number || '',
+    total: rc.total || 0, total_words: rc.totalWords || '', collector: rc.collector || '' };
+}
+function sbMapAudit(a, schoolId) {
+  return { school_id: schoolId, ts: a.ts || new Date().toISOString(), actor: a.actor || 'system', action: a.action || '', details: a.details || '' };
+}
+function sbMapActivity(a, schoolId) {
+  var row = { school_id: schoolId, icon: a.icon || '', bg: a.bg || '', title: a.title || '', sub: a.sub || '' };
+  if (a.ts) row.created_at = a.ts;
+  return row;
+}
+function sbFlattenAttendance(d) {
+  var out = [];
+  Object.keys(d.attendance || {}).forEach(function (key) {
+    var parts = key.split('|');
+    var recs = d.attendance[key] || {};
+    Object.keys(recs).forEach(function (sid) {
+      out.push({ date: parts[0], cls: parts[1] || '', studentId: sid, status: recs[sid] });
+    });
+  });
+  return out;
+}
+function sbLocalCounts(d) {
+  return { students: (d.students || []).length, feeRecords: (d.feeRecords || []).length,
+    feeStructure: (d.feeStructure || []).length, attendance: sbFlattenAttendance(d).length,
+    receipts: (d.receipts || []).length, auditLog: (d.auditLog || []).length,
+    activities: (d.activities || []).length, teachers: (d.teachers || []).length,
+    exams: (d.exams || []).length, marks: (d.marks || []).length,
+    homework: (d.homework || []).length, notices: (d.notices || []).length };
+}
+function sbNormTs(v) { return String(v || '').slice(0, 19); }
+// Upload rows that are not on the server yet. keyFn builds the dedupe key
+// from a row (local or server). onInserted receives ALL rows for the table
+// (existing + inserted) so callers can build id maps. Returns a promise
+// of the number of rows inserted.
+function sbUploadMissing(token, schoolId, table, selectCols, rows, keyFn, onInserted) {
+  if (!rows.length) return Promise.resolve(0);
+  return sbRest('GET', table + '?select=' + selectCols + '&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token).then(function (r) {
+    if (!r.ok) throw new Error('read-' + table);
+    var existing = Array.isArray(r.data) ? r.data : [];
+    var seen = {};
+    existing.forEach(function (row) { seen[keyFn(row)] = true; });
+    var missing = rows.filter(function (row) { return !seen[keyFn(row)]; });
+    if (onInserted) onInserted(existing);
+    if (!missing.length) return 0;
+    return sbRest('POST', table, token, missing, 'return=representation').then(function (r2) {
+      if (!r2.ok) throw new Error('insert-' + table);
+      var inserted = Array.isArray(r2.data) ? r2.data : [];
+      if (onInserted) onInserted(existing.concat(inserted));
+      return inserted.length;
+    });
+  });
+}
+function sbEnsureServerSchool(account, sbUid, token, d) {
+  return sbRest('GET', 'ss_schools?select=id&owner_id=eq.' + encodeURIComponent(sbUid), token).then(function (r) {
+    if (r.ok && Array.isArray(r.data) && r.data.length) {
+      sbSaveServerSchool(account.uid, r.data[0].id);
+      return r.data[0].id;
+    }
+    var p = d.profile || {};
+    var e = d.feeExtras || {};
+    var row = { owner_id: sbUid, name: p.name || account.school || '', city: p.city || '', principal: p.principal || '',
+      phone: p.phone || '', email: p.email || account.email || '', session: p.session || '2025–26',
+      address: p.address || '', logo_data_url: p.logo || null, plan: 'Active', status: 'active', is_demo: false,
+      adm_counter: d.admCounter || 1, receipt_counter: d.receiptCounter || 1,
+      admission_fee: e.admissionFee || 0, caution_money: e.cautionMoney || 0,
+      annual_charges: e.annualCharges || 0, transport_fee: e.transportFee || 0 };
+    return sbRest('POST', 'ss_schools', token, row, 'return=representation').then(function (r2) {
+      if (!r2.ok || !Array.isArray(r2.data) || !r2.data.length) throw new Error('create-school');
+      sbSaveServerSchool(account.uid, r2.data[0].id);
+      return r2.data[0].id;
+    });
+  });
+}
+function sbVerifyCounts(token, schoolId, counts) {
+  var checks = [
+    ['ss_students', 'local_id', counts.students], ['ss_fee_records', 'local_id', counts.feeRecords],
+    ['ss_fee_structure', 'cls', counts.feeStructure], ['ss_attendance', 'student_id', counts.attendance],
+    ['ss_receipts', 'receipt_no', counts.receipts], ['ss_audit_log', 'ts', counts.auditLog],
+    ['ss_activities', 'title', counts.activities], ['ss_teachers', 'local_id', counts.teachers],
+    ['ss_exams', 'local_id', counts.exams], ['ss_marks', 'exam_id', counts.marks],
+    ['ss_homework', 'local_id', counts.homework], ['ss_notices', 'local_id', counts.notices]
+  ];
+  var chain = Promise.resolve({ ok: true, detail: '' });
+  checks.forEach(function (c) {
+    chain = chain.then(function (acc) {
+      if (!acc.ok) return acc;
+      return sbRest('GET', c[0] + '?select=' + c[1] + '&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token).then(function (r) {
+        if (!r.ok) return { ok: false, detail: 'verify-' + c[0] };
+        var got = Array.isArray(r.data) ? r.data.length : 0;
+        // Server may hold MORE rows than this device (another device already
+        // migrated) — that is fine. Fewer means this upload did not land.
+        if (got < c[2]) return { ok: false, detail: c[0] + ' ' + got + '/' + c[2] };
+        return acc;
+      });
+    });
+  });
+  return chain;
+}
+function sbMaybeMigrate(account, sbUid, token, force) {
+  if (sbMigPromise) return sbMigPromise;
+  if (!account || account.role !== 'school') return Promise.resolve({ done: false, reason: 'not-school' });
+  if (!force && sbLoadMig(sbUid)) return Promise.resolve({ done: true, reason: 'already' });
+  if (!sbIsOnline()) { sbSetStatus('offline'); return Promise.resolve({ done: false, reason: 'offline' }); }
+  sbSetStatus('uploading');
+  var d = db; // the account's DB is loaded by loginAs before this runs
+  var counts = sbLocalCounts(d);
+  var schoolId = null, stuMap = {}, examMap = {};
+  var byId = {};
+  (d.students || []).forEach(function (s) { byId[s.id] = s; });
+  sbMigPromise = sbEnsureServerSchool(account, sbUid, token, d).then(function (id) {
+    schoolId = id;
+    if (!schoolId) throw new Error('no-school-id');
+    return sbUploadMissing(token, schoolId, 'ss_fee_structure', 'cls,fee_type',
+      (d.feeStructure || []).map(function (f) { return sbMapFeeStructure(f, schoolId); }),
+      function (row) { return row.cls + '|' + row.fee_type; });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_students', 'local_id,id',
+      (d.students || []).map(function (s) { return sbMapStudent(s, schoolId); }),
+      function (row) { return row.local_id; },
+      function (rows) { rows.forEach(function (r) { if (r.local_id) stuMap[r.local_id] = r.id; }); });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_teachers', 'local_id',
+      (d.teachers || []).map(function (te) { return sbMapTeacher(te, schoolId); }),
+      function (row) { return row.local_id; });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_exams', 'local_id,id',
+      (d.exams || []).map(function (e) { return sbMapExam(e, schoolId); }),
+      function (row) { return row.local_id; },
+      function (rows) { rows.forEach(function (r) { if (r.local_id) examMap[r.local_id] = r.id; }); });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_fee_records', 'local_id',
+      (d.feeRecords || []).map(function (r) { return sbMapFeeRecord(r, schoolId, stuMap); }),
+      function (row) { return row.local_id; });
+  }).then(function () {
+    var attRows = sbFlattenAttendance(d).filter(function (a) { return !!stuMap[a.studentId]; }).map(function (a) {
+      return { school_id: schoolId, att_date: a.date, cls: a.cls, student_id: stuMap[a.studentId], status: a.status };
+    });
+    return sbUploadMissing(token, schoolId, 'ss_attendance', 'att_date,cls,student_id', attRows,
+      function (row) { return row.att_date + '|' + row.cls + '|' + row.student_id; });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_receipts', 'receipt_no',
+      (d.receipts || []).map(function (rc) { return sbMapReceipt(rc, schoolId, stuMap, byId); }),
+      function (row) { return row.receipt_no; });
+  }).then(function () {
+    var markRows = (d.marks || []).filter(function (m) { return examMap[m.examId] && stuMap[m.studentId]; }).map(function (m) {
+      return { school_id: schoolId, exam_id: examMap[m.examId], student_id: stuMap[m.studentId], marks: m.marks };
+    });
+    return sbUploadMissing(token, schoolId, 'ss_marks', 'exam_id,student_id', markRows,
+      function (row) { return row.exam_id + '|' + row.student_id; });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_homework', 'local_id',
+      (d.homework || []).map(function (h) { return sbMapHomework(h, schoolId, stuMap); }),
+      function (row) { return row.local_id; });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_notices', 'local_id',
+      (d.notices || []).map(function (n) { return sbMapNotice(n, schoolId); }),
+      function (row) { return row.local_id; });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_audit_log', 'ts,actor,action,details',
+      (d.auditLog || []).map(function (a) { return sbMapAudit(a, schoolId); }),
+      function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_activities', 'title,sub',
+      (d.activities || []).map(function (a) { return sbMapActivity(a, schoolId); }),
+      function (row) { return row.title + '|' + row.sub; });
+  }).then(function () {
+    return sbVerifyCounts(token, schoolId, counts);
+  }).then(function (v) {
+    sbMigPromise = null;
+    if (!v.ok) {
+      sbSetStatus('failed', v.detail);
+      return { done: false, reason: 'verify', detail: v.detail };
+    }
+    sbSaveMig(sbUid, { at: new Date().toISOString(), schoolId: schoolId, counts: counts });
+    sbSetStatus('synced');
+    return { done: true, reason: 'ok', schoolId: schoolId, counts: counts };
+  }).catch(function (err) {
+    sbMigPromise = null;
+    sbSetStatus('failed', (err && err.message) || 'error');
+    return { done: false, reason: 'error', detail: (err && err.message) || 'error' };
+  });
+  return sbMigPromise;
+}
+function sbRetryMigration() {
+  if (!state.user || state.user.role !== 'school') { toast(t('sbStatusNotSchool')); return; }
+  if (!state.sb || !state.sb.uid) { toast(t('sbStatusPending')); return; }
+  toast(t('sbStatusUploading'));
+  sbGetValidToken().then(function (tok) {
+    if (!tok) { sbSetStatus('offline'); toast(t('sbStatusOffline')); renderApp(); return; }
+    return sbMaybeMigrate(state.user, state.sb.uid, tok, true).then(function (r) {
+      toast(r.done ? t('sbBackupDone') : t('sbBackupFailed'));
+      renderApp();
+    });
+  }).catch(function () { toast(t('sbBackupFailed')); });
+}
+// Public Apply form -> server (anon). MUST use return=minimal: anon has no
+// SELECT on ss_admission_requests, so asking for the row back fails with
+// 401 even though the insert itself succeeds (verified 9 Nov 2026).
+function sbPostAdmission(serverSchoolId, req) {
+  var body = { school_id: serverSchoolId, local_id: req.id, name: req.name, dob: sbNullIfEmpty(req.dob),
+    gender: req.gender || '', class_apply: req.classApply, guardian_name: req.guardianName || '',
+    phone: req.phone, previous_school: req.previousSchool || '', status: 'Pending', reason: '',
+    submitted: req.submitted || todayIST() };
+  return sbRest('POST', 'ss_admission_requests', SB_ANON_KEY, body, 'return=minimal');
+}
+
+
+
 /* ================= seed data ================= */
 var SCHOOL_NAMES = [
   ['St. Xavier School','Patna',1250,'active','Active'], ['DAV Public School','Gaya',1100,'active','Active'],
@@ -386,7 +923,7 @@ function saveDB(db) {
 var db = loadDB();
 
 /* ================= state ================= */
-var state = { role: null, user: null, view: 'dashboard', lang: 'en', parentStudentId: null, admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null };
+var state = { role: null, user: null, view: 'dashboard', lang: 'en', parentStudentId: null, admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, sb: null };
 
 /* Phase 2: bulk import + promotion state (in-memory only, never persisted). */
 var importState = { rows: null, fileName: '', result: null };
@@ -1276,7 +1813,7 @@ var I18N = {
     roleSchool: 'School Admin — Rahul Kumar', roleSchoolD: 'St. Xavier School, Patna — students, attendance, fees, exams, homework and notices.', goSchool: 'Open School Admin →',
     roleStudent: 'Student — Riya Kumari', roleStudentD: 'Class 10th-A — attendance, fees, results and homework on a mobile-style view.', goStudent: 'Open Student View →',
     landFooter: '<b>School Saathi</b> — Smart Education. Better Tomorrow.<br>Built for Bihar • Free for Schools • Made with ❤️ in Gopalganj, Bihar',
-    loginWelcome: 'Log in or sign up<br>to continue', loginEmail: 'Email', loginPassword: 'Password', loginEmailPh: 'you@school.edu.in', loginPwPh: '••••••••', loginBtn: 'Login', authLogin: 'Log In', authSignup: 'Sign Up', authNote: 'One account per school. Your school’s data stays on this device until the server version arrives.', suSchool: 'School Name', suYourName: 'Your Name', suEmail: 'Email', suPw: 'Password', suPw2: 'Confirm Password', suBtn: 'Create Account', loginOr: 'Or continue with', demoTitle: '— One-tap demo login —', loginBack: '← Back to website',
+    loginWelcome: 'Log in or sign up<br>to continue', loginEmail: 'Email', loginPassword: 'Password', loginEmailPh: 'you@school.edu.in', loginPwPh: '••••••••', loginBtn: 'Login', authLogin: 'Log In', authSignup: 'Sign Up', authNote: 'One account per school. Your data stays on this device and backs up to the server when you are online.', suSchool: 'School Name', suYourName: 'Your Name', suEmail: 'Email', suPw: 'Password', suPw2: 'Confirm Password', suBtn: 'Create Account', loginOr: 'Or continue with', demoTitle: '— One-tap demo login —', loginBack: '← Back to website',
     superDashboard: 'Super Admin Dashboard', schoolDashboard: 'School Admin Dashboard', studentDashboard: 'Student Dashboard',
     confirmTitle: 'Confirm', cancel: 'Cancel', confirmYes: 'Yes, continue', saveBtn: 'Save',
     addSchool: 'Add School', addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', approve: 'Approve', remove: 'Remove', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', publishBtn: 'Publish', assignHw: 'Assign Homework', saveSchoolBtn: 'Save School', saveStudentBtn: 'Save Student',
@@ -1302,7 +1839,8 @@ var I18N = {
     promoTitle: 'Promote Students', promoBtn: 'Promote Students', promoSingle: 'Promote Student', promoFromSession: 'Current Session', promoFromClass: 'Current Class', promoToSession: 'Target Session', promoToClass: 'Target Class', promoToSection: 'Target Section', promoSelectAll: 'Select All', promoSelectNone: 'Select None', promoSelected: 'selected', promoPromote: 'Promote Selected', promoRetain: 'Retain Selected', promoNoStudents: 'No students in this class and session.', promoNoSelect: 'Please select at least one student.', promoNoop: 'Target class and session are the same as current — nothing to change.', promoNoopRetain: 'Target session is the same as the current session — nothing to change.', promoDone: 'Promotion complete.', promoPromoted: 'promoted', promoRetained: 'retained', promoNote: 'Attendance, fees, exam marks and homework history are preserved.', promoSingleNote: 'Single student promotion', promoSkipped: 'skipped (already moved)', promoNotEligible: 'Only Active or Inactive students can be promoted.',
     idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.',
     authParent: 'Parent', parentAdmNo: 'Admission Number', parentPinLabel: 'Parent PIN', parentLoginBtn: 'Login as Parent', parentNote: 'Parent access on this device uses a PIN set by the school. Real password accounts arrive with the server version.', parentSub: 'Parent', parentDashboard: 'My Child', tInvalidParent: 'Invalid admission number or PIN.', tParentScope: 'You can only view your own child\'s profile.', parentAccess: 'Parent Access', parentPinNow: 'Current Parent PIN', parentPinNone: 'No PIN set — parent login unavailable for this student.', parentPinNew: 'New PIN (4–6 digits)', parentPinSetBtn: 'Set PIN', parentPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Parent PIN set.', tPinCleared: 'Parent PIN cleared.', tPinAuto: 'Default PIN is the last 4 digits of the parent\'s mobile.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
-    collectFeeBtn: 'Collect Fee', rcptTitle: 'FEE RECEIPT', rcptReceiptNo: 'Receipt No', rcptDate: 'Date', rcptAdmNo: 'Adm No', rcptSession: 'Session', rcptName: 'Name', rcptClass: 'Class', rcptInstallment: 'Installment', rcptCounter: 'Counter No', rcptSlNo: 'Sl.No', rcptDesc: 'Description', rcptDue: 'Due', rcptCon: 'Con', rcptPaid: 'Paid', rcptAdmissionFee: 'Admission Fee', rcptTuitionFee: 'Tuition Fee', rcptCaution: 'Caution Money', rcptAnnual: 'Annual Charges', rcptBusFee: 'Bus Fee', rcptDues: 'Dues', rcptPayModeTitle: 'PAY MODE INFORMATION', rcptPayMode: 'Pay Mode', rcptBank: 'Bank', rcptNumber: 'Number', rcptTotal: 'Total', rcptTotalWords: 'Total in Words', rcptComputerGen: 'This is a computer generated Receipt. Does not required signature.', rcptParentCopy: 'PARENT COPY', rcptCollectorSign: 'Collector\'s Signature', rcptIncludeBus: 'Include Bus/Transport', rcptOtherFees: 'Other Fees', rcptAnnualHint: 'One-time and annual amounts used on the Collect Fee receipt. Set 0 to hide a row.', payModeCash: 'Cash', payModeCheque: 'Cheque', payModeUpi: 'UPI', payModeCard: 'Card', payModeBank: 'Bank Transfer', tFeeCollected: 'Fee collected.', tCollectZero: 'Nothing to collect — enter a Paid amount.', tCollectSaved: 'Fee collected — Receipt ', tCollectNotActive: 'This student is not active — fee cannot be collected.', rcptReceipts: 'Receipts', rcptView: 'View', rcptPrint: 'Print / Save PDF', rcptCollectAgain: 'Collect Again', rcptNoReceipts: 'No receipts yet for this student.', rcptDraft: 'Draft — not saved yet', rcptCollectSave: 'Collect & Save', rcptNoLines: 'Nothing to collect for this period — set the fee amounts in Fee Structure first.'
+    collectFeeBtn: 'Collect Fee', rcptTitle: 'FEE RECEIPT', rcptReceiptNo: 'Receipt No', rcptDate: 'Date', rcptAdmNo: 'Adm No', rcptSession: 'Session', rcptName: 'Name', rcptClass: 'Class', rcptInstallment: 'Installment', rcptCounter: 'Counter No', rcptSlNo: 'Sl.No', rcptDesc: 'Description', rcptDue: 'Due', rcptCon: 'Con', rcptPaid: 'Paid', rcptAdmissionFee: 'Admission Fee', rcptTuitionFee: 'Tuition Fee', rcptCaution: 'Caution Money', rcptAnnual: 'Annual Charges', rcptBusFee: 'Bus Fee', rcptDues: 'Dues', rcptPayModeTitle: 'PAY MODE INFORMATION', rcptPayMode: 'Pay Mode', rcptBank: 'Bank', rcptNumber: 'Number', rcptTotal: 'Total', rcptTotalWords: 'Total in Words', rcptComputerGen: 'This is a computer generated Receipt. Does not required signature.', rcptParentCopy: 'PARENT COPY', rcptCollectorSign: 'Collector\'s Signature', rcptIncludeBus: 'Include Bus/Transport', rcptOtherFees: 'Other Fees', rcptAnnualHint: 'One-time and annual amounts used on the Collect Fee receipt. Set 0 to hide a row.', payModeCash: 'Cash', payModeCheque: 'Cheque', payModeUpi: 'UPI', payModeCard: 'Card', payModeBank: 'Bank Transfer', tFeeCollected: 'Fee collected.', tCollectZero: 'Nothing to collect — enter a Paid amount.', tCollectSaved: 'Fee collected — Receipt ', tCollectNotActive: 'This student is not active — fee cannot be collected.', rcptReceipts: 'Receipts', rcptView: 'View', rcptPrint: 'Print / Save PDF', rcptCollectAgain: 'Collect Again', rcptNoReceipts: 'No receipts yet for this student.', rcptDraft: 'Draft — not saved yet', rcptCollectSave: 'Collect & Save', rcptNoLines: 'Nothing to collect for this period — set the fee amounts in Fee Structure first.',
+    sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.'
   },
   hi: {
     dashboard: 'डैशबोर्ड', schools: 'स्कूल', users: 'उपयोगकर्ता', subscriptions: 'सदस्यता', analytics: 'विश्लेषण', settings: 'सेटिंग्स', reports: 'रिपोर्ट', help: 'सहायता', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalSchools: 'कुल स्कूल', totalUsers: 'कुल उपयोगकर्ता', activeSchools: 'सक्रिय स्कूल', pendingApproval: 'स्वीकृति लंबित', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -1380,7 +1918,7 @@ function showView(which) {
   ['login', 'app'].forEach(function (id) { $(id).classList.toggle('hidden', id !== which); });
   window.scrollTo(0, 0);
 }
-function showLogin() { showView('login'); $('loginId').focus(); }
+function showLogin() { showView('login'); try { $('sbStatus').textContent = sbStatusText(); } catch (e) {} $('loginId').focus(); }
 function persistSession() {
   // The session lives in localStorage so it survives closing and reopening
   // the app (sessionStorage died with the tab/PWA, forcing a fresh login).
@@ -1434,6 +1972,8 @@ function restoreSession() {
     var a = findAccount(sv.email);
     if (!a || a.role !== sv.role) return false;
     loginAs(a, { silent: true });
+    var ss = sbLoadSession();
+    if (ss && ss.user_id && (!ss.email || ss.email === sv.email)) state.sb = { uid: ss.user_id, email: ss.email || sv.email, isSuper: sv.role === 'super' };
     state.view = (NAV[a.role] || []).some(function (n) { return n[0] === sv.view; }) ? sv.view : 'dashboard';
     if (state.view !== 'dashboard') histReplaceTop({ view: state.view }); // drop the guard: the restored view sits on top
     renderApp();
@@ -1449,6 +1989,8 @@ function switchAuth(tab) {
     $(ids[1]).classList.toggle('hidden', tab !== k);
     $(ids[2]).classList.add('hidden');
   });
+  $('recoverForm').classList.add('hidden');
+  $('resetForm').classList.add('hidden');
   setTimeout(function () { $(tabs[tab][3]).focus(); }, 50);
 }
 function doParentLogin(e) {
@@ -1491,15 +2033,24 @@ function doLogin(e) {
   e.preventDefault();
   var id = $('loginId').value.trim().toLowerCase(), pw = $('loginPw').value;
   var err = $('loginErr');
-  var a = findAccount(id);
-  var ok = a ? (a.role === 'super' ? pw === OWNER.pw : hashPw(pw) === a.pwHash) : false;
-  if (!a || !ok) {
+  if (!id || !pw) {
     err.textContent = t('tInvalidCreds');
     err.classList.remove('hidden');
     return false;
   }
-  err.classList.add('hidden');
-  loginAs(a);
+  if (sbIsOnline()) {
+    // Server first when we can reach it; the device account is the fallback
+    // (offline, or the server says the password is wrong there).
+    // NOTE: this returns false synchronously — the promise chain runs in the
+    // background. Never return the promise: onsubmit treats a truthy
+    // return as "submit the form" and the page would reload.
+    sbSignIn(id, pw).then(function (res) {
+      if (res.ok && res.data && res.data.access_token) { sbFinishSupabaseLogin(res.data, id, pw); return; }
+      sbLocalLogin(id, pw, err);
+    }).catch(function () { sbLocalLogin(id, pw, err); });
+  } else {
+    sbLocalLogin(id, pw, err);
+  }
   return false;
 }
 function doSignup(e) {
@@ -1513,10 +2064,25 @@ function doSignup(e) {
   if (pw.length < 6) return fail(t('tPwShort'));
   if (pw !== pw2) return fail(t('tPwMismatch'));
   if (findAccount(email)) return fail(t('tEmailTaken'));
-  var a = { uid: 'u' + Date.now().toString(36), name: name, school: school, email: email, pwHash: hashPw(pw), role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10) };
+  var a = { uid: 'u' + Date.now().toString(36), name: name, school: school, email: email, pwHash: hashPw(pw), role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: null };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   err.classList.add('hidden');
   toast(t('tAccountCreated') + name);
+  // Create the server account too, best-effort and in the background.
+  // The local account above already works offline, so a server failure
+  // (offline, rate-limited) never blocks signup.
+  if (sbIsOnline()) {
+    sbSignUp(email, pw, school, name).then(function (res) {
+      if (res.status === 429) { toast(t('sbTooMany')); return; }
+      if (!res.ok || !res.data || !res.data.user || !res.data.user.id) return;
+      a.sbUid = res.data.user.id;
+      var l2 = loadAccounts();
+      for (var i = 0; i < l2.length; i++) if (l2[i].email === email) l2[i] = a;
+      saveAccounts(l2);
+      if (res.data.access_token) { sbStoreSession(res.data); state.sb = { uid: res.data.user.id, email: email, isSuper: false }; }
+      else toast(t('sbEmailConfirm'));
+    }).catch(function () { /* offline mid-flight — local account stands */ });
+  }
   loginAs(a, { silent: true });
   return false;
 }
@@ -1528,6 +2094,13 @@ function logout() {
   promoState = null; importState.rows = null; importState.result = null;
   try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
+  // Sign out of the server too (best-effort) and drop the server session.
+  try {
+    var sbSess = sbLoadSession();
+    if (sbSess && sbSess.access_token) sbSignOut(sbSess.access_token).catch(function () {});
+  } catch (e2) {}
+  sbClearSession();
+  state.sb = null;
   lastBackAt = 0; histExiting = false;
   histReset('login'); // back after logout cannot re-enter the app
   $('loginId').value = ''; $('loginPw').value = '';
@@ -3659,6 +4232,15 @@ function saveAdmissionRequest(e) {
   if (errs.length) { toast(errs.join(' ')); return false; }
   var key = $('fArSchool') ? $('fArSchool').value : '';
   if (!key || !saveAdmissionRequestToSchool(key, req)) { toast(t('tAdmReqFailed')); return false; }
+  // Also send to the server when this school is already backed up there.
+  // Fire-and-forget: the local save above is the source of truth, so a
+  // failed server post never blocks the application.
+  try {
+    var map = sbServerSchoolMap();
+    var acct = loadAccounts().filter(function (x) { return dbKeyFor(x) === key; })[0];
+    var sid = acct && map[acct.uid];
+    if (sid && sbIsOnline()) sbPostAdmission(sid, req).catch(function () {});
+  } catch (e2) {}
   closeModal();
   toast(t('admReqSubmitted'));
   return false;
@@ -3899,7 +4481,8 @@ function settingsPage() {
   '<button type="button" class="btn ghost sm" onclick="clearSchoolLogo()">' + t('removeLogo') + '</button></div>' +
   '<p class="muted">' + t('logoHint') + '</p></div>') +
   '</div><div class="actions" style="justify-content:flex-start"><button class="btn" type="submit">' + t('saveSettingsBtn') + '</button>' +
-  '<button type="button" class="btn danger" onclick="resetAllData()">' + t('resetAllData') + '</button></div></form></div>';
+  '<button type="button" class="btn danger" onclick="resetAllData()">' + t('resetAllData') + '</button></div></form></div>' +
+  (isSuper ? '' : '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub">' + sbStatusText() + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration()">' + t('sbBackupNow') + '</button></div></div>');
 }
 function saveSettings(e) {
   e.preventDefault();
@@ -3953,6 +4536,7 @@ var PAGE_PARENT = { dashboard: parentDashboard };
 document.addEventListener('DOMContentLoaded', function () {
   applyI18n();
   if (!restoreSession()) showLogin();
+  sbBoot(); // password-reset links + stored server session / pending backup
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('popstate', onPopState); // Android back button
   }

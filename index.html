@@ -14,8 +14,8 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
 <link rel="stylesheet" href="styles.css?v=26">
-<script src="qrgen.js?v=26" defer></script>
-<script src="app.js?v=26" defer></script>
+<script src="qrgen.js?v=27" defer></script>
+<script src="app.js?v=27" defer></script>
 </head>
 <body>
 
@@ -37,6 +37,18 @@
         <div class="field"><label data-i18n="loginPassword">Password</label><input id="loginPw" type="password" placeholder="••••••••" data-i18n-ph="loginPwPh" autocomplete="current-password"></div>
         <button class="btn" type="submit" style="width:100%" data-i18n="loginBtn">Login</button>
       </form>
+      <p style="text-align:center;margin-top:10px;font-size:13px"><a href="#" onclick="showRecoverForm();return false" data-i18n="sbForgotPw">Forgot password?</a></p>
+      <div id="recoverErr" class="err hidden"></div>
+      <form id="recoverForm" class="hidden" onsubmit="return doRecover(event)">
+        <div class="field"><label data-i18n="loginEmail">Email</label><input id="recoverEmail" type="email" placeholder="you@school.edu.in" autocomplete="email"></div>
+        <button class="btn" type="submit" style="width:100%" data-i18n="sbSendResetLink">Send Reset Link</button>
+      </form>
+      <div id="resetErr" class="err hidden"></div>
+      <form id="resetForm" class="hidden" onsubmit="return doResetPassword(event)">
+        <div class="field"><label data-i18n="loginPassword">Password</label><input id="resetPw" type="password" placeholder="••••••••" autocomplete="new-password"></div>
+        <div class="field"><label data-i18n="suPw2">Confirm Password</label><input id="resetPw2" type="password" placeholder="Repeat password" autocomplete="new-password"></div>
+        <button class="btn" type="submit" style="width:100%" data-i18n="sbResetPw">Set New Password</button>
+      </form>
       <div id="signupErr" class="err hidden"></div>
       <form id="signupForm" class="hidden" onsubmit="return doSignup(event)">
         <div class="field"><label data-i18n="suSchool">School Name</label><input id="suSchool" type="text" placeholder="e.g. Sunrise Public School" autocomplete="organization"></div>
@@ -53,7 +65,8 @@
         <button class="btn" type="submit" style="width:100%" data-i18n="parentLoginBtn">Login as Parent</button>
         <p style="text-align:center;margin-top:10px;font-size:12.5px;color:var(--muted)" data-i18n="parentNote">Parent access on this device uses a PIN set by the school. Real password accounts arrive with the server version.</p>
       </form>
-      <p style="text-align:center;margin-top:16px;font-size:12.5px;color:var(--muted)" data-i18n="authNote">One account per school. Your school’s data stays on this device until the server version arrives.</p>
+      <p style="text-align:center;margin-top:16px;font-size:12.5px;color:var(--muted)" data-i18n="authNote">One account per school. Your data stays on this device and backs up to the server when you are online.</p>
+      <p id="sbStatus" style="text-align:center;margin-top:8px;font-size:12.5px;color:var(--muted)"></p>
       <p style="text-align:center;margin-top:8px;font-size:13px"><a href="#" onclick="openAdmissionApply();return false" data-i18n="admReqApply">Apply for Admission</a></p>
     </div>
   </div>
@@ -70,7 +83,7 @@
         <div id="sideSchoolInfo"></div>
         <label style="color:#94A3B8;margin-top:10px">Academic Session</label>
         <select id="sessionSel" onchange="changeSession(this.value)"></select>
-        <div style="margin-top:12px">v26<br>© 2026 School Saathi</div>
+        <div style="margin-top:12px">v27<br>© 2026 School Saathi</div>
       </div>
     </aside>
     <div class="main">
