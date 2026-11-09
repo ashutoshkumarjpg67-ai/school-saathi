@@ -12,6 +12,12 @@
 *{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif;background:var(--bg);color:var(--text);font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased;-webkit-text-size-adjust:100%;text-size-adjust:100%}
+/* v29: long-press must not select text anywhere in the app (Android showed
+   its search bar when the user held the Fee Collected figure). Form fields
+   keep text selection so typing still works. CSS only — no JS. */
+body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+*{-webkit-tap-highlight-color:transparent}
+input,textarea,select,[contenteditable]{-webkit-user-select:text;user-select:text}
 a{color:var(--blue);text-decoration:none}
 button{font-family:inherit;cursor:pointer}
 input,select,textarea{font-family:inherit;font-size:14px;padding:10px 12px;border:1px solid var(--border);border-radius:9px;background:#fff;width:100%}
