@@ -21,11 +21,21 @@
    WhatsApp). No API, no automation, no bot, no auto-send. Fee due
    reminders, absent/late alerts, fee receipt share, profile chat.
    The app logs "WhatsApp opened", never "sent" — it cannot know
-   whether the user pressed Send. */
+   whether the user pressed Send.
+   v39: the receipt view is reachable from stable places (Receipt
+   column on the Fees list and on the profile Fee History tab — the
+   only entry used to be the fee profile's bottom card plus the
+   one-shot view right after collecting); a receipt the server lacks
+   uploads even when a stale snapshot entry says it already synced
+   (the live test account: RCP-2026-003 was server-minted yet never
+   landed, and the guard failed every cycle with "Backup failed");
+   one table's upload failure no longer kills the whole sync pass —
+   the status line now names the failing table; verify/guard count
+   only numbered receipts. */
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 38;
+var APP_VERSION = 39;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -347,7 +357,13 @@ function sbStatusText() {
   if (st.state === 'uploading') return t('sbStatusUploading');
   if (st.state === 'syncing') return t('sbStatusSyncing');
   if (st.state === 'pending') return t('sbStatusPendingSync');
-  if (st.state === 'failed') return t('sbStatusFailed');
+  // v39: a failed backup used to show only the generic line, so a
+  // failure that repeated every cycle (the live test account's
+  // "Backup failed", last attempt 09/11/2026 20:24) could never be
+  // diagnosed from the screen. The detail names the failing
+  // operation (table + error, e.g. "ss_receipts: insert-ss_receipts"
+  // or "ss_receipts 0/1") — short, capped, never a secret.
+  if (st.state === 'failed') return t('sbStatusFailed') + (st.detail ? ' (' + String(st.detail).slice(0, 80) + ')' : '');
   if (st.state === 'offline') return t('sbStatusOffline');
   return t('sbStatusPending');
 }
@@ -734,7 +750,11 @@ function sbFlattenAttendance(d) {
 function sbLocalCounts(d) {
   return { students: (d.students || []).length, feeRecords: (d.feeRecords || []).length,
     feeStructure: (d.feeStructure || []).length, attendance: sbFlattenAttendance(d).length,
-    receipts: (d.receipts || []).length, auditLog: (d.auditLog || []).length,
+    // v39: only NUMBERED receipts count — a receipt saved offline has
+    // no number yet and can never be on the server, so counting it
+    // made the migration verify fail forever ("ss_receipts 0/1") even
+    // when every numbered receipt had uploaded.
+    receipts: (d.receipts || []).filter(function (rc) { return !!rc.receiptNo; }).length, auditLog: (d.auditLog || []).length,
     activities: (d.activities || []).length, teachers: (d.teachers || []).length,
     exams: (d.exams || []).length, marks: (d.marks || []).length,
     homework: (d.homework || []).length, notices: (d.notices || []).length };
@@ -745,7 +765,22 @@ function sbNormTs(v) { return String(v || '').slice(0, 19); }
 // (existing + inserted) so callers can build id maps. Returns a promise
 // of the number of rows inserted.
 function sbUploadMissing(token, schoolId, table, selectCols, rows, keyFn, onInserted) {
-  if (!rows.length) return Promise.resolve(0);
+  if (!rows.length) {
+    // v39: the id map must still be built when nothing is fresh. The
+    // students/exams steps feed stuMap/examMap to every dependent row
+    // below, and the early return skipped the GET that fills them — so
+    // on any cycle where every student was already synced, a fee
+    // record or receipt added since was silently dropped by the
+    // student_id filter and could only ever land via the migration
+    // fallback (or never, when that failed too). Callers without an
+    // onInserted callback keep the fast path.
+    if (!onInserted) return Promise.resolve(0);
+    return sbRest('GET', table + '?select=' + selectCols + '&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token).then(function (r) {
+      if (!r.ok) throw new Error('read-' + table);
+      onInserted(Array.isArray(r.data) ? r.data : []);
+      return 0;
+    });
+  }
   return sbRest('GET', table + '?select=' + selectCols + '&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token).then(function (r) {
     if (!r.ok) throw new Error('read-' + table);
     var existing = Array.isArray(r.data) ? r.data : [];
@@ -847,6 +882,29 @@ function sbSyncUploadMissing(account, sbUid, token) {
   function freshRows(table, rows, keyFn) {
     return rows.filter(function (row) { return notSynced(table, keyFn(row)); });
   }
+  // v39: one table's upload failure used to reject the whole chain, so
+  // a single failing table (the live test account's receipts) killed
+  // every cycle and the status could never say WHICH table failed.
+  // Each step now records its own failure and the chain continues
+  // with the remaining tables; the pass reports the first failed
+  // table in its detail, and the status line shows it (see
+  // sbStatusText). A failed students step leaves stuMap empty, so
+  // dependent rows are skipped by their own student_id filters —
+  // nothing uploads with a dangling foreign key.
+  var uploadErrors = [];
+  function step(table, fn) {
+    return Promise.resolve().then(fn).catch(function (err) {
+      uploadErrors.push({ table: table, error: (err && err.message) || 'error' });
+      return null;
+    });
+  }
+  // v39: the server school row this device knew BEFORE this pass.
+  // If sbEnsureServerSchool returns a DIFFERENT id, the school row
+  // was recreated (a full server wipe) — the receipts snapshot
+  // bypass below is then skipped, so a wiped school's receipts are
+  // not resurrected on this device.
+  var prevServerSchoolId = (sbServerSchoolMap()[account.uid]) || null;
+  var schoolRecreated = false;
   // Pre-check (one cycle, before any upload): does the server school
   // already hold real data, and what are its counters? The school-row
   // PATCH below must never clobber a populated server row's profile
@@ -856,6 +914,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
   var serverHasStudents = false, serverAdmCounter = 1, serverReceiptCounter = 1;
   sbMigPromise = sbEnsureServerSchool(account, sbUid, token, d).then(function (id) {
     schoolId = id;
+    schoolRecreated = !!prevServerSchoolId && prevServerSchoolId !== schoolId;
     if (!schoolId) throw new Error('no-school-id');
     return Promise.all([
       sbRest('GET', 'ss_students?select=id&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=1', token),
@@ -868,73 +927,112 @@ function sbSyncUploadMissing(account, sbUid, token) {
       serverAdmCounter = row.adm_counter || 1;
       serverReceiptCounter = row.receipt_counter || 1;
     }
-    return sbUploadMissing(token, schoolId, 'ss_fee_structure', 'cls,fee_type',
-      freshRows('ss_fee_structure', (d.feeStructure || []).map(function (f) { return sbMapFeeStructure(f, schoolId); }),
-        function (row) { return row.cls + '|' + row.fee_type; }),
-      function (row) { return row.cls + '|' + row.fee_type; });
+    return step('ss_fee_structure', function () {
+      return sbUploadMissing(token, schoolId, 'ss_fee_structure', 'cls,fee_type',
+        freshRows('ss_fee_structure', (d.feeStructure || []).map(function (f) { return sbMapFeeStructure(f, schoolId); }),
+          function (row) { return row.cls + '|' + row.fee_type; }),
+        function (row) { return row.cls + '|' + row.fee_type; });
+    });
   }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_students', 'local_id,id',
-      freshRows('ss_students', (d.students || []).filter(function (s) { return !s.numPending; }).map(function (s) { return sbMapStudent(s, schoolId); }),
-        function (row) { return row.local_id; }),
-      function (row) { return row.local_id; },
-      function (rows) { rows.forEach(function (r) { if (r.local_id) stuMap[r.local_id] = r.id; }); });
+    return step('ss_students', function () {
+      return sbUploadMissing(token, schoolId, 'ss_students', 'local_id,id',
+        freshRows('ss_students', (d.students || []).filter(function (s) { return !s.numPending; }).map(function (s) { return sbMapStudent(s, schoolId); }),
+          function (row) { return row.local_id; }),
+        function (row) { return row.local_id; },
+        function (rows) { rows.forEach(function (r) { if (r.local_id) stuMap[r.local_id] = r.id; }); });
+    });
   }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_teachers', 'local_id',
-      freshRows('ss_teachers', (d.teachers || []).map(function (te) { return sbMapTeacher(te, schoolId); }),
-        function (row) { return row.local_id; }),
-      function (row) { return row.local_id; });
+    return step('ss_teachers', function () {
+      return sbUploadMissing(token, schoolId, 'ss_teachers', 'local_id',
+        freshRows('ss_teachers', (d.teachers || []).map(function (te) { return sbMapTeacher(te, schoolId); }),
+          function (row) { return row.local_id; }),
+        function (row) { return row.local_id; });
+    });
   }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_exams', 'local_id,id',
-      freshRows('ss_exams', (d.exams || []).map(function (e) { return sbMapExam(e, schoolId); }),
-        function (row) { return row.local_id; }),
-      function (row) { return row.local_id; },
-      function (rows) { rows.forEach(function (r) { if (r.local_id) examMap[r.local_id] = r.id; }); });
+    return step('ss_exams', function () {
+      return sbUploadMissing(token, schoolId, 'ss_exams', 'local_id,id',
+        freshRows('ss_exams', (d.exams || []).map(function (e) { return sbMapExam(e, schoolId); }),
+          function (row) { return row.local_id; }),
+        function (row) { return row.local_id; },
+        function (rows) { rows.forEach(function (r) { if (r.local_id) examMap[r.local_id] = r.id; }); });
+    });
   }).then(function () {
-    var feeRows = (d.feeRecords || []).map(function (r) { return sbMapFeeRecord(r, schoolId, stuMap); }).filter(function (p) { return !!p.student_id; });
-    return sbUploadMissing(token, schoolId, 'ss_fee_records', 'local_id',
-      freshRows('ss_fee_records', feeRows, function (row) { return row.local_id; }),
-      function (row) { return row.local_id; });
+    return step('ss_fee_records', function () {
+      var feeRows = (d.feeRecords || []).map(function (r) { return sbMapFeeRecord(r, schoolId, stuMap); }).filter(function (p) { return !!p.student_id; });
+      return sbUploadMissing(token, schoolId, 'ss_fee_records', 'local_id',
+        freshRows('ss_fee_records', feeRows, function (row) { return row.local_id; }),
+        function (row) { return row.local_id; });
+    });
   }).then(function () {
-    var attRows = sbFlattenAttendance(d).filter(function (a) { return !!stuMap[a.studentId]; })
-      .filter(function (a) { return notSynced('ss_attendance', a.date + '|' + a.cls + '|' + a.studentId); })
-      .map(function (a) {
-        return { school_id: schoolId, att_date: a.date, cls: a.cls, student_id: stuMap[a.studentId], status: a.status };
-      });
-    return sbUploadMissing(token, schoolId, 'ss_attendance', 'att_date,cls,student_id', attRows,
-      function (row) { return row.att_date + '|' + row.cls + '|' + row.student_id; });
+    return step('ss_attendance', function () {
+      var attRows = sbFlattenAttendance(d).filter(function (a) { return !!stuMap[a.studentId]; })
+        .filter(function (a) { return notSynced('ss_attendance', a.date + '|' + a.cls + '|' + a.studentId); })
+        .map(function (a) {
+          return { school_id: schoolId, att_date: a.date, cls: a.cls, student_id: stuMap[a.studentId], status: a.status };
+        });
+      return sbUploadMissing(token, schoolId, 'ss_attendance', 'att_date,cls,student_id', attRows,
+        function (row) { return row.att_date + '|' + row.cls + '|' + row.student_id; });
+    });
   }).then(function () {
-    var rcRows = (d.receipts || []).filter(function (rc) { return !rc.numPending; }).map(function (rc) { return sbMapReceipt(rc, schoolId, stuMap, byId); }).filter(function (p) { return !!p.student_id; });
-    return sbUploadMissing(token, schoolId, 'ss_receipts', 'receipt_no',
-      freshRows('ss_receipts', rcRows, function (row) { return row.receipt_no; }),
-      function (row) { return row.receipt_no; });
+    return step('ss_receipts', function () {
+      var rcRows = (d.receipts || []).filter(function (rc) { return !rc.numPending; }).map(function (rc) { return sbMapReceipt(rc, schoolId, stuMap, byId); }).filter(function (p) { return !!p.student_id; });
+      // v39: a receipt the server lacks uploads even when a stale
+      // snapshot entry says it already synced. The live test account
+      // proved the trap: RCP-2026-003 was minted by the server RPC
+      // (receipt_counter 4) yet never landed in ss_receipts (0 rows),
+      // and the snapshot filter made every cycle skip it — then the
+      // migration guard failed the cycle forever ("Backup failed").
+      // sbUploadMissing dedupes against the server's actual rows by
+      // receipt_no, so an already-uploaded receipt is never re-POSTed.
+      // Skipped only when the school row itself was recreated (a full
+      // server wipe): then the snapshot still means "deleted
+      // elsewhere" and the pull drops the row instead of resurrecting
+      // it. Numberless offline receipts are excluded here as before —
+      // the repair pass mints their numbers first.
+      var rcUpload = schoolRecreated
+        ? freshRows('ss_receipts', rcRows, function (row) { return row.receipt_no; })
+        : rcRows;
+      return sbUploadMissing(token, schoolId, 'ss_receipts', 'receipt_no', rcUpload,
+        function (row) { return row.receipt_no; });
+    });
   }).then(function () {
-    var markRows = (d.marks || []).filter(function (m) { return examMap[m.examId] && stuMap[m.studentId]; })
-      .filter(function (m) { return notSynced('ss_marks', m.examId + '|' + m.studentId); })
-      .map(function (m) {
-        return { school_id: schoolId, exam_id: examMap[m.examId], student_id: stuMap[m.studentId], marks: m.marks };
-      });
-    return sbUploadMissing(token, schoolId, 'ss_marks', 'exam_id,student_id', markRows,
-      function (row) { return row.exam_id + '|' + row.student_id; });
+    return step('ss_marks', function () {
+      var markRows = (d.marks || []).filter(function (m) { return examMap[m.examId] && stuMap[m.studentId]; })
+        .filter(function (m) { return notSynced('ss_marks', m.examId + '|' + m.studentId); })
+        .map(function (m) {
+          return { school_id: schoolId, exam_id: examMap[m.examId], student_id: stuMap[m.studentId], marks: m.marks };
+        });
+      return sbUploadMissing(token, schoolId, 'ss_marks', 'exam_id,student_id', markRows,
+        function (row) { return row.exam_id + '|' + row.student_id; });
+    });
   }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_homework', 'local_id',
-      freshRows('ss_homework', (d.homework || []).map(function (h) { return sbMapHomework(h, schoolId, stuMap); }),
-        function (row) { return row.local_id; }),
-      function (row) { return row.local_id; });
+    return step('ss_homework', function () {
+      return sbUploadMissing(token, schoolId, 'ss_homework', 'local_id',
+        freshRows('ss_homework', (d.homework || []).map(function (h) { return sbMapHomework(h, schoolId, stuMap); }),
+          function (row) { return row.local_id; }),
+        function (row) { return row.local_id; });
+    });
   }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_notices', 'local_id',
-      freshRows('ss_notices', (d.notices || []).map(function (n) { return sbMapNotice(n, schoolId); }),
-        function (row) { return row.local_id; }),
-      function (row) { return row.local_id; });
+    return step('ss_notices', function () {
+      return sbUploadMissing(token, schoolId, 'ss_notices', 'local_id',
+        freshRows('ss_notices', (d.notices || []).map(function (n) { return sbMapNotice(n, schoolId); }),
+          function (row) { return row.local_id; }),
+        function (row) { return row.local_id; });
+    });
   }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_audit_log', 'ts,actor,action,details',
-      freshRows('ss_audit_log', (d.auditLog || []).map(function (a) { return sbMapAudit(a, schoolId); }),
-        function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; }),
-      function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; });
+    return step('ss_audit_log', function () {
+      return sbUploadMissing(token, schoolId, 'ss_audit_log', 'ts,actor,action,details',
+        freshRows('ss_audit_log', (d.auditLog || []).map(function (a) { return sbMapAudit(a, schoolId); }),
+          function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; }),
+        function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; });
+    });
   }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_activities', 'title,sub',
-      freshRows('ss_activities', (d.activities || []).map(function (a) { return sbMapActivity(a, schoolId); }),
-        function (row) { return row.title + '|' + row.sub; }),
-      function (row) { return row.title + '|' + row.sub; });
+    return step('ss_activities', function () {
+      return sbUploadMissing(token, schoolId, 'ss_activities', 'title,sub',
+        freshRows('ss_activities', (d.activities || []).map(function (a) { return sbMapActivity(a, schoolId); }),
+          function (row) { return row.title + '|' + row.sub; }),
+        function (row) { return row.title + '|' + row.sub; });
+    });
   }).then(function () {
     // School profile + counters, last in the chain so a failure here
     // can never block the table uploads. Two cases:
@@ -953,12 +1051,18 @@ function sbSyncUploadMissing(account, sbUid, token) {
       var payload = serverHasStudents
         ? { adm_counter: Math.max(d.admCounter || 1, serverAdmCounter), receipt_counter: Math.max(d.receiptCounter || 1, serverReceiptCounter) }
         : sbSyncSchoolPayload(d);
-      return sbRest('PATCH', 'ss_schools?id=eq.' + encodeURIComponent(schoolId), token, payload, 'return=minimal').then(function (r) {
-        if (!r.ok) throw new Error('patch-school');
+      return step('ss_schools', function () {
+        return sbRest('PATCH', 'ss_schools?id=eq.' + encodeURIComponent(schoolId), token, payload, 'return=minimal').then(function (r) {
+          if (!r.ok) throw new Error('patch-school');
+        });
       });
     }
   }).then(function () {
     sbMigPromise = null;
+    // v39: the pass reports the first table that failed, by name, so
+    // the cycle (and the status line) can say exactly what broke
+    // instead of a bare "Backup failed".
+    if (uploadErrors.length) return { done: false, reason: 'upload-failed', detail: uploadErrors[0].table + ': ' + uploadErrors[0].error, schoolId: schoolId };
     return { done: true, reason: 'ok', schoolId: schoolId };
   }).catch(function (err) {
     sbMigPromise = null;
@@ -1158,6 +1262,18 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // Receipts: same number + same content = the same receipt (server
   // wins); same number + different content = a collision, kept for the
   // repair pass; no number yet (offline) = always kept.
+  // v39: a receipt whose upload was never confirmed must not be
+  // dropped on snapshot grounds alone — a stale snapshot entry (marked
+  // synced although the row never landed) used to wipe the local
+  // receipt on the next pull, so the receipt view vanished after its
+  // first render. A pending outbox upsert for the number is proof the
+  // upload is still unconfirmed: keep the row (and out of the
+  // snapshot) so the next cycle re-attempts it. A receipt with no
+  // pending upload still drops — it was deleted elsewhere.
+  var outboxRc = {};
+  try {
+    if (account && account.uid) sbOutboxLoad(account.uid).forEach(function (e) { if (e.table === 'ss_receipts' && e.op === 'upsert') outboxRc[e.key] = true; });
+  } catch (e2) {}
   var oldReceipts = d.receipts || [];
   d.receipts = (byTable.ss_receipts || []).map(function (row) {
     return { receiptNo: row.receipt_no || '', studentId: stuMap[row.student_id] || '', admissionNo: row.admission_no || '', name: row.student_name || '', cls: row.cls || '', session: row.session || '', date: row.receipt_date || '', month: row.month || '', counterNo: row.counter_no || 0, lines: row.lines || [], payMode: row.pay_mode || 'Cash', payDate: row.pay_date || '', bank: row.bank || '', number: row.number || '', total: row.total || 0, totalWords: row.total_words || '', collector: row.collector || '' };
@@ -1168,7 +1284,10 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     if (!rc.receiptNo) { d.receipts.push(rc); return; }
     var srv = serverRcByNo[rc.receiptNo];
     if (!srv) {
-      if (snapHas('ss_receipts', rc.receiptNo)) return;
+      if (snapHas('ss_receipts', rc.receiptNo)) {
+        if (outboxRc[rc.receiptNo]) { d.receipts.push(rc); keep('ss_receipts', rc.receiptNo); }
+        return;
+      }
       d.receipts.push(rc);
       keep('ss_receipts', rc.receiptNo);
       return;
@@ -1863,7 +1982,10 @@ function sbSyncGuardHit(d, byTable) {
   var checks = [
     ['ss_students', (d.students || []).length], ['ss_teachers', (d.teachers || []).length],
     ['ss_exams', (d.exams || []).length], ['ss_fee_records', (d.feeRecords || []).length],
-    ['ss_attendance', sbFlattenAttendance(d).length], ['ss_receipts', (d.receipts || []).length],
+    ['ss_attendance', sbFlattenAttendance(d).length],
+    // v39: only numbered receipts — a numberless offline receipt can
+    // never be on the server and must not trip the migration guard.
+    ['ss_receipts', (d.receipts || []).filter(function (rc) { return !!rc.receiptNo; }).length],
     ['ss_marks', (d.marks || []).length], ['ss_homework', (d.homework || []).length],
     ['ss_notices', (d.notices || []).length], ['ss_admission_requests', (d.admissionRequests || []).length]
   ];
@@ -3660,7 +3782,7 @@ var I18N = {
     schoolDashboard: 'School Admin Dashboard', studentDashboard: 'Student Dashboard',
     confirmTitle: 'Confirm', cancel: 'Cancel', confirmYes: 'Yes, continue', saveBtn: 'Save',
     addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmTitle: 'Reset — choose what to delete', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', resetNameTitle: 'Type the school name to confirm', resetNameHint: 'This is the last step before everything is deleted. Type the exact school name.', resetNameLabel: 'School name', resetNameWrong: 'That name does not match — nothing was reset.', resetNameGo: 'Confirm Reset', publishBtn: 'Publish', assignHw: 'Assign Homework', saveStudentBtn: 'Save Student',
-    attOverview: 'Attendance Overview', todayAtt: 'Today\'s Attendance', feeTrend: 'Fee Collection Trend', feeTrendSub: 'Apr – Mar (Collected vs Pending)', feeTrendSub2: 'Apr to Mar (Collected vs Pending)', recentAct: 'Recent Activities', activityLog: 'Activity Log', actLogSub: 'Full audit history — newest first.', thDetails: 'Details', actBy: 'By', supYourName: 'Your name', quickLinks: 'Quick Links', jumpTask: 'Jump to a task', enterMarks: 'Enter Marks', myHomework: 'My Homework', noticesH: 'Notices', latestNotices: 'Latest from school', contactSub: 'We reply within one working day', studentsReport: 'Students Report', feesReport: 'Fees Report', attReport: 'Attendance Report', thName: 'Name', thClass: 'Class', thRoll: 'Roll', thGuardian: 'Guardian', thPhone: 'Phone', thAtt: 'Att.', thFee: 'Fee', thAction: 'Action', thStudent: 'Student', thMonth: 'Month', thAmount: 'Amount', thDate: 'Date', thStatus: 'Status', thMarks: 'Marks', thResult: 'Result', thRole: 'Role',
+    attOverview: 'Attendance Overview', todayAtt: 'Today\'s Attendance', feeTrend: 'Fee Collection Trend', feeTrendSub: 'Apr – Mar (Collected vs Pending)', feeTrendSub2: 'Apr to Mar (Collected vs Pending)', recentAct: 'Recent Activities', activityLog: 'Activity Log', actLogSub: 'Full audit history — newest first.', thDetails: 'Details', actBy: 'By', supYourName: 'Your name', quickLinks: 'Quick Links', jumpTask: 'Jump to a task', enterMarks: 'Enter Marks', myHomework: 'My Homework', noticesH: 'Notices', latestNotices: 'Latest from school', contactSub: 'We reply within one working day', studentsReport: 'Students Report', feesReport: 'Fees Report', attReport: 'Attendance Report', thName: 'Name', thClass: 'Class', thRoll: 'Roll', thGuardian: 'Guardian', thPhone: 'Phone', thAtt: 'Att.', thFee: 'Fee', thAction: 'Action', thReceipt: 'Receipt', thStudent: 'Student', thMonth: 'Month', thAmount: 'Amount', thDate: 'Date', thStatus: 'Status', thMarks: 'Marks', thResult: 'Result', thRole: 'Role',
     subReports: 'Download CSV reports', subStudents: 'St. Xavier School, Patna', subAttendance: 'Mark & view attendance', subFees: 'Fee collection & pending dues', subExams: 'Exams & marks entry', subHomework: 'Assign & track homework', subNotices: 'Notice board',
     fSchoolName: 'School Name', fCity: 'City', fStudentName: 'Student Name', fClass: 'Class', fRoll: 'Roll No', fGuardian: 'Guardian', fPhone: 'Phone', fTitle: 'Title', fSubject: 'Subject', fDue: 'Due Date', fMessage: 'Message', fPrincipal: 'Principal / Admin', fEmail: 'Email', fAddress: 'Address', fSession: 'Academic Session',
     tLoggedIn: 'Logged in as', tAccountCreated: 'Account created. Welcome, ', tInvalidCreds: 'Invalid email or password.', tFillAll: 'Please fill in all fields.', tInvalidEmail: 'Please enter a valid email address.', tPwShort: 'Password must be at least 6 characters.', tPwMismatch: 'Passwords do not match.', tEmailTaken: 'An account with this email already exists. Please log in.', tLoggedOut: 'Logged out. See you soon!', tBackExit: 'Press back again to exit', tStudentAdded: 'Student added.', tStudentUpdated: 'Student updated.', tStudentDeleted: 'Student deleted.', tAttSaved: 'Attendance saved', tMarksSaved: 'Marks saved for', tHwDone: 'Homework marked done.', tHwNotDone: 'Homework marked not done.', tHwAssigned: 'Homework assigned.', tNoticePub: 'Notice published.', tReportDl: 'Report downloaded.', tSettingsSaved: 'Settings saved.', tAllReset: 'All data deleted — the school is now empty.', tSessionChanged: 'Academic session changed to', tNoChanges: 'No changes.', tFutureDate: 'Future date not allowed — showing today.', tDueFuture: 'Due date must be today or later.', tDemoLogin: 'Demo account — use one-tap login below.', tGoogleDemo: 'Demo build — please use a one-tap demo login.', tNoStudentData: 'No student data — ask your school admin to add students.', tNoExams: 'No exams yet.', tNoHw: 'No homework yet.', tNoMarks: 'No marks entered yet for this exam.', tNoMatch: 'No students match.', tNotEntered: 'Not entered', tCollectedFrom: 'collected from', tDupStudent: 'already exists in', tNotSaved: 'Not saved', tCheckMarks: 'check marks', tStudentsWord: 'students', tNoFeeData: 'No fee data yet.',
@@ -3697,7 +3819,7 @@ var I18N = {
     schoolDashboard: 'स्कूल एडमिन डैशबोर्ड', studentDashboard: 'छात्र डैशबोर्ड',
     confirmTitle: 'पुष्टि करें', cancel: 'रद्द करें', confirmYes: 'हाँ, जारी रखें', saveBtn: 'सहेजें',
     addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmTitle: 'रीसेट — क्या मिटाना है चुनें', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', resetNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', resetNameHint: 'सब कुछ मिटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', resetNameLabel: 'स्कूल का नाम', resetNameWrong: 'यह नाम मेल नहीं खाता — कुछ भी रीसेट नहीं हुआ।', resetNameGo: 'रीसेट की पुष्टि करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveStudentBtn: 'छात्र सहेजें',
-    attOverview: 'उपस्थिति अवलोकन', todayAtt: 'आज की उपस्थिति', feeTrend: 'शुल्क संग्रह प्रवृत्ति', feeTrendSub: 'अप्रैल – मार्च (संग्रह बनाम बकाया)', feeTrendSub2: 'अप्रैल से मार्च (संग्रह बनाम बकाया)', recentAct: 'हाल की गतिविधियाँ', activityLog: 'गतिविधि लॉग', actLogSub: 'पूरी ऑडिट हिस्ट्री — नई पहले।', thDetails: 'विवरण', actBy: 'द्वारा', supYourName: 'आपका नाम', quickLinks: 'त्वरित लिंक', jumpTask: 'किसी कार्य पर जाएँ', enterMarks: 'अंक भरें', myHomework: 'मेरा होमवर्क', noticesH: 'नोटिस', latestNotices: 'स्कूल से नवीनतम', contactSub: 'हम एक कार्य दिवस के भीतर जवाब देते हैं', studentsReport: 'छात्र रिपोर्ट', feesReport: 'शुल्क रिपोर्ट', attReport: 'उपस्थिति रिपोर्ट', thName: 'नाम', thClass: 'कक्षा', thRoll: 'रोल', thGuardian: 'अभिभावक', thPhone: 'फ़ोन', thAtt: 'उप.', thFee: 'शुल्क', thAction: 'कार्रवाई', thStudent: 'छात्र', thMonth: 'महीना', thAmount: 'राशि', thDate: 'तारीख', thStatus: 'स्थिति', thMarks: 'अंक', thResult: 'परिणाम', thRole: 'भूमिका',
+    attOverview: 'उपस्थिति अवलोकन', todayAtt: 'आज की उपस्थिति', feeTrend: 'शुल्क संग्रह प्रवृत्ति', feeTrendSub: 'अप्रैल – मार्च (संग्रह बनाम बकाया)', feeTrendSub2: 'अप्रैल से मार्च (संग्रह बनाम बकाया)', recentAct: 'हाल की गतिविधियाँ', activityLog: 'गतिविधि लॉग', actLogSub: 'पूरी ऑडिट हिस्ट्री — नई पहले।', thDetails: 'विवरण', actBy: 'द्वारा', supYourName: 'आपका नाम', quickLinks: 'त्वरित लिंक', jumpTask: 'किसी कार्य पर जाएँ', enterMarks: 'अंक भरें', myHomework: 'मेरा होमवर्क', noticesH: 'नोटिस', latestNotices: 'स्कूल से नवीनतम', contactSub: 'हम एक कार्य दिवस के भीतर जवाब देते हैं', studentsReport: 'छात्र रिपोर्ट', feesReport: 'शुल्क रिपोर्ट', attReport: 'उपस्थिति रिपोर्ट', thName: 'नाम', thClass: 'कक्षा', thRoll: 'रोल', thGuardian: 'अभिभावक', thPhone: 'फ़ोन', thAtt: 'उप.', thFee: 'शुल्क', thAction: 'कार्रवाई', thReceipt: 'रसीद', thStudent: 'छात्र', thMonth: 'महीना', thAmount: 'राशि', thDate: 'तारीख', thStatus: 'स्थिति', thMarks: 'अंक', thResult: 'परिणाम', thRole: 'भूमिका',
     subReports: 'CSV रिपोर्ट डाउनलोड करें', subStudents: 'सेंट ज़ेवियर स्कूल, पटना', subAttendance: 'उपस्थिति दर्ज करें और देखें', subFees: 'शुल्क संग्रह और बकाया', subExams: 'परीक्षा और अंक प्रविष्टि', subHomework: 'होमवर्क सौंपें और देखें', subNotices: 'नोटिस बोर्ड',
     fSchoolName: 'स्कूल का नाम', fCity: 'शहर', fStudentName: 'छात्र का नाम', fClass: 'कक्षा', fRoll: 'रोल नंबर', fGuardian: 'अभिभावक', fPhone: 'फ़ोन', fTitle: 'शीर्षक', fSubject: 'विषय', fDue: 'देय तारीख', fMessage: 'संदेश', fPrincipal: 'प्रधानाचार्य / एडमिन', fEmail: 'ईमेल', fAddress: 'पता', fSession: 'शैक्षणिक सत्र',
     tLoggedIn: 'के रूप में लॉगिन हुआ', tAccountCreated: 'अकाउंट बन गया। स्वागत है, ', tInvalidCreds: 'ईमेल या पासवर्ड गलत है।', tFillAll: 'कृपया सभी फ़ील्ड भरें।', tInvalidEmail: 'कृपया सही ईमेल पता डालें।', tPwShort: 'पासवर्ड कम से कम 6 अक्षर का हो।', tPwMismatch: 'पासवर्ड मेल नहीं खाते।', tEmailTaken: 'इस ईमेल से अकाउंट पहले से बना है। कृपया लॉग इन करें।', tLoggedOut: 'लॉगआउट हो गया। फिर मिलते हैं!', tBackExit: 'बाहर निकलने के लिए बैक फिर से दबाएँ', tStudentAdded: 'छात्र जोड़ा गया।', tStudentUpdated: 'छात्र अपडेट हुआ।', tStudentDeleted: 'छात्र हटाया गया।', tAttSaved: 'उपस्थिति सहेजी गई', tMarksSaved: 'अंक सहेजे गए', tHwDone: 'होमवर्क पूर्ण के रूप में चिह्नित।', tHwNotDone: 'होमवर्क अपूर्ण के रूप में चिह्नित।', tHwAssigned: 'होमवर्क सौंपा गया।', tNoticePub: 'नोटिस प्रकाशित हुआ।', tReportDl: 'रिपोर्ट डाउनलोड हुई।', tSettingsSaved: 'सेटिंग्स सहेजी गईं।', tAllReset: 'सारा डेटा मिट गया — स्कूल अब खाली है।', tSessionChanged: 'शैक्षणिक सत्र बदला गया', tNoChanges: 'कोई बदलाव नहीं।', tFutureDate: 'भविष्य की तारीख नहीं चुन सकते — आज की तारीख दिखा रहे हैं।', tDueFuture: 'देय तारीख आज या आगे की होनी चाहिए।', tDemoLogin: 'डेमो खाता — नीचे एक-टैप लॉगिन इस्तेमाल करें।', tGoogleDemo: 'डेमो बिल्ड — कृपया एक-टैप डेमो लॉगिन इस्तेमाल करें।', tNoStudentData: 'कोई छात्र डेटा नहीं — अपने स्कूल एडमिन से छात्र जोड़ने को कहें।', tNoExams: 'अभी कोई परीक्षा नहीं है।', tNoHw: 'अभी कोई होमवर्क नहीं है।', tNoMarks: 'इस परीक्षा के लिए अभी कोई अंक नहीं भरे गए।', tNoMatch: 'कोई छात्र नहीं मिला।', tNotEntered: 'नहीं भरा गया', tCollectedFrom: 'से वसूला गया', tDupStudent: 'में पहले से मौजूद है', tNotSaved: 'सहेजा नहीं गया', tCheckMarks: 'अंक जाँचें', tStudentsWord: 'छात्र', tNoFeeData: 'अभी कोई शुल्क डेटा नहीं है।',
@@ -5242,11 +5364,11 @@ function profileTabBody(s, tab) {
       return '<div class="type-row"><b>' + esc(feeTypeLabel(ty)) + '</b><span>' + t('collectedW') + ' ' + inr(sum.byType[ty].collected) + ' • ' + t('pendingW') + ' ' + inr(sum.byType[ty].pending) + '</span></div>';
     }).join('');
     var frs = sum.recs.map(function (r) {
-      return '<tr><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td><td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td></tr>';
+      return '<tr><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td><td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td><td>' + receiptCellForRecord(r) + '</td></tr>';
     }).join('');
     return '<div class="stats">' + statCard('🧾', 'blue', t('totalBilled'), sum.billed, '', 'up', { prefix: '₹' }) + statCard('✅', 'green', t('totalPaid'), sum.paid, '', 'up', { prefix: '₹' }) + statCard('⏰', 'red', t('totalPending'), sum.pend, '', 'down', { prefix: '₹' }) + '</div>' +
       '<div class="card"><h3>' + t('feeByType') + '</h3>' + (btRows || '<p class="muted">' + t('tNoFeeRecs') + '</p>') + '</div>' +
-      '<div class="card" style="margin-top:16px"><h3>' + t('feeRecsH') + '</h3><div class="tbl-wrap fee-hist-tbl"><table><thead><tr><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th></tr></thead><tbody>' + (frs || '<tr><td colspan="5"><div class="empty">' + t('tNoFeeRecs') + '</div></td></tr>') + '</tbody></table></div>' +
+      '<div class="card" style="margin-top:16px"><h3>' + t('feeRecsH') + '</h3><div class="tbl-wrap fee-hist-tbl"><table><thead><tr><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thReceipt') + '</th></tr></thead><tbody>' + (frs || '<tr><td colspan="6"><div class="empty">' + t('tNoFeeRecs') + '</div></td></tr>') + '</tbody></table></div>' +
       (state.role !== 'school' ? '' : '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="viewStudentFees(\'' + s.id + '\')">' + t('openFees') + '</button></div>') + '</div>';
   }
   if (tab === 'results') {
@@ -5579,6 +5701,7 @@ function feesPage() {
   var rows = list.slice(0, 120).map(function (r) {
     return '<tr><td><button class="linklike" onclick="return openFeeProfile(\'' + r.studentId + '\', event)">' + esc(r.student) + '</button></td><td>' + esc(enrOf(r.studentId)) + '</td><td>' + esc(r.cls) + '</td><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td>' +
       '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
+      '<td>' + receiptCellForRecord(r) + '</td>' +
       '<td>' + (r.status === 'Pending' ? '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, r.studentId) + ' <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>' : '<span class="muted">—</span>') + '</td></tr>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('fees') + '</h2><p>' + t('collectedW') + ' ' + inr(ft.collected) + ' • ' + t('pendingW') + ' ' + inr(ft.pending) + ' (' + feeRangeLabel() + ')</p></div>' +
@@ -5594,8 +5717,8 @@ function feesPage() {
     '</div>' +
     '<div class="card"><h3>' + t('feeByType') + '</h3><p class="card-sub">' + t('feeByTypeSub') + '</p><div class="type-rows">' + (btRows || '<div class="empty">' + t('tNoFeeRecs') + '</div>') + '</div></div>' +
     '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted" style="margin-top:8px"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div>' +
-    '<div class="card"><div class="tbl-wrap fee-list-tbl"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thEnr') + '</th><th>' + t('thClass') + '</th><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody id="feeBody">' +
-    (rows || '<tr><td colspan="9"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '<tr id="feeNoMatch" style="display:none"><td colspan="9"><div class="empty">' + t('tNoMatch') + '</div></td></tr></tbody></table></div>' +
+    '<div class="card"><div class="tbl-wrap fee-list-tbl"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thEnr') + '</th><th>' + t('thClass') + '</th><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thReceipt') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody id="feeBody">' +
+    (rows || '<tr><td colspan="10"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '<tr id="feeNoMatch" style="display:none"><td colspan="10"><div class="empty">' + t('tNoMatch') + '</div></td></tr></tbody></table></div>' +
     '<p class="muted" id="feeCount" style="margin-top:10px">' + t('showingRec') + ' ' + Math.min(120, list.length) + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('recordsWord') + '</p></div>' +
     feeFormCard() + feeStructureCard();
 }
@@ -5638,6 +5761,32 @@ function studentFeeProfile(sid) {
     '<div class="card"><h3>' + t('feeByType') + '</h3><p class="card-sub">' + t('feeByTypeSub') + '</p><div class="type-rows">' + (btRows || '<div class="empty">' + t('tNoFeeRecs') + '</div>') + '</div></div>' +
     '<div class="card"><h3>' + t('feeRecsH') + '</h3><p class="card-sub">' + recs.length + ' ' + t('recordsWord') + '</p><div class="tbl-wrap fee-prof-tbl"><table><thead><tr><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6"><div class="empty">' + t('tNoFeeRecs') + '</div></td></tr>') + '</tbody></table></div></div>' +
     receiptListCard(sid);
+}
+// v39: the receipt for one fee record — same student, same month,
+// latest first; a receipt whose lines include the record's fee type
+// wins over one that merely shares the month. A fee record carries
+// no receipt id of its own, so the receipt view is found this way
+// from the Fees list and the profile Fee History tab — stable entry
+// points that do not depend on the fee profile's bottom card or on
+// the one-shot view right after collecting.
+function receiptForFeeRecord(r) {
+  var list = (db.receipts || []).filter(function (rc) { return rc.studentId === r.studentId && rc.month === r.month && rc.receiptNo; });
+  if (!list.length) return null;
+  var ty = feeTypeOf(r);
+  var typed = list.filter(function (rc) { return (rc.lines || []).some(function (ln) { return ln.type === ty; }); });
+  var pick = typed.length ? typed : list;
+  pick.sort(function (a, b) { return (a.date < b.date ? 1 : a.date > b.date ? -1 : (a.receiptNo < b.receiptNo ? 1 : -1)); });
+  return pick[0];
+}
+function receiptCellForRecord(r) {
+  // A receipt exists only for money already collected — a Pending
+  // row never shows one, even when another record for the same
+  // student and month was already paid (partial payments split one
+  // due into a Collected part and a Pending remainder).
+  if (r.status !== 'Collected') return '<span class="muted">—</span>';
+  var rc = receiptForFeeRecord(r);
+  if (!rc) return '<span class="muted">—</span>';
+  return '<button class="linklike" onclick="openSavedReceipt(\'' + esc(rc.receiptNo) + '\')">' + esc(rc.receiptNo) + '</button>';
 }
 function receiptListCard(sid) {
   var rcs = (db.receipts || []).filter(function (r) { return r.studentId === sid; }).slice().reverse();
