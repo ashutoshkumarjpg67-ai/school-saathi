@@ -752,7 +752,7 @@ function studentStats() {
     if (st === 'Active') active++; else if (st === 'Inactive') inactive++; else if (st === 'Draft') draft++; else if (st === 'Cancelled') cancelled++;
     if (s.gender === 'Boy') boys++; else if (s.gender === 'Girl') girls++; else unspec++;
     if (studentFeeStatus(s.id) === 'Pending') pend++;
-    attSum += s.att || 0;
+    attSum += studentAttPct(s);
     byClass[s.cls] = (byClass[s.cls] || 0) + 1;
     if (s.admissionDate && sessionOfDate(s.admissionDate) === curSess) newAdm++;
   });
@@ -793,7 +793,7 @@ function stuSorted(list) {
     else if (col === 'admDate') {
       var da = a.admissionDate || '', dbv = b.admissionDate || '';
       r = !da && !dbv ? 0 : !da ? 1 : !dbv ? -1 : (da < dbv ? -1 : da > dbv ? 1 : 0);
-    } else if (col === 'att') r = (a.att || 0) - (b.att || 0);
+    } else if (col === 'att') r = studentAttPct(a) - studentAttPct(b);
     return r * dir;
   });
   return arr;
@@ -844,7 +844,7 @@ function studentCSVRow(s) {
   var d = s.documents || {};
   return [s.name, s.admissionNo || '', s.enr || '', s.cls, sectionOf(s.cls), s.roll,
     s.fatherName || s.guardian, s.motherName || '', s.guardian, s.phone, s.mobile2 || '', s.parentEmail || '',
-    s.att, studentFeeStatus(s.id), s.status || 'Active', s.session || '', s.admissionDate || '', s.dob || '',
+    studentAttPct(s), studentFeeStatus(s.id), s.status || 'Active', s.session || '', s.admissionDate || '', s.dob || '',
     s.gender || '', s.category || '', s.bloodGroup || '', s.address || '', s.district || '', s.state || '', s.pin || '',
     s.previousSchool || '', s.previousClass || '', d.birthCert ? 'Yes' : 'No', d.tc ? 'Yes' : 'No', d.tcNumber || ''];
 }
@@ -1116,17 +1116,40 @@ function todayAtt() {
   // 1,250-student school, not this one, and was only ever delta-updated from
   // that wrong baseline — so the donut showed fake numbers. 0 of 0 when
   // nothing is marked today yet.
+  // v24: soft-deleted (Cancelled) students never count — their old marks
+  // stay in the register, but they are not today's students anymore.
   var t = todayIST(), p = 0, a = 0, l = 0;
+  var cancelled = {};
+  (db.students || []).forEach(function (s) { if ((s.status || 'Active') === 'Cancelled') cancelled[s.id] = 1; });
   Object.keys(db.attendance || {}).forEach(function (k) {
     if (k.indexOf(t + '|') !== 0) return;
     var recs = db.attendance[k] || {};
     Object.keys(recs).forEach(function (id) {
+      if (cancelled[id]) return;
       if (recs[id] === 'Present') p++;
       else if (recs[id] === 'Absent') a++;
       else l++;
     });
   });
   return { present: p, absent: a, late: l, total: p + a + l };
+}
+function studentAttPct(s) {
+  // v24: a student's attendance % is computed LIVE from the actual marked
+  // records in db.attendance — so the figure moves the moment attendance
+  // is marked. Present and Late both count as attended (the student was
+  // there); Absent does not. Only when the student has NO marked days at
+  // all do we fall back to the stored s.att (the seed / import / admission
+  // value). Never write the computed value back into s.att — the stored
+  // value stays the fallback.
+  var total = 0, attended = 0;
+  Object.keys(db.attendance || {}).forEach(function (k) {
+    var recs = db.attendance[k] || {};
+    var m = recs[s.id];
+    if (!m) return;
+    total++;
+    if (m === 'Present' || m === 'Late') attended++;
+  });
+  return total ? Math.round(attended / total * 100) : (s.att || 0);
 }
 function schoolCounts() {
   var t = db.schools.length, a = 0, p = 0;
@@ -1278,7 +1301,7 @@ var I18N = {
     superDashboard: 'Super Admin Dashboard', schoolDashboard: 'School Admin Dashboard', studentDashboard: 'Student Dashboard',
     confirmTitle: 'Confirm', cancel: 'Cancel', confirmYes: 'Yes, continue', saveBtn: 'Save',
     addSchool: 'Add School', addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', approve: 'Approve', remove: 'Remove', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', publishBtn: 'Publish', assignHw: 'Assign Homework', saveSchoolBtn: 'Save School', saveStudentBtn: 'Save Student',
-    attOverview: 'Attendance Overview', todayAtt: 'Today\'s Attendance', feeTrend: 'Fee Collection Trend', feeTrendSub: 'Apr – Aug (Collected vs Pending)', feeTrendSub2: 'Apr to Aug (Collected vs Pending)', recentAct: 'Recent Activities', quickLinks: 'Quick Links', jumpTask: 'Jump to a task', top5: 'Top 5 Schools', byStrength: 'By student strength', schoolGrowth: 'School Growth', growthSub: 'New schools onboarded this week', growthWeek: 'This week (Mon–Sun)', subsStatus: 'Subscription Status', subsSub: 'Share of schools by plan status', quickActions: 'Quick Actions', qaSub: 'Common admin tasks', enterMarks: 'Enter Marks', myHomework: 'My Homework', noticesH: 'Notices', latestNotices: 'Latest from school', plansH: 'Plans', guidesH: 'Quick Guides', guidesSub: 'Most common tasks', contactH: 'Contact', contactSub: 'We reply within one working day', studentsReport: 'Students Report', feesReport: 'Fees Report', attReport: 'Attendance Report', schoolsReport: 'Schools Report',
+    attOverview: 'Attendance Overview', todayAtt: 'Today\'s Attendance', feeTrend: 'Fee Collection Trend', feeTrendSub: 'Apr – Aug (Collected vs Pending)', feeTrendSub2: 'Apr to Aug (Collected vs Pending)', recentAct: 'Recent Activities', activityLog: 'Activity Log', actLogSub: 'Full audit history — newest first.', thDetails: 'Details', actBy: 'By', supYourName: 'Your name', quickLinks: 'Quick Links', jumpTask: 'Jump to a task', top5: 'Top 5 Schools', byStrength: 'By student strength', schoolGrowth: 'School Growth', growthSub: 'New schools onboarded this week', growthWeek: 'This week (Mon–Sun)', subsStatus: 'Subscription Status', subsSub: 'Share of schools by plan status', quickActions: 'Quick Actions', qaSub: 'Common admin tasks', enterMarks: 'Enter Marks', myHomework: 'My Homework', noticesH: 'Notices', latestNotices: 'Latest from school', plansH: 'Plans', guidesH: 'Quick Guides', guidesSub: 'Most common tasks', contactH: 'Contact', contactSub: 'We reply within one working day', studentsReport: 'Students Report', feesReport: 'Fees Report', attReport: 'Attendance Report', schoolsReport: 'Schools Report',
     thName: 'Name', thClass: 'Class', thRoll: 'Roll', thGuardian: 'Guardian', thPhone: 'Phone', thAtt: 'Att.', thFee: 'Fee', thAction: 'Action', thStudent: 'Student', thMonth: 'Month', thAmount: 'Amount', thDate: 'Date', thStatus: 'Status', thSchool: 'School', thCity: 'City', thStudents: 'Students', thUsers: 'Users', thPlan: 'Plan', thMarks: 'Marks', thResult: 'Result', thSince: 'Since', thRole: 'Role',
     subSuperDash: 'Platform Overview & Management', subSchools: 'All schools on the platform', subUsers: 'Teachers, staff & students', subSubs: 'Plans & billing status', subAnalytics: 'Growth, attendance & fees', subAnalyticsFull: 'Growth, attendance & fees across the platform', subReports: 'Download CSV reports', subHelp: 'Guides & contact', subStudents: 'St. Xavier School, Patna', subAttendance: 'Mark & view attendance', subFees: 'Fee collection & pending dues', subExams: 'Exams & marks entry', subHomework: 'Assign & track homework', subNotices: 'Notice board',
     fSchoolName: 'School Name', fCity: 'City', fStudents: 'Students', fPlan: 'Plan', fStudentName: 'Student Name', fClass: 'Class', fRoll: 'Roll No', fGuardian: 'Guardian', fPhone: 'Phone', fTitle: 'Title', fSubject: 'Subject', fDue: 'Due Date', fMessage: 'Message', fPrincipal: 'Principal / Admin', fEmail: 'Email', fAddress: 'Address', fSession: 'Academic Session',
@@ -1323,7 +1346,7 @@ var I18N = {
     superDashboard: 'सुपर एडमिन डैशबोर्ड', schoolDashboard: 'स्कूल एडमिन डैशबोर्ड', studentDashboard: 'छात्र डैशबोर्ड',
     confirmTitle: 'पुष्टि करें', cancel: 'रद्द करें', confirmYes: 'हाँ, जारी रखें', saveBtn: 'सहेजें',
     addSchool: 'स्कूल जोड़ें', addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', approve: 'स्वीकृत करें', remove: 'हटाएँ', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveSchoolBtn: 'स्कूल सहेजें', saveStudentBtn: 'छात्र सहेजें',
-    attOverview: 'उपस्थिति अवलोकन', todayAtt: 'आज की उपस्थिति', feeTrend: 'शुल्क संग्रह प्रवृत्ति', feeTrendSub: 'अप्रैल – अगस्त (संग्रह बनाम बकाया)', feeTrendSub2: 'अप्रैल से अगस्त (संग्रह बनाम बकाया)', recentAct: 'हाल की गतिविधियाँ', quickLinks: 'त्वरित लिंक', jumpTask: 'किसी कार्य पर जाएँ', top5: 'शीर्ष 5 स्कूल', byStrength: 'छात्र संख्या के अनुसार', schoolGrowth: 'स्कूल वृद्धि', growthSub: 'इस सप्ताह जुड़े नए स्कूल', growthWeek: 'इस सप्ताह (सोम–रवि)', subsStatus: 'सदस्यता स्थिति', subsSub: 'योजना स्थिति के अनुसार स्कूलों का हिस्सा', quickActions: 'त्वरित कार्य', qaSub: 'आम व्यवस्थापक कार्य', enterMarks: 'अंक भरें', myHomework: 'मेरा होमवर्क', noticesH: 'नोटिस', latestNotices: 'स्कूल से नवीनतम', plansH: 'योजनाएँ', guidesH: 'त्वरित मार्गदर्शिकाएँ', guidesSub: 'सबसे आम कार्य', contactH: 'संपर्क', contactSub: 'हम एक कार्य दिवस के भीतर जवाब देते हैं', studentsReport: 'छात्र रिपोर्ट', feesReport: 'शुल्क रिपोर्ट', attReport: 'उपस्थिति रिपोर्ट', schoolsReport: 'स्कूल रिपोर्ट',
+    attOverview: 'उपस्थिति अवलोकन', todayAtt: 'आज की उपस्थिति', feeTrend: 'शुल्क संग्रह प्रवृत्ति', feeTrendSub: 'अप्रैल – अगस्त (संग्रह बनाम बकाया)', feeTrendSub2: 'अप्रैल से अगस्त (संग्रह बनाम बकाया)', recentAct: 'हाल की गतिविधियाँ', activityLog: 'गतिविधि लॉग', actLogSub: 'पूरी ऑडिट हिस्ट्री — नई पहले।', thDetails: 'विवरण', actBy: 'द्वारा', supYourName: 'आपका नाम', quickLinks: 'त्वरित लिंक', jumpTask: 'किसी कार्य पर जाएँ', top5: 'शीर्ष 5 स्कूल', byStrength: 'छात्र संख्या के अनुसार', schoolGrowth: 'स्कूल वृद्धि', growthSub: 'इस सप्ताह जुड़े नए स्कूल', growthWeek: 'इस सप्ताह (सोम–रवि)', subsStatus: 'सदस्यता स्थिति', subsSub: 'योजना स्थिति के अनुसार स्कूलों का हिस्सा', quickActions: 'त्वरित कार्य', qaSub: 'आम व्यवस्थापक कार्य', enterMarks: 'अंक भरें', myHomework: 'मेरा होमवर्क', noticesH: 'नोटिस', latestNotices: 'स्कूल से नवीनतम', plansH: 'योजनाएँ', guidesH: 'त्वरित मार्गदर्शिकाएँ', guidesSub: 'सबसे आम कार्य', contactH: 'संपर्क', contactSub: 'हम एक कार्य दिवस के भीतर जवाब देते हैं', studentsReport: 'छात्र रिपोर्ट', feesReport: 'शुल्क रिपोर्ट', attReport: 'उपस्थिति रिपोर्ट', schoolsReport: 'स्कूल रिपोर्ट',
     thName: 'नाम', thClass: 'कक्षा', thRoll: 'रोल', thGuardian: 'अभिभावक', thPhone: 'फ़ोन', thAtt: 'उप.', thFee: 'शुल्क', thAction: 'कार्रवाई', thStudent: 'छात्र', thMonth: 'महीना', thAmount: 'राशि', thDate: 'तारीख', thStatus: 'स्थिति', thSchool: 'स्कूल', thCity: 'शहर', thStudents: 'छात्र', thUsers: 'उपयोगकर्ता', thPlan: 'योजना', thMarks: 'अंक', thResult: 'परिणाम', thSince: 'से', thRole: 'भूमिका',
     subSuperDash: 'प्लेटफ़ॉर्म अवलोकन और प्रबंधन', subSchools: 'प्लेटफ़ॉर्म के सभी स्कूल', subUsers: 'शिक्षक, कर्मचारी और छात्र', subSubs: 'योजनाएँ और बिलिंग स्थिति', subAnalytics: 'वृद्धि, उपस्थिति और शुल्क', subAnalyticsFull: 'पूरे प्लेटफ़ॉर्म पर वृद्धि, उपस्थिति और शुल्क', subReports: 'CSV रिपोर्ट डाउनलोड करें', subHelp: 'मार्गदर्शिकाएँ और संपर्क', subStudents: 'सेंट ज़ेवियर स्कूल, पटना', subAttendance: 'उपस्थिति दर्ज करें और देखें', subFees: 'शुल्क संग्रह और बकाया', subExams: 'परीक्षा और अंक प्रविष्टि', subHomework: 'होमवर्क सौंपें और देखें', subNotices: 'नोटिस बोर्ड',
     fSchoolName: 'स्कूल का नाम', fCity: 'शहर', fStudents: 'छात्र', fPlan: 'योजना', fStudentName: 'छात्र का नाम', fClass: 'कक्षा', fRoll: 'रोल नंबर', fGuardian: 'अभिभावक', fPhone: 'फ़ोन', fTitle: 'शीर्षक', fSubject: 'विषय', fDue: 'देय तारीख', fMessage: 'संदेश', fPrincipal: 'प्रधानाचार्य / एडमिन', fEmail: 'ईमेल', fAddress: 'पता', fSession: 'शैक्षणिक सत्र',
@@ -1544,7 +1567,7 @@ var NAV = {
   school: [
     ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['admissions', '📋', 'admissions'], ['attendance', '✅', 'attendance'],
     ['fees', '💰', 'fees'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'],
-    ['notices', '📢', 'notices'], ['reports', '📄', 'reports'], ['settings', '⚙️', 'settings']
+    ['notices', '📢', 'notices'], ['reports', '📄', 'reports'], ['activityLog', '📜', 'activityLog'], ['settings', '⚙️', 'settings']
   ],
   student: [
     ['dashboard', '🏠', 'dashboard'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
@@ -1558,6 +1581,7 @@ var VIEW_TITLES = {
   schools: ['Schools', 'All schools on the platform'], users: ['Users', 'Teachers, staff & students'],
   subscriptions: ['Subscriptions', 'Plans & billing status'], analytics: ['Analytics', 'Growth, attendance & fees'],
   settings: ['Settings', 'Platform / school settings'], reports: ['Reports', 'Download CSV reports'],
+  activityLog: ['Activity Log', 'Full audit history'],
   help: ['Help & Support', 'Guides & contact'],
   students: ['Student Management', 'St. Xavier School, Patna'], admissions: ['Admission Requests', 'New applications & approvals'], attendance: ['Attendance', 'Mark & view attendance'],
   fees: ['Fees', 'Fee collection & pending dues'], exams: ['Examinations', 'Exams & marks entry'],
@@ -1966,14 +1990,44 @@ function superAnalytics() {
     '<div class="row"><span class="dot" style="background:' + ORANGE + '"></span>' + t('lateBtn') + '<b>' + num(ta.late) + '</b></div></div>' +
   '</div></div>';
 }
+/* ================= Super Admin platform settings (v24) =================
+   The settings on this page used to be read-only text under a button
+   that only showed a toast — nothing was ever saved. They now live in
+   localStorage (key schoolSaathiPlatformSettings) so they survive
+   reloads: Save writes them and re-renders the page with the new
+   values. The version label shows the real build version. */
+function platformSettings() {
+  try { var v = JSON.parse(localStorage.getItem('schoolSaathiPlatformSettings') || 'null'); return v && typeof v === 'object' ? v : {}; }
+  catch (e) { return {}; }
+}
+function savePlatformSettings(e) {
+  if (e) e.preventDefault();
+  var v = {
+    name: ($('fPlName').value || '').trim() || 'School Saathi',
+    tagline: ($('fPlTagline').value || '').trim() || 'Smart Education. Better Tomorrow.',
+    session: ($('fPlSession').value || '').trim() || db.profile.session,
+    supportEmail: ($('fPlEmail').value || '').trim() || 'support@school-saathi.in'
+  };
+  localStorage.setItem('schoolSaathiPlatformSettings', JSON.stringify(v));
+  renderApp();
+  toast('✓ ' + t('tSettingsSaved'));
+  return false;
+}
 function superSettings() {
+  var ps = platformSettings();
+  var pName = ps.name || 'School Saathi', pTag = ps.tagline || 'Smart Education. Better Tomorrow.',
+      pSess = ps.session || db.profile.session, pEmail = ps.supportEmail || 'support@school-saathi.in';
+  var sessOpts = ['2025–26', '2024–25', '2026–27'].map(function (s) { return '<option' + (pSess === s ? ' selected' : '') + '>' + s + '</option>'; }).join('');
   return '<div class="page-head"><div><h2>' + t('sysSettings') + '</h2><p>' + t('platformConfig') + '</p></div></div>' +
-  '<div class="card" style="max-width:640px"><h3>' + t('platformH') + '</h3><p class="card-sub">School Saathi — Version 1.0.0</p>' +
-  '<div class="kv"><b>' + t('supName') + '</b><span>School Saathi</span><b>' + t('supTagline') + '</b><span>Smart Education. Better Tomorrow.</span>' +
-  '<b>' + t('supSession') + '</b><span>' + esc(db.profile.session) + '</span><b>' + t('supEmail') + '</b><span>support@school-saathi.in</span>' +
-  '<b>' + t('supStorage') + '</b><span>' + t('supStorageV') + '</span></div>' +
-  '<div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap"><button class="btn" onclick="toast(t(\'tSettingsSaved\'))">' + t('saveSettingsBtn') + '</button>' +
-  '<button class="btn danger" onclick="resetAllData()">' + t('resetAllData') + '</button></div></div>';
+  '<div class="card" style="max-width:640px"><h3>' + t('platformH') + '</h3><p class="card-sub">' + esc(pName) + ' — v24</p>' +
+  '<form onsubmit="return savePlatformSettings(event)"><div class="form-grid">' +
+  '<div><label>' + t('supName') + '</label><input id="fPlName" value="' + esc(pName) + '"></div>' +
+  '<div><label>' + t('supTagline') + '</label><input id="fPlTagline" value="' + esc(pTag) + '"></div>' +
+  '<div><label>' + t('supSession') + '</label><select id="fPlSession">' + sessOpts + '</select></div>' +
+  '<div><label>' + t('supEmail') + '</label><input id="fPlEmail" type="email" value="' + esc(pEmail) + '"></div>' +
+  '<div class="full"><label>' + t('supStorage') + '</label><input value="' + esc(t('supStorageV')) + '" disabled></div>' +
+  '</div><div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap"><button class="btn" type="submit">' + t('saveSettingsBtn') + '</button>' +
+  '<button type="button" class="btn danger" onclick="resetAllData()">' + t('resetAllData') + '</button></div></form></div>';
 }
 function resetPwCheck(pw) {
   // Password gate for Reset All Data: the signed-in account's own password.
@@ -2039,7 +2093,35 @@ function superHelp() {
   '<div class="act"><div class="ic" style="background:var(--orange-soft)">✅</div><div><b>' + t('guide3t') + '</b><span>' + t('guide3d') + '</span></div></div>' +
   '</div></div>' +
   '<div class="card"><h3>' + t('contactH') + '</h3><p class="card-sub">' + t('contactSub') + '</p><div class="kv"><b>' + t('fEmail') + '</b><span>support@school-saathi.in</span><b>' + t('contactPhone') + '</b><span>+91 63047 97341</span><b>' + t('contactHours') + '</b><span>' + t('hoursV') + '</span></div>' +
-  '<div style="margin-top:16px"><button class="btn" onclick="toast(t(\'supportNoted\'))">' + t('raiseSupport') + '</button></div></div></div>';
+  '<div style="margin-top:16px"><button class="btn" onclick="openSupportForm()">' + t('raiseSupport') + '</button></div></div></div>';
+}
+/* v24: "Raise Support" used to only show a toast — the request went
+   nowhere. It now opens a small form (name + message); submitting
+   stores the request in localStorage (key schoolSaathiSupportRequests,
+   newest first, max 50) and shows the confirmation. */
+function openSupportForm() {
+  openModal('<h3>' + t('raiseSupport') + '</h3><p style="color:var(--muted);font-size:14px">' + t('contactSub') + '</p>' +
+    '<form onsubmit="return submitSupportRequest(event)"><div class="form-grid">' +
+    '<div><label>' + t('supYourName') + '</label><input id="fSupName" value="' + esc(state.user ? state.user.name : '') + '"></div>' +
+    '<div class="full"><label>' + t('fMessage') + '</label><input id="fSupMsg"></div></div>' +
+    '<div id="supErr" class="err hidden"></div>' +
+    '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    '<button class="btn" type="submit">' + t('raiseSupport') + '</button></div></form>');
+}
+function submitSupportRequest(e) {
+  if (e) e.preventDefault();
+  var name = ($('fSupName') ? $('fSupName').value : '').trim();
+  var msg = ($('fSupMsg') ? $('fSupMsg').value : '').trim();
+  if (!name || !msg) { var err = $('supErr'); if (err) { err.textContent = t('tFillAll'); err.classList.remove('hidden'); } return false; }
+  var list = [];
+  try { list = JSON.parse(localStorage.getItem('schoolSaathiSupportRequests') || '[]'); } catch (e2) { list = []; }
+  if (!Array.isArray(list)) list = [];
+  list.unshift({ ts: new Date().toISOString(), name: name, message: msg, by: state.user ? state.user.name : '' });
+  if (list.length > 50) list.length = 50;
+  localStorage.setItem('schoolSaathiSupportRequests', JSON.stringify(list));
+  closeModal();
+  toast(t('supportNoted'));
+  return false;
 }
 var PAGE_SUPER = { dashboard: superDashboard, schools: superSchools, users: superUsers, subscriptions: superSubscriptions, analytics: superAnalytics, settings: superSettings, reports: superReports, help: superHelp };
 
@@ -2064,14 +2146,33 @@ function schoolDashboard() {
     '<div class="row"><span class="dot" style="background:' + RED + '"></span>' + t('absBtn') + '<b>' + num(ta.absent) + '</b></div>' +
     '<div class="row"><span class="dot" style="background:' + ORANGE + '"></span>' + t('lateBtn') + '<b>' + num(ta.late) + '</b></div></div>' +
   '</div></div>' +
-  '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + t('feeTrendSub') + '</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted" style="margin-top:8px"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div></div>' +
-  '<div class="grid2"><div class="card"><div class="head-row"><div><h3>' + t('recentAct') + '</h3></div><a href="#" onclick="return false">' + t('viewAll') + '</a></div><div class="act-list">' + acts + '</div></div>' +
+  '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted" style="margin-top:8px"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div></div>' +
+  '<div class="grid2"><div class="card"><div class="head-row"><div><h3>' + t('recentAct') + '</h3></div><a href="#" onclick="go(\'activityLog\');return false">' + t('viewAll') + '</a></div><div class="act-list">' + acts + '</div></div>' +
   '<div class="card"><h3>' + t('quickLinks') + '</h3><p class="card-sub">' + t('jumpTask') + '</p><div class="qa-grid">' +
     '<div class="qa" onclick="go(\'students\')"><div class="ic">🎒</div><b>' + t('qaAddStudent') + '</b><span>' + t('qaAddStudentD') + '</span></div>' +
     '<div class="qa" onclick="go(\'attendance\')"><div class="ic">✅</div><b>' + t('qaMarkAtt') + '</b><span>' + t('qaMarkAttD') + '</span></div>' +
     '<div class="qa" onclick="go(\'exams\')"><div class="ic">📝</div><b>' + t('qaEnterMarks') + '</b><span>' + t('qaEnterMarksD') + '</span></div>' +
     '<div class="qa" onclick="go(\'reports\')"><div class="ic">📄</div><b>' + t('qaGenReport') + '</b><span>' + t('qaGenReportD') + '</span></div>' +
   '</div></div></div>';
+}
+/* ================= Activity / Audit Log (v24) =================
+   The dashboard "Recent Activities" card only shows the last few
+   db.activities entries (collections, attendance saves, notices) — and
+   its "View All" link was dead. The real audit trail lives in
+   db.auditLog (logAudit: fee collections, fee deletions, admissions,
+   transfers, promotions, PIN changes...), newest first. This page
+   lists every audit entry so nothing — including a fee deletion —
+   is invisible. */
+function activityLogPage() {
+  var rows = (db.auditLog || []).slice().sort(function (a, b) { return a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0; });
+  var trs = rows.map(function (a) {
+    var when = (a.ts || '').replace('T', ' ').slice(0, 19);
+    return '<tr><td style="white-space:nowrap">' + esc(when) + '</td><td><b>' + esc(a.action) + '</b></td><td>' + esc(a.details || '') + '</td><td>' + esc(a.actor || '') + '</td></tr>';
+  }).join('');
+  return '<div class="page-head"><div><h2>' + t('activityLog') + '</h2><p>' + t('actLogSub') + '</p></div>' +
+    '<div class="toolbar"><button class="btn ghost" onclick="go(\'dashboard\')">← ' + t('dashboard') + '</button></div></div>' +
+    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thDate') + '</th><th>' + t('thAction') + '</th><th>' + t('thDetails') + '</th><th>' + t('actBy') + '</th></tr></thead><tbody>' +
+    (trs || '<tr><td colspan="4"><div class="empty">' + t('noActivity') + '</div></td></tr>') + '</tbody></table></div></div>';
 }
 function studentsPage() {
   if (state.profileStudent) return studentProfilePage(state.profileStudent);
@@ -2086,7 +2187,7 @@ function studentsPage() {
     var stt = s.status || 'Active';
     var badgeCls = stt === 'Active' ? 'green' : stt === 'Inactive' ? 'grey' : stt === 'Draft' ? 'blue' : 'red';
     return '<tr><td class="sel-col"><input type="checkbox" ' + ((state.stuSel || {})[s.id] ? 'checked' : '') + ' onchange="toggleStuSel(\'' + s.id + '\', this.checked)" aria-label="' + esc(s.name) + '"></td><td>' + avatarHTML(s.photo, s.name, 'mini-avatar') + '<button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td>' +
-      '<td>' + esc(s.admissionNo || '—') + '</td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.fatherName || s.guardian) + '</td><td>' + esc(s.phone) + '</td><td>' + s.att + '%</td>' +
+      '<td>' + esc(s.admissionNo || '—') + '</td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.fatherName || s.guardian) + '</td><td>' + esc(s.phone) + '</td><td>' + studentAttPct(s) + '%</td>' +
       '<td><span class="badge ' + (fs === 'Paid' ? 'green' : fs === 'Pending' ? 'orange' : 'grey') + '">' + fs + '</span></td>' +
       '<td><span class="badge ' + badgeCls + '">' + stt + '</span></td>' +
       '<td><button class="btn ghost sm" onclick="stuActions(\'' + s.id + '\')">⋮ ' + t('actionsW') + '</button></td></tr>';
@@ -2625,7 +2726,7 @@ function profileTabBody(s, tab) {
     var trs = shown.map(function (r) {
       return '<tr><td>' + esc(r.date) + '</td><td>' + esc(r.cls) + '</td><td><span class="badge ' + (r.st === 'Present' ? 'green' : r.st === 'Absent' ? 'red' : 'orange') + '">' + r.st + '</span></td></tr>';
     }).join('');
-    return '<div class="card"><p class="muted">' + t('attPct') + ': <b>' + s.att + '%</b>' + (rows.length > 30 ? ' • ' + t('showingRec') + ' 30 ' + t('ofRec') + ' ' + rows.length : '') + '</p><div class="tbl-wrap"><table><thead><tr><th>' + t('thDate') + '</th><th>' + t('thClass') + '</th><th>' + t('thStatus') + '</th></tr></thead><tbody>' + (trs || '<tr><td colspan="3"><div class="empty">' + t('noAttRecs') + '</div></td></tr>') + '</tbody></table></div></div>';
+    return '<div class="card"><p class="muted">' + t('attPct') + ': <b>' + studentAttPct(s) + '%</b>' + (rows.length > 30 ? ' • ' + t('showingRec') + ' 30 ' + t('ofRec') + ' ' + rows.length : '') + '</p><div class="tbl-wrap"><table><thead><tr><th>' + t('thDate') + '</th><th>' + t('thClass') + '</th><th>' + t('thStatus') + '</th></tr></thead><tbody>' + (trs || '<tr><td colspan="3"><div class="empty">' + t('noAttRecs') + '</div></td></tr>') + '</tbody></table></div></div>';
   }
   if (tab === 'fees') {
     var sum = feeSummaryFor(s.id);
@@ -2679,7 +2780,7 @@ function profileTabBody(s, tab) {
   var sum2 = feeSummaryFor(s.id);
   var pendAmt = sum2 ? sum2.pend : 0;
   return '<div class="stats">' +
-    statCard('📊', 'blue', t('attPct'), s.att, '', 'up', { suffix: '%' }) +
+    statCard('📊', 'blue', t('attPct'), studentAttPct(s), '', 'up', { suffix: '%' }) +
     statCard('💰', 'green', t('feeSt'), pendAmt, '', pendAmt ? 'down' : 'up', { prefix: '₹' }) +
     statCard('📝', 'orange', t('latestExam'), lex ? lex.pct : 0, lex ? lex.name : '', 'up', { suffix: '%' }) +
     statCard('📚', 'red', t('hwPending'), hwPend, '', 'up') +
@@ -3130,6 +3231,7 @@ function collectFee(id) {
   var r = db.feeRecords.find(function (x) { return x.id === id; });
   if (!r || r.status !== 'Pending') return;
   r.status = 'Collected';
+  logAudit('Fee collected', r.student + ' • ' + inr(r.amount));
   addActivity('💰', 'green', 'New fee payment received', 'by ' + r.student + ' • ' + inr(r.amount));
   saveDB(db); renderApp();
   toast('✓ ' + inr(r.amount) + ' ' + t('tCollectedFrom') + ' ' + r.student + '.');
@@ -3711,7 +3813,7 @@ function reportsPage(role) {
 function downloadReportCSV(kind) {
   if (kind === 'students') {
     downloadCSV('school-saathi-students.csv', [['Name', 'Class', 'Roll', 'Guardian', 'Phone', 'Attendance %', 'Fee Status']]
-      .concat(db.students.map(function (s) { return [s.name, s.cls, s.roll, s.guardian, s.phone, s.att, studentFeeStatus(s.id)]; })));
+      .concat(db.students.map(function (s) { return [s.name, s.cls, s.roll, s.guardian, s.phone, studentAttPct(s), studentFeeStatus(s.id)]; })));
   } else if (kind === 'fees') {
     downloadCSV('school-saathi-fees.csv', feeCSVRows());
   } else if (kind === 'attendance') {
@@ -3769,7 +3871,7 @@ function saveSettings(e) {
   return false;
 }
 PAGE_SCHOOL.exams = examsPage; PAGE_SCHOOL.homework = homeworkPage; PAGE_SCHOOL.notices = noticesPage;
-PAGE_SCHOOL.reports = function () { return reportsPage('school'); }; PAGE_SCHOOL.settings = settingsPage; PAGE_SCHOOL.admissions = admissionRequestsPage;
+PAGE_SCHOOL.reports = function () { return reportsPage('school'); }; PAGE_SCHOOL.settings = settingsPage; PAGE_SCHOOL.admissions = admissionRequestsPage; PAGE_SCHOOL.activityLog = activityLogPage;
 
 /* ================= STUDENT view ================= */
 function studentDashboard() {
@@ -3787,7 +3889,7 @@ function studentDashboard() {
   return '<div class="phone"><div class="card"><div class="stu-hero">' + avatarHTML(me.photo, me.name, 'avatar') + '</div>' +
     '<h3>' + esc(me.name) + '</h3><p>Class ' + esc(me.cls) + ' • ' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div>' +
     '<div class="tile-grid">' +
-    '<div class="tile green"><div class="n">' + me.att + '%</div><div class="l">' + t('tileAtt') + '</div></div>' +
+    '<div class="tile green"><div class="n">' + studentAttPct(me) + '%</div><div class="l">' + t('tileAtt') + '</div></div>' +
     '<div class="tile yellow"><div class="n">' + studentFeeStatus(me.id) + '</div><div class="l">' + t('tileFees') + '</div></div>' +
     '<div class="tile purple"><div class="n">' + me.result + '%</div><div class="l">' + t('tileResults') + '</div></div>' +
     '<div class="tile blue"><div class="n">' + myHw.length + '</div><div class="l">' + t('tileHw') + ' (' + doneCount + ' ' + t('doneSuffix') + ')</div></div>' +
