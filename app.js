@@ -177,6 +177,11 @@ function sbLoginNewSchool(meta, email, pw, uid, token, serverSchool) {
   $('loginErr').classList.add('hidden');
   loginAs(a);
   sbMaybeMigrate(a, uid, token); // fire-and-forget: never blocks login
+  // v30: second device — this school already has a server row, so pull
+  // its data down into the fresh empty workspace. Skipped for a fresh
+  // signup (no server row yet: nothing to download) and skipped entirely
+  // when the local store is not empty (download never overwrites).
+  if (serverSchool && serverSchool.id) sbDownloadSchoolData(a, uid, token, serverSchool.id);
 }
 function sbShowNoSchool() {
   // v28: a Supabase account with no school tied to it (no local school
@@ -587,6 +592,122 @@ function sbRetryMigration() {
     });
   }).catch(function () { toast(t('sbBackupFailed')); });
 }
+// v30: second-device download — the inverse of sbMaybeMigrate. A school
+// signing in on a new phone has its data on the server but an empty local
+// workspace; this pulls it down. SAFETY FIRST: the local store is filled
+// ONLY when it is completely empty (no students AND no fee records AND no
+// teachers). If ANY local data exists the download is skipped entirely —
+// upload wins, local data is never overwritten and never deleted.
+// Download never blocks login (fire-and-forget, like migration) and never
+// sets the migration flag, so new local rows still upload later via
+// "Back Up Now". Also fetches the school row itself (profile, fee extras,
+// counters) and the fee structure, which the content tables do not carry.
+function sbRowToStudent(row) {
+  return { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', roll: row.roll || 0,
+    enr: row.enr || '', guardian: row.guardian || '', phone: row.phone || '', mobile2: row.mobile2 || '',
+    parentEmail: row.parent_email || '', fatherName: row.father_name || '', motherName: row.mother_name || '',
+    occupation: row.occupation || '', dob: row.dob || '',
+    gender: (row.gender === 'Boy' || row.gender === 'Girl') ? row.gender : '',
+    bloodGroup: row.blood_group || '', category: row.category || '', address: row.address || '',
+    state: row.state || '', district: row.district || '', pin: row.pin || '',
+    previousSchool: row.previous_school || '', previousClass: row.previous_class || '',
+    admissionNo: row.admission_no || '', admissionDate: row.admission_date || '',
+    session: row.session || '', status: row.status || 'Active', result: (row.result === undefined || row.result === null) ? null : row.result,
+    parentPin: row.parent_pin || null, photo: row.photo_data_url || null,
+    documents: row.documents || { birthCert: false, tc: false, tcNumber: '', other: '' },
+    aadhaar: row.aadhaar || '' };
+}
+function sbRowToFeeRecord(row, stuMap) {
+  return { id: row.local_id || ('srv-' + row.id), studentId: stuMap[row.student_id] || '',
+    student: row.student_name || '', cls: row.cls || '', month: row.month || '', type: row.fee_type || 'Tuition',
+    amount: row.amount || 0, status: row.status || 'Pending', date: row.record_date || '' };
+}
+function sbDownloadSchoolData(account, sbUid, token, serverSchoolId) {
+  if (!account || account.role !== 'school') return Promise.resolve({ done: false, reason: 'not-school' });
+  if (!token) return Promise.resolve({ done: false, reason: 'no-token' });
+  if (!sbIsOnline()) return Promise.resolve({ done: false, reason: 'offline' });
+  var d = db; // the account's DB is loaded by loginAs before this runs
+  if ((d.students || []).length || (d.feeRecords || []).length || (d.teachers || []).length) {
+    return Promise.resolve({ done: false, reason: 'not-empty' });
+  }
+  var idP = serverSchoolId ? Promise.resolve(serverSchoolId)
+    : sbGetServerSchoolId(sbUid, token).then(function (row) { return row ? row.id : null; });
+  return idP.then(function (sid) {
+    if (!sid) return { done: false, reason: 'no-server-school' };
+    var tables = ['ss_fee_structure', 'ss_students', 'ss_teachers', 'ss_exams', 'ss_fee_records', 'ss_attendance', 'ss_receipts', 'ss_marks', 'ss_homework', 'ss_notices'];
+    var gets = [sbRest('GET', 'ss_schools?select=*&id=eq.' + encodeURIComponent(sid), token)];
+    tables.forEach(function (t) {
+      gets.push(sbRest('GET', t + '?select=*&school_id=eq.' + encodeURIComponent(sid) + '&limit=5000', token));
+    });
+    return Promise.all(gets).then(function (res) {
+      var i;
+      for (i = 0; i < res.length; i++) if (!res[i].ok || !Array.isArray(res[i].data)) throw new Error('read-failed');
+      var schoolRow = (res[0].data && res[0].data[0]) || null;
+      var byTable = {};
+      tables.forEach(function (t, j) { byTable[t] = res[j + 1].data; });
+      // School row first: profile, fee extras, counters.
+      if (schoolRow) {
+        d.profile = { name: schoolRow.name || d.profile.name || '', city: schoolRow.city || '', principal: schoolRow.principal || '', phone: schoolRow.phone || '', email: schoolRow.email || '', session: schoolRow.session || '2025–26', address: schoolRow.address || '' };
+        if (schoolRow.logo_data_url) d.profile.logo = schoolRow.logo_data_url;
+        d.feeExtras = { admissionFee: schoolRow.admission_fee || 0, cautionMoney: schoolRow.caution_money || 0, annualCharges: schoolRow.annual_charges || 0, transportFee: schoolRow.transport_fee || 0 };
+        d.admCounter = schoolRow.adm_counter || 1;
+        d.receiptCounter = schoolRow.receipt_counter || 1;
+        sbSaveServerSchool(account.uid, sid);
+      }
+      // Fee structure only when the server has one — otherwise the local
+      // defaults stay.
+      if (byTable.ss_fee_structure.length) {
+        d.feeStructure = byTable.ss_fee_structure.map(function (row) { return { cls: row.cls || '', type: row.fee_type || 'Tuition', amount: row.amount || 0 }; });
+      }
+      // Students first: everything else maps through their server ids.
+      var stuMap = {}, examMap = {};
+      d.students = byTable.ss_students.map(function (row) { var s = sbRowToStudent(row); stuMap[row.id] = s.id; return s; });
+      d.teachers = byTable.ss_teachers.map(function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '' }; });
+      d.exams = byTable.ss_exams.map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; examMap[row.id] = e.id; return e; });
+      d.feeRecords = byTable.ss_fee_records.map(function (row) { return sbRowToFeeRecord(row, stuMap); });
+      // Attendance: server rows fold back into the 'date|cls' map.
+      d.attendance = {};
+      byTable.ss_attendance.forEach(function (row) {
+        var localId = stuMap[row.student_id];
+        if (!localId) return;
+        var key = (row.att_date || '') + '|' + (row.cls || '');
+        if (!d.attendance[key]) d.attendance[key] = {};
+        d.attendance[key][localId] = row.status || 'Present';
+      });
+      d.receipts = byTable.ss_receipts.map(function (row) {
+        return { receiptNo: row.receipt_no || '', studentId: stuMap[row.student_id] || '', admissionNo: row.admission_no || '', name: row.student_name || '', cls: row.cls || '', session: row.session || '', date: row.receipt_date || '', month: row.month || '', counterNo: row.counter_no || 0, lines: row.lines || [], payMode: row.pay_mode || 'Cash', payDate: row.pay_date || '', bank: row.bank || '', number: row.number || '', total: row.total || 0, totalWords: row.total_words || '', collector: row.collector || '' };
+      });
+      d.marks = [];
+      byTable.ss_marks.forEach(function (row) {
+        if (!examMap[row.exam_id] || !stuMap[row.student_id]) return;
+        d.marks.push({ examId: examMap[row.exam_id], studentId: stuMap[row.student_id], marks: row.marks });
+      });
+      d.homework = byTable.ss_homework.map(function (row) {
+        return { id: row.local_id || ('srv-' + row.id), cls: row.cls || '', subject: row.subject || '', title: row.title || '', due: row.due || '', doneBy: (row.done_by || []).map(function (id) { return stuMap[id]; }).filter(function (x) { return !!x; }) };
+      });
+      d.notices = byTable.ss_notices.map(function (row) { return { id: row.local_id || ('srv-' + row.id), title: row.title || '', date: row.notice_date || '', body: row.body || '' }; });
+      saveDB(db);
+      renderApp();
+      return { done: true, reason: 'ok', schoolId: sid, counts: sbLocalCounts(d) };
+    });
+  }).catch(function (err) {
+    return { done: false, reason: 'error', detail: (err && err.message) || 'error' };
+  });
+}
+function sbRetryDownload() {
+  if (!state.user || state.user.role !== 'school') { toast(t('sbStatusNotSchool')); return; }
+  if (!state.sb || !state.sb.uid) { toast(t('sbStatusPending')); return; }
+  toast(t('sbDownloadStart'));
+  sbGetValidToken().then(function (tok) {
+    if (!tok) { toast(t('sbDownloadOffline')); return; }
+    return sbDownloadSchoolData(state.user, state.sb.uid, tok, null).then(function (r) {
+      if (r.done) { toast(t('sbDownloadDone')); renderApp(); }
+      else if (r.reason === 'not-empty') toast(t('sbDownloadSkipped'));
+      else if (r.reason === 'no-server-school') toast(t('sbDownloadNoServer'));
+      else toast(t('sbDownloadFailed'));
+    });
+  }).catch(function () { toast(t('sbDownloadFailed')); });
+}
 // Public Apply form -> server (anon). MUST use return=minimal: anon has no
 // SELECT on ss_admission_requests, so asking for the row back fails with
 // 401 even though the insert itself succeeds (verified 9 Nov 2026).
@@ -597,23 +718,52 @@ function sbPostAdmission(serverSchoolId, req) {
     submitted: req.submitted || todayIST() };
   return sbRest('POST', 'ss_admission_requests', SB_ANON_KEY, body, 'return=minimal');
 }
+// v30: support request -> server (authenticated, best-effort). The local
+// save already happened before this is called, so a failure here (offline,
+// no session, no server school yet) never blocks the confirmation and
+// never shows a scary error — the request simply stays local until the
+// next successful login/backup. return=minimal so a missing SELECT on the
+// table can never fail the insert (same lesson as the anon Apply form).
+function sbPostSupportRequest(req) {
+  if (!state.user || state.user.role !== 'school' || !state.sb || !state.sb.uid) return;
+  sbGetValidToken().then(function (tok) {
+    if (!tok) return;
+    var post = function (schoolId) {
+      if (!schoolId) return;
+      sbRest('POST', 'ss_support_requests', tok, { school_id: schoolId, local_id: req.id, name: req.name, message: req.message, status: 'Pending' }, 'return=minimal').catch(function () {});
+    };
+    var sid = sbServerSchoolMap()[state.user.uid];
+    if (sid) { post(sid); return; }
+    sbGetServerSchoolId(state.sb.uid, tok).then(function (row) {
+      if (row && row.id) { sbSaveServerSchool(state.user.uid, row.id); post(row.id); }
+    }).catch(function () {});
+  }).catch(function () {});
+}
 
 
 
 /* ================= seed data ================= */
+// Seed platform schools. INVARIANT (v30 — the v26 count mismatch): the
+// account status and the plan must tell the same story, or every count
+// derived from them disagrees. Allowed pairs only:
+//   status 'active'  <-> plan 'Active' or 'Trial'   (account is live)
+//   status 'pending' <-> plan 'Pending'             (awaiting approval)
+//   status 'expired' <-> plan 'Expired'             (subscription lapsed)
+// So: active-status == Active-plan + Trial-plan; expired == Expired;
+// pending == Pending. The harness asserts this agreement.
 var SCHOOL_NAMES = [
   ['St. Xavier School','Patna',1250,'active','Active'], ['DAV Public School','Gaya',1100,'active','Active'],
   ['Bright Future School','Muzaffarpur',980,'active','Active'], ['Holy Child School','Bhagalpur',860,'active','Active'],
   ['Sunrise Academy','Darbhanga',750,'active','Active'], ['Saraswati Vidya Mandir','Gopalganj',620,'active','Active'],
   ['Gyanlok Public School','Baliwan Sagar',500,'active','Trial'], ['St. Joseph\'s School','Siwan',940,'active','Active'],
   ['Delhi Public School','Patna',1480,'active','Active'], ['Notre Dame Academy','Patna',1120,'active','Active'],
-  ['Kendriya Vidyalaya','Chhapra',890,'active','Expired'], ['Bal Vidyapeeth','Hajipur',430,'active','Trial'],
+  ['Kendriya Vidyalaya','Chhapra',890,'expired','Expired'], ['Bal Vidyapeeth','Hajipur',430,'active','Trial'],
   ['St. Mary\'s School','Motihari',760,'active','Active'], ['Rose Public School','Bettiah',540,'active','Active'],
   ['Modern Public School','Samastipur',690,'active','Active'], ['Vidya Niketan','Ara',610,'active','Active'],
-  ['Little Scholars Public School','Siwan',380,'pending','Active'], ['Gyan Jyoti Vidyalaya','Chhapra',290,'pending','Active'],
+  ['Little Scholars Public School','Siwan',380,'pending','Pending'], ['Gyan Jyoti Vidyalaya','Chhapra',290,'pending','Pending'],
   ['Carmel High School','Patna',1050,'active','Active'], ['Don Bosco Academy','Patna',980,'active','Active'],
-  ['St. Karen\'s School','Patna',870,'active','Expired'], ['Radiant Public School','Gopalganj',450,'active','Active'],
-  ['Oxford Public School','Muzaffarpur',720,'active','Expired'], ['Mount Carmel School','Gaya',660,'active','Expired']
+  ['St. Karen\'s School','Patna',870,'expired','Expired'], ['Radiant Public School','Gopalganj',450,'active','Active'],
+  ['Oxford Public School','Muzaffarpur',720,'expired','Expired'], ['Mount Carmel School','Gaya',660,'expired','Expired']
 ];
 var FIRST = ['Aarav','Vivaan','Aditya','Arjun','Sai','Reyansh','Krishna','Ishaan','Rohan','Kabir','Ananya','Diya','Aadhya','Myra','Sara','Ira','Priya','Riya','Anika','Navya','Aarush','Vihaan','Aryan','Dhruv','Meera','Kavya','Sneha','Pooja','Nikhil','Varun','Rahul','Sana','Ishita','Tanvi','Yash','Om','Dev','Rudra','Aisha','Zara','Farhan','Imran','Nisha','Kiran','Manav','Shreya'];
 var LAST = ['Kumar','Singh','Sharma','Verma','Gupta','Mishra','Tiwari','Yadav','Jha','Pandey','Choudhary','Ranjan','Srivastava','Dubey','Sinha','Patel','Das','Roy','Kumari','Devi'];
@@ -1816,7 +1966,7 @@ var I18N = {
     loginWelcome: 'Log in or sign up<br>to continue', loginEmail: 'Email', loginPassword: 'Password', loginEmailPh: 'you@school.edu.in', loginPwPh: '••••••••', loginBtn: 'Login', authLogin: 'Log In', authSignup: 'Sign Up', authNote: 'One account per school. Your data stays on this device and backs up to the server when you are online.', suSchool: 'School Name', suYourName: 'Your Name', suEmail: 'Email', suPw: 'Password', suPw2: 'Confirm Password', suBtn: 'Create Account', loginOr: 'Or continue with', demoTitle: '— One-tap demo login —', loginBack: '← Back to website',
     schoolDashboard: 'School Admin Dashboard', studentDashboard: 'Student Dashboard',
     confirmTitle: 'Confirm', cancel: 'Cancel', confirmYes: 'Yes, continue', saveBtn: 'Save',
-    addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', publishBtn: 'Publish', assignHw: 'Assign Homework', saveStudentBtn: 'Save Student',
+    addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', resetNameTitle: 'Type the school name to confirm', resetNameHint: 'This is the last step before everything is deleted. Type the exact school name.', resetNameLabel: 'School name', resetNameWrong: 'That name does not match — nothing was reset.', resetNameGo: 'Confirm Reset', publishBtn: 'Publish', assignHw: 'Assign Homework', saveStudentBtn: 'Save Student',
     attOverview: 'Attendance Overview', todayAtt: 'Today\'s Attendance', feeTrend: 'Fee Collection Trend', feeTrendSub: 'Apr – Aug (Collected vs Pending)', feeTrendSub2: 'Apr to Aug (Collected vs Pending)', recentAct: 'Recent Activities', activityLog: 'Activity Log', actLogSub: 'Full audit history — newest first.', thDetails: 'Details', actBy: 'By', supYourName: 'Your name', quickLinks: 'Quick Links', jumpTask: 'Jump to a task', enterMarks: 'Enter Marks', myHomework: 'My Homework', noticesH: 'Notices', latestNotices: 'Latest from school', contactSub: 'We reply within one working day', studentsReport: 'Students Report', feesReport: 'Fees Report', attReport: 'Attendance Report', thName: 'Name', thClass: 'Class', thRoll: 'Roll', thGuardian: 'Guardian', thPhone: 'Phone', thAtt: 'Att.', thFee: 'Fee', thAction: 'Action', thStudent: 'Student', thMonth: 'Month', thAmount: 'Amount', thDate: 'Date', thStatus: 'Status', thMarks: 'Marks', thResult: 'Result', thRole: 'Role',
     subReports: 'Download CSV reports', subStudents: 'St. Xavier School, Patna', subAttendance: 'Mark & view attendance', subFees: 'Fee collection & pending dues', subExams: 'Exams & marks entry', subHomework: 'Assign & track homework', subNotices: 'Notice board',
     fSchoolName: 'School Name', fCity: 'City', fStudentName: 'Student Name', fClass: 'Class', fRoll: 'Roll No', fGuardian: 'Guardian', fPhone: 'Phone', fTitle: 'Title', fSubject: 'Subject', fDue: 'Due Date', fMessage: 'Message', fPrincipal: 'Principal / Admin', fEmail: 'Email', fAddress: 'Address', fSession: 'Academic Session',
@@ -1832,7 +1982,7 @@ var I18N = {
     idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.',
     authParent: 'Parent', parentAdmNo: 'Admission Number', parentPinLabel: 'Parent PIN', parentLoginBtn: 'Login as Parent', parentNote: 'Parent access on this device uses a PIN set by the school. Real password accounts arrive with the server version.', parentSub: 'Parent', parentDashboard: 'My Child', tInvalidParent: 'Invalid admission number or PIN.', tParentScope: 'You can only view your own child\'s profile.', parentAccess: 'Parent Access', parentPinNow: 'Current Parent PIN', parentPinNone: 'No PIN set — parent login unavailable for this student.', parentPinNew: 'New PIN (4–6 digits)', parentPinSetBtn: 'Set PIN', parentPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Parent PIN set.', tPinCleared: 'Parent PIN cleared.', tPinAuto: 'Default PIN is the last 4 digits of the parent\'s mobile.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
     collectFeeBtn: 'Collect Fee', rcptTitle: 'FEE RECEIPT', rcptReceiptNo: 'Receipt No', rcptDate: 'Date', rcptAdmNo: 'Adm No', rcptSession: 'Session', rcptName: 'Name', rcptClass: 'Class', rcptInstallment: 'Installment', rcptCounter: 'Counter No', rcptSlNo: 'Sl.No', rcptDesc: 'Description', rcptDue: 'Due', rcptCon: 'Con', rcptPaid: 'Paid', rcptAdmissionFee: 'Admission Fee', rcptTuitionFee: 'Tuition Fee', rcptCaution: 'Caution Money', rcptAnnual: 'Annual Charges', rcptBusFee: 'Bus Fee', rcptDues: 'Dues', rcptPayModeTitle: 'PAY MODE INFORMATION', rcptPayMode: 'Pay Mode', rcptBank: 'Bank', rcptNumber: 'Number', rcptTotal: 'Total', rcptTotalWords: 'Total in Words', rcptComputerGen: 'This is a computer generated Receipt. Does not required signature.', rcptParentCopy: 'PARENT COPY', rcptCollectorSign: 'Collector\'s Signature', rcptIncludeBus: 'Include Bus/Transport', rcptOtherFees: 'Other Fees', rcptAnnualHint: 'One-time and annual amounts used on the Collect Fee receipt. Set 0 to hide a row.', payModeCash: 'Cash', payModeCheque: 'Cheque', payModeUpi: 'UPI', payModeCard: 'Card', payModeBank: 'Bank Transfer', tFeeCollected: 'Fee collected.', tCollectZero: 'Nothing to collect — enter a Paid amount.', tCollectSaved: 'Fee collected — Receipt ', tCollectNotActive: 'This student is not active — fee cannot be collected.', rcptReceipts: 'Receipts', rcptView: 'View', rcptPrint: 'Print / Save PDF', rcptCollectAgain: 'Collect Again', rcptNoReceipts: 'No receipts yet for this student.', rcptDraft: 'Draft — not saved yet', rcptCollectSave: 'Collect & Save', rcptNoLines: 'Nothing to collect for this period — set the fee amounts in Fee Structure first.',
-    sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.'
+    sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.'
   },
   hi: {
     dashboard: 'डैशबोर्ड', settings: 'सेटिंग्स', reports: 'रिपोर्ट', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -1840,7 +1990,7 @@ var I18N = {
     loginWelcome: 'लॉग इन करें या साइन अप करें<br>जारी रखने के लिए', loginEmail: 'ईमेल', loginPassword: 'पासवर्ड', loginEmailPh: 'आप@school.edu.in', loginPwPh: '••••••••', loginBtn: 'लॉगिन', authLogin: 'लॉग इन', authSignup: 'साइन अप', authNote: 'एक स्कूल, एक अकाउंट। सर्वर वर्शन आने तक आपके स्कूल का डेटा इसी डिवाइस पर रहेगा।', suSchool: 'स्कूल का नाम', suYourName: 'आपका नाम', suEmail: 'ईमेल', suPw: 'पासवर्ड', suPw2: 'पासवर्ड दोबारा डालें', suBtn: 'अकाउंट बनाएँ', loginOr: 'या जारी रखें', demoTitle: '— एक टैप में डेमो लॉगिन —', loginBack: '← वेबसाइट पर वापस',
     schoolDashboard: 'स्कूल एडमिन डैशबोर्ड', studentDashboard: 'छात्र डैशबोर्ड',
     confirmTitle: 'पुष्टि करें', cancel: 'रद्द करें', confirmYes: 'हाँ, जारी रखें', saveBtn: 'सहेजें',
-    addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveStudentBtn: 'छात्र सहेजें',
+    addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', resetNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', resetNameHint: 'सब कुछ मिटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', resetNameLabel: 'स्कूल का नाम', resetNameWrong: 'यह नाम मेल नहीं खाता — कुछ भी रीसेट नहीं हुआ।', resetNameGo: 'रीसेट की पुष्टि करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveStudentBtn: 'छात्र सहेजें',
     attOverview: 'उपस्थिति अवलोकन', todayAtt: 'आज की उपस्थिति', feeTrend: 'शुल्क संग्रह प्रवृत्ति', feeTrendSub: 'अप्रैल – अगस्त (संग्रह बनाम बकाया)', feeTrendSub2: 'अप्रैल से अगस्त (संग्रह बनाम बकाया)', recentAct: 'हाल की गतिविधियाँ', activityLog: 'गतिविधि लॉग', actLogSub: 'पूरी ऑडिट हिस्ट्री — नई पहले।', thDetails: 'विवरण', actBy: 'द्वारा', supYourName: 'आपका नाम', quickLinks: 'त्वरित लिंक', jumpTask: 'किसी कार्य पर जाएँ', enterMarks: 'अंक भरें', myHomework: 'मेरा होमवर्क', noticesH: 'नोटिस', latestNotices: 'स्कूल से नवीनतम', contactSub: 'हम एक कार्य दिवस के भीतर जवाब देते हैं', studentsReport: 'छात्र रिपोर्ट', feesReport: 'शुल्क रिपोर्ट', attReport: 'उपस्थिति रिपोर्ट', thName: 'नाम', thClass: 'कक्षा', thRoll: 'रोल', thGuardian: 'अभिभावक', thPhone: 'फ़ोन', thAtt: 'उप.', thFee: 'शुल्क', thAction: 'कार्रवाई', thStudent: 'छात्र', thMonth: 'महीना', thAmount: 'राशि', thDate: 'तारीख', thStatus: 'स्थिति', thMarks: 'अंक', thResult: 'परिणाम', thRole: 'भूमिका',
     subReports: 'CSV रिपोर्ट डाउनलोड करें', subStudents: 'सेंट ज़ेवियर स्कूल, पटना', subAttendance: 'उपस्थिति दर्ज करें और देखें', subFees: 'शुल्क संग्रह और बकाया', subExams: 'परीक्षा और अंक प्रविष्टि', subHomework: 'होमवर्क सौंपें और देखें', subNotices: 'नोटिस बोर्ड',
     fSchoolName: 'स्कूल का नाम', fCity: 'शहर', fStudentName: 'छात्र का नाम', fClass: 'कक्षा', fRoll: 'रोल नंबर', fGuardian: 'अभिभावक', fPhone: 'फ़ोन', fTitle: 'शीर्षक', fSubject: 'विषय', fDue: 'देय तारीख', fMessage: 'संदेश', fPrincipal: 'प्रधानाचार्य / एडमिन', fEmail: 'ईमेल', fAddress: 'पता', fSession: 'शैक्षणिक सत्र',
@@ -2390,6 +2540,31 @@ function submitResetPw(e) {
     return false;
   }
   closeModal();
+  openResetNamePrompt();
+  return false;
+}
+// v30: second gate for Reset All Data. The password alone is too easy to
+// tap through — after it passes, the school must type its EXACT name.
+// A mismatch aborts with a clear message and deletes nothing. The name
+// is never shown in the prompt (typing it from memory is the point).
+function openResetNamePrompt() {
+  openModal('<h3>' + t('resetNameTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('resetNameHint') + '</p>' +
+    '<form onsubmit="return submitResetName(event)"><div class="form-grid"><div class="full"><label>' + t('resetNameLabel') + '</label>' +
+    '<input id="resetNameInput" autocomplete="off" placeholder="' + t('resetNameLabel') + '"></div></div>' +
+    '<div id="resetNameErr" class="err hidden"></div>' +
+    '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    '<button class="btn danger" type="submit">' + t('resetNameGo') + '</button></div></form>');
+  setTimeout(function () { var el = $('resetNameInput'); if (el) el.focus(); }, 50);
+}
+function submitResetName(e) {
+  if (e) e.preventDefault();
+  var typed = ($('resetNameInput') ? $('resetNameInput').value : '').trim();
+  if (typed !== (db.profile.name || '').trim()) {
+    var err = $('resetNameErr');
+    if (err) { err.textContent = t('resetNameWrong'); err.classList.remove('hidden'); }
+    return false;
+  }
+  closeModal();
   confirmModal(t('resetConfirmMsg'), resetAllConfirmed);
   return false;
 }
@@ -2427,16 +2602,19 @@ function submitSupportRequest(e) {
   var name = ($('fSupName') ? $('fSupName').value : '').trim();
   var msg = ($('fSupMsg') ? $('fSupMsg').value : '').trim();
   if (!name || !msg) { var err = $('supErr'); if (err) { err.textContent = t('tFillAll'); err.classList.remove('hidden'); } return false; }
-  // v28: the request is stored on this device only. There is no Super
-  // Admin list or dashboard card anymore, and no demo seed requests are
-  // invented. (No server post existed in v27 either — the
-  // ss_support_requests table is backend-only until a later phase.)
+  // v30: the request is stored on this device first, always. When the
+  // school has a server session it is ALSO posted to ss_support_requests
+  // (best-effort — a failed post never blocks the confirmation). There is
+  // still no Super Admin list or dashboard card in the app; the owner
+  // reads the requests on the server until the Play Store admin UI.
+  var req = { id: 'sr' + Date.now().toString(36), ts: new Date().toISOString(), name: name, message: msg, status: 'Open', by: state.user ? state.user.name : '' };
   var list = [];
   try { list = JSON.parse(localStorage.getItem('schoolSaathiSupportRequests') || '[]'); } catch (e2) { list = []; }
   if (!Array.isArray(list)) list = [];
-  list.unshift({ ts: new Date().toISOString(), name: name, message: msg, status: 'Open', by: state.user ? state.user.name : '' });
+  list.unshift(req);
   if (list.length > 50) list.length = 50;
   localStorage.setItem('schoolSaathiSupportRequests', JSON.stringify(list));
+  sbPostSupportRequest(req);
   closeModal();
   toast(t('supportNoted'));
   renderApp();
@@ -4187,7 +4365,7 @@ function settingsPage() {
   '<p class="muted">' + t('logoHint') + '</p></div>' +
   '</div><div class="actions" style="justify-content:flex-start"><button class="btn" type="submit">' + t('saveSettingsBtn') + '</button>' +
   '<button type="button" class="btn danger" onclick="resetAllData()">' + t('resetAllData') + '</button></div></form></div>' +
-  '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub">' + sbStatusText() + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration()">' + t('sbBackupNow') + '</button></div></div>' +
+  '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub">' + sbStatusText() + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration()">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload()">' + t('sbDownloadNow') + '</button></div></div>' +
   '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('raiseSupport') + '</h3><p class="card-sub">' + t('contactSub') + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="openSupportForm()">' + t('raiseSupport') + '</button></div></div>';
 }
 function saveSettings(e) {
