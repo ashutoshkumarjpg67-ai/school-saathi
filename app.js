@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 44;
+var APP_VERSION = 45;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -826,6 +826,26 @@ function sbLocalCounts(d) {
     exams: (d.exams || []).length, marks: (d.marks || []).length,
     homework: (d.homework || []).length, notices: (d.notices || []).length };
 }
+function sbLocalCountsReal(d) {
+  // v45: the migration guard + verification count only REAL rows.
+  // The demo seed inflates every count (40 students, 12 teachers, 70
+  // fee records) and the seed never uploads — counting it made the
+  // guard demand a migration the upload could never satisfy, so the
+  // pull never ran, the seed never dropped locally, and the cycle never
+  // completed (live v44: the flooded device stayed unsynced). Fee
+  // structure / audit / activities have no seed rows and count as-is.
+  function real(table, arr) { return (arr || []).filter(function (r) { return !sbIsSeedRow(table, r, d); }).length; }
+  return { students: real('ss_students', d.students), feeRecords: real('ss_fee_records', d.feeRecords),
+    feeStructure: (d.feeStructure || []).length,
+    attendance: sbFlattenAttendance(d).filter(function (a) { return !sbIsSeedStudentId(a.studentId, d); }).length,
+    // v39: only NUMBERED receipts count — a receipt saved offline has
+    // no number yet and can never be on the server.
+    receipts: (d.receipts || []).filter(function (rc) { return !!rc.receiptNo && !sbIsSeedStudentId(rc.studentId, d); }).length,
+    auditLog: (d.auditLog || []).length, activities: (d.activities || []).length,
+    teachers: real('ss_teachers', d.teachers), exams: real('ss_exams', d.exams),
+    marks: (d.marks || []).filter(function (m) { return !sbIsSeedExamId(m.examId, d) && !sbIsSeedStudentId(m.studentId, d); }).length,
+    homework: real('ss_homework', d.homework), notices: real('ss_notices', d.notices) };
+}
 function sbNormTs(v) { return String(v || '').slice(0, 19); }
 // Upload rows that are not on the server yet. keyFn builds the dedupe key
 // from a row (local or server). onInserted receives ALL rows for the table
@@ -946,6 +966,146 @@ function sbVerifyCounts(token, schoolId, counts) {
    they were deleted elsewhere — the pull drops them locally instead of
    resurrecting them. Never rejects: a failed pass returns {done:false}
    and the cycle's pull + needs-migration fallback still runs. */
+/* ================= v45: the demo-seed quarantine =================
+   Live 9 Nov 2026 (v44 verification): the test school went from 1
+   student to 40 in ~5 minutes, its school row renamed to "St. Xavier
+   School" with counters 41/1, and ~149 receipt numbers were minted —
+   all demo-seed rows (seedDB(), the harness fixture set) uploaded from
+   a client whose local DB still held the pre-v36 seed. seedDB() has no
+   caller in app.js (v36 stopped seeding fresh devices), but a local DB
+   written before v36 keeps its seed rows forever, and every sync egress
+   treated them as the account's own data.
+   A seed row is recognisable by its local_id AND its content: the seed
+   mints short ids (stu1..stu40, t1..t12, fee1..fee200, ex1..ex5,
+   hw1..hw4, n1..n3) while the app mints uniqueId() ids (prefix +
+   base-36 timestamp + counter + random — the real V21 Test Kumar row
+   is stu1794162292000, 13 digits, never 1–40). The id alone is NOT
+   enough: ordinary rows can reuse a short id (the harness fixtures use
+   stu1/stu2/ex1/fee1 for real rows), so the fingerprint below is built
+   from seedDB() itself — id plus the seed's exact content for that id
+   (name + numbers for a student, name + subject + class for a teacher,
+   and so on). A row is seed only when both match; an edited seed row
+   escapes the quarantine, which is safe — it was user-edited, and the
+   server cleanup removes the pristine rows.
+   Quarantine rules, all in this version:
+   (1) a seed row is never hashed (sbSyncTableHashes) — the diff never
+       queues it and the snapshot never marks it synced;
+   (2) the upload pass never POSTs it;
+   (3) the repair pass never re-numbers it or mints for it (the live
+       flood's stu1, ADM-2025-001, collides with the real V21 row — the
+       repair would otherwise mint it a new number and upload it as a
+       41st student);
+   (4) the flush never POSTs/PATCHes it — a queued seed entry is
+       dropped as skipped, so the outbox drains instead of replaying
+       seed rows one by one forever (the live flood's one-at-a-time
+       ~1.4s cadence was the flush, not the bulk upload pass);
+   (5) the pull drops a local seed row the server no longer has
+       (mergeById + the attendance/marks keep-loops) — demo data is not
+       user data, so dropping it cannot lose anything the account
+       created; a real local-only row is still kept exactly as before.
+   The seed PROFILE is fingerprinted separately (name + city +
+   principal + phone + email, all five, plus at least one seed row
+   present) and is never pushed to the server school row. */
+var __sbSeedFp = null;
+function sbSeedFingerprints() {
+  // The seed's content fingerprint, built from seedDB() itself so it
+  // can never drift from the fixture set: per local_id, the fields
+  // that identify the row as the demo seed.
+  if (__sbSeedFp) return __sbSeedFp;
+  var fp = { students: {}, teachers: {}, exams: {}, feeRecords: {}, homework: {}, notices: {} };
+  try {
+    var s = seedDB();
+    (s.students || []).forEach(function (r) { fp.students[r.id] = (r.name || '') + '|' + (r.admissionNo || '') + '|' + (r.enr || ''); });
+    (s.teachers || []).forEach(function (r) { fp.teachers[r.id] = (r.name || '') + '|' + (r.subject || '') + '|' + (r.cls || ''); });
+    (s.exams || []).forEach(function (r) { fp.exams[r.id] = (r.name || '') + '|' + (r.cls || '') + '|' + (r.subject || ''); });
+    (s.feeRecords || []).forEach(function (r) { fp.feeRecords[r.id] = (r.studentId || '') + '|' + (r.month || '') + '|' + (r.type || '') + '|' + (r.amount || 0) + '|' + (r.status || ''); });
+    (s.homework || []).forEach(function (r) { fp.homework[r.id] = (r.title || '') + '|' + (r.cls || '') + '|' + (r.subject || ''); });
+    (s.notices || []).forEach(function (r) { fp.notices[r.id] = (r.title || '') + '|' + (r.date || ''); });
+  } catch (e) {}
+  __sbSeedFp = fp;
+  return fp;
+}
+function sbIsSeedLocalId(table, localId) {
+  var id = String(localId || '');
+  if (!id) return false;
+  if (table === 'ss_students') return /^stu([1-9]|[1-3][0-9]|40)$/.test(id);
+  if (table === 'ss_teachers') return /^t([1-9]|1[0-2])$/.test(id);
+  if (table === 'ss_exams') return /^ex[1-5]$/.test(id);
+  if (table === 'ss_fee_records') return /^fee([1-9]|[1-9][0-9]|1[0-9][0-9]|200)$/.test(id);
+  if (table === 'ss_homework') return /^hw[1-4]$/.test(id);
+  if (table === 'ss_notices') return /^n[1-3]$/.test(id);
+  return false;
+}
+function sbSeedRowContent(table, row) {
+  if (!row) return '';
+  if (table === 'ss_students') return (row.name || '') + '|' + (row.admissionNo || '') + '|' + (row.enr || '');
+  if (table === 'ss_teachers') return (row.name || '') + '|' + (row.subject || '') + '|' + (row.cls || '');
+  if (table === 'ss_exams') return (row.name || '') + '|' + (row.cls || '') + '|' + (row.subject || '');
+  if (table === 'ss_fee_records') return (row.studentId || '') + '|' + (row.month || '') + '|' + (row.type || '') + '|' + (row.amount || 0) + '|' + (row.status || '');
+  if (table === 'ss_homework') return (row.title || '') + '|' + (row.cls || '') + '|' + (row.subject || '');
+  if (table === 'ss_notices') return (row.title || '') + '|' + (row.date || '');
+  return '';
+}
+function sbIsSeedStudentId(id, d) {
+  // A student id is a seed id only when the local row for it carries
+  // the seed's content for that id. Without a local row to check, it
+  // cannot be proven seed — so it is not quarantined (a partial DB
+  // that simply omits the students array must never be treated as
+  // seed evidence — v39 guard test).
+  if (!sbIsSeedLocalId('ss_students', id)) return false;
+  var dbx = d || (typeof db !== 'undefined' ? db : null);
+  if (!dbx) return false;
+  var s = (dbx.students || []).filter(function (x) { return String(x.id) === String(id); })[0];
+  if (!s) return false;
+  var want = sbSeedFingerprints().students[String(id)];
+  return !!want && want === sbSeedRowContent('ss_students', s);
+}
+function sbIsSeedExamId(id, d) {
+  if (!sbIsSeedLocalId('ss_exams', id)) return false;
+  var dbx = d || (typeof db !== 'undefined' ? db : null);
+  if (!dbx) return false;
+  var e = (dbx.exams || []).filter(function (x) { return String(x.id) === String(id); })[0];
+  if (!e) return false;
+  var want = sbSeedFingerprints().exams[String(id)];
+  return !!want && want === sbSeedRowContent('ss_exams', e);
+}
+function sbIsSeedRow(table, row, d) {
+  if (!row) return false;
+  if (table === 'ss_attendance') return sbIsSeedStudentId(row.studentId, d);
+  if (table === 'ss_marks') return sbIsSeedExamId(row.examId, d) || sbIsSeedStudentId(row.studentId, d);
+  if (table === 'ss_receipts') return sbIsSeedStudentId(row.studentId, d);
+  if (table === 'ss_fee_structure' || table === 'ss_audit_log' || table === 'ss_activities' || table === 'ss_admission_requests') return false;
+  if (!sbIsSeedLocalId(table, row.id)) return false;
+  var fp = sbSeedFingerprints();
+  var map = table === 'ss_students' ? fp.students : table === 'ss_teachers' ? fp.teachers : table === 'ss_exams' ? fp.exams : table === 'ss_fee_records' ? fp.feeRecords : table === 'ss_homework' ? fp.homework : table === 'ss_notices' ? fp.notices : null;
+  if (!map) return false;
+  var want = map[String(row.id)];
+  return !!want && want === sbSeedRowContent(table, row);
+}
+function sbIsSeedEntry(table, entry, d) {
+  if (!entry) return false;
+  if (table === 'ss_schools') return !!(entry.row && entry.row.profile && sbIsSeedProfileParts(entry.row.profile));
+  if (entry.key !== undefined && entry.key !== null && entry.key !== '') {
+    if (table === 'ss_attendance') { var ap = String(entry.key).split('|'); return sbIsSeedStudentId(ap[2], d); }
+    if (table === 'ss_marks') { var mp = String(entry.key).split('|'); return sbIsSeedExamId(mp[0], d) || sbIsSeedStudentId(mp[1], d); }
+    if (sbIsSeedRow(table, entry.row, d)) return true;
+  }
+  return sbIsSeedRow(table, entry.row, d);
+}
+function sbIsSeedProfileParts(p) {
+  if (!p) return false;
+  return (p.name || '') === 'St. Xavier School' && (p.city || '') === 'Patna'
+    && (p.principal || '') === 'Rahul Kumar' && (p.phone || '') === '+91 98350 12345'
+    && (p.email || '') === 'info@stxavierpatna.edu.in';
+}
+function sbIsSeedProfile(d) {
+  if (!d || !sbIsSeedProfileParts(d.profile)) return false;
+  // A real school could share the name — the seed rows prove it is the
+  // demo set, not a coincidence.
+  function anySeed(table, arr) { return (arr || []).some(function (r) { return sbIsSeedRow(table, r); }); }
+  return anySeed('ss_students', d.students) || anySeed('ss_teachers', d.teachers) || anySeed('ss_exams', d.exams)
+    || anySeed('ss_fee_records', d.feeRecords) || anySeed('ss_homework', d.homework) || anySeed('ss_notices', d.notices);
+}
 function sbSyncUploadMissing(account, sbUid, token) {
   if (sbMigPromise) return sbMigPromise;
   if (!account || account.role !== 'school') return Promise.resolve({ done: false, reason: 'not-school' });
@@ -1013,7 +1173,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
   }).then(function () {
     return step('ss_students', function () {
       return sbUploadMissing(token, schoolId, 'ss_students', 'local_id,id',
-        freshRows('ss_students', (d.students || []).filter(function (s) { return !s.numPending; }).map(function (s) { return sbMapStudent(s, schoolId); }),
+        freshRows('ss_students', (d.students || []).filter(function (s) { return !s.numPending && !sbIsSeedRow('ss_students', s, d); }).map(function (s) { return sbMapStudent(s, schoolId); }),
           function (row) { return row.local_id; }),
         function (row) { return row.local_id; },
         // v44: persist the id map too — the old code only kept it in
@@ -1025,14 +1185,14 @@ function sbSyncUploadMissing(account, sbUid, token) {
   }).then(function () {
     return step('ss_teachers', function () {
       return sbUploadMissing(token, schoolId, 'ss_teachers', 'local_id',
-        freshRows('ss_teachers', (d.teachers || []).map(function (te) { return sbMapTeacher(te, schoolId); }),
+        freshRows('ss_teachers', (d.teachers || []).filter(function (te) { return !sbIsSeedRow('ss_teachers', te, d); }).map(function (te) { return sbMapTeacher(te, schoolId); }),
           function (row) { return row.local_id; }),
         function (row) { return row.local_id; });
     });
   }).then(function () {
     return step('ss_exams', function () {
       return sbUploadMissing(token, schoolId, 'ss_exams', 'local_id,id',
-        freshRows('ss_exams', (d.exams || []).map(function (e) { return sbMapExam(e, schoolId); }),
+        freshRows('ss_exams', (d.exams || []).filter(function (e) { return !sbIsSeedRow('ss_exams', e, d); }).map(function (e) { return sbMapExam(e, schoolId); }),
           function (row) { return row.local_id; }),
         function (row) { return row.local_id; },
         // v44: same map persist as students — a row uploaded by this
@@ -1041,14 +1201,14 @@ function sbSyncUploadMissing(account, sbUid, token) {
     });
   }).then(function () {
     return step('ss_fee_records', function () {
-      var feeRows = (d.feeRecords || []).map(function (r) { return sbMapFeeRecord(r, schoolId, stuMap); }).filter(function (p) { return !!p.student_id; });
+      var feeRows = (d.feeRecords || []).filter(function (r) { return !sbIsSeedRow('ss_fee_records', r, d); }).map(function (r) { return sbMapFeeRecord(r, schoolId, stuMap); }).filter(function (p) { return !!p.student_id; });
       return sbUploadMissing(token, schoolId, 'ss_fee_records', 'local_id',
         freshRows('ss_fee_records', feeRows, function (row) { return row.local_id; }),
         function (row) { return row.local_id; });
     });
   }).then(function () {
     return step('ss_attendance', function () {
-      var attRows = sbFlattenAttendance(d).filter(function (a) { return !!stuMap[a.studentId]; })
+      var attRows = sbFlattenAttendance(d).filter(function (a) { return !!stuMap[a.studentId] && !sbIsSeedStudentId(a.studentId, d); })
         .filter(function (a) { return notSynced('ss_attendance', a.date + '|' + a.cls + '|' + a.studentId); })
         .map(function (a) {
           return { school_id: schoolId, att_date: a.date, cls: a.cls, student_id: stuMap[a.studentId], status: a.status };
@@ -1058,7 +1218,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
     });
   }).then(function () {
     return step('ss_receipts', function () {
-      var rcRows = (d.receipts || []).filter(function (rc) { return !rc.numPending; }).map(function (rc) { return sbMapReceipt(rc, schoolId, stuMap, byId); }).filter(function (p) { return !!p.student_id; });
+      var rcRows = (d.receipts || []).filter(function (rc) { return !rc.numPending && !sbIsSeedStudentId(rc.studentId, d); }).map(function (rc) { return sbMapReceipt(rc, schoolId, stuMap, byId); }).filter(function (p) { return !!p.student_id; });
       // v39: a receipt the server lacks uploads even when a stale
       // snapshot entry says it already synced. The live test account
       // proved the trap: RCP-2026-003 was minted by the server RPC
@@ -1080,7 +1240,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
     });
   }).then(function () {
     return step('ss_marks', function () {
-      var markRows = (d.marks || []).filter(function (m) { return examMap[m.examId] && stuMap[m.studentId]; })
+      var markRows = (d.marks || []).filter(function (m) { return examMap[m.examId] && stuMap[m.studentId] && !sbIsSeedExamId(m.examId, d) && !sbIsSeedStudentId(m.studentId, d); })
         .filter(function (m) { return notSynced('ss_marks', m.examId + '|' + m.studentId); })
         .map(function (m) {
           return { school_id: schoolId, exam_id: examMap[m.examId], student_id: stuMap[m.studentId], marks: m.marks };
@@ -1091,14 +1251,14 @@ function sbSyncUploadMissing(account, sbUid, token) {
   }).then(function () {
     return step('ss_homework', function () {
       return sbUploadMissing(token, schoolId, 'ss_homework', 'local_id',
-        freshRows('ss_homework', (d.homework || []).map(function (h) { return sbMapHomework(h, schoolId, stuMap); }),
+        freshRows('ss_homework', (d.homework || []).filter(function (h) { return !sbIsSeedRow('ss_homework', h, d); }).map(function (h) { return sbMapHomework(h, schoolId, stuMap); }),
           function (row) { return row.local_id; }),
         function (row) { return row.local_id; });
     });
   }).then(function () {
     return step('ss_notices', function () {
       return sbUploadMissing(token, schoolId, 'ss_notices', 'local_id',
-        freshRows('ss_notices', (d.notices || []).map(function (n) { return sbMapNotice(n, schoolId); }),
+        freshRows('ss_notices', (d.notices || []).filter(function (n) { return !sbIsSeedRow('ss_notices', n, d); }).map(function (n) { return sbMapNotice(n, schoolId); }),
           function (row) { return row.local_id; }),
         function (row) { return row.local_id; });
     });
@@ -1130,7 +1290,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
     // ss_schools entry in the snapshot) and the local profile has a
     // name — a fresh device with an empty profile must never blank the
     // server row's name.
-    if ((!snap.ss_schools || snap.ss_schools.school === undefined) && d.profile && d.profile.name) {
+    if ((!snap.ss_schools || snap.ss_schools.school === undefined) && d.profile && d.profile.name && !sbIsSeedProfile(d)) {
       var payload = serverHasStudents
         ? { adm_counter: Math.max(d.admCounter || 1, serverAdmCounter), receipt_counter: Math.max(d.receiptCounter || 1, serverReceiptCounter) }
         : sbSyncSchoolPayload(d);
@@ -1166,7 +1326,9 @@ function sbMaybeMigrate(account, sbUid, token, force) {
   if (!sbIsOnline()) { sbSetStatus('offline'); return Promise.resolve({ done: false, reason: 'offline' }); }
   sbSetStatus('uploading');
   var d = db; // the account's DB is loaded by loginAs before this runs
-  var counts = sbLocalCounts(d);
+  // v45: verify against the REAL rows only — the seed never uploads,
+  // so requiring it on the server would fail the migration forever.
+  var counts = sbLocalCountsReal(d);
   return sbSyncUploadMissing(account, sbUid, token).then(function (up) {
     if (!up.done) {
       sbSetStatus('failed', up.detail || '');
@@ -1287,6 +1449,24 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   function snapHas(table, key) { return !!(snap[table] && snap[table][key] !== undefined); }
   var kept = {};
   function keep(table, key) { if (!kept[table]) kept[table] = {}; kept[table][key] = true; }
+  // v45: snapshot the seed student/exam ids BEFORE the merges below
+  // drop the seed rows — the dependent merges (fee records, attendance,
+  // marks, receipts) prove a row is seed by its student/exam, and that
+  // proof vanishes once the student/exam row is gone (the live v44
+  // flood: the first pull dropped the 40 students but kept their seed
+  // attendance/marks, which then looked real and blocked every later
+  // cycle at the migration guard). The sets are built from the full
+  // local DB at merge start, so they are exact; a real student's row
+  // is always present here.
+  var seedStudentIds = {};
+  (d.students || []).forEach(function (s) { if (sbIsSeedStudentId(s.id, d)) seedStudentIds[s.id] = true; });
+  var seedExamIds = {};
+  (d.exams || []).forEach(function (e) { if (sbIsSeedExamId(e.id, d)) seedExamIds[e.id] = true; });
+  function mergeIsSeedRow(table, row) {
+    if (table === 'ss_fee_records' || table === 'ss_receipts') return !!seedStudentIds[row.studentId];
+    if (table === 'ss_marks') return !!(seedExamIds[row.examId] || seedStudentIds[row.studentId]);
+    return sbIsSeedRow(table, row, d);
+  }
   function mergeById(table, localArr, serverRows, mapFn) {
     var serverList = (serverRows || []).map(mapFn);
     var onServer = {};
@@ -1294,6 +1474,13 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     var merged = serverList.slice();
     (localArr || []).forEach(function (r) {
       if (!r.id || onServer[r.id] || snapHas(table, r.id)) return;
+      // v45: a local demo-seed row the server no longer has is dropped,
+      // never kept — it was never the account's data, so dropping it
+      // cannot lose anything the account created (the 9 Nov never-lose
+      // rule protects user rows only; a real local-only row is still
+      // kept exactly as before). This is what returns a flooded device
+      // to 1 student after the server cleanup runs.
+      if (mergeIsSeedRow(table, r)) return;
       merged.push(r);
       keep(table, r.id);
     });
@@ -1346,6 +1533,9 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
       var parts = key.split('|');
       var snapKey = parts[0] + '|' + parts[1] + '|' + sid;
       if (snapHas('ss_attendance', snapKey)) return;
+      // v45: attendance for a demo-seed student drops with the seed row
+      // (seedStudentIds was snapshotted before the student merge).
+      if (seedStudentIds[sid]) return;
       if (!d.attendance[key]) d.attendance[key] = {};
       d.attendance[key][sid] = recs[sid];
       keep('ss_attendance', snapKey);
@@ -1399,6 +1589,9 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   d.receipts.forEach(function (r) { if (r.receiptNo) serverRcByNo[r.receiptNo] = r; });
   oldReceipts.forEach(function (rc) {
     if (!rc.receiptNo) { d.receipts.push(rc); return; }
+    // v45: a receipt for a demo-seed student is seed data, not a
+    // collection — it drops with the seed row.
+    if (seedStudentIds[rc.studentId]) return;
     var srv = serverRcByNo[rc.receiptNo];
     if (!srv) {
       if (snapHas('ss_receipts', rc.receiptNo)) {
@@ -1425,6 +1618,8 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   oldMarks.forEach(function (m) {
     var key = m.examId + '|' + m.studentId;
     if (serverMarkKeys[key] || snapHas('ss_marks', key)) return;
+    // v45: marks for a demo-seed exam or student drop with the seed row.
+    if (seedExamIds[m.examId] || seedStudentIds[m.studentId]) return;
     d.marks.push(m);
     keep('ss_marks', key);
   });
@@ -1697,6 +1892,9 @@ function sbSyncTableHashes(d, schoolId, maps) {
     (d[cfg.local] || []).forEach(function (row) {
       var key = row[cfg.key];
       if (key === undefined || key === null || key === '') return;
+      // v45: a demo-seed row is never hashed — the diff never queues
+      // it and the snapshot never marks it synced (quarantine rule 1).
+      if (sbIsSeedRow(table, row, d)) return;
       // v33: a row saved while offline has no server number yet — it
       // must not be queued or snapshotted until the repair pass mints
       // one for it. (A pending receipt has no receiptNo, so the
@@ -1716,12 +1914,14 @@ function sbSyncTableHashes(d, schoolId, maps) {
   out.ss_fee_structure = fs;
   var att = {};
   sbFlattenAttendance(d).forEach(function (a) {
+    if (sbIsSeedStudentId(a.studentId, d)) return; // v45: seed attendance never queues
     var key = a.date + '|' + a.cls + '|' + a.studentId;
     att[key] = { hash: JSON.stringify(sbSyncMapRow('ss_attendance', a, schoolId, maps, d)), row: a };
   });
   out.ss_attendance = att;
   var mk = {};
   (d.marks || []).forEach(function (mrow) {
+    if (sbIsSeedRow('ss_marks', mrow, d)) return; // v45: seed marks never queue
     var key = mrow.examId + '|' + mrow.studentId;
     mk[key] = { hash: JSON.stringify(sbSyncMapRow('ss_marks', mrow, schoolId, maps, d)), row: mrow };
   });
@@ -1738,7 +1938,10 @@ function sbSyncTableHashes(d, schoolId, maps) {
     ac[key] = { hash: JSON.stringify(sbMapActivity(a, schoolId)), row: a };
   });
   out.ss_activities = ac;
-  out.ss_schools = { school: { hash: JSON.stringify(sbSyncSchoolPayload(d)), row: { profile: d.profile, feeExtras: d.feeExtras, admCounter: d.admCounter, receiptCounter: d.receiptCounter } } };
+  // v45: a seed profile (St. Xavier demo set) has no school-row hash —
+  // the diff never queues it and the upload pass never pushes it (the
+  // pull replaces it with the server's real profile on the next cycle).
+  out.ss_schools = sbIsSeedProfile(d) ? {} : { school: { hash: JSON.stringify(sbSyncSchoolPayload(d)), row: { profile: d.profile, feeExtras: d.feeExtras, admCounter: d.admCounter, receiptCounter: d.receiptCounter } } };
   return out;
 }
 function sbSyncSnapshotRefresh(d, account, applied) {
@@ -1961,6 +2164,11 @@ function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
 // sends local_id, so the server row keeps its own identity.
 function sbSyncFindStudentByNumber(entry, token, schoolId) {
   var row = entry.row || {};
+  // v45: a demo-seed row is never adopted — the live flood renamed the
+  // real V21 Test Kumar row to the seed name "Aarav Verma" exactly
+  // here, by adopting the server row under the seed row's admission_no
+  // and PATCHing the seed name onto it.
+  if (sbIsSeedRow('ss_students', row)) return Promise.resolve(null);
   var adm = row.admissionNo || row.admission_no || '';
   var enr = row.enr || '';
   function byAdm() {
@@ -1984,7 +2192,12 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid) {
   // conflict: the server copy is newer — the entry is dropped and the
   // next pull restores the server version. keep: the row cannot be
   // pushed yet (a parent has no server id) — it stays queued.
+  // v45: a queued demo-seed entry is dropped as skipped, never pushed —
+  // the live flood's outbox held one entry per seed row and the flush
+  // POSTed them one by one for minutes. Skipped (not kept) so the
+  // outbox drains and the cycle can reach synced.
   var table = entry.table;
+  if (sbIsSeedEntry(table, entry)) return Promise.resolve({ pushed: false, skipped: true });
   if (entry.op === 'delete') {
     return sbSyncFindServerRow(table, entry, token, schoolId, maps, uid).then(function (row) {
       if (!row) return { pushed: false, skipped: true };
@@ -2151,15 +2364,19 @@ function sbSyncGuardHit(d, byTable) {
   // table that has local rows. Returns the first such table, or null.
   // Fee structure is excluded: local defaults always exist and are not
   // user data, so an empty server structure is normal for a fresh school.
+  // v45: the counts are the REAL rows only (sbLocalCountsReal) — demo
+  // seed rows must never trip the guard, or the migration it demands
+  // can never complete and the pull never runs.
+  var rc45 = sbLocalCountsReal(d);
   var checks = [
-    ['ss_students', (d.students || []).length], ['ss_teachers', (d.teachers || []).length],
-    ['ss_exams', (d.exams || []).length], ['ss_fee_records', (d.feeRecords || []).length],
-    ['ss_attendance', sbFlattenAttendance(d).length],
+    ['ss_students', rc45.students], ['ss_teachers', rc45.teachers],
+    ['ss_exams', rc45.exams], ['ss_fee_records', rc45.feeRecords],
+    ['ss_attendance', rc45.attendance],
     // v39: only numbered receipts — a numberless offline receipt can
     // never be on the server and must not trip the migration guard.
-    ['ss_receipts', (d.receipts || []).filter(function (rc) { return !!rc.receiptNo; }).length],
-    ['ss_marks', (d.marks || []).length], ['ss_homework', (d.homework || []).length],
-    ['ss_notices', (d.notices || []).length], ['ss_admission_requests', (d.admissionRequests || []).length]
+    ['ss_receipts', rc45.receipts],
+    ['ss_marks', rc45.marks], ['ss_homework', rc45.homework],
+    ['ss_notices', rc45.notices], ['ss_admission_requests', (d.admissionRequests || []).length]
   ];
   for (var i = 0; i < checks.length; i++) {
     if (checks[i][1] > 0 && !(byTable[checks[i][0]] || []).length) return checks[i][0];
@@ -2472,12 +2689,16 @@ function sbSyncRepairNumbers(account, sbUid, token) {
     // blocks minting (the loop still walks past taken numbers).
     var highestAdm = taken.maxAdm, highestRcp = taken.maxRcp;
     (d.students || []).forEach(function (s) {
+      // v45: seed numbers are not the account's numbers — the demo
+      // set's ADM-2025-001..040 must never lift the server counter.
+      if (sbIsSeedRow('ss_students', s, d)) return;
       // A row the pull is about to drop (deleted elsewhere) does not
       // count as used — its number is free again.
       if (snap.ss_students && snap.ss_students[s.id] !== undefined && !serverByLocal[s.id]) return;
       highestAdm = Math.max(highestAdm, sbNumSeq(s.admissionNo));
     });
     (d.receipts || []).forEach(function (rc) {
+      if (sbIsSeedStudentId(rc.studentId, d)) return; // v45: a seed receipt never lifts the counter
       if (rc.receiptNo && snap.ss_receipts && snap.ss_receipts[rc.receiptNo] !== undefined && !taken.rcp[rc.receiptNo]) return;
       highestRcp = Math.max(highestRcp, sbNumSeq(rc.receiptNo));
     });
@@ -2495,6 +2716,11 @@ function sbSyncRepairNumbers(account, sbUid, token) {
       (d.students || []).forEach(function (s) {
         chain = chain.then(function () {
           if (serverByLocal[s.id]) return; // already on the server: its numbers are the server's
+          // v45: a demo-seed student never gets a server number. The
+          // live flood's stu1 (ADM-2025-001) collides with the real V21
+          // row — minting it a fresh number would upload it as a 41st
+          // student instead of dropping it.
+          if (sbIsSeedRow('ss_students', s, d)) return;
           // Deleted elsewhere (in the snapshot but absent on the server):
           // the pull drops this row — never spend a server number on it.
           if (snap.ss_students && snap.ss_students[s.id] !== undefined) return;
@@ -2538,6 +2764,9 @@ function sbSyncRepairNumbers(account, sbUid, token) {
     (d.students || []).forEach(function (s) { byId[s.id] = s; });
     (d.receipts || []).forEach(function (rc) {
       chain2 = chain2.then(function () {
+        // v45: a receipt for a demo-seed student is never minted or
+        // re-linked — it is seed data, not a collection.
+        if (sbIsSeedStudentId(rc.studentId, d)) return;
         // Deleted elsewhere (in the snapshot, no such number on the
         // server): the pull drops this receipt — never re-number it.
         if (rc.receiptNo && snap.ss_receipts && snap.ss_receipts[rc.receiptNo] !== undefined && !taken.rcp[rc.receiptNo]) return;
