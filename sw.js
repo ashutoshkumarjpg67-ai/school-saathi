@@ -3,14 +3,17 @@
    Lesson learned (VidyaSetu / gym app, Nov 2026): cache-first navigation served stale
    builds after deploys. Navigation is network-first here; static assets are
    cache-first with background refresh. Per-file precache: one missing file (e.g.
-   an icon not yet uploaded) must not fail the whole app shell. */
-var CACHE_NAME = 'school-saathi-v36';
+   an icon not yet uploaded) must not fail the whole app shell.
+   v37: version.json is network-first too — the in-app update check must see the
+   LIVE version, never a cached marker. */
+var CACHE_NAME = 'school-saathi-v37';
 var APP_SHELL = [
   './',
   'index.html',
-  'styles.css?v=36',
-  'app.js?v=36',
-  'qrgen.js?v=36',
+  'styles.css?v=37',
+  'app.js?v=37',
+  'qrgen.js?v=37',
+  'version.json',
   'manifest.json',
   'icons/icon-192.png',
   'icons/icon-512.png',
@@ -54,6 +57,25 @@ self.addEventListener('fetch', function (event) {
         return res;
       }).catch(function () {
         return caches.match(req).then(function (hit) { return hit || caches.match('index.html'); });
+      })
+    );
+    return;
+  }
+
+  // v37: the version marker is always network-first — the in-app update
+  // check must see the LIVE version, never a cached one. Offline it
+  // falls back to the cached marker (or fails, which the check treats
+  // as "no update" and keeps the cached app running).
+  if (url.pathname.endsWith('version.json')) {
+    event.respondWith(
+      fetch(req).then(function (res) {
+        if (res && res.ok) {
+          var copy = res.clone();
+          caches.open(CACHE_NAME).then(function (cache) { cache.put('version.json', copy); }).catch(function () {});
+        }
+        return res;
+      }).catch(function () {
+        return caches.match('version.json');
       })
     );
     return;
