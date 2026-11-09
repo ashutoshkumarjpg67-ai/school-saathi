@@ -13,9 +13,9 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=34">
-<script src="qrgen.js?v=34" defer></script>
-<script src="app.js?v=34" defer></script>
+<link rel="stylesheet" href="styles.css?v=35">
+<script src="qrgen.js?v=35" defer></script>
+<script src="app.js?v=35" defer></script>
 </head>
 <body>
 
@@ -29,7 +29,8 @@
       <div class="auth-tabs">
         <button type="button" id="tabLogin" class="auth-tab on" onclick="switchAuth('login')" data-i18n="authLogin">Log In</button>
         <button type="button" id="tabSignup" class="auth-tab" onclick="switchAuth('signup')" data-i18n="authSignup">Sign Up</button>
-        <button type="button" id="tabParent" class="auth-tab" onclick="switchAuth('parent')" data-i18n="authParent">Parent</button>
+        <button type="button" id="tabStudent" class="auth-tab" onclick="switchAuth('student')" data-i18n="authStudent">Student</button>
+        <button type="button" id="tabTeacher" class="auth-tab" onclick="switchAuth('teacher')" data-i18n="authTeacher">Teacher</button>
       </div>
       <div id="loginErr" class="err hidden"></div>
       <form id="loginForm" onsubmit="return doLogin(event)">
@@ -58,13 +59,20 @@
         <div class="field"><label data-i18n="suPw2">Confirm Password</label><input id="suPw2" type="password" placeholder="Repeat password" autocomplete="new-password"></div>
         <button class="btn" type="submit" style="width:100%" data-i18n="suBtn">Create Account</button>
       </form>
-      <div id="parentErr" class="err hidden"></div>
-      <form id="parentForm" class="hidden" onsubmit="return doParentLogin(event)">
-        <div class="field"><label data-i18n="admReqSchool">School</label><select id="parentSchool"></select></div>
-        <div class="field"><label data-i18n="parentAdmNo">Admission Number</label><input id="parentAdmNo" type="text" placeholder="e.g. ADM-2025-001" autocomplete="off"></div>
-        <div class="field"><label data-i18n="parentPinLabel">Parent PIN</label><input id="parentPin" type="password" inputmode="numeric" maxlength="6" placeholder="4–6 digits" autocomplete="off"></div>
-        <button class="btn" type="submit" style="width:100%" data-i18n="parentLoginBtn">Login as Parent</button>
-        <p style="text-align:center;margin-top:10px;font-size:12.5px;color:var(--muted)" data-i18n="parentNote">Parent access on this device uses a PIN set by the school. Real password accounts arrive with the server version.</p>
+      <div id="studentErr" class="err hidden"></div>
+      <form id="studentForm" class="hidden" onsubmit="return doStudentLogin(event)">
+        <div class="field"><label data-i18n="admReqSchool">School</label><select id="studentSchool"></select></div>
+        <div class="field"><label data-i18n="stuAdmNo">Admission Number</label><input id="studentAdmNo" type="text" placeholder="e.g. ADM-2025-001" autocomplete="off"></div>
+        <div class="field"><label data-i18n="stuPinLabel">Student PIN</label><input id="studentPin" type="password" inputmode="numeric" maxlength="6" placeholder="4–6 digits" autocomplete="off"></div>
+        <button class="btn" type="submit" style="width:100%" data-i18n="stuLoginBtn">Login as Student</button>
+        <p style="text-align:center;margin-top:10px;font-size:12.5px;color:var(--muted)" data-i18n="stuNote">Student login uses the PIN set by the school. Ask your school if you do not know it.</p>
+      </form>
+      <div id="teacherErr" class="err hidden"></div>
+      <form id="teacherForm" class="hidden" onsubmit="return doTeacherLogin(event)">
+        <div class="field"><label data-i18n="loginEmail">Email</label><input id="teacherEmail" type="email" placeholder="you@school.edu.in" autocomplete="username"></div>
+        <div class="field"><label data-i18n="loginPassword">Password</label><input id="teacherPw" type="password" placeholder="••••••••" autocomplete="current-password"></div>
+        <button class="btn" type="submit" style="width:100%" data-i18n="tchrLoginBtn">Login as Teacher</button>
+        <p style="text-align:center;margin-top:10px;font-size:12.5px;color:var(--muted)" data-i18n="tchrNote">Teacher accounts are created by the school admin.</p>
       </form>
       <p style="text-align:center;margin-top:16px;font-size:12.5px;color:var(--muted)" data-i18n="authNote">One account per school. Your data stays on this device and backs up to the server when you are online.</p>
       <p id="sbStatus" style="text-align:center;margin-top:8px;font-size:12.5px;color:var(--muted)"></p>
@@ -84,7 +92,7 @@
         <div id="sideSchoolInfo"></div>
         <label style="color:#94A3B8;margin-top:10px">Academic Session</label>
         <select id="sessionSel" onchange="changeSession(this.value)"></select>
-        <div style="margin-top:12px">v34<br>© 2026 School Saathi</div>
+        <div style="margin-top:12px">v35<br>© 2026 School Saathi</div>
       </div>
     </aside>
     <div class="main">

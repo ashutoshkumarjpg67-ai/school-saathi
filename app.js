@@ -2,7 +2,9 @@
    via Supabase — the server is the source of truth, the local store is a
    cache/mirror that syncs on login, on save and on reconnect (outbox for
    offline changes). Local-only accounts (no server session) still work
-   exactly as before: everything lives in localStorage on this device. */
+   exactly as before: everything lives in localStorage on this device.
+   v35: parent login is REMOVED; student login (admission no. + PIN) and
+   teacher login (email + password, local device accounts) replace it. */
 'use strict';
 
 /* ================= constants ================= */
@@ -32,7 +34,13 @@ function findAccount(email) {
   for (var i = 0; i < list.length; i++) if (list[i].email === email) return list[i];
   return null;
 }
-function dbKeyFor(a) { if (a.role === 'parent') return DB_KEY; return 'schoolSaathiDB_' + a.uid; }
+function dbKeyFor(a) {
+  // School accounts own their DB. Student and teacher logins open the
+  // SCHOOL's DB — they never have a DB of their own (a fresh key would
+  // seed the demo DB under the school's name).
+  if ((a.role === 'teacher' || a.role === 'student') && a.schoolUid) return 'schoolSaathiDB_' + a.schoolUid;
+  return 'schoolSaathiDB_' + a.uid;
+}
 function applySchoolProfile(d, a) { d.profile.name = a.school; d.profile.principal = a.name; d.profile.email = a.email; return d; }
 
 /* ================= Supabase Auth (v27; v28 removes the admin role) =================
@@ -483,7 +491,7 @@ function sbBoot() {
    localStorage as its working store after migration; v31 is server-first
    (login pulls the server state and saves sync through the outbox), so a
    second device signing in sees the same data after its first sync.
-   Migration never runs for non-school roles (parents). */
+   Migration never runs for non-school roles (student/teacher). */
 function sbNullIfEmpty(v) { return (v === '' || v === undefined || v === null) ? null : v; }
 function sbMapStudent(s, schoolId) {
   return { school_id: schoolId, local_id: s.id, name: s.name || '', cls: s.cls || '', roll: s.roll || 0,
@@ -509,7 +517,9 @@ function sbMapFeeRecord(r, schoolId, stuMap) {
     amount: r.amount || 0, status: r.status || 'Pending', record_date: sbNullIfEmpty(r.date) };
 }
 function sbMapTeacher(te, schoolId) {
-  return { school_id: schoolId, local_id: te.id, name: te.name || '', subject: te.subject || '', cls: te.cls || '' };
+  // v35: classes[] rides with the teacher row (supabase/08_teacher_classes.sql
+  // adds the column — apply it before v35 ships, or the upload 400s).
+  return { school_id: schoolId, local_id: te.id, name: te.name || '', subject: te.subject || '', cls: te.cls || '', classes: Array.isArray(te.classes) ? te.classes.slice() : [] };
 }
 function sbMapExam(e, schoolId) {
   return { school_id: schoolId, local_id: e.id, name: e.name || '', cls: e.cls || '', subject: e.subject || '',
@@ -945,7 +955,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   var stuMap = {}, examMap = {};
   var oldStudents = d.students || [];
   d.students = mergeById('ss_students', oldStudents, byTable.ss_students || [], function (row) { var s = sbRowToStudent(row); stuMap[row.id] = s.id; return s; });
-  d.teachers = mergeById('ss_teachers', d.teachers || [], byTable.ss_teachers || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '' }; });
+  d.teachers = mergeById('ss_teachers', d.teachers || [], byTable.ss_teachers || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [] }; });
   d.exams = mergeById('ss_exams', d.exams || [], byTable.ss_exams || [], function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; examMap[row.id] = e.id; return e; });
   d.feeRecords = mergeById('ss_fee_records', d.feeRecords || [], byTable.ss_fee_records || [], function (row) { return sbRowToFeeRecord(row, stuMap); });
   // Attendance: server rows fold back into the 'date|cls' map, then
@@ -2492,6 +2502,16 @@ function migrateV12(d) {
   if (!Array.isArray(d.admissionRequests)) d.admissionRequests = [];
   return d;
 }
+function migrateV15(d) {
+  // v35: teacher class assignments. Older teacher rows carry a single
+  // cls — the assignment list starts from it. Idempotent; never changes
+  // existing values.
+  (d.teachers || []).forEach(function (te) {
+    if (!Array.isArray(te.classes)) te.classes = te.cls ? [te.cls] : [];
+    if (!te.cls && te.classes.length) te.cls = te.classes[0];
+  });
+  return d;
+}
 function defaultFeeExtras() { return { admissionFee: 0, cautionMoney: 0, annualCharges: 0, transportFee: 0 }; }
 function migrateV13(d) {
   // Phase 5 (fee collection receipt) migration for existing v2 DBs: one-time /
@@ -2510,67 +2530,17 @@ function migrateV13(d) {
   }
   return d;
 }
-function storageKeys() {
-  var out = [];
-  try {
-    if (typeof localStorage.key === 'function' && typeof localStorage.length === 'number') {
-      for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); if (k) out.push(k); }
-      return out;
-    }
-  } catch (e) {}
-  if (typeof localStorage.keys === 'function') { try { return localStorage.keys(); } catch (e2) {} }
-  return out;
-}
 function readDbByKey(key) {
   try { var raw = localStorage.getItem(key); if (!raw) return null; var d = JSON.parse(raw); return (d && d.v === 2) ? d : null; }
   catch (e) { return null; }
 }
 function writeDbByKey(key, d) { try { localStorage.setItem(key, JSON.stringify(d)); } catch (e) {} }
-function findStudentById(sid) {
-  // Same device-wide scan as findStudentByAdmNo, but by student id (used to
-  // restore a stored parent session after a refresh).
-  var want = String(sid || '').trim();
-  if (!want) return null;
-  var found = null;
-  storageKeys().forEach(function (key) {
-    if (found) return;
-    if (key.indexOf('schoolSaathiDB') !== 0 || key.slice(-4) === '.bak') return;
-    var d = readDbByKey(key);
-    if (!d) return;
-    migrateV12(d);
-    (d.students || []).some(function (s) {
-      if (String(s.id || '') === want) { found = { student: s, dbKey: key, db: d }; return true; }
-      return false;
-    });
-  });
-  return found;
-}
-function findStudentByAdmNo(admNo) {
-  // Search every school DB on this device for the admission number. Returns
-  // { student, dbKey, db } or null. Migrates the found DB in memory so the
-  // parent PIN is available even on a DB that has not loaded since v12.
-  var want = String(admNo || '').trim().toLowerCase();
-  if (!want) return null;
-  var found = null;
-  storageKeys().forEach(function (key) {
-    if (found) return;
-    if (key.indexOf('schoolSaathiDB') !== 0 || key.slice(-4) === '.bak') return;
-    var d = readDbByKey(key);
-    if (!d) return;
-    migrateV12(d);
-    (d.students || []).some(function (s) {
-      if (String(s.admissionNo || '').trim().toLowerCase() === want) { found = { student: s, dbKey: key, db: d }; return true; }
-      return false;
-    });
-  });
-  return found;
-}
 function loadDB(override) {
   try {
     var raw = localStorage.getItem(DB_KEY);
     if (raw) {
       var d = JSON.parse(raw);
-      if (d && d.v === 2) { var m = migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))); saveDB(m); return m; }
+      if (d && d.v === 2) { var m = migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))))); saveDB(m); return m; }
       // Unknown version: keep a backup, never wipe silently.
       try { localStorage.setItem(DB_KEY + '.bak', raw); } catch (e2) { /* ignore */ }
     }
@@ -2594,7 +2564,7 @@ function saveDB(db) {
 var db = loadDB();
 
 /* ================= state ================= */
-var state = { role: null, user: null, view: 'dashboard', lang: 'en', parentStudentId: null, admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, sb: null };
+var state = { role: null, user: null, view: 'dashboard', lang: 'en', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, sb: null };
 
 /* Phase 2: bulk import + promotion state (in-memory only, never persisted). */
 var importState = { rows: null, fileName: '', result: null };
@@ -3499,7 +3469,7 @@ var I18N = {
     impTitle: 'Bulk Import Students', impImportBtn: 'Import Students', impTemplate: 'Download Sample Template', impTemplateSub: 'CSV format only — Excel (.xlsx) files cannot be read here. Use the template columns.', impChooseFile: 'Choose CSV File', impPreview: 'Import Preview', impSummary: 'Import Summary', impValid: 'Valid', impError: 'Error', impDuplicate: 'Duplicate', impReason: 'Reason', impConfirm: 'Import Valid Rows', impDone: 'Done', impNoRows: 'No rows found in this file. Please check the template.', impBadHeader: 'This file does not look like the student template — the Name column is missing.', impNoFile: 'Please choose a CSV file first.', impNoValid: 'No valid rows to import.', impImported: 'imported', impSkipped: 'skipped', impErrName: 'Name is required', impErrMobile: 'Mobile must be 10 digits', impErrMobile2: 'Secondary mobile must be 10 digits', impErrClass: 'Class is not valid', impErrSection: 'Section must be A, B or C', impErrPin: 'PIN must be 6 digits', impErrAadhaar: 'Aadhaar must be 12 digits', impErrDob: 'Date of birth is not a valid date', impErrAdmDate: 'Admission date is not a valid date', impErrSession: 'Session is not valid (e.g. 2025–26)', impErrGender: 'Gender must be Boy, Girl or Other', impErrBlood: 'Blood group is not valid', impErrCategory: 'Category must be General, OBC, SC, ST or Other', impErrEmail: 'Parent email is not valid', impErrRoll: 'Roll must be a positive number', impErrBool: 'Must be Yes or No', impErrDup: 'Duplicate of', impErrDupFile: 'Duplicate in this file', tImpDone: 'Bulk import complete.', tImpTemplate: 'Sample template downloaded.',
     promoTitle: 'Promote Students', promoBtn: 'Promote Students', promoSingle: 'Promote Student', promoFromSession: 'Current Session', promoFromClass: 'Current Class', promoToSession: 'Target Session', promoToClass: 'Target Class', promoToSection: 'Target Section', promoSelectAll: 'Select All', promoSelectNone: 'Select None', promoSelected: 'selected', promoPromote: 'Promote Selected', promoRetain: 'Retain Selected', promoNoStudents: 'No students in this class and session.', promoNoSelect: 'Please select at least one student.', promoNoop: 'Target class and session are the same as current — nothing to change.', promoNoopRetain: 'Target session is the same as the current session — nothing to change.', promoDone: 'Promotion complete.', promoPromoted: 'promoted', promoRetained: 'retained', promoNote: 'Attendance, fees, exam marks and homework history are preserved.', promoSingleNote: 'Single student promotion', promoSkipped: 'skipped (already moved)', promoNotEligible: 'Only Active or Inactive students can be promoted.',
     idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.',
-    authParent: 'Parent', parentAdmNo: 'Admission Number', parentPinLabel: 'Parent PIN', parentLoginBtn: 'Login as Parent', parentNote: 'Parent access on this device uses a PIN set by the school. Real password accounts arrive with the server version.', parentSub: 'Parent', parentDashboard: 'My Child', tInvalidParent: 'Invalid admission number or PIN.', tParentScope: 'You can only view your own child\'s profile.', parentAccess: 'Parent Access', parentPinNow: 'Current Parent PIN', parentPinNone: 'No PIN set — parent login unavailable for this student.', parentPinNew: 'New PIN (4–6 digits)', parentPinSetBtn: 'Set PIN', parentPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Parent PIN set.', tPinCleared: 'Parent PIN cleared.', tPinAuto: 'Default PIN is the last 4 digits of the parent\'s mobile.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
+    authStudent: 'Student', authTeacher: 'Teacher', stuAdmNo: 'Admission Number', stuPinLabel: 'Student PIN', stuLoginBtn: 'Login as Student', stuNote: 'Student login uses the PIN set by the school. Ask your school if you do not know it.', stuSub: 'Student', stuDashboard: 'My Profile', tInvalidStudent: 'Invalid admission number or PIN.', stuPinField: 'Student login PIN (optional)', stuPinPh: 'Default: last 4 digits of mobile', stuPinTitle: 'Student PIN', stuPinNow: 'Current Student PIN', stuPinNone: 'No PIN set — student login unavailable for this student.', stuPinNew: 'New PIN (4–6 digits)', stuPinSetBtn: 'Set PIN', stuPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Student PIN set.', tPinCleared: 'Student PIN cleared.', tPinAuto: 'Default PIN is the last 4 digits of the parent\'s mobile.', tNotAllowed: 'Your login cannot open this section.', tOwnProfileOnly: 'You can only view your own profile.', todayW: 'Today', tchrLoginBtn: 'Login as Teacher', tchrNote: 'Teacher accounts are created by the school admin.', tchrSub: 'Teacher', tchrDashboard: 'Teacher Dashboard', tchrNoDb: 'School data is not on this device — log in on the school device first.', teachers: 'Teachers', teachersSub: 'Teacher accounts and the classes they teach.', tchrAdd: 'Add Teacher', tchrEdit: 'Edit Teacher', tchrName: 'Teacher Name', tchrSubject: 'Subject', tchrClasses: 'Classes Taught', tchrEmail: 'Email', tchrPw: 'Password', tchrPwHint: 'At least 6 characters. Leave blank to keep the current password.', tchrNoLogin: 'No login', tchrSaved: 'Teacher saved.', tchrNoClasses: 'Choose at least one class.', tchrEmailTaken: 'This email is already used by another account.', tchrMyClasses: 'My Classes', tchrStudents: 'Students in my classes', tchrNoClassesYet: 'No classes assigned yet — ask the school admin to assign classes.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
     collectFeeBtn: 'Collect Fee', rcptTitle: 'FEE RECEIPT', rcptReceiptNo: 'Receipt No', rcptDate: 'Date', rcptAdmNo: 'Adm No', rcptSession: 'Session', rcptName: 'Name', rcptClass: 'Class', rcptInstallment: 'Installment', rcptCounter: 'Counter No', rcptSlNo: 'Sl.No', rcptDesc: 'Description', rcptDue: 'Due', rcptCon: 'Con', rcptPaid: 'Paid', rcptAdmissionFee: 'Admission Fee', rcptTuitionFee: 'Tuition Fee', rcptCaution: 'Caution Money', rcptAnnual: 'Annual Charges', rcptBusFee: 'Bus Fee', rcptDues: 'Dues', rcptPayModeTitle: 'PAY MODE INFORMATION', rcptPayMode: 'Pay Mode', rcptBank: 'Bank', rcptNumber: 'Number', rcptTotal: 'Total', rcptTotalWords: 'Total in Words', rcptComputerGen: 'This is a computer generated Receipt. Does not required signature.', rcptParentCopy: 'PARENT COPY', rcptCollectorSign: 'Collector\'s Signature', rcptIncludeBus: 'Include Bus/Transport', rcptOtherFees: 'Other Fees', rcptAnnualHint: 'One-time and annual amounts used on the Collect Fee receipt. Set 0 to hide a row.', payModeCash: 'Cash', payModeCheque: 'Cheque', payModeUpi: 'UPI', payModeCard: 'Card', payModeBank: 'Bank Transfer', tFeeCollected: 'Fee collected.', tCollectZero: 'Nothing to collect — enter a Paid amount.', tCollectSaved: 'Fee collected — Receipt ', tCollectNotActive: 'This student is not active — fee cannot be collected.', rcptReceipts: 'Receipts', rcptView: 'View', rcptPrint: 'Print / Save PDF', rcptCollectAgain: 'Collect Again', rcptNoReceipts: 'No receipts yet for this student.', rcptDraft: 'Draft — not saved yet', rcptCollectSave: 'Collect & Save', rcptNoLines: 'Nothing to collect for this period — set the fee amounts in Fee Structure first.',
     sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.', sbStatusSyncing: 'Syncing with the server…', sbStatusPendingSync: 'Offline — changes will sync when you are back online.', sbSyncDone: 'Synced with the server.', sbSyncFailed: 'Sync did not finish — it will retry on your next login.', sbSyncOffline: 'Offline — your changes are saved here and will sync later.', sbSyncConflict: 'Server had a newer copy — kept the server version.', sbNumPending: 'Admission saved. The admission number will be assigned when you are back online.', sbNumPendingReceipt: 'Fee saved. The receipt number will be assigned when you are back online.', sbStatusSessionExpired: 'Session expired — please log in again.', sbStatusNotLinked: 'Not linked to the server yet — it will link when you log in.', sbLinkServer: 'Link to Server', sbLinkDone: 'Server account linked.', sbLinkFailed: 'Could not link the server account — check your connection and try again.', sbLinkPwTitle: 'Link the server account', sbNumAssigning: 'Assigning number…', tWrongPasswordServer: 'Wrong password for the server account.', tCollectCapped: 'The paid amount was more than the due — only the due amount was taken.', resetPwHintServer: 'This deletes the data on THIS device only. The server copy will come back on the next sync unless you also wipe the server.', resetConfirmMsgServer: 'Delete this device’s data only? The server copy will return on the next sync — choose “Delete on server too” to remove it everywhere.', resetDeviceOnly: 'This device only', resetWipeServerBtn: 'Delete on server too', resetWipeServerDone: 'Server data deleted.', resetWipeServerFailed: 'Could not delete the server data — nothing was reset. Check your connection and try again.', supportQueued: 'Support request saved — it will be sent when you are back online.', admReqQueued: 'Application saved — it will be sent when you are back online.', admReqLoadingSchools: 'Loading schools…', attNotMarked: 'Not marked'
   },
@@ -3523,7 +3493,7 @@ var I18N = {
     impTitle: 'छात्रों का बल्क आयात', impImportBtn: 'छात्र आयात करें', impTemplate: 'नमूना टेम्पलेट डाउनलोड करें', impTemplateSub: 'सिर्फ CSV प्रारूप — Excel (.xlsx) फ़ाइल यहाँ पढ़ी नहीं जा सकती। टेम्पलेट के कॉलम इस्तेमाल करें।', impChooseFile: 'CSV फ़ाइल चुनें', impPreview: 'आयात पूर्वावलोकन', impSummary: 'आयात सारांश', impValid: 'सही', impError: 'त्रुटि', impDuplicate: 'दोहरा', impReason: 'कारण', impConfirm: 'सही पंक्तियाँ आयात करें', impDone: 'पूर्ण', impNoRows: 'इस फ़ाइल में कोई पंक्ति नहीं मिली। कृपया टेम्पलेट जाँचें।', impBadHeader: 'यह फ़ाइल छात्र टेम्पलेट जैसी नहीं लगती — नाम वाला कॉलम नहीं मिला।', impNoFile: 'कृपया पहले CSV फ़ाइल चुनें।', impNoValid: 'आयात के लिए कोई सही पंक्ति नहीं है।', impImported: 'आयात हुए', impSkipped: 'छोड़े गए', impErrName: 'नाम आवश्यक है', impErrMobile: 'मोबाइल 10 अंकों का होना चाहिए', impErrMobile2: 'दूसरा मोबाइल 10 अंकों का होना चाहिए', impErrClass: 'कक्षा सही नहीं है', impErrSection: 'अनुभाग A, B या C होना चाहिए', impErrPin: 'पिन 6 अंकों का होना चाहिए', impErrAadhaar: 'आधार 12 अंकों का होना चाहिए', impErrDob: 'जन्म तिथि सही तारीख नहीं है', impErrAdmDate: 'प्रवेश तिथि सही तारीख नहीं है', impErrSession: 'सत्र सही नहीं है (जैसे 2025–26)', impErrGender: 'लिंग Boy, Girl या Other होना चाहिए', impErrBlood: 'रक्त समूह सही नहीं है', impErrCategory: 'श्रेणी General, OBC, SC, ST या Other होनी चाहिए', impErrEmail: 'अभिभावक ईमेल सही नहीं है', impErrRoll: 'रोल धनात्मक संख्या होनी चाहिए', impErrBool: 'Yes या No होना चाहिए', impErrDup: 'इसकी प्रतिलिपि', impErrDupFile: 'इस फ़ाइल में दोहरा', tImpDone: 'बल्क आयात पूर्ण हुआ।', tImpTemplate: 'नमूना टेम्पलेट डाउनलोड हुआ।',
     promoTitle: 'छात्रों को प्रोन्नत करें', promoBtn: 'छात्र प्रोन्नत करें', promoSingle: 'छात्र प्रोन्नत करें', promoFromSession: 'वर्तमान सत्र', promoFromClass: 'वर्तमान कक्षा', promoToSession: 'लक्ष्य सत्र', promoToClass: 'लक्ष्य कक्षा', promoToSection: 'लक्ष्य अनुभाग', promoSelectAll: 'सभी चुनें', promoSelectNone: 'कोई नहीं', promoSelected: 'चयनित', promoPromote: 'चयनित को प्रोन्नत करें', promoRetain: 'चयनित को रोकें', promoNoStudents: 'इस कक्षा और सत्र में कोई छात्र नहीं है।', promoNoSelect: 'कृपया कम से कम एक छात्र चुनें।', promoNoop: 'लक्ष्य कक्षा और सत्र वर्तमान जैसे ही हैं — बदलने को कुछ नहीं।', promoNoopRetain: 'लक्ष्य सत्र वर्तमान सत्र जैसा ही है — बदलने को कुछ नहीं।', promoDone: 'प्रोन्नति पूर्ण हुई।', promoPromoted: 'प्रोन्नत हुए', promoRetained: 'रोके गए', promoNote: 'उपस्थिति, शुल्क, परीक्षा अंक और होमवर्क इतिहास सुरक्षित रहता है।', promoSingleNote: 'एक छात्र की प्रोन्नति', promoSkipped: 'छोड़े गए (पहले ही स्थानांतरित)', promoNotEligible: 'केवल सक्रिय या निष्क्रिय छात्र ही प्रोन्नत हो सकते हैं।',
     idcPreview: 'ID कार्ड पूर्वावलोकन', idcPrint: 'छापें', idcPrintCards: 'ID कार्ड छापें', idcSelectAll: 'सभी चुनें', idcClearSel: 'चयन हटाएँ', idcReady: 'ID कार्ड छपाई के लिए तैयार', idcEmergency: 'आपातकालीन संपर्क', idcReturn: 'मिले तो कृपया लौटाएँ', idcNoQr: 'QR कोड नहीं बन सका।',
-    authParent: 'अभिभावक', parentAdmNo: 'प्रवेश संख्या', parentPinLabel: 'अभिभावक PIN', parentLoginBtn: 'अभिभावक के रूप में लॉगिन करें', parentNote: 'इस डिवाइस पर अभिभावक लॉगिन स्कूल द्वारा दिए गए PIN से होता है। सर्वर संस्करण में असली पासवर्ड अकाउंट आएँगे।', parentSub: 'अभिभावक', parentDashboard: 'मेरा बच्चा', tInvalidParent: 'प्रवेश संख्या या PIN गलत है।', tParentScope: 'आप केवल अपने बच्चे की प्रोफ़ाइल देख सकते हैं।', parentAccess: 'अभिभावक पहुँच', parentPinNow: 'वर्तमान अभिभावक PIN', parentPinNone: 'कोई PIN नहीं है — इस छात्र के लिए अभिभावक लॉगिन उपलब्ध नहीं है।', parentPinNew: 'नया PIN (4–6 अंक)', parentPinSetBtn: 'PIN सेट करें', parentPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'अभिभावक PIN सेट हो गया।', tPinCleared: 'अभिभावक PIN हटा दिया गया।', tPinAuto: 'डिफ़ॉल्ट PIN अभिभावक के मोबाइल के आखिरी 4 अंक होते हैं।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।',
+    authStudent: 'छात्र', authTeacher: 'शिक्षक', stuAdmNo: 'प्रवेश संख्या', stuPinLabel: 'छात्र PIN', stuLoginBtn: 'छात्र के रूप में लॉगिन करें', stuNote: 'छात्र लॉगिन स्कूल द्वारा दिए गए PIN से होता है। PIN न पता हो तो अपने स्कूल से पूछें।', stuSub: 'छात्र', stuDashboard: 'मेरी प्रोफ़ाइल', tInvalidStudent: 'प्रवेश संख्या या PIN गलत है।', stuPinField: 'छात्र लॉगिन PIN (वैकल्पिक)', stuPinPh: 'डिफ़ॉल्ट: मोबाइल के आखिरी 4 अंक', stuPinTitle: 'छात्र PIN', stuPinNow: 'वर्तमान छात्र PIN', stuPinNone: 'कोई PIN नहीं है — इस छात्र के लिए छात्र लॉगिन उपलब्ध नहीं है।', stuPinNew: 'नया PIN (4–6 अंक)', stuPinSetBtn: 'PIN सेट करें', stuPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'छात्र PIN सेट हो गया।', tPinCleared: 'छात्र PIN हटा दिया गया।', tPinAuto: 'डिफ़ॉल्ट PIN अभिभावक के मोबाइल के आखिरी 4 अंक होते हैं।', tNotAllowed: 'आपकी लॉगिन इस सेक्शन को नहीं खोल सकती।', tOwnProfileOnly: 'आप केवल अपनी प्रोफ़ाइल देख सकते हैं।', todayW: 'आज', tchrLoginBtn: 'शिक्षक के रूप में लॉगिन करें', tchrNote: 'शिक्षक अकाउंट स्कूल एडमिन बनाता है।', tchrSub: 'शिक्षक', tchrDashboard: 'शिक्षक डैशबोर्ड', tchrNoDb: 'इस डिवाइस पर स्कूल का डेटा नहीं है — पहले स्कूल के डिवाइस पर लॉगिन करें।', teachers: 'शिक्षक', teachersSub: 'शिक्षक अकाउंट और वे जो कक्षाएँ पढ़ाते हैं।', tchrAdd: 'शिक्षक जोड़ें', tchrEdit: 'शिक्षक बदलें', tchrName: 'शिक्षक का नाम', tchrSubject: 'विषय', tchrClasses: 'पढ़ाई जाने वाली कक्षाएँ', tchrEmail: 'ईमेल', tchrPw: 'पासवर्ड', tchrPwHint: 'कम से कम 6 अक्षर। मौजूदा पासवर्ड रखने के लिए खाली छोड़ें।', tchrNoLogin: 'कोई लॉगिन नहीं', tchrSaved: 'शिक्षक सहेजा गया।', tchrNoClasses: 'कम से कम एक कक्षा चुनें।', tchrEmailTaken: 'यह ईमेल किसी और अकाउंट में इस्तेमाल हो रहा है।', tchrMyClasses: 'मेरी कक्षाएँ', tchrStudents: 'मेरी कक्षाओं के छात्र', tchrNoClassesYet: 'अभी कोई कक्षा नहीं दी गई है — स्कूल एडमिन से कक्षा देने को कहें।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।',
     collectFeeBtn: 'शुल्क वसूलें', rcptTitle: 'शुल्क रसीद', rcptReceiptNo: 'रसीद संख्या', rcptDate: 'तारीख', rcptAdmNo: 'प्रवेश संख्या', rcptSession: 'सत्र', rcptName: 'नाम', rcptClass: 'कक्षा', rcptInstallment: 'किस्त', rcptCounter: 'काउंटर संख्या', rcptSlNo: 'क्र.सं.', rcptDesc: 'विवरण', rcptDue: 'देय', rcptCon: 'छूट', rcptPaid: 'जमा', rcptAdmissionFee: 'प्रवेश शुल्क', rcptTuitionFee: 'शिक्षण शुल्क', rcptCaution: 'जमानत राशि', rcptAnnual: 'वार्षिक शुल्क', rcptBusFee: 'बस शुल्क', rcptDues: 'बकाया', rcptPayModeTitle: 'भुगतान जानकारी', rcptPayMode: 'भुगतान माध्यम', rcptBank: 'बैंक', rcptNumber: 'संख्या', rcptTotal: 'कुल', rcptTotalWords: 'कुल (शब्दों में)', rcptComputerGen: 'यह कंप्यूटर द्वारा बनाई गई रसीद है। हस्ताक्षर की आवश्यकता नहीं है।', rcptParentCopy: 'अभिभावक प्रति', rcptCollectorSign: 'वसूलकर्ता के हस्ताक्षर', rcptIncludeBus: 'बस/परिवहन शामिल करें', rcptOtherFees: 'अन्य शुल्क', rcptAnnualHint: 'शुल्क वसूली रसीद पर दिखने वाली एकमुश्त और वार्षिक राशि। छिपाने के लिए 0 रखें।', payModeCash: 'नकद', payModeCheque: 'चेक', payModeUpi: 'UPI', payModeCard: 'कार्ड', payModeBank: 'बैंक ट्रांसफर', tFeeCollected: 'शुल्क वसूल लिया गया।', tCollectZero: 'वसूलने के लिए कुछ नहीं है — जमा राशि डालें।', tCollectSaved: 'शुल्क वसूल लिया गया — रसीद ', tCollectNotActive: 'यह छात्र सक्रिय नहीं है — शुल्क नहीं वसूला जा सकता।', rcptReceipts: 'रसीदें', rcptView: 'देखें', rcptPrint: 'प्रिंट / PDF सहेजें', rcptCollectAgain: 'फिर से वसूलें', rcptNoReceipts: 'इस छात्र की अभी कोई रसीद नहीं है।', rcptDraft: 'मसौदा — अभी सहेजा नहीं गया', rcptCollectSave: 'वसूलें और सहेजें', rcptNoLines: 'इस अवधि के लिए वसूलने को कुछ नहीं है — पहले शुल्क संरचना में राशि डालें।',
     sbNumPending: 'प्रवेश सहेजा गया। प्रवेश संख्या ऑनलाइन आने पर दी जाएगी।', sbNumPendingReceipt: 'शुल्क सहेजा गया। रसीद संख्या ऑनलाइन आने पर दी जाएगी।', sbStatusSessionExpired: 'सत्र समाप्त हो गया — कृपया दोबारा लॉग इन करें।', sbStatusNotLinked: 'अभी सर्वर से जुड़ा नहीं है — लॉग इन पर जुड़ जाएगा।', sbLinkServer: 'सर्वर से जोड़ें', sbLinkDone: 'सर्वर अकाउंट जुड़ गया।', sbLinkFailed: 'सर्वर अकाउंट जुड़ा नहीं जा सका — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkPwTitle: 'सर्वर अकाउंट जोड़ें', sbNumAssigning: 'नंबर मिल रहा है…', tWrongPasswordServer: 'सर्वर अकाउंट के लिए पासवर्ड गलत है।', tCollectCapped: 'दी गई राशि बकाया से ज़्यादा थी — सिर्फ बकाया राशि ली गई।', resetPwHintServer: 'इससे सिर्फ इस डिवाइस का डेटा मिटेगा। सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी, जब तक आप सर्वर भी न मिटाएँ।', resetConfirmMsgServer: 'सिर्फ इस डिवाइस का डेटा मिटाएँ? सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी — हर जगह से मिटाने के लिए “सर्वर से भी मिटाएँ” चुनें।', resetDeviceOnly: 'सिर्फ यह डिवाइस', resetWipeServerBtn: 'सर्वर से भी मिटाएँ', resetWipeServerDone: 'सर्वर का डेटा मिट गया।', resetWipeServerFailed: 'सर्वर का डेटा मिटा नहीं जा सका — कुछ भी रीसेट नहीं हुआ। कनेक्शन जाँचकर फिर कोशिश करें।', supportQueued: 'सहायता अनुरोध सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqQueued: 'आवेदन सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqLoadingSchools: 'स्कूल लोड हो रहे हैं…', attNotMarked: 'दर्ज नहीं'
   }
@@ -3595,14 +3565,20 @@ function restoreSession() {
     }
     if (!raw) return false;
     var sv = JSON.parse(raw);
-    if (sv.role === 'parent' && typeof sv.email === 'string' && sv.email.indexOf('parent:') === 0) {
-      // Parent accounts are not in schoolSaathiAccounts: restore by looking
-      // the student up on this device. A cleared PIN invalidates the session.
-      var pf = findStudentById(sv.email.slice(7));
-      if (pf && pf.student.parentPin) {
-        DB_KEY = pf.dbKey;
-        state.parentStudentId = pf.student.id;
-        loginAs({ role: 'parent', name: pf.student.name, sub: t('parentSub') + ' • ' + pf.student.name, email: 'parent:' + pf.student.id, uid: 'parent-' + pf.student.id, studentId: pf.student.id }, { silent: true });
+    if (sv.role === 'student' && typeof sv.email === 'string' && sv.email.indexOf('student:') === 0) {
+      // Student sessions are not in schoolSaathiAccounts: the session
+      // email carries schoolUid + studentId (student:<uid>:<id>).
+      // Restore by looking the student up in that school's DB. A cleared
+      // PIN invalidates the session.
+      var parts = sv.email.split(':');
+      var stuKey = 'schoolSaathiDB_' + (parts[1] || '');
+      var stuDb = readDbByKey(stuKey);
+      if (!stuDb) return false;
+      migrateV12(stuDb);
+      var stu = (stuDb.students || []).find(function (x) { return x.id === parts[2]; });
+      if (stu && stu.parentPin) {
+        DB_KEY = stuKey;
+        loginAs({ role: 'student', name: stu.name, sub: t('stuSub') + ' • ' + stu.name, email: sv.email, uid: 'student-' + stu.id, studentId: stu.id, schoolUid: parts[1] }, { silent: true });
         state.view = 'dashboard';
         renderApp();
         return true;
@@ -3611,6 +3587,7 @@ function restoreSession() {
     }
     var a = findAccount(sv.email);
     if (!a || a.role !== sv.role) return false;
+    if (a.role === 'teacher' && !readDbByKey(dbKeyFor(a))) return false; // the school's data left this device — no DB to open
     loginAs(a, { silent: true });
     var ss = sbLoadSession();
     if (ss && ss.user_id && (!ss.email || ss.email === sv.email)) state.sb = { uid: ss.user_id, email: ss.email || sv.email };
@@ -3622,7 +3599,7 @@ function restoreSession() {
   } catch (e) { return false; }
 }
 function switchAuth(tab) {
-  var tabs = { login: ['tabLogin', 'loginForm', 'loginErr', 'loginId'], signup: ['tabSignup', 'signupForm', 'signupErr', 'suSchool'], parent: ['tabParent', 'parentForm', 'parentErr', 'parentAdmNo'] };
+  var tabs = { login: ['tabLogin', 'loginForm', 'loginErr', 'loginId'], signup: ['tabSignup', 'signupForm', 'signupErr', 'suSchool'], student: ['tabStudent', 'studentForm', 'studentErr', 'studentAdmNo'], teacher: ['tabTeacher', 'teacherForm', 'teacherErr', 'teacherEmail'] };
   Object.keys(tabs).forEach(function (k) {
     var ids = tabs[k];
     $(ids[0]).classList.toggle('on', tab === k);
@@ -3631,14 +3608,14 @@ function switchAuth(tab) {
   });
   $('recoverForm').classList.add('hidden');
   $('resetForm').classList.add('hidden');
-  // v34 (P1-6): the parent form now picks the school first — every
-  // school's first student is ADM-2025-001, so a bare admission number
-  // matches the wrong school.
-  if (tab === 'parent') fillParentSchoolPicker();
+  // v35: the student form picks the school first — every school's first
+  // student is ADM-2025-001, so a bare admission number matches the
+  // wrong school (the same trap the v34 parent picker fixed).
+  if (tab === 'student') fillSchoolPicker('studentSchool');
   setTimeout(function () { $(tabs[tab][3]).focus(); }, 50);
 }
-function fillParentSchoolPicker() {
-  var sel = $('parentSchool');
+function fillSchoolPicker(selId) {
+  var sel = $(selId);
   if (!sel) return;
   var schools = loadAccounts().filter(function (a) { return a.role === 'school'; }).filter(function (a) { return !!readDbByKey(dbKeyFor(a)); });
   var cur = sel.value;
@@ -3646,9 +3623,9 @@ function fillParentSchoolPicker() {
   if (cur && schools.some(function (a) { return a.uid === cur; })) sel.value = cur;
 }
 function findStudentByAdmNoInSchool(admNo, accountUid) {
-  // v34 (P1-6): search ONE school's DB only. The global scan
-  // (findStudentByAdmNo) returns the first ADM-2025-001 on the device,
-  // which is a different school's child.
+  // v34 (P1-6) / v35: search ONE school's DB only. A device-wide scan
+  // returns the first ADM-2025-001 on the device, which is a different
+  // school's child.
   var want = String(admNo || '').trim().toLowerCase();
   if (!want) return null;
   var a = loadAccounts().filter(function (x) { return x.uid === accountUid; })[0];
@@ -3664,42 +3641,100 @@ function findStudentByAdmNoInSchool(admNo, accountUid) {
   });
   return found;
 }
-function doParentLogin(e) {
+function doStudentLogin(e) {
   e.preventDefault();
-  var adm = $('parentAdmNo').value.trim();
-  var pin = $('parentPin').value.trim();
-  var err = $('parentErr');
-  var schoolUid = $('parentSchool') ? $('parentSchool').value : '';
-  var found = schoolUid ? findStudentByAdmNoInSchool(adm, schoolUid) : findStudentByAdmNo(adm);
+  var adm = $('studentAdmNo').value.trim();
+  var pin = $('studentPin').value.trim();
+  var err = $('studentErr');
+  var schoolUid = $('studentSchool') ? $('studentSchool').value : '';
+  var found = schoolUid ? findStudentByAdmNoInSchool(adm, schoolUid) : null;
   // One generic error: never reveal whether the number or the PIN was wrong.
   var ok = found && found.student.parentPin && digitsOnly(pin).length >= 4 && digitsOnly(pin) === digitsOnly(found.student.parentPin);
   if (!found || !ok) {
-    err.textContent = t('tInvalidParent');
+    err.textContent = t('tInvalidStudent');
     err.classList.remove('hidden');
     return false;
   }
   DB_KEY = found.dbKey;
-  var acct = { role: 'parent', name: found.student.name, sub: t('parentSub') + ' • ' + found.student.name, email: 'parent:' + found.student.id, uid: 'parent-' + found.student.id, studentId: found.student.id };
-  state.parentStudentId = found.student.id;
+  var acct = { role: 'student', name: found.student.name, sub: t('stuSub') + ' • ' + found.student.name, email: 'student:' + schoolUid + ':' + found.student.id, uid: 'student-' + found.student.id, studentId: found.student.id, schoolUid: schoolUid };
   err.classList.add('hidden');
   loginAs(acct);
   return false;
 }
-function parentStudent() {
-  if (state.role !== 'parent' || !state.parentStudentId) return null;
-  return db.students.find(function (x) { return x.id === state.parentStudentId; }) || null;
+function doTeacherLogin(e) {
+  e.preventDefault();
+  var id = $('teacherEmail').value.trim().toLowerCase(), pw = $('teacherPw').value;
+  var err = $('teacherErr');
+  // Local-only login (v35): teacher accounts live in schoolSaathiAccounts
+  // on this device, with no server account — no Supabase attempt.
+  var a = findAccount(id);
+  var ok = a && a.role === 'teacher' && !!a.pwHash && hashPw(pw) === a.pwHash;
+  if (!ok) {
+    err.textContent = t('tInvalidCreds');
+    err.classList.remove('hidden');
+    return false;
+  }
+  // The teacher opens the SCHOOL's DB — if it is not on this device
+  // there is nothing to open (loginAs would seed a demo DB instead).
+  if (!readDbByKey(dbKeyFor(a))) {
+    err.textContent = t('tchrNoDb');
+    err.classList.remove('hidden');
+    return false;
+  }
+  err.classList.add('hidden');
+  loginAs(a);
+  return false;
+}
+function teacherRecord() {
+  if (state.role !== 'teacher' || !state.user) return null;
+  return db.teachers.find(function (x) { return x.id === state.user.teacherId; }) || null;
+}
+function teacherClasses() {
+  var te = teacherRecord();
+  if (!te) return [];
+  return Array.isArray(te.classes) ? te.classes.slice() : (te.cls ? [te.cls] : []);
 }
 function canViewStudent(id) {
-  // Parents may open ONLY their own child's profile. Everyone else is
-  // unrestricted here (their nav already limits which views exist).
-  if (state.role === 'parent') return id === state.parentStudentId;
-  return true;
+  // School: everything. Student: ONLY their own profile. Teacher: only
+  // students in the classes they teach. Anyone else: nothing.
+  if (state.role === 'school') return true;
+  if (state.role === 'student') return !!state.user && id === state.user.studentId;
+  if (state.role === 'teacher') {
+    var s = db.students.find(function (x) { return x.id === id; });
+    if (!s) return false;
+    return teacherClasses().indexOf(s.cls) !== -1;
+  }
+  return false;
 }
-function parentDashboard() {
-  var s = parentStudent();
-  if (!s) return '<div class="card"><div class="empty">' + t('tNoStudentData') + '</div></div>';
-  state.profileStudent = s.id;
-  return studentProfilePage(s.id);
+function teacherDashboard() {
+  var te = teacherRecord();
+  if (!te) return '<div class="card"><div class="empty">' + t('tNoStudentData') + '</div></div>';
+  var myClasses = teacherClasses();
+  var myStudents = db.students.filter(function (s) { return myClasses.indexOf(s.cls) !== -1 && isEnrolledStudent(s); });
+  var today = todayIST();
+  var attToday = 0;
+  myClasses.forEach(function (c) {
+    var recs = db.attendance[today + '|' + c] || {};
+    Object.keys(recs).forEach(function (sid) { if (recs[sid] === 'Present') attToday++; });
+  });
+  var hwDue = db.homework.filter(function (h) { return myClasses.indexOf(h.cls) !== -1; }).length;
+  var notices = db.notices.slice(0, 2).map(function (n) {
+    return '<div class="notice"><b>' + esc(n.title) + '</b><span>' + esc(n.date) + '</span><p>' + esc(n.body) + '</p></div>';
+  }).join('');
+  var classTiles = myClasses.map(function (c) {
+    var n = myStudents.filter(function (s) { return s.cls === c; }).length;
+    return '<div class="tile blue"><div class="n">' + n + '</div><div class="l">' + esc(c) + '</div></div>';
+  }).join('');
+  return '<div class="phone"><div class="card"><div class="stu-hero">' + avatarHTML(null, te.name, 'avatar') + '</div>' +
+    '<h3>' + esc(te.name) + '</h3><p>' + esc(te.subject || '') + ' • ' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div>' +
+    '<div class="tile-grid">' +
+    '<div class="tile green"><div class="n">' + myClasses.length + '</div><div class="l">' + t('tchrMyClasses') + '</div></div>' +
+    '<div class="tile yellow"><div class="n">' + myStudents.length + '</div><div class="l">' + t('tchrStudents') + '</div></div>' +
+    '<div class="tile purple"><div class="n">' + attToday + '</div><div class="l">' + t('presBtn') + ' ' + t('todayW') + '</div></div>' +
+    '<div class="tile blue"><div class="n">' + hwDue + '</div><div class="l">' + t('tileHw') + '</div></div>' +
+    '</div></div>' +
+    '<div class="card" style="margin-top:16px"><h3>' + t('tchrMyClasses') + '</h3><p class="card-sub">' + (myClasses.length ? esc(myClasses.join(', ')) : t('tchrNoClassesYet')) + '</p>' + (classTiles || '') + '</div>' +
+    '<div class="card" style="margin-top:16px"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div></div>';
 }
 function doLogin(e) {
   e.preventDefault();
@@ -3779,7 +3814,7 @@ function logout() {
   state.role = null; state.user = null; state.view = 'dashboard';
   state.feeStudent = null; state.feeSearch = ''; state.feeType = 'All'; state.feeFilter = 'All'; state.feeFormOpen = false; state.feePreselect = null;
   state.profileStudent = null; state.profileTab = 'overview'; state.stuPage = 1;
-  state.parentStudentId = null; state.admReqFilter = 'All';
+  state.admReqFilter = 'All';
   promoState = null; importState.rows = null; importState.result = null;
   try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
@@ -3795,7 +3830,8 @@ function logout() {
   lastBackAt = 0; histExiting = false;
   histReset('login'); // back after logout cannot re-enter the app
   $('loginId').value = ''; $('loginPw').value = '';
-  $('parentAdmNo').value = ''; $('parentPin').value = '';
+  $('studentAdmNo').value = ''; $('studentPin').value = '';
+  $('teacherEmail').value = ''; $('teacherPw').value = '';
   $('page').innerHTML = '';
   showLogin();
   toast(t('tLoggedOut'));
@@ -3803,21 +3839,21 @@ function logout() {
 
 var NAV = {
   school: [
-    ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['admissions', '📋', 'admissions'], ['attendance', '✅', 'attendance'],
+    ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['teachers', '👩‍🏫', 'teachers'], ['admissions', '📋', 'admissions'], ['attendance', '✅', 'attendance'],
     ['fees', '💰', 'fees'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'],
     ['notices', '📢', 'notices'], ['reports', '📄', 'reports'], ['activityLog', '📜', 'activityLog'], ['settings', '⚙️', 'settings']
   ],
   student: [
     ['dashboard', '🏠', 'dashboard'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
   ],
-  parent: [
-    ['dashboard', '🏠', 'dashboard']
+  teacher: [
+    ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
   ]
 };
 var VIEW_TITLES = {
   dashboard: ['Dashboard', ''],
   settings: ['Settings', 'School settings'], reports: ['Reports', 'Download CSV reports'],
-  activityLog: ['Activity Log', 'Full audit history'],
+  activityLog: ['Activity Log', 'Full audit history'], teachers: ['Teachers', 'Teacher accounts & classes'],
   students: ['Student Management', 'St. Xavier School, Patna'], admissions: ['Admission Requests', 'New applications & approvals'], attendance: ['Attendance', 'Mark & view attendance'],
   fees: ['Fees', 'Fee collection & pending dues'], exams: ['Examinations', 'Exams & marks entry'],
   homework: ['Homework', 'Assign & track homework'], notices: ['Notices', 'Notice board']
@@ -3987,7 +4023,8 @@ function backFromReceipt() { if (histBack()) return; state.savedReceiptId = null
 function go(view) {
   var nav = NAV[state.role] || [];
   var ok = nav.some(function (n) { return n[0] === view; });
-  state.view = ok ? view : 'dashboard';
+  if (!ok) { toast(t('tNotAllowed')); state.view = 'dashboard'; }
+  else state.view = view;
   if (state.view !== 'fees') { state.feeStudent = null; state.collectStudent = null; state.collectRecordId = null; state.savedReceiptId = null; collectDraft = null; }
   state.profileStudent = null;
   promoState = null; importState.rows = null; importState.result = null;
@@ -4008,7 +4045,7 @@ function renderApp() {
     return '<button class="' + (state.view === n[0] ? 'active' : '') + '" onclick="go(\'' + n[0] + '\')"><span class="ic">' + n[1] + '</span>' + esc(t(n[2])) + '</button>';
   }).join('');
   var u = state.user;
-  var me = state.role === 'student' ? meStudent() : (state.role === 'parent' ? parentStudent() : null);
+  var me = state.role === 'student' ? meStudent() : null;
   var whoPhoto = me ? me.photo : null;
   var wa = $('whoAvatar');
   if (whoPhoto) { wa.innerHTML = '<img src="' + esc(whoPhoto) + '" alt="">'; wa.classList.add('has-photo'); }
@@ -4026,11 +4063,11 @@ function renderApp() {
     });
   }
   sess.value = prof.session;
-  sess.disabled = (state.role === 'parent');
+  sess.disabled = (state.role !== 'school');
   var vt = VIEW_TITLES[state.view] || ['Dashboard', ''];
   $('topTitle').textContent = t(state.view) === state.view ? vt[0] : t(state.view);
   if (state.view === 'dashboard') $('topTitle').textContent = t('dashboard');
-  $('topCrumb').textContent = state.role === 'school' ? prof.name + ', ' + prof.city : (state.role === 'parent' ? t('parentDashboard') : t('studentDashboard'));
+  $('topCrumb').textContent = state.role === 'school' ? prof.name + ', ' + prof.city : (state.role === 'student' ? t('stuDashboard') : t('tchrDashboard'));
   renderPage();
 }
 function changeSession(v) {
@@ -4041,8 +4078,15 @@ function changeSession(v) {
 function renderPage() {
   var p = $('page');
   hideTip();
-  var pages = state.role === 'school' ? PAGE_SCHOOL : state.role === 'parent' ? PAGE_PARENT : PAGE_STUDENT;
-  var fn = pages[state.view] || pages.dashboard;
+  var pages = state.role === 'school' ? PAGE_SCHOOL : state.role === 'teacher' ? PAGE_TEACHER : PAGE_STUDENT;
+  var fn = pages[state.view];
+  if (!fn) {
+    // A view this role may not open refuses with a clear message instead
+    // of rendering another role's data (go() normally prevents this —
+    // this is the direct state.view path).
+    p.innerHTML = '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
+    return;
+  }
   p.innerHTML = fn();
   if (state.view === 'fees' && !state.feeStudent && state.feeSearch) filterFees(state.feeSearch);
   animateDonuts(p); animateBars(p);
@@ -4090,7 +4134,7 @@ function resetPwCheck(pw) {
     var a = findAccount(state.user.email);
     return !!a && !!a.pwHash && hashPw(pw) === a.pwHash;
   }
-  return false; // parent / student roles never reset
+  return false; // student / teacher roles never reset
 }
 function resetAllData() {
   if (!state.role || !state.user || state.role !== 'school') return;
@@ -4225,7 +4269,7 @@ function resetAllConfirmed() {
   state.feeStudent = null; state.feeSearch = ''; state.feeType = 'All'; state.feeFilter = 'All'; state.feeFormOpen = false; state.feePreselect = null;
   state.profileStudent = null; state.profileTab = 'overview'; state.stuPage = 1;
   state.collectStudent = null; state.collectRecordId = null; state.savedReceiptId = null; collectDraft = null;
-  state.parentStudentId = null; state.admReqFilter = 'All';
+  state.admReqFilter = 'All';
   promoState = null; importState.rows = null; importState.result = null;
   renderApp();
   persistSession();
@@ -4404,7 +4448,7 @@ function suggestRoll() {
 }
 var admPrefill = null; // admission request being converted into an admission
 function studentForm(id) {
-  if (state.role !== 'school') { toast(t('tParentScope')); return; }
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   pendingPhoto = null;
   admEditingId = id || null;
   var s = id ? db.students.find(function (x) { return x.id === id; }) : null;
@@ -4464,6 +4508,7 @@ function studentForm(id) {
     '<div><label>' + t('fPhone') + ' *</label><input id="fStPh" value="' + esc(s ? s.phone : (pf ? pf.phone : '')) + '" placeholder="98XXXXXXXX"></div>' +
     '<div><label>' + t('fPhone2') + '</label><input id="fStPh2" value="' + esc(s ? (s.mobile2 || '') : '') + '" placeholder="98XXXXXXXX"></div>' +
     '<div><label>' + t('fParentEmail') + '</label><input id="fStParentEmail" type="email" value="' + esc(s ? (s.parentEmail || '') : '') + '" placeholder="parent@email.com"></div>' +
+    '<div><label>' + t('stuPinField') + '</label><input id="fStPinLogin" inputmode="numeric" maxlength="6" value="' + esc(s ? (s.parentPin || '') : '') + '" placeholder="' + t('stuPinPh') + '"></div>' +
     '<div><label>' + t('fOccupation') + '</label><input id="fStOccupation" value="' + esc(s ? (s.occupation || '') : '') + '" placeholder="e.g. Farmer"></div>' +
     '<div class="full sec-title">' + t('secDocs') + '</div>' +
     '<div><label class="check"><input type="checkbox" id="fStBirthCert" ' + (d.birthCert ? 'checked' : '') + '> ' + t('fBirthCert') + '</label></div>' +
@@ -4480,7 +4525,7 @@ function studentForm(id) {
     '<button class="btn" type="submit">' + t('saveStudentBtn') + '</button></div></form>', true);
 }
 function saveStudent(e, id, mode) {
-  if (state.role !== 'school') { toast(t('tParentScope')); return false; }
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
   e.preventDefault();
   mode = mode || 'active';
   var errEl = $('fStErr');
@@ -4495,6 +4540,8 @@ function saveStudent(e, id, mode) {
   if (digitsOnly(phone).length !== 10) return fail(t('tInvalidMobile'));
   var pin = fval('fStPin').trim();
   if (pin && !/^\d{6}$/.test(pin)) return fail(t('tInvalidPin'));
+  var pinLogin = digitsOnly(fval('fStPinLogin'));
+  if (pinLogin && (pinLogin.length < 4 || pinLogin.length > 6)) return fail(t('tPinLen'));
   var aadhaar = digitsOnly(fval('fStAadhaar'));
   if (aadhaar && aadhaar.length !== 12) return fail(t('tInvalidAadhaar'));
   var admDateVal = fval('fStAdmDate');
@@ -4531,11 +4578,11 @@ function saveStudent(e, id, mode) {
   if (id) {
     var s = db.students.find(function (x) { return x.id === id; });
     if (!s) return false;
-    var oldPhone = s.phone;
     Object.assign(s, data);
-    // Parent PIN follows the primary mobile while it is still the default
-    // (last 4 digits); a custom PIN set by the school is never overwritten.
-    if (!s.parentPin || s.parentPin === parentPinFromPhone(oldPhone)) s.parentPin = parentPinFromPhone(s.phone);
+    // The form shows the current PIN, so an edit round-trips it; a blank
+    // field resets it to the default (last 4 digits of the mobile). A
+    // custom PIN is never silently overwritten by a phone change.
+    s.parentPin = pinLogin || parentPinFromPhone(s.phone);
     s.status = mode === 'draft' ? 'Draft' : 'Active';
     if (pendingPhoto !== null) { if (pendingPhoto) s.photo = pendingPhoto; else delete s.photo; }
     logAudit('Student updated', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
@@ -4545,7 +4592,7 @@ function saveStudent(e, id, mode) {
   }
   var nid = 'stu' + Date.now();
   function createWith(admNo, enr, numPending) {
-    var newStu = Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: enr, admissionNo: admNo, status: mode === 'draft' ? 'Draft' : 'Active', parentPin: parentPinFromPhone(phone) }, data);
+    var newStu = Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: enr, admissionNo: admNo, status: mode === 'draft' ? 'Draft' : 'Active', parentPin: pinLogin || parentPinFromPhone(phone) }, data);
     if (numPending) newStu.numPending = true;
     if (pendingPhoto) newStu.photo = pendingPhoto;
     db.students.push(newStu);
@@ -4600,21 +4647,21 @@ function stuActions(id) {
     '</div>');
 }
 function viewStudentAttendance(id) {
-  if (state.role === 'parent' || !canViewStudent(id)) { toast(t('tParentScope')); return; }
+  if (state.role === 'student' || !canViewStudent(id)) { toast(t('tNotAllowed')); return; }
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
   state.attCls = s.cls;
   go('attendance');
 }
 function viewStudentFees(id) {
-  if (state.role === 'parent' || !canViewStudent(id)) { toast(t('tParentScope')); return; }
+  if (state.role !== 'school' || !canViewStudent(id)) { toast(t('tNotAllowed')); return; }
   state.view = 'fees'; state.feeStudent = id;
   persistSession();
   histPush({ view: 'fees', sub: 'profile:' + id });
   renderApp();
 }
 function viewStudentResults(id) {
-  if (state.role === 'parent' || !canViewStudent(id)) { toast(t('tParentScope')); return; }
+  if (state.role === 'student' || !canViewStudent(id)) { toast(t('tNotAllowed')); return; }
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
   var ex = db.exams.find(function (e) { return e.cls === s.cls; });
@@ -4622,7 +4669,7 @@ function viewStudentResults(id) {
   go('exams');
 }
 function transferStudent(id) {
-  if (state.role !== 'school') { toast(t('tParentScope')); return; }
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
   var clsOpts = CLASSES.map(function (c) { return '<option ' + (c === s.cls ? 'selected' : '') + '>' + c + '</option>'; }).join('');
@@ -4714,7 +4761,7 @@ function promoList() {
   return promoEligible(promoState.fromSession, promoState.fromCls);
 }
 function openPromotion(singleId, opts) {
-  if (state.role !== 'school') { toast(t('tParentScope')); return; }
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   state.profileStudent = null; // never show profile + promotion at once
   var s = singleId ? db.students.find(function (x) { return x.id === singleId; }) : null;
   var fromSession = s ? (s.session || db.profile.session) : db.profile.session;
@@ -4821,7 +4868,7 @@ function promotionPage() {
     '<button class="btn ghost" onclick="doPromote(\'retain\')">' + t('promoRetain') + '</button></div></div>' + resHtml;
 }
 function deactivateStudent(id) {
-  if (state.role !== 'school') { toast(t('tParentScope')); return; }
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
   var toInactive = (s.status || 'Active') === 'Active';
@@ -4833,6 +4880,7 @@ function deactivateStudent(id) {
   });
 }
 function cancelAdmission(id) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
   confirmModal(t('cancelAdmMsg'), function () {
@@ -4843,7 +4891,7 @@ function cancelAdmission(id) {
   });
 }
 function openStudentProfile(id) {
-  if (!canViewStudent(id)) { toast(t('tParentScope')); return; }
+  if (!canViewStudent(id)) { toast(t('tOwnProfileOnly')); return; }
   promoState = null;
   state.profileStudent = id; state.profileTab = 'overview';
   persistSession();
@@ -4853,20 +4901,33 @@ function openStudentProfile(id) {
 function setProfileTab(tab) { state.profileTab = tab; renderPage(); }
 function studentProfilePage(id) {
   var s = db.students.find(function (x) { return x.id === id; });
-  if (!s) { state.profileStudent = null; return studentsPage(); }
+  if (!s) {
+    state.profileStudent = null;
+    if (state.role !== 'school') return '<div class="card"><div class="empty">' + t('tNoStudentData') + '</div></div>';
+    return studentsPage();
+  }
   var stt = s.status || 'Active';
   var badgeCls = stt === 'Active' ? 'green' : stt === 'Inactive' ? 'grey' : stt === 'Draft' ? 'blue' : 'red';
-  var tabs = [['overview', 'tabOverview'], ['personal', 'tabPersonal'], ['parent', 'tabParent'], ['academic', 'tabAcademic'], ['attendance', 'tabAttendance'], ['fees', 'tabFees'], ['results', 'tabResults'], ['homework', 'tabHomework'], ['docs', 'tabDocs'], ['activity', 'tabActivity']];
+  // v35: role-filtered tabs. A student sees their own record (no audit
+  // log); a teacher never sees the fees tab (teachers cannot see fees).
+  var allTabs = [['overview', 'tabOverview'], ['personal', 'tabPersonal'], ['parent', 'tabParent'], ['academic', 'tabAcademic'], ['attendance', 'tabAttendance'], ['fees', 'tabFees'], ['results', 'tabResults'], ['homework', 'tabHomework'], ['docs', 'tabDocs'], ['activity', 'tabActivity']];
+  var tabs = allTabs.filter(function (tb) {
+    if (tb[0] === 'activity') return state.role === 'school';
+    if (tb[0] === 'fees') return state.role !== 'teacher';
+    return true;
+  });
   var tabBar = '<div class="tabs">' + tabs.map(function (tb) {
     return '<button class="tab-btn' + (state.profileTab === tb[0] ? ' on' : '') + '" onclick="setProfileTab(\'' + tb[0] + '\')">' + t(tb[1]) + '</button>';
   }).join('') + '</div>';
-  var isParent = state.role === 'parent';
-  var toolbar = isParent
-    ? '<div class="toolbar"><button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button></div>'
-    : '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">← ' + t('backDir') + '</button>' +
+  var toolbar = state.role === 'school'
+    ? '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">← ' + t('backDir') + '</button>' +
     '<button class="btn" onclick="studentForm(\'' + s.id + '\')">' + t('editStudent') + '</button>' +
     '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button>' +
-    ((stt === 'Active' || stt === 'Inactive') ? '<button class="btn ghost" onclick="promoteSingle(\'' + s.id + '\')">⬆️ ' + t('promoSingle') + '</button>' : '') + '</div>';
+    ((stt === 'Active' || stt === 'Inactive') ? '<button class="btn ghost" onclick="promoteSingle(\'' + s.id + '\')">⬆️ ' + t('promoSingle') + '</button>' : '') + '</div>'
+    : state.role === 'teacher'
+    ? '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">← ' + t('backDir') + '</button>' +
+    '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button></div>'
+    : '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">← ' + t('backDir') + '</button><button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button></div>';
   return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + esc(s.cls) + ' • ' + t('thAdmNo') + ' ' + esc(s.admissionNo || '—') + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • <span class="badge ' + badgeCls + '">' + stt + '</span></p></div></div>' +
     toolbar + '</div>' +
     tabBar + '<div style="margin-top:16px">' + profileTabBody(s, state.profileTab || 'overview') + '</div>';
@@ -4874,6 +4935,10 @@ function studentProfilePage(id) {
 function profileTabBody(s, tab) {
   var d = s.documents || {};
   var kv = function (label, val) { return '<div class="kv"><b>' + label + '</b><span>' + val + '</span></div>'; };
+  // v35: tabs hidden by role are also refused here, so a direct
+  // setProfileTab call cannot open them either.
+  if (tab === 'activity' && state.role !== 'school') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
+  if (tab === 'fees' && state.role === 'teacher') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
   if (tab === 'personal') {
     return '<div class="card">' + kv(t('fStudentName'), esc(s.name)) + kv(t('fDob'), esc(s.dob || '—')) + kv(t('fGender'), esc(s.gender || '—')) + kv(t('fBlood'), esc(s.bloodGroup || '—')) + kv(t('fCategory'), esc(s.category || '—')) + kv(t('fAddress'), esc(s.address || '—')) + kv(t('fState'), esc(s.state || '—')) + kv(t('fDistrict'), esc(s.district || '—')) + kv(t('fPin'), esc(s.pin || '—')) + kv(t('fAadhaar'), maskAadhaar(s.aadhaar)) + '</div>';
   }
@@ -4881,12 +4946,12 @@ function profileTabBody(s, tab) {
     var base = '<div class="card">' + kv(t('fFather'), esc(s.fatherName || '—')) + kv(t('fMother'), esc(s.motherName || '—')) + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fPhone2'), esc(s.mobile2 || '—')) + kv(t('fParentEmail'), esc(s.parentEmail || '—')) + kv(t('fOccupation'), esc(s.occupation || '—')) + '</div>';
     if (state.role !== 'school') return base;
     var pinNow = s.parentPin ? esc(s.parentPin) : '—';
-    var pinBox = '<div class="card" style="margin-top:16px"><h3>' + t('parentAccess') + '</h3>' +
-      '<div class="kv"><b>' + t('parentPinNow') + '</b><span>' + pinNow + '</span></div>' +
-      '<p class="muted" style="margin:8px 0">' + t('tPinAuto') + (s.parentPin ? '' : ' ' + t('parentPinNone')) + '</p>' +
-      '<div class="form-grid"><div><label>' + t('parentPinNew') + '</label><input id="fParentPinNew" inputmode="numeric" maxlength="6" placeholder="4–6 digits"></div></div>' +
-      '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="setParentPin(\'' + s.id + '\')">' + t('parentPinSetBtn') + '</button>' +
-      '<button class="btn ghost" onclick="clearParentPin(\'' + s.id + '\')">' + t('parentPinClear') + '</button></div></div>';
+    var pinBox = '<div class="card" style="margin-top:16px"><h3>' + t('stuPinTitle') + '</h3>' +
+      '<div class="kv"><b>' + t('stuPinNow') + '</b><span>' + pinNow + '</span></div>' +
+      '<p class="muted" style="margin:8px 0">' + t('tPinAuto') + (s.parentPin ? '' : ' ' + t('stuPinNone')) + '</p>' +
+      '<div class="form-grid"><div><label>' + t('stuPinNew') + '</label><input id="fStuPinNew" inputmode="numeric" maxlength="6" placeholder="4–6 digits"></div></div>' +
+      '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="setStudentPin(\'' + s.id + '\')">' + t('stuPinSetBtn') + '</button>' +
+      '<button class="btn ghost" onclick="clearStudentPin(\'' + s.id + '\')">' + t('stuPinClear') + '</button></div></div>';
     return base + pinBox;
   }
   if (tab === 'academic') {
@@ -4917,7 +4982,7 @@ function profileTabBody(s, tab) {
     return '<div class="stats">' + statCard('🧾', 'blue', t('totalBilled'), sum.billed, '', 'up', { prefix: '₹' }) + statCard('✅', 'green', t('totalPaid'), sum.paid, '', 'up', { prefix: '₹' }) + statCard('⏰', 'red', t('totalPending'), sum.pend, '', 'down', { prefix: '₹' }) + '</div>' +
       '<div class="card"><h3>' + t('feeByType') + '</h3>' + (btRows || '<p class="muted">' + t('tNoFeeRecs') + '</p>') + '</div>' +
       '<div class="card" style="margin-top:16px"><h3>' + t('feeRecsH') + '</h3><div class="tbl-wrap fee-hist-tbl"><table><thead><tr><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th></tr></thead><tbody>' + (frs || '<tr><td colspan="5"><div class="empty">' + t('tNoFeeRecs') + '</div></td></tr>') + '</tbody></table></div>' +
-      (state.role === 'parent' ? '' : '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="viewStudentFees(\'' + s.id + '\')">' + t('openFees') + '</button></div>') + '</div>';
+      (state.role !== 'school' ? '' : '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="viewStudentFees(\'' + s.id + '\')">' + t('openFees') + '</button></div>') + '</div>';
   }
   if (tab === 'results') {
     var exs = db.exams.filter(function (e) { return e.cls === s.cls; }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
@@ -4964,25 +5029,26 @@ function profileTabBody(s, tab) {
     '</div>' +
     '<div class="card">' + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fAdmNo'), esc(s.admissionNo || '—')) + kv(t('thEnr'), esc(s.enr || '—')) + kv(t('fAdmDate'), esc(s.admissionDate || '—')) + kv(t('fSession'), esc(s.session || '—')) + kv(t('thStatus'), esc(s.status || 'Active')) + '</div>';
 }
-function setParentPin(id) {
+function setStudentPin(id) {
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s || state.role !== 'school') return;
-  var v = digitsOnly($('fParentPinNew') ? $('fParentPinNew').value : '');
+  var v = digitsOnly($('fStuPinNew') ? $('fStuPinNew').value : '');
   if (v.length < 4 || v.length > 6) { toast(t('tPinLen')); return; }
   s.parentPin = v;
-  logAudit('Parent PIN set', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
+  logAudit('Student PIN set', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
   saveDB(db); renderPage();
   toast(t('tPinSet'));
 }
-function clearParentPin(id) {
+function clearStudentPin(id) {
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s || state.role !== 'school') return;
   s.parentPin = '';
-  logAudit('Parent PIN cleared', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
+  logAudit('Student PIN cleared', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
   saveDB(db); renderPage();
   toast(t('tPinCleared'));
 }
 function deleteStudent(id) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
   // Soft delete only: the record and ALL of its history (fees, marks,
@@ -4996,6 +5062,14 @@ function deleteStudent(id) {
 }
 function attendancePage() {
   if (!state.attDate) state.attDate = todayIST();
+  // v35: a teacher only ever sees their own assigned classes — the class
+  // picker is restricted, and a stale attCls outside the assignment is
+  // pulled back to the first assigned class.
+  if (state.role === 'teacher') {
+    var myCls35 = teacherClasses();
+    if (!myCls35.length) return '<div class="page-head"><div><h2>' + t('attendance') + '</h2></div></div><div class="card"><div class="empty">' + t('tchrNoClassesYet') + '</div></div>';
+    if (myCls35.indexOf(state.attCls) === -1) state.attCls = myCls35[0];
+  }
   var cls = state.attCls;
   // v34 (P1-10): rosters are enrolled students only — Cancelled/Draft
   // never appear on the register.
@@ -5020,14 +5094,14 @@ function attendancePage() {
     else if (m === 'Absent') counts.Absent++;
     else counts.Late++;
   });
-  var clsOpts = CLASSES.map(function (c) { return '<option ' + (cls === c ? 'selected' : '') + '>' + c + '</option>'; }).join('');
+  var clsOpts = (state.role === 'teacher' ? teacherClasses() : CLASSES).map(function (c) { return '<option ' + (cls === c ? 'selected' : '') + '>' + c + '</option>'; }).join('');
   var ta = todayAtt();
   return '<div class="page-head"><div><h2>' + t('attendance') + '</h2><p>Class ' + esc(cls) + ' • ' + esc(state.attDate) + ' — ' + counts.Present + ' ' + t('presBtn') + ', ' + counts.Absent + ' ' + t('absBtn') + ', ' + counts.Late + ' ' + t('lateBtn') + (counts.NotMarked ? ', ' + counts.NotMarked + ' ' + t('attNotMarked') : '') + '</p></div>' +
     '<div class="toolbar"><select onchange="state.attCls=this.value;renderPage()">' + clsOpts + '</select>' +
     '<input type="date" value="' + esc(state.attDate) + '" max="' + todayIST() + '" onchange="onAttDate(this.value)" style="min-width:160px">' +
     '<button class="btn green" onclick="saveAttendance()">✓ ' + t('saveAttendance') + '</button></div></div>' +
     '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thStatus') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
-    '<p class="muted" style="margin-top:12px">School-wide today: ' + num(ta.present) + ' Present • ' + num(ta.absent) + ' Absent • ' + num(ta.late) + ' Late (' + donutPct(ta.present, ta.total) + '% attendance).</p></div>';
+    (state.role === 'teacher' ? '' : '<p class="muted" style="margin-top:12px">School-wide today: ' + num(ta.present) + ' Present • ' + num(ta.absent) + ' Absent • ' + num(ta.late) + ' Late (' + donutPct(ta.present, ta.total) + '% attendance).</p>') + '</div>';
 }
 function onAttDate(v) {
   if (v > todayIST()) { toast(t('tFutureDate')); state.attDate = todayIST(); }
@@ -5035,6 +5109,11 @@ function onAttDate(v) {
   renderPage();
 }
 function markAtt(id, m) {
+  // v35: a teacher marks only their own assigned class, and only a
+  // student on this class's roster.
+  if (state.role === 'teacher' && teacherClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
+  var stu = db.students.find(function (x) { return x.id === id; });
+  if (stu && stu.cls !== state.attCls) { toast(t('tNotAllowed')); return; }
   var key = state.attDate + '|' + state.attCls;
   if (!db.attendance[key]) db.attendance[key] = {};
   db.attendance[key][id] = m;
@@ -5042,6 +5121,8 @@ function markAtt(id, m) {
   renderPage();
 }
 function saveAttendance() {
+  // v35: a teacher saves only their own assigned class.
+  if (state.role === 'teacher' && teacherClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
   var key = state.attDate + '|' + state.attCls;
   var recs = db.attendance[key] || {};
   // v25: attendance saves go to the audit log too, so the full Activity
@@ -5181,6 +5262,7 @@ function feeFormCard() {
 }
 function saveFeeRecord(e) {
   e.preventDefault();
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
   var sid = $('fFeeStudent').value;
   var s = db.students.find(function (x) { return x.id === sid; });
   if (!sid || !s) { toast(t('tPickStudent')); return false; }
@@ -5226,6 +5308,7 @@ function feeStructureCard() {
     '<button class="btn green" onclick="generateFees()">' + t('genFees') + '</button></div></div>';
 }
 function saveFeeStructure() {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   var rows = db.feeStructure || [];
   var exVals = {};
   var exKeys = ['admissionFee', 'cautionMoney', 'annualCharges', 'transportFee'];
@@ -5269,6 +5352,7 @@ function deleteFeeStructureRow(i) {
   toast(t('tStructRemoved'));
 }
 function deleteFeeRecord(rid) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   // Only a PENDING record can be deleted. A Collected record is tied to a
   // receipt and is the payment's evidence, so it must stay.
   var r = db.feeRecords.find(function (x) { return x.id === rid; });
@@ -5284,6 +5368,7 @@ function deleteFeeRecord(rid) {
   });
 }
 function generateFees() {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   var month = state.feeGenMonth;
   var sel = $('fGenMonth');
   if (sel && sel.value) month = sel.value;
@@ -5403,7 +5488,7 @@ function idCardsPrintHTML(ids) {
 // Print preview modal: shows the count + the exact cards, then prints via #printArea.
 function openIdCardPreview(ids) {
   ids = (ids || []).filter(function (id) { return canViewStudent(id); });
-  if (!ids.length) { toast(t('tParentScope')); return; }
+  if (!ids.length) { toast(t('tNotAllowed')); return; }
   var list = (ids || []).map(function (id) { return db.students.find(function (x) { return x.id === id; }); }).filter(function (s) { return !!s; });
   if (!list.length) { toast(t('promoNoSelect')); return; }
   pendingIdPrint = list.map(function (s) { return s.id; });
@@ -5441,6 +5526,7 @@ function toggleStuSelAll(checked) {
 function clearStuSel() { state.stuSel = {}; renderPage(); }
 function stuSelCount() { return Object.keys(state.stuSel || {}).length; }
 function collectFee(id) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   var r = db.feeRecords.find(function (x) { return x.id === id; });
   if (!r || r.status !== 'Pending') return;
   r.status = 'Collected';
@@ -6011,6 +6097,12 @@ function doRejectAdmissionRequest(e, id) {
 /* ================= exams / homework / notices / reports / settings ================= */
 function examsPage() {
   var ex = db.exams.find(function (e) { return e.id === state.examId; }) || db.exams[0];
+  // v35: a teacher only ever sees exams for their own assigned classes.
+  if (state.role === 'teacher') {
+    var myExams35 = db.exams.filter(function (e) { return teacherClasses().indexOf(e.cls) !== -1; });
+    if (!myExams35.length) return '<div class="page-head"><div><h2>' + t('exams') + '</h2></div></div><div class="card"><div class="empty">' + t('tchrNoClassesYet') + '</div></div>';
+    ex = myExams35.find(function (e) { return e.id === state.examId; }) || myExams35[0];
+  }
   if (!ex) return '<div class="page-head"><div><h2>' + t('exams') + '</h2></div></div><div class="card"><div class="empty">' + t('tNoExams') + '</div></div>';
   // v34 (P1-10): marks roster is enrolled students only — Cancelled/
   // Draft never get a marks row.
@@ -6021,7 +6113,8 @@ function examsPage() {
       '<td><input type="number" min="0" step="0.5" max="' + ex.total + '" value="' + (mk ? mk.marks : '') + '" placeholder="—" style="width:90px" id="mk-' + s.id + '"> / ' + ex.total + '</td>' +
       '<td>' + (mk ? '<b>' + Math.round(mk.marks / ex.total * 100) + '%</b>' : '<span class="muted">' + t('tNotEntered') + '</span>') + '</td></tr>';
   }).join('');
-  var opts = db.exams.map(function (e) { return '<option value="' + e.id + '" ' + (ex.id === e.id ? 'selected' : '') + '>' + esc(e.name) + ' — ' + esc(e.cls) + ' (' + esc(e.subject) + ')</option>'; }).join('');
+  var examList35 = state.role === 'teacher' ? db.exams.filter(function (e) { return teacherClasses().indexOf(e.cls) !== -1; }) : db.exams;
+  var opts = examList35.map(function (e) { return '<option value="' + e.id + '" ' + (ex.id === e.id ? 'selected' : '') + '>' + esc(e.name) + ' — ' + esc(e.cls) + ' (' + esc(e.subject) + ')</option>'; }).join('');
   var avg = 0, n = 0;
   db.marks.forEach(function (m) { if (m.examId === ex.id) { avg += m.marks; n++; } });
   return '<div class="page-head"><div><h2>' + t('exams') + '</h2><p>' + esc(ex.name) + ' • ' + esc(ex.cls) + ' • ' + esc(ex.subject) + ' • ' + esc(ex.date) + '</p></div>' +
@@ -6033,6 +6126,8 @@ function examsPage() {
 function saveMarks(examId) {
   var ex = db.exams.find(function (e) { return e.id === examId; });
   if (!ex) return;
+  // v35: a teacher enters marks only for their own assigned class.
+  if (state.role === 'teacher' && teacherClasses().indexOf(ex.cls) === -1) { toast(t('tNotAllowed')); return; }
   var saved = 0, bad = [];
   // v34 (P1-10): new/updated marks are only saved for enrolled students
   // (Active/Inactive). An empty input still clears an EXISTING mark for
@@ -6060,16 +6155,20 @@ function saveMarks(examId) {
   else toast(t('tNoChanges'));
 }
 function meStudent() {
-  if (state.role !== 'student' || !state.user) return null;
-  var s = db.students.find(function (x) { return x.name === state.user.name; });
-  return s || db.students[0] || null;
+  // v35: the logged-in student is found by id, never by name and never
+  // by falling back to the first student in the list (the old code did
+  // both — a name match could open the wrong child).
+  if (state.role !== 'student' || !state.user || !state.user.studentId) return null;
+  return db.students.find(function (x) { return x.id === state.user.studentId; }) || null;
 }
-function riyaId() { var s = meStudent(); return s ? s.id : 'stu33'; }
 function homeworkPage() {
   var isStudent = state.role === 'student';
+  var isTeacher = state.role === 'teacher';
   var me = meStudent();
   var myCls = me ? me.cls : '10th-A';
-  var list = db.homework.filter(function (h) { return isStudent ? h.cls === myCls : true; });
+  // v35: a teacher sees homework for their own assigned classes only
+  // (and may post it); a student sees only their own class.
+  var list = db.homework.filter(function (h) { return isStudent ? h.cls === myCls : isTeacher ? teacherClasses().indexOf(h.cls) !== -1 : true; });
   var items = list.map(function (h) {
     var done = me ? h.doneBy.indexOf(me.id) !== -1 : false;
     var box = isStudent
@@ -6095,7 +6194,9 @@ function toggleHw(id, done) {
   toast(done ? '✓ ' + t('tHwDone') : t('tHwNotDone'));
 }
 function homeworkForm() {
-  var clsOpts = CLASSES.map(function (c) { return '<option>' + c + '</option>'; }).join('');
+  // v35: a teacher assigns homework only to their own classes.
+  var clsList35 = state.role === 'teacher' ? teacherClasses() : CLASSES;
+  var clsOpts = clsList35.map(function (c) { return '<option>' + c + '</option>'; }).join('');
   var subOpts = SUBJECTS.map(function (s) { return '<option>' + s + '</option>'; }).join('');
   openModal('<h3>' + t('addHomework') + '</h3><form onsubmit="return saveHomework(event)"><div class="form-grid">' +
     '<div><label>' + t('fClass') + '</label><select id="fHwCls">' + clsOpts + '</select></div>' +
@@ -6107,6 +6208,8 @@ function homeworkForm() {
 function saveHomework(e) {
   e.preventDefault();
   if ($('fHwDue').value < todayIST()) { toast(t('tDueFuture')); return false; }
+  // v35: a teacher posts homework only to their own assigned class.
+  if (state.role === 'teacher' && teacherClasses().indexOf($('fHwCls').value) === -1) { toast(t('tNotAllowed')); return false; }
   db.homework.unshift({ id: 'hw' + Date.now(), cls: $('fHwCls').value, subject: $('fHwSub').value, title: $('fHwTitle').value.trim(), due: $('fHwDue').value, doneBy: [] });
   addActivity('📚', 'orange', 'Homework assigned', $('fHwSub').value + ' • Class ' + $('fHwCls').value);
   saveDB(db); closeModal(); renderApp();
@@ -6117,7 +6220,7 @@ function noticesPage() {
   var items = db.notices.map(function (n) {
     return '<div class="notice"><b>' + esc(n.title) + '</b><span>' + esc(n.date) + '</span><p>' + esc(n.body) + '</p></div>';
   }).join('');
-  var canPost = state.role !== 'student';
+  var canPost = state.role === 'school'; // v35: teachers view notices only
   return '<div class="page-head"><div><h2>' + t('notices') + '</h2><p>' + t('subNotices') + ' — ' + esc(db.profile.name) + '</p></div>' +
     (canPost ? '<div class="toolbar"><button class="btn" onclick="noticeForm()">+ ' + t('publishNotice') + '</button></div>' : '') + '</div>' +
     '<div class="card">' + items + '</div>';
@@ -6130,6 +6233,7 @@ function noticeForm() {
 }
 function saveNotice(e) {
   e.preventDefault();
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
   db.notices.unshift({ id: 'n' + Date.now(), title: $('fNtTitle').value.trim(), date: todayIST(), body: $('fNtBody').value.trim() });
   addActivity('📢', 'orange', 'New notice published', $('fNtTitle').value.trim());
   saveDB(db); closeModal(); renderApp();
@@ -6145,6 +6249,7 @@ function reportsPage() {
   '</div>';
 }
 function downloadReportCSV(kind) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   if (kind === 'students') {
     downloadCSV('school-saathi-students.csv', [['Name', 'Class', 'Roll', 'Guardian', 'Phone', 'Attendance %', 'Fee Status']]
       .concat(db.students.map(function (s) { return [s.name, s.cls, s.roll, s.guardian, s.phone, studentAttPct(s), studentFeeStatus(s.id)]; })));
@@ -6187,6 +6292,7 @@ function settingsPage() {
 }
 function saveSettings(e) {
   e.preventDefault();
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
   var p = db.profile;
   p.name = $('fPfName').value.trim(); p.city = $('fPfCity').value.trim();
   p.principal = $('fPfPr').value.trim(); p.phone = $('fPfPh').value.trim(); p.email = $('fPfEm').value.trim();
@@ -6196,13 +6302,95 @@ function saveSettings(e) {
   toast('✓ ' + t('tSettingsSaved'));
   return false;
 }
+/* ================= TEACHERS view (v35) =================
+   The school admin creates teacher login accounts here: name, subject,
+   classes taught, email + password. The account is a local device
+   account (role 'teacher', djb2 hash — v36 replaces the hash) linked to
+   the teacher record by teacherId; the teacher opens the school's DB.
+   Teacher records (incl. classes[]) sync to the server like any other
+   row; the login account itself is local-only in v35. */
+var tchrFormClasses = []; // in-memory class selection for the teacher form
+function toggleTchrClass(cls, on) {
+  var i = tchrFormClasses.indexOf(cls);
+  if (on && i === -1) tchrFormClasses.push(cls);
+  if (!on && i !== -1) tchrFormClasses.splice(i, 1);
+}
+function teachersPage() {
+  if (state.role !== 'school') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
+  var rows = (db.teachers || []).map(function (te) {
+    var acct = loadAccounts().find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; });
+    var clsList = Array.isArray(te.classes) && te.classes.length ? te.classes : (te.cls ? [te.cls] : []);
+    return '<tr><td><b>' + esc(te.name) + '</b></td><td>' + esc(te.subject || '—') + '</td><td>' + esc(clsList.join(', ') || '—') + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('tchrNoLogin') + '</span>') + '</td><td><button class="btn ghost sm" onclick="teacherForm(\'' + te.id + '\')">' + t('editBtn') + '</button></td></tr>';
+  }).join('');
+  return '<div class="page-head"><div><h2>' + t('teachers') + '</h2><p>' + t('teachersSub') + '</p></div>' +
+    '<div class="toolbar"><button class="btn" onclick="teacherForm()">+ ' + t('tchrAdd') + '</button></div></div>' +
+    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thName') + '</th><th>' + t('tchrSubject') + '</th><th>' + t('tchrClasses') + '</th><th>' + t('tchrEmail') + '</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="5"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '</tbody></table></div></div>';
+}
+function teacherForm(id) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
+  var te = id ? db.teachers.find(function (x) { return x.id === id; }) : null;
+  var acct = te ? loadAccounts().find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; }) : null;
+  tchrFormClasses = te ? (Array.isArray(te.classes) && te.classes.length ? te.classes.slice() : (te.cls ? [te.cls] : [])) : [];
+  var clsBoxes = CLASSES.map(function (c) {
+    return '<label class="check"><input type="checkbox" ' + (tchrFormClasses.indexOf(c) !== -1 ? 'checked' : '') + ' onchange="toggleTchrClass(\'' + c + '\', this.checked)"> ' + c + '</label>';
+  }).join('');
+  var subOpts = SUBJECTS.map(function (s) { return '<option ' + (te && te.subject === s ? 'selected' : '') + '>' + s + '</option>'; }).join('');
+  openModal('<h3>' + (te ? t('tchrEdit') : t('tchrAdd')) + '</h3>' +
+    '<div id="fTchrErr" class="err hidden"></div>' +
+    '<form onsubmit="return saveTeacher(event,\'' + (id || '') + '\')"><div class="form-grid">' +
+    '<div><label>' + t('tchrName') + ' *</label><input id="fTchrName" required value="' + esc(te ? te.name : '') + '" placeholder="e.g. Sunita Sharma"></div>' +
+    '<div><label>' + t('tchrSubject') + '</label><select id="fTchrSub">' + subOpts + '</select></div>' +
+    '<div class="full"><label>' + t('tchrClasses') + ' *</label><div style="display:flex;flex-wrap:wrap;gap:8px 16px">' + clsBoxes + '</div></div>' +
+    '<div><label>' + t('tchrEmail') + ' *</label><input id="fTchrEmail" type="email" required value="' + esc(acct ? acct.email : '') + '" placeholder="teacher@school.edu.in" autocomplete="off"></div>' +
+    '<div><label>' + t('tchrPw') + (acct ? '' : ' *') + '</label><input id="fTchrPw" type="password" ' + (acct ? '' : 'required') + ' placeholder="••••••••" autocomplete="new-password"><p class="muted">' + t('tchrPwHint') + '</p></div>' +
+    '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + t('saveBtn') + '</button></div></form>', true);
+}
+function saveTeacher(e, id) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
+  e.preventDefault();
+  var errEl = $('fTchrErr');
+  function fail(msg) { if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); } toast(msg); return false; }
+  var name = ($('fTchrName') ? $('fTchrName').value : '').trim();
+  var email = ($('fTchrEmail') ? $('fTchrEmail').value : '').trim().toLowerCase();
+  var pw = $('fTchrPw') ? $('fTchrPw').value : '';
+  var subject = $('fTchrSub') ? $('fTchrSub').value : '';
+  if (!name || !email) return fail(t('tFillAll'));
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail(t('tInvalidEmail'));
+  if (!tchrFormClasses.length) return fail(t('tchrNoClasses'));
+  var list = loadAccounts();
+  var te = id ? db.teachers.find(function (x) { return x.id === id; }) : null;
+  var ownAcct = te ? list.find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; }) : null;
+  var existing = list.find(function (a) { return a.email === email; });
+  if (existing && (!ownAcct || existing.uid !== ownAcct.uid)) return fail(t('tchrEmailTaken'));
+  if (!ownAcct && pw.length < 6) return fail(t('tPwShort'));
+  if (ownAcct && pw && pw.length < 6) return fail(t('tPwShort'));
+  if (!te) {
+    te = { id: 't' + Date.now().toString(36), name: name, subject: subject, cls: tchrFormClasses[0], classes: tchrFormClasses.slice() };
+    db.teachers.push(te);
+  } else {
+    te.name = name; te.subject = subject; te.classes = tchrFormClasses.slice(); te.cls = tchrFormClasses[0] || '';
+  }
+  if (ownAcct) {
+    ownAcct.name = name; ownAcct.email = email; ownAcct.sub = t('tchrSub') + ' • ' + db.profile.name;
+    if (pw) ownAcct.pwHash = hashPw(pw);
+  } else {
+    list.push({ uid: 'u' + Date.now().toString(36), name: name, school: db.profile.name, email: email, pwHash: hashPw(pw), role: 'teacher', sub: t('tchrSub') + ' • ' + db.profile.name, teacherId: te.id, schoolUid: state.user.uid, created: new Date().toISOString().slice(0, 10) });
+  }
+  saveAccounts(list);
+  logAudit(ownAcct ? 'Teacher updated' : 'Teacher added', name + ' • ' + (te.classes || []).join(', '));
+  saveDB(db); closeModal(); renderApp();
+  toast(t('tchrSaved'));
+  return false;
+}
 PAGE_SCHOOL.exams = examsPage; PAGE_SCHOOL.homework = homeworkPage; PAGE_SCHOOL.notices = noticesPage;
-PAGE_SCHOOL.reports = function () { return reportsPage(); }; PAGE_SCHOOL.settings = settingsPage; PAGE_SCHOOL.admissions = admissionRequestsPage; PAGE_SCHOOL.activityLog = activityLogPage;
+PAGE_SCHOOL.teachers = teachersPage; PAGE_SCHOOL.reports = function () { return reportsPage(); }; PAGE_SCHOOL.settings = settingsPage; PAGE_SCHOOL.admissions = admissionRequestsPage; PAGE_SCHOOL.activityLog = activityLogPage;
 
 /* ================= STUDENT view ================= */
 function studentDashboard() {
   var me = meStudent();
   if (!me) return '<div class="phone"><div class="card"><div class="empty">' + t('tNoStudentData') + '</div></div></div>';
+  // Full profile (opened from the "View full profile" button below).
+  if (state.profileStudent === me.id) return studentProfilePage(me.id);
   var myHw = db.homework.filter(function (h) { return h.cls === me.cls; });
   var doneCount = myHw.filter(function (h) { return h.doneBy.indexOf(me.id) !== -1; }).length;
   var hwItems = myHw.map(function (h) {
@@ -6213,7 +6401,8 @@ function studentDashboard() {
     return '<div class="notice"><b>' + esc(n.title) + '</b><span>' + esc(n.date) + '</span><p>' + esc(n.body) + '</p></div>';
   }).join('');
   return '<div class="phone"><div class="card"><div class="stu-hero">' + avatarHTML(me.photo, me.name, 'avatar') + '</div>' +
-    '<h3>' + esc(me.name) + '</h3><p>Class ' + esc(me.cls) + ' • ' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div>' +
+    '<h3>' + esc(me.name) + '</h3><p>Class ' + esc(me.cls) + ' • ' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p>' +
+    '<div class="toolbar" style="justify-content:center;margin-top:10px"><button class="btn" onclick="openStudentProfile(\'' + me.id + '\')">' + t('actView') + '</button></div></div>' +
     '<div class="tile-grid">' +
     '<div class="tile green"><div class="n">' + studentAttPct(me) + '%</div><div class="l">' + t('tileAtt') + '</div></div>' +
     '<div class="tile yellow"><div class="n">' + studentFeeStatus(me.id) + '</div><div class="l">' + t('tileFees') + '</div></div>' +
@@ -6224,7 +6413,7 @@ function studentDashboard() {
     '<div class="card" style="margin-top:16px"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div></div>';
 }
 var PAGE_STUDENT = { dashboard: studentDashboard, homework: homeworkPage, notices: noticesPage };
-var PAGE_PARENT = { dashboard: parentDashboard };
+var PAGE_TEACHER = { dashboard: teacherDashboard, attendance: attendancePage, exams: examsPage, homework: homeworkPage, notices: noticesPage };
 
 /* ================= init ================= */
 document.addEventListener('DOMContentLoaded', function () {
