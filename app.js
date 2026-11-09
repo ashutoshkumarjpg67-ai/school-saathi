@@ -177,7 +177,7 @@ function sbLoginNewSchool(meta, email, pw, uid, token, serverSchool) {
   // metadata (fresh signup, not yet migrated), then log in and migrate.
   var school = (serverSchool && serverSchool.name) || meta.school || '';
   var name = (serverSchool && serverSchool.principal) || meta.name || email;
-  var a = { uid: 'u' + Date.now().toString(36), name: name, school: school, email: email, pwHash: pw ? hashPw(pw) : '', role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: uid };
+  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: pw ? hashPw(pw) : '', role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: uid };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   state.sb = { uid: uid, email: email };
   $('loginErr').classList.add('hidden');
@@ -1767,6 +1767,7 @@ function findStudentByAdmNo(admNo) {
   storageKeys().forEach(function (key) {
     if (found) return;
     if (key.indexOf('schoolSaathiDB') !== 0 || key.slice(-4) === '.bak') return;
+    if (key === 'schoolSaathiDBv1') return; // v24: platform demo DB is never a real school's DB
     var d = readDbByKey(key);
     if (!d) return;
     migrateV12(d);
@@ -1776,6 +1777,33 @@ function findStudentByAdmNo(admNo) {
     });
   });
   return found;
+}
+function findParentByAdmNo(admNo, pin) {
+  // v24: same device-wide scan as findStudentByAdmNo, but a parent is
+  // identified by admission number AND parent PIN together. Admission
+  // numbers alone are NOT unique across schools — every school restarts at
+  // ADM-2025-001 — and the platform demo DB holds them too, so matching on
+  // the number alone once opened a demo child for a real parent. The
+  // platform demo DB (schoolSaathiDBv1) is never a parent login target.
+  var want = String(admNo || '').trim().toLowerCase();
+  var pinDigits = digitsOnly(pin || '');
+  if (!want || pinDigits.length < 4) return null;
+  var match = null;
+  storageKeys().forEach(function (key) {
+    if (match) return;
+    if (key.indexOf('schoolSaathiDB') !== 0 || key.slice(-4) === '.bak') return;
+    if (key === 'schoolSaathiDBv1') return;
+    var d = readDbByKey(key);
+    if (!d) return;
+    migrateV12(d);
+    (d.students || []).some(function (s) {
+      if (String(s.admissionNo || '').trim().toLowerCase() === want && s.parentPin && digitsOnly(s.parentPin) === pinDigits) {
+        match = { student: s, dbKey: key, db: d }; return true;
+      }
+      return false;
+    });
+  });
+  return match;
 }
 function loadDB(override) {
   try {
@@ -1959,6 +1987,14 @@ function feeExtras() {
     if (typeof e[k] !== 'number' || isNaN(e[k]) || e[k] < 0) e[k] = 0;
   });
   return e;
+}
+// v24: ids must stay unique even when two records are created in the same
+// millisecond (fast "Save & Add Another" entry, or a scripted flow).
+// Date.now() alone collided — two students once shared one id, which broke
+// fees, attendance and profiles for both of them.
+var uidSeq = 0;
+function uniqueId(prefix) {
+  return prefix + Date.now().toString(36) + '_' + (++uidSeq) + Math.random().toString(36).slice(2, 6);
 }
 // peek=true previews the next number without consuming it (draft display only).
 function nextReceiptNo(peek) {
@@ -2816,10 +2852,11 @@ function doParentLogin(e) {
   var adm = $('parentAdmNo').value.trim();
   var pin = $('parentPin').value.trim();
   var err = $('parentErr');
-  var found = findStudentByAdmNo(adm);
+  // v24: admission numbers restart at ADM-2025-001 in every school, and the
+  // platform demo DB holds them too — so match on admission no. AND PIN.
+  var found = findParentByAdmNo(adm, pin);
   // One generic error: never reveal whether the number or the PIN was wrong.
-  var ok = found && found.student.parentPin && digitsOnly(pin).length >= 4 && digitsOnly(pin) === digitsOnly(found.student.parentPin);
-  if (!found || !ok) {
+  if (!found) {
     err.textContent = t('tInvalidParent');
     err.classList.remove('hidden');
     return false;
@@ -2882,7 +2919,7 @@ function doSignup(e) {
   if (pw.length < 6) return fail(t('tPwShort'));
   if (pw !== pw2) return fail(t('tPwMismatch'));
   if (findAccount(email)) return fail(t('tEmailTaken'));
-  var a = { uid: 'u' + Date.now().toString(36), name: name, school: school, email: email, pwHash: hashPw(pw), role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: null };
+  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: hashPw(pw), role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: null };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   err.classList.add('hidden');
   toast(t('tAccountCreated') + name);
@@ -3314,7 +3351,7 @@ function submitSupportRequest(e) {
   // (best-effort — a failed post never blocks the confirmation). There is
   // still no Super Admin list or dashboard card in the app; the owner
   // reads the requests on the server until the Play Store admin UI.
-  var req = { id: 'sr' + Date.now().toString(36), ts: new Date().toISOString(), name: name, message: msg, status: 'Open', by: state.user ? state.user.name : '' };
+  var req = { id: uniqueId('sr'), ts: new Date().toISOString(), name: name, message: msg, status: 'Open', by: state.user ? state.user.name : '' };
   var list = [];
   try { list = JSON.parse(localStorage.getItem('schoolSaathiSupportRequests') || '[]'); } catch (e2) { list = []; }
   if (!Array.isArray(list)) list = [];
@@ -3584,7 +3621,7 @@ function saveStudent(e, id, mode) {
     logAudit('Student updated', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
     toast(t('tStudentUpdated'));
   } else {
-    var nid = 'stu' + Date.now();
+    var nid = uniqueId('stu');
     var admNo = nextAdmNo();
     var newStu = Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: nextEnr(), admissionNo: admNo, status: mode === 'draft' ? 'Draft' : 'Active', parentPin: parentPinFromPhone(phone) }, data);
     if (pendingPhoto) newStu.photo = pendingPhoto;
@@ -4062,6 +4099,18 @@ function markAtt(id, m) {
 function saveAttendance() {
   var key = state.attDate + '|' + state.attCls;
   var recs = db.attendance[key] || {};
+  // v32: persist the Present default. The page shows every unmarked
+  // student as Present (recs[s.id] || 'Present'), but markAtt() only
+  // stores clicked marks — so todayAtt() (dashboard + footer) counted
+  // only stored records and showed 0 Present even for a full class.
+  // Saving now writes 'Present' for every unmarked roster student, so
+  // the dashboard agrees with the class page. Explicit Absent/Late
+  // marks are never overwritten. (todayAtt() itself is unchanged: a
+  // class never opened still counts 0 of 0.)
+  db.students.filter(function (s) { return s.cls === state.attCls; }).forEach(function (s) {
+    if (!recs[s.id]) recs[s.id] = 'Present';
+  });
+  db.attendance[key] = recs;
   // v25: attendance saves go to the audit log too, so the full Activity
   // Log shows them. Recent Activities keeps its own db.activities entry
   // (addActivity below) — one save = one entry in each list, never two
@@ -4204,7 +4253,7 @@ function saveFeeRecord(e) {
     ty = $('fFeeCustom').value.trim();
     if (!ty) { toast(t('tTypeRequired')); return false; }
   }
-  db.feeRecords.push({ id: 'fee' + Date.now(), studentId: sid, student: s.name, cls: s.cls,
+  db.feeRecords.push({ id: uniqueId('fee'), studentId: sid, student: s.name, cls: s.cls,
     month: $('fFeeMonth').value, type: ty, amount: amt, status: $('fFeeStatus').value, date: $('fFeeDate').value || todayIST() });
   refreshStudentFee(sid);
   state.feePreselect = null;
@@ -4309,7 +4358,7 @@ function generateFees() {
       if (row.cls !== s.cls) return;
       var key = s.id + '|' + row.type;
       if (existing[key]) { skipped++; return; }
-      db.feeRecords.push({ id: 'fee' + Date.now() + '_' + made, studentId: s.id, student: s.name, cls: s.cls,
+      db.feeRecords.push({ id: uniqueId('fee'), studentId: s.id, student: s.name, cls: s.cls,
         month: month, type: row.type, amount: row.amount, status: 'Pending', date: monthStartDate(month) });
       existing[key] = 1; made++;
     });
@@ -4736,11 +4785,11 @@ function saveCollectFee(e) {
       if (paid >= net) { rec.status = 'Collected'; rec.amount = net; rec.date = today; }
       else {
         rec.amount = net - paid; // remainder stays Pending
-        db.feeRecords.push({ id: 'fee' + Date.now() + '_' + i, studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: paid, status: 'Collected', date: today });
+        db.feeRecords.push({ id: uniqueId('fee'), studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: paid, status: 'Collected', date: today });
       }
     } else {
-      db.feeRecords.push({ id: 'fee' + Date.now() + '_' + i, studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: paid, status: 'Collected', date: today });
-      if (paid < net) db.feeRecords.push({ id: 'fee' + Date.now() + '_p' + i, studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: net - paid, status: 'Pending', date: today });
+      db.feeRecords.push({ id: uniqueId('fee'), studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: paid, status: 'Collected', date: today });
+      if (paid < net) db.feeRecords.push({ id: uniqueId('fee'), studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: net - paid, status: 'Pending', date: today });
     }
   });
   var rc = { receiptNo: receiptNo, studentId: s.id, admissionNo: s.admissionNo || s.enr || '', name: s.name, cls: s.cls, session: s.session || currentSession(), date: today, month: d.month, counterNo: d.counterNo, lines: savedLines, payMode: d.payMode, payDate: d.payDate, bank: d.bank, number: d.number, total: total, totalWords: numberToWords(total), collector: state.user ? state.user.name : '' };
@@ -4817,7 +4866,7 @@ function openAdmissionApply() {
 }
 function saveAdmissionRequest(e) {
   e.preventDefault();
-  var req = { id: 'ar' + Date.now(), name: ($('fArName') ? $('fArName').value : '').trim(),
+  var req = { id: uniqueId('ar'), name: ($('fArName') ? $('fArName').value : '').trim(),
     dob: $('fArDob') ? $('fArDob').value : '', gender: $('fArGender') ? $('fArGender').value : '',
     classApply: $('fArClass') ? $('fArClass').value : '', guardianName: ($('fArGuardian') ? $('fArGuardian').value : '').trim(),
     phone: ($('fArPhone') ? $('fArPhone').value : '').trim(), previousSchool: ($('fArPrevSchool') ? $('fArPrevSchool').value : '').trim(),
@@ -4997,7 +5046,7 @@ function homeworkForm() {
 function saveHomework(e) {
   e.preventDefault();
   if ($('fHwDue').value < todayIST()) { toast(t('tDueFuture')); return false; }
-  db.homework.unshift({ id: 'hw' + Date.now(), cls: $('fHwCls').value, subject: $('fHwSub').value, title: $('fHwTitle').value.trim(), due: $('fHwDue').value, doneBy: [] });
+  db.homework.unshift({ id: uniqueId('hw'), cls: $('fHwCls').value, subject: $('fHwSub').value, title: $('fHwTitle').value.trim(), due: $('fHwDue').value, doneBy: [] });
   addActivity('📚', 'orange', 'Homework assigned', $('fHwSub').value + ' • Class ' + $('fHwCls').value);
   saveDB(db); closeModal(); renderApp();
   toast(t('tHwAssigned'));
@@ -5020,7 +5069,7 @@ function noticeForm() {
 }
 function saveNotice(e) {
   e.preventDefault();
-  db.notices.unshift({ id: 'n' + Date.now(), title: $('fNtTitle').value.trim(), date: todayIST(), body: $('fNtBody').value.trim() });
+  db.notices.unshift({ id: uniqueId('n'), title: $('fNtTitle').value.trim(), date: todayIST(), body: $('fNtBody').value.trim() });
   addActivity('📢', 'orange', 'New notice published', $('fNtTitle').value.trim());
   saveDB(db); closeModal(); renderApp();
   toast(t('tNoticePub'));
