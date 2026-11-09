@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 41;
+var APP_VERSION = 42;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -356,7 +356,14 @@ function sbStatusText() {
   if (st.state === 'synced') return t('sbStatusSynced') + (st.at ? ' ' + st.at.slice(0, 10) : '');
   if (st.state === 'uploading') return t('sbStatusUploading');
   if (st.state === 'syncing') return t('sbStatusSyncing');
-  if (st.state === 'pending') return t('sbStatusPendingSync');
+  // v42: a persisted 'pending'/'offline' state is only truthful while
+  // the device is actually offline. A cycle that started offline
+  // writes it, the device comes back online, the user logs out — and
+  // the login screen then claimed "Offline — changes will sync when
+  // you are back online" while online (live v41). While online, show
+  // the pending wording instead; while offline, keep the Offline
+  // wording. The truthful failed line (with its detail) is untouched.
+  if (st.state === 'pending') return sbIsOnline() ? t('sbStatusPending') : t('sbStatusPendingSync');
   // v39: a failed backup used to show only the generic line, so a
   // failure that repeated every cycle (the live test account's
   // "Backup failed", last attempt 09/11/2026 20:24) could never be
@@ -364,7 +371,7 @@ function sbStatusText() {
   // operation (table + error, e.g. "ss_receipts: insert-ss_receipts"
   // or "ss_receipts 0/1") — short, capped, never a secret.
   if (st.state === 'failed') return t('sbStatusFailed') + (st.detail ? ' (' + String(st.detail).slice(0, 80) + ')' : '');
-  if (st.state === 'offline') return t('sbStatusOffline');
+  if (st.state === 'offline') return sbIsOnline() ? t('sbStatusPending') : t('sbStatusOffline');
   return t('sbStatusPending');
 }
 function sbLoadMig(uid) {
@@ -747,9 +754,16 @@ function sbMapAudit(a, schoolId) {
   return { school_id: schoolId, ts: a.ts || new Date().toISOString(), actor: a.actor || 'system', action: a.action || '', details: a.details || '' };
 }
 function sbMapActivity(a, schoolId) {
-  var row = { school_id: schoolId, icon: a.icon || '', bg: a.bg || '', title: a.title || '', sub: a.sub || '' };
-  if (a.ts) row.created_at = a.ts;
-  return row;
+  // v42: every row in a bulk insert must carry the SAME key set —
+  // PostgREST rejects mixed keys with PGRST102 "All object keys must
+  // match". The old `if (a.ts)` left seed activities (no ts) without
+  // created_at while logged activities carried it, so the mixed bulk
+  // POST failed every cycle and the sync never completed (live v41:
+  // "Backup failed … (ss_activities: insert-ss_activities: PGRST102
+  // All object keys must match)"). A missing ts gets a fixed epoch
+  // fallback — deterministic, so the snapshot hash stays stable —
+  // never a fresh timestamp, which would change the hash on every call.
+  return { school_id: schoolId, icon: a.icon || '', bg: a.bg || '', title: a.title || '', sub: a.sub || '', created_at: a.ts || '1970-01-01T00:00:00.000Z' };
 }
 function sbFlattenAttendance(d) {
   var out = [];
@@ -1303,6 +1317,31 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   d.receipts = (byTable.ss_receipts || []).map(function (row) {
     return { receiptNo: row.receipt_no || '', studentId: stuMap[row.student_id] || '', admissionNo: row.admission_no || '', name: row.student_name || '', cls: row.cls || '', session: row.session || '', date: row.receipt_date || '', month: row.month || '', counterNo: row.counter_no || 0, lines: row.lines || [], payMode: row.pay_mode || 'Cash', payDate: row.pay_date || '', bank: row.bank || '', number: row.number || '', total: row.total || 0, totalWords: row.total_words || '', collector: row.collector || '' };
   });
+  // v42: the server may hold duplicate rows for one collection (a past
+  // cycle minted a new number for the same fee and uploaded it — live:
+  // 192 rows for 3 collections). The local mirror keeps only the
+  // EARLIEST number per collection so the display shows the original
+  // 001/002/003, not the latest duplicate, and the mirror never holds
+  // 189 junk rows. Server rows are untouched here; the dedup SQL
+  // (13_*) removes them later. A genuinely different collection keeps
+  // its own row (different content key).
+  (function () {
+    var earliestByContent = {};
+    var deduped = [];
+    d.receipts.forEach(function (r) {
+      if (!r.receiptNo) { deduped.push(r); return; }
+      var k = sbReceiptContentKey(r);
+      var cur = earliestByContent[k];
+      if (!cur) { earliestByContent[k] = r; deduped.push(r); return; }
+      if (r.receiptNo < cur.receiptNo) {
+        var idx = deduped.indexOf(cur);
+        if (idx !== -1) deduped[idx] = r;
+        earliestByContent[k] = r;
+      }
+      // else: a later duplicate of the same collection — drop it.
+    });
+    d.receipts = deduped;
+  })();
   var serverRcByNo = {};
   d.receipts.forEach(function (r) { if (r.receiptNo) serverRcByNo[r.receiptNo] = r; });
   oldReceipts.forEach(function (rc) {
@@ -2169,6 +2208,19 @@ function sbFindReceiptByContent(serverReceipts, rc, stuMap, byId) {
   });
   return best;
 }
+function sbReceiptContentKey(rc) {
+  // v42: canonical identity of one collection, for collapsing
+  // duplicate server rows in the pull mirror: student + month +
+  // total + date + name + fee types (when lines exist). Two rows
+  // with the same key are the same collection minted twice — the
+  // earliest number wins. A genuinely different collection
+  // (different total, date or fee type) has a different key and
+  // keeps its own row.
+  var types = [];
+  (rc.lines || []).forEach(function (ln) { if (ln.type) types.push(ln.type); });
+  types.sort();
+  return [rc.studentId || '', rc.month || '', Number(rc.total || 0), rc.date || '', rc.name || '', types.join(',')].join('|');
+}
 function sbGetSchoolIdForSync(account, sbUid, token) {
   var cached = sbServerSchoolMap()[account.uid];
   if (cached) return Promise.resolve(cached);
@@ -2381,14 +2433,18 @@ function sbSyncRepairNumbers(account, sbUid, token) {
           collides = !sbReceiptSameServer(srv, mapped);
         }
         if (!collides && !rc.numPending && rc.receiptNo) {
-          // v41 adopt-before-mint: the number is not on the server
-          // (srv null) but this receipt's content may already exist
-          // under another number (a previous cycle re-numbered it and
-          // uploaded the copy). Link to the earliest such number
-          // instead of uploading yet another duplicate row.
-          if (srv) return;
+          // v42: the number may be on the server (srv) AND an EARLIER
+          // number with the same content may also exist (a previous
+          // cycle minted a duplicate for the same collection — live
+          // v41: local receipts were 193/194/195 while the originals
+          // 001/002/003 sat on the server, and the v41 adopt never
+          // fired because it only ran when the number was NOT on the
+          // server). Link to the earliest such number so the display
+          // shows the original, not the latest duplicate. When srv is
+          // null this is the v41 adopt; when srv exists it is the v42
+          // re-link. No minting happens on this path, ever.
           var adoptNo = sbFindReceiptByContent(taken.receipts, rc, maps.stu, byId);
-          if (adoptNo) {
+          if (adoptNo && adoptNo !== rc.receiptNo) {
             var oldNoA = rc.receiptNo;
             rc.receiptNo = adoptNo;
             changed = true;
