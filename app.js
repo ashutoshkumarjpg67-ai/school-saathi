@@ -177,7 +177,7 @@ function sbLoginNewSchool(meta, email, pw, uid, token, serverSchool) {
   // metadata (fresh signup, not yet migrated), then log in and migrate.
   var school = (serverSchool && serverSchool.name) || meta.school || '';
   var name = (serverSchool && serverSchool.principal) || meta.name || email;
-  var a = { uid: 'u' + Date.now().toString(36), name: name, school: school, email: email, pwHash: pw ? hashPw(pw) : '', role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: uid };
+  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: pw ? hashPw(pw) : '', role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: uid };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   state.sb = { uid: uid, email: email };
   $('loginErr').classList.add('hidden');
@@ -2919,7 +2919,7 @@ function doSignup(e) {
   if (pw.length < 6) return fail(t('tPwShort'));
   if (pw !== pw2) return fail(t('tPwMismatch'));
   if (findAccount(email)) return fail(t('tEmailTaken'));
-  var a = { uid: 'u' + Date.now().toString(36), name: name, school: school, email: email, pwHash: hashPw(pw), role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: null };
+  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: hashPw(pw), role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: null };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   err.classList.add('hidden');
   toast(t('tAccountCreated') + name);
@@ -3351,7 +3351,7 @@ function submitSupportRequest(e) {
   // (best-effort — a failed post never blocks the confirmation). There is
   // still no Super Admin list or dashboard card in the app; the owner
   // reads the requests on the server until the Play Store admin UI.
-  var req = { id: 'sr' + Date.now().toString(36), ts: new Date().toISOString(), name: name, message: msg, status: 'Open', by: state.user ? state.user.name : '' };
+  var req = { id: uniqueId('sr'), ts: new Date().toISOString(), name: name, message: msg, status: 'Open', by: state.user ? state.user.name : '' };
   var list = [];
   try { list = JSON.parse(localStorage.getItem('schoolSaathiSupportRequests') || '[]'); } catch (e2) { list = []; }
   if (!Array.isArray(list)) list = [];
@@ -4099,6 +4099,18 @@ function markAtt(id, m) {
 function saveAttendance() {
   var key = state.attDate + '|' + state.attCls;
   var recs = db.attendance[key] || {};
+  // v32: persist the Present default. The page shows every unmarked
+  // student as Present (recs[s.id] || 'Present'), but markAtt() only
+  // stores clicked marks — so todayAtt() (dashboard + footer) counted
+  // only stored records and showed 0 Present even for a full class.
+  // Saving now writes 'Present' for every unmarked roster student, so
+  // the dashboard agrees with the class page. Explicit Absent/Late
+  // marks are never overwritten. (todayAtt() itself is unchanged: a
+  // class never opened still counts 0 of 0.)
+  db.students.filter(function (s) { return s.cls === state.attCls; }).forEach(function (s) {
+    if (!recs[s.id]) recs[s.id] = 'Present';
+  });
+  db.attendance[key] = recs;
   // v25: attendance saves go to the audit log too, so the full Activity
   // Log shows them. Recent Activities keeps its own db.activities entry
   // (addActivity below) — one save = one entry in each list, never two
