@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 42;
+var APP_VERSION = 43;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -338,10 +338,39 @@ function sbSetStatus(st, detail) {
   // truthful status stands. (The parameter is named `st` so it does not
   // shadow the global `state` this guard reads.)
   if ((st === 'failed' || st === 'offline' || st === 'session-expired') && (typeof state === 'undefined' || !state || !state.user || state.user.role !== 'school')) return;
-  try { localStorage.setItem(SB_STATUS_KEY, JSON.stringify({ state: st, at: new Date().toISOString(), detail: detail || '' })); } catch (e) {}
+  // v43: the stored status is stamped with the build that wrote it, so
+  // a failure from an older build can be recognised as stale (see
+  // sbStatusText). The stamp is part of the stored record, never shown.
+  try { localStorage.setItem(SB_STATUS_KEY, JSON.stringify({ state: st, at: new Date().toISOString(), detail: detail || '', v: APP_VERSION })); } catch (e) {}
+  // v43: keep the two visible status lines in step with the stored
+  // state. Both lines are rendered once (Settings on navigation, login
+  // screen on showLogin) and no re-render follows a background cycle,
+  // so without this the Settings line kept showing the state it was
+  // rendered with — live v42: "Syncing…" for ~150s after the cycle had
+  // finished. Updating the two known nodes here is far cheaper than a
+  // full renderApp on every cycle, and it cannot swallow a tap the way
+  // a re-render can (see the pull render gate below).
+  try {
+    if (typeof document !== 'undefined' && document.getElementById) {
+      var txt43 = sbStatusText();
+      var sl43 = document.getElementById('sbStatusLine'); if (sl43) sl43.textContent = txt43;
+      var lg43 = document.getElementById('sbStatus'); if (lg43) lg43.textContent = txt43;
+    }
+  } catch (e2) {}
 }
 function sbLoadStatus() {
   try { var r = localStorage.getItem(SB_STATUS_KEY); return r ? JSON.parse(r) : null; } catch (e) { return null; }
+}
+function sbAtLabel(iso) {
+  // v43: "09/11/2026 22:15" in the DEVICE's local time, from the stored
+  // ISO timestamp. Built through the Date so the phone shows its own
+  // local time, not the stored UTC hour.
+  try {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    function p(n) { return (n < 10 ? '0' : '') + n; }
+    return p(d.getDate()) + '/' + p(d.getMonth() + 1) + '/' + d.getFullYear() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+  } catch (e) { return ''; }
 }
 function sbStatusText() {
   // v37: while a local-only school is logged in, the line is the
@@ -353,7 +382,7 @@ function sbStatusText() {
   if (st.state === 'local-only') return t('sbStatusLocalOnly'); // v37: persisted by sbSetStatus / logout for local-only accounts
   if (st.state === 'session-expired') return t('sbStatusSessionExpired'); // v34 (P1-3)
   if (st.state === 'not-linked') return t('sbStatusNotLinked'); // v34 (P0-1)
-  if (st.state === 'synced') return t('sbStatusSynced') + (st.at ? ' ' + st.at.slice(0, 10) : '');
+  if (st.state === 'synced') return t('sbStatusSynced') + (st.at ? ' ' + t('sbLastAttempt') + ': ' + sbAtLabel(st.at) : '');
   if (st.state === 'uploading') return t('sbStatusUploading');
   if (st.state === 'syncing') return t('sbStatusSyncing');
   // v42: a persisted 'pending'/'offline' state is only truthful while
@@ -370,6 +399,15 @@ function sbStatusText() {
   // diagnosed from the screen. The detail names the failing
   // operation (table + error, e.g. "ss_receipts: insert-ss_receipts"
   // or "ss_receipts 0/1") — short, capped, never a secret.
+  // v43: a failure persisted by an OLDER build is stale the moment the
+  // app updates — it describes a bug that may already be fixed, and the
+  // login screen showed v41's PGRST102 failure on a fresh v42 load
+  // before any v42 cycle had run (live v42). Until a cycle under THIS
+  // version writes a fresh state, show the pending wording instead.
+  // Records written before v43 carry no version at all and are stale by
+  // the same rule. A failure written by the CURRENT version still shows
+  // truthfully with its detail.
+  if (st.state === 'failed' && st.v !== APP_VERSION) return t('sbStatusPending');
   if (st.state === 'failed') return t('sbStatusFailed') + (st.detail ? ' (' + String(st.detail).slice(0, 80) + ')' : '');
   if (st.state === 'offline') return sbIsOnline() ? t('sbStatusPending') : t('sbStatusOffline');
   return t('sbStatusPending');
@@ -2087,16 +2125,26 @@ function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
         var guardHit = sbSyncGuardHit(d, byTable);
         if (guardHit) return { done: false, reason: 'needs-migration', detail: guardHit };
       }
+      var snapBefore43 = sbSnapLoad(account.uid);
       sbSyncApplying = true;
-      var applied;
+      var applied, snapAfter43;
       try {
         applied = sbApplyServerRows(d, schoolRow, byTable, account, sid);
-        sbSyncSnapshotRefresh(d, account, applied);
+        snapAfter43 = sbSyncSnapshotRefresh(d, account, applied);
       } finally {
         sbSyncApplying = false;
       }
       saveDB(d);
-      renderApp();
+      // v43: a pull that changed nothing must not re-render the page.
+      // Every 30s tick / focus event ran a pull, and every pull called
+      // renderApp() unconditionally — a tap landing on a node the
+      // re-render replaces between touchstart and click is swallowed
+      // (live v42: the Dec receipt link's first tap did nothing, the
+      // second opened it). The snapshot hashes are content-based, so
+      // an unchanged snapshot means the visible data is unchanged and
+      // the current DOM stays valid. A pull that DID change data still
+      // re-renders, exactly as before.
+      if (JSON.stringify(snapBefore43) !== JSON.stringify(snapAfter43)) renderApp();
       return { done: true, reason: 'ok', schoolId: sid, counts: sbLocalCounts(d) };
     });
   }).catch(function (err) {
@@ -2508,7 +2556,6 @@ function sbSyncCycleRun(account, sbUid, token) {
     sbSetStatus(left ? 'pending' : 'offline');
     return Promise.resolve({ done: false, reason: 'offline' });
   }
-  sbSetStatus('syncing');
   var tokP = token ? Promise.resolve(token) : sbGetValidToken();
   return tokP.then(function (tok) {
     if (!tok) { sbSetStatus(sbSessionExpired ? 'session-expired' : 'offline'); return { done: false, reason: 'no-token' }; } // v34 (P1-3)
@@ -2516,6 +2563,25 @@ function sbSyncCycleRun(account, sbUid, token) {
     // for offline-saved rows — so the upload pass below never hits a
     // unique-constraint failure on a number another device already owns.
     return sbSyncRepairNumbers(account, sbUid, tok).then(function () {
+      // v43: a cycle with nothing to upload runs QUIET — it must not
+      // write 'syncing'. Live v42: the 30s tick plus focus/visibility
+      // events started a new cycle (or queued a follow-up) every few
+      // seconds, each writing 'syncing' at its start, so the 'synced'
+      // the previous cycle had written was clobbered before any
+      // observation could see it — the Settings line never showed
+      // 'Backed up to the server.' in ~150s even though every cycle
+      // completed (and one manual Back Up Now proved the backup
+      // itself works). The decision comes AFTER the repair pass: a
+      // repair can mint numbers / re-link receipts, which IS upload
+      // work. The pull still runs in quiet mode — other devices'
+      // changes must arrive — but the status line stays 'synced'
+      // (re-confirmed at the end of the cycle) instead of flashing
+      // 'Syncing…'. No mapped server school yet also counts as work:
+      // the upload pass is about to create/link the school and push
+      // the first rows.
+      var hasWork43 = !((sbServerSchoolMap()[account.uid]) || null) || sbOutboxLoad(sbUid).length > 0;
+      if (!hasWork43) { try { hasWork43 = sbSyncQueueDiff() > 0; } catch (e43) {} }
+      if (hasWork43) sbSetStatus('syncing');
       return sbSyncUploadMissing(account, sbUid, tok);
     }).then(function (up) {
       if (!up.done) {
@@ -3968,7 +4034,7 @@ var I18N = {
     idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.',
     authStudent: 'Student', authTeacher: 'Teacher', stuAdmNo: 'Admission Number', stuPinLabel: 'Student PIN', stuLoginBtn: 'Login as Student', stuNote: 'Student login uses the PIN set by the school. Ask your school if you do not know it.', stuSub: 'Student', stuDashboard: 'My Profile', tInvalidStudent: 'Invalid admission number or PIN.', stuPinField: 'Student login PIN (optional)', stuPinPh: 'Leave blank — a random PIN is generated', stuPinTitle: 'Student PIN', stuPinNow: 'Current Student PIN', stuPinNone: 'No PIN set — student login unavailable for this student.', stuPinNew: 'New PIN (4–6 digits)', stuPinSetBtn: 'Set PIN', stuPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Student PIN set.', tPinShown: 'Student PIN: ', tPinCleared: 'Student PIN cleared.', tPinAuto: 'The PIN is set by the school at admission. If the student forgets it, set a new one here.', tNotAllowed: 'Your login cannot open this section.', tOwnProfileOnly: 'You can only view your own profile.', todayW: 'Today', tchrLoginBtn: 'Login as Teacher', tchrNote: 'Teacher accounts are created by the school admin.', tchrSub: 'Teacher', tchrDashboard: 'Teacher Dashboard', tchrNoDb: 'School data is not on this device — log in on the school device first.', teachers: 'Teachers', teachersSub: 'Teacher accounts and the classes they teach.', tchrAdd: 'Add Teacher', tchrEdit: 'Edit Teacher', tchrName: 'Teacher Name', tchrSubject: 'Subject', tchrClasses: 'Classes Taught', tchrEmail: 'Email', tchrPw: 'Password', tchrPwHint: 'At least 6 characters. Leave blank to keep the current password.', tchrNoLogin: 'No login', tchrSaved: 'Teacher saved.', tchrNoClasses: 'Choose at least one class.', tchrEmailTaken: 'This email is already used by another account.', tchrMyClasses: 'My Classes', tchrStudents: 'Students in my classes', tchrNoClassesYet: 'No classes assigned yet — ask the school admin to assign classes.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
     collectFeeBtn: 'Collect Fee', rcptTitle: 'FEE RECEIPT', rcptReceiptNo: 'Receipt No', rcptDate: 'Date', rcptAdmNo: 'Adm No', rcptSession: 'Session', rcptName: 'Name', rcptClass: 'Class', rcptInstallment: 'Installment', rcptCounter: 'Counter No', rcptSlNo: 'Sl.No', rcptDesc: 'Description', rcptDue: 'Due', rcptCon: 'Con', rcptPaid: 'Paid', rcptAdmissionFee: 'Admission Fee', rcptTuitionFee: 'Tuition Fee', rcptCaution: 'Caution Money', rcptAnnual: 'Annual Charges', rcptBusFee: 'Bus Fee', rcptDues: 'Dues', rcptPayModeTitle: 'PAY MODE INFORMATION', rcptPayMode: 'Pay Mode', rcptBank: 'Bank', rcptNumber: 'Number', rcptTotal: 'Total', rcptTotalWords: 'Total in Words', rcptComputerGen: 'This is a computer generated Receipt. Does not required signature.', rcptParentCopy: 'PARENT COPY', rcptCollectorSign: 'Collector\'s Signature', rcptIncludeBus: 'Include Bus/Transport', rcptOtherFees: 'Other Fees', rcptAnnualHint: 'One-time and annual amounts used on the Collect Fee receipt. Set 0 to hide a row.', payModeCash: 'Cash', payModeCheque: 'Cheque', payModeUpi: 'UPI', payModeCard: 'Card', payModeBank: 'Bank Transfer', tFeeCollected: 'Fee collected.', tCollectZero: 'Nothing to collect — enter a Paid amount.', tCollectSaved: 'Fee collected — Receipt ', tCollectNotActive: 'This student is not active — fee cannot be collected.', rcptReceipts: 'Receipts', rcptView: 'View', rcptPrint: 'Print / Save PDF', rcptCollectAgain: 'Collect Again', rcptNoReceipts: 'No receipts yet for this student.', rcptDraft: 'Draft — not saved yet', rcptCollectSave: 'Collect & Save', rcptNoLines: 'Nothing to collect for this period — set the fee amounts in Fee Structure first.',
-    sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.', sbStatusSyncing: 'Syncing with the server…', sbStatusPendingSync: 'Offline — changes will sync when you are back online.', sbSyncDone: 'Synced with the server.', sbSyncFailed: 'Sync did not finish — it will retry on your next login.', sbSyncOffline: 'Offline — your changes are saved here and will sync later.', sbSyncConflict: 'Server had a newer copy — kept the server version.', sbNumPending: 'Admission saved. The admission number will be assigned when you are back online.', sbNumPendingReceipt: 'Fee saved. The receipt number will be assigned when you are back online.', sbStatusSessionExpired: 'Session expired — please log in again.', sbStatusNotLinked: 'Not linked to the server yet — it will link when you log in.', sbLinkServer: 'Link to Server', sbLinkDone: 'Server account linked.', sbLinkFailed: 'Could not link the server account — check your connection and try again.', sbLinkPwTitle: 'Link the server account', sbNumAssigning: 'Assigning number…', tWrongPasswordServer: 'Wrong password for the server account.', tCollectCapped: 'The paid amount was more than the due — only the due amount was taken.', resetPwHintServer: 'This deletes the data on THIS device only. The server copy will come back on the next sync unless you also wipe the server.', resetConfirmMsgServer: 'Delete this device’s data only? The server copy will return on the next sync — choose “Delete on server too” to remove it everywhere.', resetDeviceOnly: 'This device only', resetWipeServerBtn: 'Delete on server too', resetWipeServerDone: 'Server data deleted.', resetWipeServerFailed: 'Could not delete the server data — nothing was reset. Check your connection and try again.', supportQueued: 'Support request saved — it will be sent when you are back online.', admReqQueued: 'Application saved — it will be sent when you are back online.', admReqLoadingSchools: 'Loading schools…', attNotMarked: 'Not marked',
+    sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbLastAttempt: 'Last attempt', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.', sbStatusSyncing: 'Syncing with the server…', sbStatusPendingSync: 'Offline — changes will sync when you are back online.', sbSyncDone: 'Synced with the server.', sbSyncFailed: 'Sync did not finish — it will retry on your next login.', sbSyncOffline: 'Offline — your changes are saved here and will sync later.', sbSyncConflict: 'Server had a newer copy — kept the server version.', sbNumPending: 'Admission saved. The admission number will be assigned when you are back online.', sbNumPendingReceipt: 'Fee saved. The receipt number will be assigned when you are back online.', sbStatusSessionExpired: 'Session expired — please log in again.', sbStatusNotLinked: 'Not linked to the server yet — it will link when you log in.', sbLinkServer: 'Link to Server', sbLinkDone: 'Server account linked.', sbLinkFailed: 'Could not link the server account — check your connection and try again.', sbLinkPwTitle: 'Link the server account', sbNumAssigning: 'Assigning number…', tWrongPasswordServer: 'Wrong password for the server account.', tCollectCapped: 'The paid amount was more than the due — only the due amount was taken.', resetPwHintServer: 'This deletes the data on THIS device only. The server copy will come back on the next sync unless you also wipe the server.', resetConfirmMsgServer: 'Delete this device’s data only? The server copy will return on the next sync — choose “Delete on server too” to remove it everywhere.', resetDeviceOnly: 'This device only', resetWipeServerBtn: 'Delete on server too', resetWipeServerDone: 'Server data deleted.', resetWipeServerFailed: 'Could not delete the server data — nothing was reset. Check your connection and try again.', supportQueued: 'Support request saved — it will be sent when you are back online.', admReqQueued: 'Application saved — it will be sent when you are back online.', admReqLoadingSchools: 'Loading schools…', attNotMarked: 'Not marked',
     createExam: 'Create Exam', examName: 'Exam Name', examTotal: 'Total Marks', tExamCreated: 'Exam created.', tExamInvalid: 'Please fill the exam name, class and total marks.', tNoTeachers: 'No teachers yet.',
     fullBackup: 'Full Backup & Restore', fullBackupSub: 'Download all school data as one file, or restore from a backup file. Restoring replaces the data on this device.', backupExport: 'Download Full Backup', backupImport: 'Restore from Backup File', tBackupExported: 'Full backup downloaded.', tBackupRestored: 'Backup restored.', tBackupBadFile: 'This file is not a valid School Saathi backup — nothing was changed.', backupRestoreConfirm: 'Restore will REPLACE all current data on this device with the backup file. A safety backup of your current data will be downloaded first.',
     sbStatusLocalOnly: 'Not linked to the server — your data stays on this device. Link to back up.',
@@ -4008,7 +4074,7 @@ var I18N = {
     sbNumPending: 'प्रवेश सहेजा गया। प्रवेश संख्या ऑनलाइन आने पर दी जाएगी।', sbNumPendingReceipt: 'शुल्क सहेजा गया। रसीद संख्या ऑनलाइन आने पर दी जाएगी।', sbStatusSessionExpired: 'सत्र समाप्त हो गया — कृपया दोबारा लॉग इन करें।', sbStatusNotLinked: 'अभी सर्वर से जुड़ा नहीं है — लॉग इन पर जुड़ जाएगा।', sbLinkServer: 'सर्वर से जोड़ें', sbLinkDone: 'सर्वर अकाउंट जुड़ गया।', sbLinkFailed: 'सर्वर अकाउंट जुड़ा नहीं जा सका — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkPwTitle: 'सर्वर अकाउंट जोड़ें', sbNumAssigning: 'नंबर मिल रहा है…', tWrongPasswordServer: 'सर्वर अकाउंट के लिए पासवर्ड गलत है।', tCollectCapped: 'दी गई राशि बकाया से ज़्यादा थी — सिर्फ बकाया राशि ली गई।', resetPwHintServer: 'इससे सिर्फ इस डिवाइस का डेटा मिटेगा। सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी, जब तक आप सर्वर भी न मिटाएँ।', resetConfirmMsgServer: 'सिर्फ इस डिवाइस का डेटा मिटाएँ? सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी — हर जगह से मिटाने के लिए “सर्वर से भी मिटाएँ” चुनें।', resetDeviceOnly: 'सिर्फ यह डिवाइस', resetWipeServerBtn: 'सर्वर से भी मिटाएँ', resetWipeServerDone: 'सर्वर का डेटा मिट गया।', resetWipeServerFailed: 'सर्वर का डेटा मिटा नहीं जा सका — कुछ भी रीसेट नहीं हुआ। कनेक्शन जाँचकर फिर कोशिश करें।', supportQueued: 'सहायता अनुरोध सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqQueued: 'आवेदन सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqLoadingSchools: 'स्कूल लोड हो रहे हैं…', attNotMarked: 'दर्ज नहीं',
     createExam: 'परीक्षा बनाएँ', examName: 'परीक्षा का नाम', examTotal: 'कुल अंक', tExamCreated: 'परीक्षा बन गई।', tExamInvalid: 'कृपया परीक्षा का नाम, कक्षा और कुल अंक भरें।', tNoTeachers: 'अभी कोई शिक्षक नहीं है।',
     fullBackup: 'पूरा बैकअप और रिस्टोर', fullBackupSub: 'स्कूल का सारा डेटा एक फ़ाइल में डाउनलोड करें, या बैकअप फ़ाइल से वापस लाएँ। रिस्टोर करने से इस डिवाइस का डेटा बदल जाएगा।', backupExport: 'पूरा बैकअप डाउनलोड करें', backupImport: 'बैकअप फ़ाइल से रिस्टोर करें', tBackupExported: 'पूरा बैकअप डाउनलोड हो गया।', tBackupRestored: 'बैकअप रिस्टोर हो गया।', tBackupBadFile: 'यह फ़ाइल सही School Saathi बैकअप नहीं है — कुछ भी नहीं बदला।', backupRestoreConfirm: 'रिस्टोर करने से इस डिवाइस का मौजूदा सारा डेटा बैकअप फ़ाइल से बदल जाएगा। पहले आपके मौजूदा डेटा का सुरक्षा बैकअप डाउनलोड होगा।',
-    sbStatusLocalOnly: 'सर्वर से जुड़ा नहीं है — डेटा इसी डिवाइस पर है। बैकअप के लिए लिंक करें।',
+    sbStatusLocalOnly: 'सर्वर से जुड़ा नहीं है — डेटा इसी डिवाइस पर है। बैकअप के लिए लिंक करें।', sbLastAttempt: 'अंतिम प्रयास',
     waReminderBtn: 'WhatsApp रिमाइंडर', waNotifyBtn: 'अभिभावक को बताएं', waShareReceiptBtn: 'WhatsApp पर भेजें', waChatBtn: 'WhatsApp', waNotifyCol: 'सूचित करें',
     waNoNumber: 'इस छात्र का सही अभिभावक मोबाइल नंबर नहीं है — WhatsApp उपलब्ध नहीं है।',
     waOpened: 'WhatsApp खुल गया — संदेश भेजने के लिए WhatsApp में Send दबाएँ।',
@@ -7187,7 +7253,7 @@ function settingsPage() {
   '<p class="muted">' + t('logoHint') + '</p></div>' +
   '</div><div class="actions" style="justify-content:flex-start"><button class="btn" type="submit">' + t('saveSettingsBtn') + '</button>' +
   '<button type="button" class="btn danger" onclick="resetAllData()">' + t('resetAllData') + '</button></div></form></div>' +
-  '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub">' + sbStatusText() + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration()">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload()">' + t('sbDownloadNow') + '</button>' + (state.user && state.user.role === 'school' && !state.user.sbUid ? '<button type="button" class="btn ghost" onclick="openLinkServerModal()">' + t('sbLinkServer') + '</button>' : '') + (sbSessionExpired ? '<button type="button" class="btn ghost" onclick="logout()">' + t('authLogin') + '</button>' : '') + '</div></div>' +
+  '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub" id="sbStatusLine">' + sbStatusText() + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration()">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload()">' + t('sbDownloadNow') + '</button>' + (state.user && state.user.role === 'school' && !state.user.sbUid ? '<button type="button" class="btn ghost" onclick="openLinkServerModal()">' + t('sbLinkServer') + '</button>' : '') + (sbSessionExpired ? '<button type="button" class="btn ghost" onclick="logout()">' + t('authLogin') + '</button>' : '') + '</div></div>' +
   '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('fullBackup') + '</h3><p class="card-sub">' + t('fullBackupSub') + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="exportFullBackup()">' + t('backupExport') + '</button><label class="btn ghost" style="cursor:pointer">' + t('backupImport') + '<input type="file" accept="application/json,.json" style="display:none" onchange="onBackupFileChosen(this)"></label></div></div>' +
   '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('raiseSupport') + '</h3><p class="card-sub">' + t('contactSub') + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="openSupportForm()">' + t('raiseSupport') + '</button></div></div>';
 }
