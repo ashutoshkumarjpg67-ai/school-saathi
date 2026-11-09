@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 46;
+var APP_VERSION = 47;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -378,7 +378,16 @@ function sbStatusText() {
   // "Backed up" written before v37 must not survive the upgrade.
   if (sbIsLocalOnlySchool()) return t('sbStatusLocalOnly');
   var st = sbLoadStatus();
-  if (!st) return t('sbStatusPending');
+  if (!st) {
+    // v47: no status was ever recorded on this device — claiming
+    // "Backup pending" on a first visit is wrong. Show pending only
+    // if the logged-in school actually has queued offline changes.
+    try {
+      var uid47 = (typeof state !== 'undefined' && state.user && state.user.sbUid) ? state.user.sbUid : null;
+      if (uid47 && sbOutboxLoad(uid47).length) return t('sbStatusPending');
+    } catch (e) {}
+    return '';
+  }
   if (st.state === 'local-only') return t('sbStatusLocalOnly'); // v37: persisted by sbSetStatus / logout for local-only accounts
   if (st.state === 'session-expired') return t('sbStatusSessionExpired'); // v34 (P1-3)
   if (st.state === 'not-linked') return t('sbStatusNotLinked'); // v34 (P0-1)
@@ -4365,7 +4374,7 @@ var I18N = {
   en: {
     dashboard: 'Dashboard', settings: 'Settings', reports: 'Reports', students: 'Student Management', attendance: 'Attendance', fees: 'Fees', exams: 'Examinations', homework: 'Homework', notices: 'Notices', totalStudents: 'Total Students', totalTeachers: 'Total Teachers', feeCollected: 'Fee Collected', pendingFee: 'Pending Fee', logout: 'Logout',
     landFooter: '<b>School Saathi</b> — Smart Education. Better Tomorrow.<br>Built for Bihar • Free for Schools • Made with ❤️ in Gopalganj, Bihar',
-    loginWelcome: 'Log in or sign up<br>to continue', loginEmail: 'Email', loginPassword: 'Password', loginEmailPh: 'you@school.edu.in', loginPwPh: '••••••••', loginBtn: 'Login', authLogin: 'Log In', authSignup: 'Sign Up', authNote: 'One account per school. When you log in with your server account, your data syncs across devices automatically — and works offline too.', suSchool: 'School Name', suYourName: 'Your Name', suEmail: 'Email', suPw: 'Password', suPw2: 'Confirm Password', suBtn: 'Create Account', loginOr: 'Or continue with', demoTitle: '— One-tap demo login —', loginBack: '← Back to website',
+    loginWelcome: 'Log in or sign up<br>to continue', loginWelcomeBack: 'Welcome back', loginNewSchool: 'New school?', loginCreateAccount: 'Create a school account →', featTitle: 'WHAT YOU GET', featAttendance: 'Attendance', featFees: 'Fees & Receipts', featExams: 'Exams & Marks', featHomework: 'Homework', featWhatsApp: 'WhatsApp Alerts', loginEmail: 'Email', loginPassword: 'Password', loginEmailPh: 'you@school.edu.in', loginPwPh: '••••••••', loginBtn: 'Log In', authLogin: 'Log In', authSignup: 'Sign Up', authNote: 'One account per school.', suSchool: 'School Name', suYourName: 'Your Name', suEmail: 'Email', suPw: 'Password', suPw2: 'Confirm Password', suBtn: 'Create Account', loginOr: 'Or continue with', demoTitle: '— One-tap demo login —', loginBack: '← Back to website',
     schoolDashboard: 'School Admin Dashboard', studentDashboard: 'Student Dashboard',
     confirmTitle: 'Confirm', cancel: 'Cancel', confirmYes: 'Yes, continue', saveBtn: 'Save',
     addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmTitle: 'Reset — choose what to delete', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', resetNameTitle: 'Type the school name to confirm', resetNameHint: 'This is the last step before everything is deleted. Type the exact school name.', resetNameLabel: 'School name', resetNameWrong: 'That name does not match — nothing was reset.', resetNameGo: 'Confirm Reset', publishBtn: 'Publish', assignHw: 'Assign Homework', saveStudentBtn: 'Save Student',
@@ -4402,7 +4411,7 @@ var I18N = {
   hi: {
     dashboard: 'डैशबोर्ड', settings: 'सेटिंग्स', reports: 'रिपोर्ट', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
     landFooter: '<b>School Saathi</b> — Smart Education. Better Tomorrow.<br>बिहार के लिए बना • स्कूलों के लिए मुफ़्त • गोपालगंज, बिहार में बना ❤️',
-    loginWelcome: 'लॉग इन करें या साइन अप करें<br>जारी रखने के लिए', loginEmail: 'ईमेल', loginPassword: 'पासवर्ड', loginEmailPh: 'आप@school.edu.in', loginPwPh: '••••••••', loginBtn: 'लॉगिन', authLogin: 'लॉग इन', authSignup: 'साइन अप', authNote: 'एक स्कूल, एक अकाउंट। सर्वर अकाउंट से लॉग इन करने पर आपका डेटा अपने आप सभी डिवाइस पर सिंक होता है — और ऑफ़लाइन भी काम करता है।', suSchool: 'स्कूल का नाम', suYourName: 'आपका नाम', suEmail: 'ईमेल', suPw: 'पासवर्ड', suPw2: 'पासवर्ड दोबारा डालें', suBtn: 'अकाउंट बनाएँ', loginOr: 'या जारी रखें', demoTitle: '— एक टैप में डेमो लॉगिन —', loginBack: '← वेबसाइट पर वापस',
+    loginWelcome: 'लॉग इन करें या साइन अप करें<br>जारी रखने के लिए', loginWelcomeBack: 'फिर से स्वागत है', loginNewSchool: 'नया स्कूल?', loginCreateAccount: 'स्कूल अकाउंट बनाएँ →', featTitle: 'आपको क्या मिलेगा', featAttendance: 'उपस्थिति', featFees: 'फीस व रसीद', featExams: 'परीक्षा व अंक', featHomework: 'गृहकार्य', featWhatsApp: 'WhatsApp अलर्ट', loginEmail: 'ईमेल', loginPassword: 'पासवर्ड', loginEmailPh: 'आप@school.edu.in', loginPwPh: '••••••••', loginBtn: 'लॉग इन करें', authLogin: 'लॉग इन', authSignup: 'साइन अप', authNote: 'एक स्कूल, एक अकाउंट।', suSchool: 'स्कूल का नाम', suYourName: 'आपका नाम', suEmail: 'ईमेल', suPw: 'पासवर्ड', suPw2: 'पासवर्ड दोबारा डालें', suBtn: 'अकाउंट बनाएँ', loginOr: 'या जारी रखें', demoTitle: '— एक टैप में डेमो लॉगिन —', loginBack: '← वेबसाइट पर वापस',
     schoolDashboard: 'स्कूल एडमिन डैशबोर्ड', studentDashboard: 'छात्र डैशबोर्ड',
     confirmTitle: 'पुष्टि करें', cancel: 'रद्द करें', confirmYes: 'हाँ, जारी रखें', saveBtn: 'सहेजें',
     addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmTitle: 'रीसेट — क्या मिटाना है चुनें', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', resetNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', resetNameHint: 'सब कुछ मिटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', resetNameLabel: 'स्कूल का नाम', resetNameWrong: 'यह नाम मेल नहीं खाता — कुछ भी रीसेट नहीं हुआ।', resetNameGo: 'रीसेट की पुष्टि करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveStudentBtn: 'छात्र सहेजें',
@@ -4541,17 +4550,29 @@ function switchAuth(tab) {
   var tabs = { login: ['tabLogin', 'loginForm', 'loginErr', 'loginId'], signup: ['tabSignup', 'signupForm', 'signupErr', 'suSchool'], student: ['tabStudent', 'studentForm', 'studentErr', 'studentAdmNo'], teacher: ['tabTeacher', 'teacherForm', 'teacherErr', 'teacherEmail'] };
   Object.keys(tabs).forEach(function (k) {
     var ids = tabs[k];
-    $(ids[0]).classList.toggle('on', tab === k);
+    var tb = $(ids[0]);
+    if (tb) tb.classList.toggle('on', tab === k);
     $(ids[1]).classList.toggle('hidden', tab !== k);
     $(ids[2]).classList.add('hidden');
   });
   $('recoverForm').classList.add('hidden');
   $('resetForm').classList.add('hidden');
+  // v47: "Forgot password?" only on the Log In tab (signup/student/teacher have their own flows).
+  var fr47 = $('forgotRow');
+  if (fr47) fr47.classList.toggle('hidden', tab !== 'login');
   // v35: the student form picks the school first — every school's first
   // student is ADM-2025-001, so a bare admission number matches the
   // wrong school (the same trap the v34 parent picker fixed).
   if (tab === 'student') fillSchoolPicker('studentSchool');
   setTimeout(function () { $(tabs[tab][3]).focus(); }, 50);
+}
+function togglePw(id, btn) {
+  var el = $(id);
+  if (!el) return;
+  var show = el.type === 'password';
+  el.type = show ? 'text' : 'password';
+  if (btn) { btn.textContent = show ? '🙈' : '👁'; btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password'); }
+  el.focus();
 }
 function fillSchoolPicker(selId) {
   var sel = $(selId);

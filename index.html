@@ -13,32 +13,43 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=46">
-<script src="qrgen.js?v=46" defer></script>
-<script src="app.js?v=46" defer></script>
+<link rel="stylesheet" href="styles.css?v=47">
+<script src="qrgen.js?v=47" defer></script>
+<script src="app.js?v=47" defer></script>
 </head>
 <body>
 
 <!-- ============ LOGIN ============ -->
 <div id="login" class="hidden">
   <div class="login-wrap">
+    <div class="login-hero">
+      <div class="logo-tile"><img src="icons/logo.svg" alt="School Saathi logo" width="46" height="46"></div>
+      <h1>School <span>Saathi</span></h1>
+      <p class="tagline">Smart Education. Better Tomorrow.</p>
+    </div>
     <div class="login-card">
-      <div class="logo"><span class="cap">🎓</span></div>
-      <h1>School Saathi</h1>
-      <p class="sub2" data-i18n-html="loginWelcome">Log in or sign up<br>to continue</p>
+      <div class="welcome"><b data-i18n="loginWelcomeBack">Welcome back</b><span data-i18n-html="loginWelcome">Log in or sign up<br>to continue</span></div>
       <div class="auth-tabs">
         <button type="button" id="tabLogin" class="auth-tab on" onclick="switchAuth('login')" data-i18n="authLogin">Log In</button>
-        <button type="button" id="tabSignup" class="auth-tab" onclick="switchAuth('signup')" data-i18n="authSignup">Sign Up</button>
         <button type="button" id="tabStudent" class="auth-tab" onclick="switchAuth('student')" data-i18n="authStudent">Student</button>
         <button type="button" id="tabTeacher" class="auth-tab" onclick="switchAuth('teacher')" data-i18n="authTeacher">Teacher</button>
       </div>
       <div id="loginErr" class="err hidden"></div>
       <form id="loginForm" onsubmit="return doLogin(event)">
         <div class="field"><label data-i18n="loginEmail">Email</label><input id="loginId" type="email" placeholder="you@school.edu.in" data-i18n-ph="loginEmailPh" autocomplete="username"></div>
-        <div class="field"><label data-i18n="loginPassword">Password</label><input id="loginPw" type="password" placeholder="••••••••" data-i18n-ph="loginPwPh" autocomplete="current-password"></div>
-        <button class="btn" type="submit" style="width:100%" data-i18n="loginBtn">Login</button>
+        <div class="field"><label data-i18n="loginPassword">Password</label><div class="pw-wrap"><input id="loginPw" type="password" placeholder="••••••••" data-i18n-ph="loginPwPh" autocomplete="current-password"><button type="button" class="eye-btn" onclick="togglePw('loginPw',this)" aria-label="Show password">👁</button></div></div>
+        <button class="btn" type="submit" style="width:100%" data-i18n="loginBtn">Log In</button>
       </form>
-      <p style="text-align:center;margin-top:10px;font-size:13px"><a href="#" onclick="showRecoverForm();return false" data-i18n="sbForgotPw">Forgot password?</a></p>
+      <p id="forgotRow" style="text-align:center;margin-top:10px;font-size:13px"><a href="#" onclick="showRecoverForm();return false" data-i18n="sbForgotPw">Forgot password?</a></p>
+      <p class="signup-cta"><span data-i18n="loginNewSchool">New school?</span> <a href="#" onclick="switchAuth('signup');return false" data-i18n="loginCreateAccount">Create a school account →</a></p>
+      <div class="feat-divider"><span data-i18n="featTitle">WHAT YOU GET</span></div>
+      <div class="chips">
+        <span class="chip">✓ <span data-i18n="featAttendance">Attendance</span></span>
+        <span class="chip">💰 <span data-i18n="featFees">Fees &amp; Receipts</span></span>
+        <span class="chip">📝 <span data-i18n="featExams">Exams &amp; Marks</span></span>
+        <span class="chip">📚 <span data-i18n="featHomework">Homework</span></span>
+        <span class="chip">💬 <span data-i18n="featWhatsApp">WhatsApp Alerts</span></span>
+      </div>
       <div id="recoverErr" class="err hidden"></div>
       <form id="recoverForm" class="hidden" onsubmit="return doRecover(event)">
         <div class="field"><label data-i18n="loginEmail">Email</label><input id="recoverEmail" type="email" placeholder="you@school.edu.in" autocomplete="email"></div>
@@ -92,7 +103,7 @@
         <div id="sideSchoolInfo"></div>
         <label style="color:#94A3B8;margin-top:10px">Academic Session</label>
         <select id="sessionSel" onchange="changeSession(this.value)"></select>
-        <div style="margin-top:12px">v46<br>© 2026 School Saathi</div>
+        <div style="margin-top:12px">v47<br>© 2026 School Saathi</div>
       </div>
     </aside>
     <div class="main">
