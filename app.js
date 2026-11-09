@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 45;
+var APP_VERSION = 46;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -1202,8 +1202,21 @@ function sbSyncUploadMissing(account, sbUid, token) {
   }).then(function () {
     return step('ss_fee_records', function () {
       var feeRows = (d.feeRecords || []).filter(function (r) { return !sbIsSeedRow('ss_fee_records', r, d); }).map(function (r) { return sbMapFeeRecord(r, schoolId, stuMap); }).filter(function (p) { return !!p.student_id; });
+      // v46: a fee record the server lacks uploads even when a stale
+      // snapshot entry says it already synced — the live test account
+      // proved the trap (10 Nov 2026: "Backup failed … (ss_fee_records
+      // 0/3)" every cycle, although the upload pass reported done:true).
+      // This is the v39 receipts bypass, extended to fee records:
+      // sbUploadMissing dedupes against the server's actual rows by
+      // local_id, so an already-uploaded record is never re-POSTed.
+      // Skipped only when the school row itself was recreated (a full
+      // server wipe): then the snapshot still means "deleted elsewhere"
+      // and the pull drops the row instead of resurrecting it.
+      var feeUpload = schoolRecreated
+        ? freshRows('ss_fee_records', feeRows, function (row) { return row.local_id; })
+        : feeRows;
       return sbUploadMissing(token, schoolId, 'ss_fee_records', 'local_id',
-        freshRows('ss_fee_records', feeRows, function (row) { return row.local_id; }),
+        feeUpload,
         function (row) { return row.local_id; });
     });
   }).then(function () {
@@ -1462,6 +1475,30 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   (d.students || []).forEach(function (s) { if (sbIsSeedStudentId(s.id, d)) seedStudentIds[s.id] = true; });
   var seedExamIds = {};
   (d.exams || []).forEach(function (e) { if (sbIsSeedExamId(e.id, d)) seedExamIds[e.id] = true; });
+  // v46: pending outbox upserts, keyed by the SUPABASE uid — the
+  // outbox is stored per Supabase uid (see SB_OUTBOX_KEY), not per
+  // local account uid, so the merge must load it with the session
+  // uid (the account's sbUid, falling back to the live session).
+  // A row with a pending upsert is proof its upload is still
+  // unconfirmed, so the merge must not drop it on snapshot grounds
+  // alone (the v39 receipts trap: a stale snapshot entry marked a row
+  // synced although it never landed, and the next pull wiped the
+  // local row). A row deleted elsewhere has no pending upsert, so it
+  // still drops. Shared by mergeById (fee records) and the receipts
+  // keep-loop below — the v39 receipts load read the local account
+  // uid and so always saw an empty outbox; the keep never fired.
+  var outboxUpsert46 = { feeRecords: {}, receipts: {} };
+  try {
+    var uid46 = (account && account.sbUid) || (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
+    if (uid46) {
+      (sbOutboxLoad(uid46) || []).forEach(function (e) {
+        if (e && e.op === 'upsert' && e.key) {
+          if (e.table === 'ss_fee_records') outboxUpsert46.feeRecords[e.key] = true;
+          if (e.table === 'ss_receipts') outboxUpsert46.receipts[e.key] = true;
+        }
+      });
+    }
+  } catch (e46) {}
   function mergeIsSeedRow(table, row) {
     if (table === 'ss_fee_records' || table === 'ss_receipts') return !!seedStudentIds[row.studentId];
     if (table === 'ss_marks') return !!(seedExamIds[row.examId] || seedStudentIds[row.studentId]);
@@ -1473,7 +1510,15 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     serverList.forEach(function (r) { onServer[r.id] = true; });
     var merged = serverList.slice();
     (localArr || []).forEach(function (r) {
-      if (!r.id || onServer[r.id] || snapHas(table, r.id)) return;
+      if (!r.id || onServer[r.id]) return;
+      if (snapHas(table, r.id)) {
+        // v46: a fee record whose upload is still unconfirmed (a
+        // pending outbox upsert) is KEPT, never dropped on snapshot
+        // grounds — the snapshot entry is stale, not proof of a delete
+        // elsewhere.
+        if (table === 'ss_fee_records' && outboxUpsert46.feeRecords[r.id]) { merged.push(r); keep(table, r.id); }
+        return;
+      }
       // v45: a local demo-seed row the server no longer has is dropped,
       // never kept — it was never the account's data, so dropping it
       // cannot lose anything the account created (the 9 Nov never-lose
@@ -1552,10 +1597,11 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // upload is still unconfirmed: keep the row (and out of the
   // snapshot) so the next cycle re-attempts it. A receipt with no
   // pending upload still drops — it was deleted elsewhere.
-  var outboxRc = {};
-  try {
-    if (account && account.uid) sbOutboxLoad(account.uid).forEach(function (e) { if (e.table === 'ss_receipts' && e.op === 'upsert') outboxRc[e.key] = true; });
-  } catch (e2) {}
+  // v46: the receipts keep uses the shared outbox set built above
+  // (keyed by the Supabase uid) — the v39 load read the local
+  // account uid and always saw an empty outbox, so the keep never
+  // fired. Same trap as the fee records above.
+  var outboxRc = outboxUpsert46.receipts;
   var oldReceipts = d.receipts || [];
   d.receipts = (byTable.ss_receipts || []).map(function (row) {
     return { receiptNo: row.receipt_no || '', studentId: stuMap[row.student_id] || '', admissionNo: row.admission_no || '', name: row.student_name || '', cls: row.cls || '', session: row.session || '', date: row.receipt_date || '', month: row.month || '', counterNo: row.counter_no || 0, lines: row.lines || [], payMode: row.pay_mode || 'Cash', payDate: row.pay_date || '', bank: row.bank || '', number: row.number || '', total: row.total || 0, totalWords: row.total_words || '', collector: row.collector || '' };
