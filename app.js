@@ -559,7 +559,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
       function (row) { return row.cls + '|' + row.fee_type; });
   }).then(function () {
     return sbUploadMissing(token, schoolId, 'ss_students', 'local_id,id',
-      freshRows('ss_students', (d.students || []).map(function (s) { return sbMapStudent(s, schoolId); }),
+      freshRows('ss_students', (d.students || []).filter(function (s) { return !s.numPending; }).map(function (s) { return sbMapStudent(s, schoolId); }),
         function (row) { return row.local_id; }),
       function (row) { return row.local_id; },
       function (rows) { rows.forEach(function (r) { if (r.local_id) stuMap[r.local_id] = r.id; }); });
@@ -588,7 +588,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
     return sbUploadMissing(token, schoolId, 'ss_attendance', 'att_date,cls,student_id', attRows,
       function (row) { return row.att_date + '|' + row.cls + '|' + row.student_id; });
   }).then(function () {
-    var rcRows = (d.receipts || []).map(function (rc) { return sbMapReceipt(rc, schoolId, stuMap, byId); }).filter(function (p) { return !!p.student_id; });
+    var rcRows = (d.receipts || []).filter(function (rc) { return !rc.numPending; }).map(function (rc) { return sbMapReceipt(rc, schoolId, stuMap, byId); }).filter(function (p) { return !!p.student_id; });
     return sbUploadMissing(token, schoolId, 'ss_receipts', 'receipt_no',
       freshRows('ss_receipts', rcRows, function (row) { return row.receipt_no; }),
       function (row) { return row.receipt_no; });
@@ -763,13 +763,43 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   if ((byTable.ss_fee_structure || []).length) {
     d.feeStructure = byTable.ss_fee_structure.map(function (row) { return { cls: row.cls || '', type: row.fee_type || 'Tuition', amount: row.amount || 0 }; });
   }
+  // v33: MERGE, never replace wholesale. A local row that has NOT
+  // reached the server yet — not on the server AND not in the last
+  // synced snapshot — is KEPT, and the caller keeps it out of the
+  // snapshot so the next cycle still uploads it. A failed upload must
+  // never delete local data (9 Nov 2026, VM School: a colliding laptop
+  // student was wiped by a server-wins pull and existed nowhere).
+  // A row that IS in the snapshot but absent on the server was deleted
+  // elsewhere and still drops. Receipts carry no local_id on the
+  // server, so a receipt is "the same" only when its number AND its
+  // content (student, total, date, month) match; same number with
+  // different content is a collision and is kept for the repair pass.
+  var snap = (account && account.uid) ? sbSnapLoad(account.uid) : {};
+  function snapHas(table, key) { return !!(snap[table] && snap[table][key] !== undefined); }
+  var kept = {};
+  function keep(table, key) { if (!kept[table]) kept[table] = {}; kept[table][key] = true; }
+  function mergeById(table, localArr, serverRows, mapFn) {
+    var serverList = (serverRows || []).map(mapFn);
+    var onServer = {};
+    serverList.forEach(function (r) { onServer[r.id] = true; });
+    var merged = serverList.slice();
+    (localArr || []).forEach(function (r) {
+      if (!r.id || onServer[r.id] || snapHas(table, r.id)) return;
+      merged.push(r);
+      keep(table, r.id);
+    });
+    return merged;
+  }
   // Students first: everything else maps through their server ids.
   var stuMap = {}, examMap = {};
-  d.students = (byTable.ss_students || []).map(function (row) { var s = sbRowToStudent(row); stuMap[row.id] = s.id; return s; });
-  d.teachers = (byTable.ss_teachers || []).map(function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '' }; });
-  d.exams = (byTable.ss_exams || []).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; examMap[row.id] = e.id; return e; });
-  d.feeRecords = (byTable.ss_fee_records || []).map(function (row) { return sbRowToFeeRecord(row, stuMap); });
-  // Attendance: server rows fold back into the 'date|cls' map.
+  var oldStudents = d.students || [];
+  d.students = mergeById('ss_students', oldStudents, byTable.ss_students || [], function (row) { var s = sbRowToStudent(row); stuMap[row.id] = s.id; return s; });
+  d.teachers = mergeById('ss_teachers', d.teachers || [], byTable.ss_teachers || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '' }; });
+  d.exams = mergeById('ss_exams', d.exams || [], byTable.ss_exams || [], function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; examMap[row.id] = e.id; return e; });
+  d.feeRecords = mergeById('ss_fee_records', d.feeRecords || [], byTable.ss_fee_records || [], function (row) { return sbRowToFeeRecord(row, stuMap); });
+  // Attendance: server rows fold back into the 'date|cls' map, then
+  // local attendance for kept (not-yet-uploaded) students is kept.
+  var oldAtt = d.attendance || {};
   d.attendance = {};
   (byTable.ss_attendance || []).forEach(function (row) {
     var localId = stuMap[row.student_id];
@@ -778,22 +808,65 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     if (!d.attendance[key]) d.attendance[key] = {};
     d.attendance[key][localId] = row.status || 'Present';
   });
+  var keptStu = {};
+  Object.keys(kept.ss_students || {}).forEach(function (id) { keptStu[id] = true; });
+  Object.keys(oldAtt).forEach(function (key) {
+    var recs = oldAtt[key] || {};
+    Object.keys(recs).forEach(function (sid) {
+      if (!keptStu[sid]) return;
+      var parts = key.split('|');
+      var snapKey = parts[0] + '|' + parts[1] + '|' + sid;
+      if (snapHas('ss_attendance', snapKey)) return;
+      if (!d.attendance[key]) d.attendance[key] = {};
+      d.attendance[key][sid] = recs[sid];
+      keep('ss_attendance', snapKey);
+    });
+  });
+  // Receipts: same number + same content = the same receipt (server
+  // wins); same number + different content = a collision, kept for the
+  // repair pass; no number yet (offline) = always kept.
+  var oldReceipts = d.receipts || [];
   d.receipts = (byTable.ss_receipts || []).map(function (row) {
     return { receiptNo: row.receipt_no || '', studentId: stuMap[row.student_id] || '', admissionNo: row.admission_no || '', name: row.student_name || '', cls: row.cls || '', session: row.session || '', date: row.receipt_date || '', month: row.month || '', counterNo: row.counter_no || 0, lines: row.lines || [], payMode: row.pay_mode || 'Cash', payDate: row.pay_date || '', bank: row.bank || '', number: row.number || '', total: row.total || 0, totalWords: row.total_words || '', collector: row.collector || '' };
   });
+  var serverRcByNo = {};
+  d.receipts.forEach(function (r) { if (r.receiptNo) serverRcByNo[r.receiptNo] = r; });
+  oldReceipts.forEach(function (rc) {
+    if (!rc.receiptNo) { d.receipts.push(rc); return; }
+    var srv = serverRcByNo[rc.receiptNo];
+    if (!srv) {
+      if (snapHas('ss_receipts', rc.receiptNo)) return;
+      d.receipts.push(rc);
+      keep('ss_receipts', rc.receiptNo);
+      return;
+    }
+    if (sbReceiptSame(srv, rc)) return;
+    d.receipts.push(rc);
+    keep('ss_receipts', rc.receiptNo);
+  });
+  var oldMarks = d.marks || [];
   d.marks = [];
+  var serverMarkKeys = {};
   (byTable.ss_marks || []).forEach(function (row) {
     if (!examMap[row.exam_id] || !stuMap[row.student_id]) return;
-    d.marks.push({ examId: examMap[row.exam_id], studentId: stuMap[row.student_id], marks: row.marks });
+    var m = { examId: examMap[row.exam_id], studentId: stuMap[row.student_id], marks: row.marks };
+    d.marks.push(m);
+    serverMarkKeys[m.examId + '|' + m.studentId] = true;
   });
-  d.homework = (byTable.ss_homework || []).map(function (row) {
+  oldMarks.forEach(function (m) {
+    var key = m.examId + '|' + m.studentId;
+    if (serverMarkKeys[key] || snapHas('ss_marks', key)) return;
+    d.marks.push(m);
+    keep('ss_marks', key);
+  });
+  d.homework = mergeById('ss_homework', d.homework || [], byTable.ss_homework || [], function (row) {
     return { id: row.local_id || ('srv-' + row.id), cls: row.cls || '', subject: row.subject || '', title: row.title || '', due: row.due || '', doneBy: (row.done_by || []).map(function (id) { return stuMap[id]; }).filter(function (x) { return !!x; }) };
   });
-  d.notices = (byTable.ss_notices || []).map(function (row) { return { id: row.local_id || ('srv-' + row.id), title: row.title || '', date: row.notice_date || '', body: row.body || '' }; });
+  d.notices = mergeById('ss_notices', d.notices || [], byTable.ss_notices || [], function (row) { return { id: row.local_id || ('srv-' + row.id), title: row.title || '', date: row.notice_date || '', body: row.body || '' }; });
   if (byTable.ss_admission_requests) {
-    d.admissionRequests = byTable.ss_admission_requests.map(function (row) { return sbRowToAdmissionRequest(row, stuMap); });
+    d.admissionRequests = mergeById('ss_admission_requests', d.admissionRequests || [], byTable.ss_admission_requests, function (row) { return sbRowToAdmissionRequest(row, stuMap); });
   }
-  return { stuMap: stuMap, examMap: examMap };
+  return { stuMap: stuMap, examMap: examMap, kept: kept };
 }
 function sbDownloadSchoolData(account, sbUid, token, serverSchoolId) {
   if (!account || account.role !== 'school') return Promise.resolve({ done: false, reason: 'not-school' });
@@ -877,7 +950,17 @@ function sbRetryDownload() {
    in parallel, so a laptop-first login left the phone's student stranded
    until the user pressed Back Up Now. That manual step is gone: the
    buttons in Settings stay as manual overrides only. At most one cycle
-   runs at a time; a second trigger queues one follow-up, never two. */
+   runs at a time; a second trigger queues one follow-up, never two.
+   v33: atomic server-side numbering + never-lose pull. Admission and
+   receipt numbers for server accounts come from the ss_next_adm_no /
+   ss_next_receipt_no RPCs (mint-until-free against the server's taken
+   set — the live counter can sit behind the highest used number, so
+   the RPC alone re-mints a taken number); the repair pass re-numbers
+   colliding rows and mints numbers for offline-saved rows BEFORE the
+   upload in every cycle; the pull MERGES instead of replacing, so a
+   local row that has not reached the server is never wiped; the outbox
+   keeps failed entries with their failure reason. Local-only accounts
+   keep minting locally and make zero server calls. */
 var SB_OUTBOX_KEY = 'schoolSaathiOutbox'; // per Supabase uid: [{table,key,op,row,at}]
 var SB_SRVID_KEY = 'schoolSaathiSrvIds'; // per Supabase uid: {table: {localKey: serverUuid}}
 var SB_SNAP_KEY = 'schoolSaathiSyncSnap'; // per local account uid: {table: {key: hash}}
@@ -903,6 +986,9 @@ function sbOutboxAdd(uid, entry) {
   for (var i = 0; i < list.length; i++) {
     if (list[i].table === entry.table && list[i].key === entry.key) {
       if (list[i].at && (!entry.at || list[i].at < entry.at)) entry.at = list[i].at;
+      // v33: a failure reason survives a re-queue — the entry keeps
+      // retrying, and the reason says why the last attempt failed.
+      if (list[i].failReason && !entry.failReason) entry.failReason = list[i].failReason;
       list[i] = entry; done = true; break;
     }
   }
@@ -1042,6 +1128,11 @@ function sbSyncTableHashes(d, schoolId, maps) {
     (d[cfg.local] || []).forEach(function (row) {
       var key = row[cfg.key];
       if (key === undefined || key === null || key === '') return;
+      // v33: a row saved while offline has no server number yet — it
+      // must not be queued or snapshotted until the repair pass mints
+      // one for it. (A pending receipt has no receiptNo, so the
+      // empty-key check above already covers it.)
+      if (table === 'ss_students' && row.numPending) return;
       var payload = sbSyncMapRow(table, row, schoolId, maps, d);
       if (!payload) return;
       m[String(key)] = { hash: JSON.stringify(payload), row: row };
@@ -1102,6 +1193,15 @@ function sbSyncSnapshotRefresh(d, account, applied) {
     snap[table] = {};
     Object.keys(hashes[table]).forEach(function (key) { snap[table][key] = hashes[table][key].hash; });
   });
+  // v33: rows the merge kept (never reached the server) must NOT be
+  // snapshotted as synced — otherwise the diff and the upload-missing
+  // pass would both skip them forever and the row would be stranded.
+  if (applied && applied.kept) {
+    Object.keys(applied.kept).forEach(function (table) {
+      if (!snap[table]) return;
+      Object.keys(applied.kept[table]).forEach(function (key) { delete snap[table][key]; });
+    });
+  }
   sbSyncSnapshot = snap; sbSyncSnapUid = account.uid;
   sbSnapSave(account.uid, snap);
   return snap;
@@ -1258,7 +1358,12 @@ function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
   } else {
     filter = 'school_id=eq.' + encodeURIComponent(schoolId) + '&local_id=eq.' + encodeURIComponent(entry.key);
   }
-  return sbRest('GET', table + '?select=id,updated_at&' + filter, token).then(function (r) {
+  // v33: receipts carry no local_id, so a row found by receipt_no is
+  // only THIS receipt when its content matches — the push entry checks
+  // that before patching, so a same-number collision can never
+  // overwrite another device's receipt.
+  var cols = table === 'ss_receipts' ? 'id,updated_at,student_id,total,receipt_date,student_name,month' : 'id,updated_at';
+  return sbRest('GET', table + '?select=' + cols + '&' + filter, token).then(function (r) {
     if (r.ok && Array.isArray(r.data) && r.data.length) return r.data[0];
     return null;
   });
@@ -1273,7 +1378,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid) {
     return sbSyncFindServerRow(table, entry, token, schoolId, maps, uid).then(function (row) {
       if (!row) return { pushed: false, skipped: true };
       return sbRest('DELETE', table + '?id=eq.' + encodeURIComponent(row.id), token, undefined, 'return=minimal').then(function (r) {
-        if (!r.ok) throw new Error('delete-' + table);
+        if (!r.ok) throw new Error('delete-' + table + '-' + (r.status || 'fail'));
         return { pushed: true };
       });
     });
@@ -1295,7 +1400,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid) {
     return sbSyncFindServerRow(table, entry, token, schoolId, maps, uid).then(function (row) {
       if (row && row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true };
       return sbRest('PATCH', 'ss_schools?id=eq.' + encodeURIComponent(schoolId), token, payload, 'return=minimal').then(function (r) {
-        if (!r.ok) throw new Error('patch-ss_schools');
+        if (!r.ok) throw new Error('patch-ss_schools-' + (r.status || 'fail'));
         return { pushed: true, hash: JSON.stringify(payload) };
       });
     });
@@ -1308,16 +1413,20 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid) {
   if (!sbSyncPayloadReady(table, payload2)) return Promise.resolve({ pushed: false, skipped: true, keep: true });
   return sbSyncFindServerRow(table, entry, token, schoolId, maps, uid).then(function (row) {
     if (row) {
+      // v33: a receipt found by number is only patched when its content
+      // matches this receipt — same number, different receipt is a
+      // collision, and the entry stays queued for the repair pass.
+      if (table === 'ss_receipts' && !sbReceiptSameServer(row, payload2)) return { pushed: false, skipped: true, keep: true };
       // Last-write-wins: a newer server copy beats this local change.
       if (row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true };
       return sbRest('PATCH', table + '?id=eq.' + encodeURIComponent(row.id), token, payload2, 'return=minimal').then(function (r) {
-        if (!r.ok) throw new Error('patch-' + table);
+        if (!r.ok) throw new Error('patch-' + table + '-' + (r.status || 'fail'));
         sbSrvIdSet(uid, table, entry.key, row.id);
         return { pushed: true, hash: JSON.stringify(payload2) };
       });
     }
     return sbRest('POST', table, token, payload2, 'return=representation').then(function (r) {
-      if (!r.ok) throw new Error('post-' + table);
+      if (!r.ok) throw new Error('post-' + table + '-' + (r.status || 'fail'));
       var created = Array.isArray(r.data) && r.data[0];
       if (created && created.id) sbSrvIdSet(uid, table, entry.key, created.id);
       return { pushed: true, hash: JSON.stringify(payload2) };
@@ -1343,12 +1452,14 @@ function sbSyncFlushWithToken(act, tok) {
     var maps = sbSyncBuildMaps(db, act.uid);
     var chain = Promise.resolve();
     var pushedThisPass = 0;
+    var currentEntry = null; // the entry being pushed when a throw happens
     outbox.forEach(function (entry) {
       chain = chain.then(function () {
         // The row vanished locally since it was queued and its table
         // never propagates deletes: drop the stale entry (the next pull
         // restores the row from the server).
         if (entry.op === 'upsert' && !sbSyncLocalRow(entry)) { sbOutboxRemove(act.uid, entry); return; }
+        currentEntry = entry;
         return sbSyncPushEntry(entry, tok, schoolId, maps, act.uid).then(function (r) {
           if (r.pushed) {
             pushedThisPass++; pushedTotal++;
@@ -1367,12 +1478,21 @@ function sbSyncFlushWithToken(act, tok) {
       });
     });
     return chain.then(function () {
+      currentEntry = null; // anything thrown after this point is not a push failure
       if (!pushedThisPass && !conflicts) return { done: true, pushed: pushedTotal, conflicts: conflicts };
       // New rows may have become mappable: re-diff and loop.
       var n = sbSyncQueueDiff();
       if (n) return pass();
       return { done: true, pushed: pushedTotal, conflicts: conflicts };
     }).catch(function (err) {
+      // v33: the failed entry stays queued WITH the reason, so a local
+      // row is never silently lost and the next cycle can repair it
+      // (e.g. a 409 unique-constraint failure on a colliding number).
+      if (currentEntry) {
+        var list = sbOutboxLoad(act.uid);
+        list.forEach(function (e2) { if (e2.table === currentEntry.table && e2.key === currentEntry.key) e2.failReason = (err && err.message) || 'error'; });
+        sbOutboxSave(act.uid, list);
+      }
       return { done: false, reason: 'error', detail: (err && err.message) || 'error', pushed: pushedTotal };
     });
   }
@@ -1417,11 +1537,13 @@ function sbSyncGuardHit(d, byTable) {
   return null;
 }
 function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
-  // Server-wins pull: replaces the local mirror with the server state.
-  // The guard refuses the pull when the school never migrated and the
-  // server is empty for a table with local rows (the caller then runs
-  // the migration upload instead). Audit log / activities are NOT pulled
-  // (append-only; the push uploads new entries, the server keeps them).
+  // v33 merge pull: server rows come in, but a local row that has not
+  // reached the server yet is KEPT (never wiped by the pull) — see
+  // sbApplyServerRows. The guard refuses the pull when the school never
+  // migrated and the server is empty for a table with local rows (the
+  // caller then runs the migration upload instead). Audit log /
+  // activities are NOT pulled (append-only; the push uploads new
+  // entries, the server keeps them).
   if (!account || account.role !== 'school') return Promise.resolve({ done: false, reason: 'not-school' });
   if (!token) return Promise.resolve({ done: false, reason: 'no-token' });
   if (!sbIsOnline()) return Promise.resolve({ done: false, reason: 'offline' });
@@ -1462,6 +1584,278 @@ function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
 function sbSyncPull(account, sbUid, token, serverSchoolId) {
   return sbSyncWithLock(function () { return sbSyncPullRun(account, sbUid, token, serverSchoolId); });
 }
+/* ================= v33: atomic server-side numbering =================
+   The live bug (9 Nov 2026, VM School): the phone added Ankit Kumar
+   (ADM-2025-001 / ENR-001); the laptop, whose local store was empty,
+   minted ADM-2025-001 / ENR-001 for a new student too. The server
+   rejected the laptop's POST (unique (school_id, admission_no) and
+   unique (school_id, enr)), the student never reached the server, and
+   a server-wins pull then WIPED the laptop-only student — the record
+   existed nowhere. Two fixes, both in this version:
+   (1) NUMBERING: for a school logged in via Supabase, admission and
+   receipt numbers come from the server, through the existing atomic
+   RPCs ss_next_adm_no / ss_next_receipt_no (01_schema.sql; both
+   SECURITY DEFINER, ownership-checked, granted to authenticated in
+   02_rls.sql — no new SQL file is needed). The local counters stay
+   only for local-only accounts and as a display fallback. The RPC
+   alone is not enough: the live server counter (1) sat BEHIND the
+   highest used number (001 taken), so the RPC re-mints a taken number
+   first — every candidate is checked against the server's taken set
+   and the RPC is retried until a free number comes back (mint-until-
+   free). ENR has no server counter; it is derived from the ADM
+   sequence (ENR-002 for ADM-2025-002), matching the live data.
+   (2) REPAIR + NEVER-LOSE: every sync cycle first re-numbers local
+   rows that collide with a different server row and mints numbers for
+   rows saved while offline (numPending), then uploads, then pulls.
+   The pull MERGES instead of replacing: a local row that has not
+   reached the server is kept, and the outbox keeps failed entries
+   with their reason instead of dropping them.
+   Offline: a student/receipt added while offline is saved WITHOUT a
+   number (numPending) and minted on the next online cycle — never a
+   locally guessed number for a server account, because a guess can
+   collide. Local-only accounts keep minting locally, exactly as now,
+   and make zero server calls. */
+function sbNumSeq(num) {
+  var m = /^(?:ADM|RCP)-\d{4}-(\d+)$/.exec(String(num || ''));
+  return m ? parseInt(m[1], 10) : 0;
+}
+function sbEnrFromAdm(admNo) { return 'ENR-' + String(sbNumSeq(admNo)).padStart(3, '0'); }
+function sbReceiptSame(a, b) {
+  // Same receipt? Server-mapped receipt vs local receipt: number is
+  // checked by the caller; content is student name + total + date +
+  // month. (Receipts carry no local_id on the server, so content is
+  // the only identity available.)
+  return (a.name || '') === (b.name || '') && Number(a.total || 0) === Number(b.total || 0)
+    && (a.date || '') === (b.date || '') && (a.month || '') === (b.month || '');
+}
+function sbReceiptSameServer(row, payload) {
+  // The server row found by receipt_no is THIS receipt only when its
+  // content matches the push payload — same number, different receipt
+  // is a collision, and patching it would overwrite another device's
+  // receipt.
+  if (!row || !payload) return false;
+  return String(row.student_id || '') === String(payload.student_id || '')
+    && Number(row.total || 0) === Number(payload.total || 0)
+    && String(row.receipt_date || '') === String(payload.receipt_date || '')
+    && String(row.month || '') === String(payload.month || '')
+    && String(row.student_name || '') === String(payload.student_name || '');
+}
+function sbGetSchoolIdForSync(account, sbUid, token) {
+  var cached = sbServerSchoolMap()[account.uid];
+  if (cached) return Promise.resolve(cached);
+  return sbEnsureServerSchool(account, sbUid, token, db);
+}
+function sbFetchTakenNumbers(token, schoolId) {
+  // The numbers already on the server, for the mint-until-free check
+  // and the repair pass. Also the server counters and the highest used
+  // sequences, for the counter heal.
+  return Promise.all([
+    sbRest('GET', 'ss_students?select=local_id,admission_no,enr&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token),
+    sbRest('GET', 'ss_receipts?select=receipt_no,student_id,total,receipt_date,student_name,month&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token),
+    sbRest('GET', 'ss_schools?select=adm_counter,receipt_counter&id=eq.' + encodeURIComponent(schoolId), token)
+  ]).then(function (res) {
+    var students = (res[0].ok && Array.isArray(res[0].data)) ? res[0].data : [];
+    var receipts = (res[1].ok && Array.isArray(res[1].data)) ? res[1].data : [];
+    var schoolRow = (res[2].ok && Array.isArray(res[2].data) && res[2].data[0]) || null;
+    var taken = { adm: {}, enr: {}, rcp: {}, students: students, receipts: receipts,
+      admCounter: (schoolRow && schoolRow.adm_counter) || 1, receiptCounter: (schoolRow && schoolRow.receipt_counter) || 1,
+      maxAdm: 0, maxRcp: 0 };
+    students.forEach(function (r) {
+      if (r.admission_no) { taken.adm[r.admission_no] = r.local_id || ''; taken.maxAdm = Math.max(taken.maxAdm, sbNumSeq(r.admission_no)); }
+      if (r.enr) taken.enr[r.enr] = r.local_id || '';
+    });
+    receipts.forEach(function (r) {
+      if (r.receipt_no) { taken.rcp[r.receipt_no] = r; taken.maxRcp = Math.max(taken.maxRcp, sbNumSeq(r.receipt_no)); }
+    });
+    return taken;
+  });
+}
+function sbMintAdmNo(token, schoolId, taken) {
+  var attempts = 0;
+  function tryOnce() {
+    attempts++;
+    return sbRest('POST', 'rpc/ss_next_adm_no', token, { p_school_id: schoolId }).then(function (r) {
+      if (!r.ok || typeof r.data !== 'string' || !r.data) throw new Error('rpc-adm-' + (r.status || 'fail'));
+      var adm = r.data, enr = sbEnrFromAdm(adm);
+      if ((taken.adm && taken.adm[adm]) || (taken.enr && taken.enr[enr])) {
+        if (attempts >= 8) throw new Error('rpc-adm-exhausted');
+        return tryOnce();
+      }
+      if (taken.adm) taken.adm[adm] = 'minted';
+      if (taken.enr) taken.enr[enr] = 'minted';
+      return { admissionNo: adm, enr: enr };
+    });
+  }
+  return tryOnce();
+}
+function sbMintReceiptNo(token, schoolId, takenRcp) {
+  var attempts = 0;
+  function tryOnce() {
+    attempts++;
+    return sbRest('POST', 'rpc/ss_next_receipt_no', token, { p_school_id: schoolId }).then(function (r) {
+      if (!r.ok || typeof r.data !== 'string' || !r.data) throw new Error('rpc-rcp-' + (r.status || 'fail'));
+      if (takenRcp && takenRcp[r.data]) {
+        if (attempts >= 8) throw new Error('rpc-rcp-exhausted');
+        return tryOnce();
+      }
+      if (takenRcp) takenRcp[r.data] = true;
+      return r.data;
+    });
+  }
+  return tryOnce();
+}
+function sbMintNewStudentNumbers(act) {
+  // One fresh (admissionNo, enr) pair from the server for a new student.
+  return sbGetValidToken().then(function (tok) {
+    if (!tok) throw new Error('no-token');
+    return sbGetSchoolIdForSync(act.account, act.uid, tok).then(function (schoolId) {
+      if (!schoolId) throw new Error('no-school-id');
+      return sbFetchTakenNumbers(tok, schoolId).then(function (taken) {
+        return sbMintAdmNo(tok, schoolId, taken);
+      });
+    });
+  });
+}
+function sbMintNewReceiptNumber(act) {
+  return sbGetValidToken().then(function (tok) {
+    if (!tok) throw new Error('no-token');
+    return sbGetSchoolIdForSync(act.account, act.uid, tok).then(function (schoolId) {
+      if (!schoolId) throw new Error('no-school-id');
+      return sbFetchTakenNumbers(tok, schoolId).then(function (taken) {
+        return sbMintReceiptNo(tok, schoolId, taken.rcp);
+      });
+    });
+  });
+}
+function sbMintManyAdmNos(token, schoolId, taken, count) {
+  // Sequential mints for a bulk import: each mint updates the taken
+  // sets, so two rows in the same import never share a number.
+  var out = [];
+  var chain = Promise.resolve();
+  for (var i = 0; i < count; i++) {
+    chain = chain.then(function () { return sbMintAdmNo(token, schoolId, taken); }).then(function (nums) { out.push(nums); });
+  }
+  return chain.then(function () { return out; });
+}
+function sbSyncRepairNumbers(account, sbUid, token) {
+  // v33 repair + mint-pending pass. Runs FIRST in every sync cycle,
+  // before the upload-missing pass:
+  // (1) a local student whose admission_no/enr collides with a
+  //     DIFFERENT server row (same number, different local_id) is
+  //     re-numbered from the server and re-queued — no manual step;
+  // (2) a local receipt whose receipt_no collides with a DIFFERENT
+  //     server receipt (same number, different content) is re-numbered;
+  // (3) rows saved while offline (numPending, no number yet) are minted.
+  // Rows that already match a server row by local_id are never touched.
+  // Counters are healed to past the highest used number. Never rejects:
+  // a failed pass leaves the rows for the next cycle (the merge pull
+  // keeps them locally and the outbox keeps retrying them).
+  var act = sbSyncActive();
+  if (!act) return Promise.resolve({ done: false, reason: 'no-session' });
+  if (!sbIsOnline()) return Promise.resolve({ done: false, reason: 'offline' });
+  var d = db;
+  var schoolId = null, taken = null, serverByLocal = {}, snap = {};
+  var repaired = 0, minted = 0, changed = false;
+  return sbGetSchoolIdForSync(account, sbUid, token).then(function (id) {
+    schoolId = id;
+    if (!schoolId) throw new Error('no-school-id');
+    return sbFetchTakenNumbers(token, schoolId);
+  }).then(function (tk) {
+    taken = tk;
+    serverByLocal = {};
+    taken.students.forEach(function (r) { if (r.local_id) serverByLocal[r.local_id] = r; });
+    snap = sbSnapLoad(act.account.uid);
+    var chain = Promise.resolve();
+    (d.students || []).forEach(function (s) {
+      chain = chain.then(function () {
+        if (serverByLocal[s.id]) return; // already on the server: its numbers are the server's
+        // Deleted elsewhere (in the snapshot but absent on the server):
+        // the pull drops this row — never spend a server number on it.
+        if (snap.ss_students && snap.ss_students[s.id] !== undefined) return;
+        var collides = (s.admissionNo && taken.adm[s.admissionNo] && taken.adm[s.admissionNo] !== s.id)
+          || (s.enr && taken.enr[s.enr] && taken.enr[s.enr] !== s.id);
+        if (!collides && !s.numPending && s.admissionNo) return;
+        return sbMintAdmNo(token, schoolId, taken).then(function (nums) {
+          s.admissionNo = nums.admissionNo;
+          s.enr = nums.enr;
+          if (s.numPending) { delete s.numPending; minted++; }
+          else repaired++;
+          changed = true;
+          // Keep denormalised copies in step: fee records and receipts
+          // carry the student's admission number.
+          (d.feeRecords || []).forEach(function (r) { if (r.studentId === s.id && r.admissionNo) r.admissionNo = nums.admissionNo; });
+          (d.receipts || []).forEach(function (rc) { if (rc.studentId === s.id && rc.admissionNo) rc.admissionNo = nums.admissionNo; });
+          sbOutboxAdd(act.uid, { table: 'ss_students', key: s.id, op: 'upsert', row: JSON.parse(JSON.stringify(s)), at: new Date().toISOString() });
+        });
+      });
+    });
+    return chain;
+  }).then(function () {
+    var chain2 = Promise.resolve();
+    var maps = sbSyncBuildMaps(d, act.uid);
+    var byId = {};
+    (d.students || []).forEach(function (s) { byId[s.id] = s; });
+    (d.receipts || []).forEach(function (rc) {
+      chain2 = chain2.then(function () {
+        // Deleted elsewhere (in the snapshot, no such number on the
+        // server): the pull drops this receipt — never re-number it.
+        if (rc.receiptNo && snap.ss_receipts && snap.ss_receipts[rc.receiptNo] !== undefined && !taken.rcp[rc.receiptNo]) return;
+        var srv = rc.receiptNo ? (taken.rcp[rc.receiptNo] || null) : null;
+        var collides = false;
+        if (srv) {
+          // Same number on the server: the same receipt only when the
+          // content matches (student, total, date, month); otherwise
+          // it is a collision with another device's receipt.
+          var mapped = sbMapReceipt(rc, schoolId, maps.stu, byId);
+          collides = !sbReceiptSameServer(srv, mapped);
+        }
+        if (!collides && !rc.numPending && rc.receiptNo) return;
+        return sbMintReceiptNo(token, schoolId, taken.rcp).then(function (no) {
+          var oldNo = rc.receiptNo;
+          rc.receiptNo = no;
+          if (rc.numPending) { delete rc.numPending; minted++; }
+          else repaired++;
+          changed = true;
+          sbOutboxAdd(act.uid, { table: 'ss_receipts', key: no, op: 'upsert', row: JSON.parse(JSON.stringify(rc)), at: new Date().toISOString() });
+          if (oldNo) sbOutboxRemove(act.uid, { table: 'ss_receipts', key: oldNo });
+        });
+      });
+    });
+    return chain2;
+  }).then(function () {
+    // Counter heal: the counters must sit past the highest used number.
+    // The mint loop already advanced them past every number it minted,
+    // but a locally-minted number uploaded earlier can still sit above
+    // them — bump to max(current, highest + 1), never backwards. The
+    // patch value is always >= the live counter (each RPC call advanced
+    // it by one and the accepted number is the last one returned), so
+    // this can never move a counter down.
+    var highestAdm = taken.maxAdm, highestRcp = taken.maxRcp;
+    (d.students || []).forEach(function (s) {
+      // A row the pull is about to drop (deleted elsewhere) does not
+      // count as used — its number is free again.
+      if (snap.ss_students && snap.ss_students[s.id] !== undefined && !serverByLocal[s.id]) return;
+      highestAdm = Math.max(highestAdm, sbNumSeq(s.admissionNo));
+    });
+    (d.receipts || []).forEach(function (rc) {
+      if (rc.receiptNo && snap.ss_receipts && snap.ss_receipts[rc.receiptNo] !== undefined && !taken.rcp[rc.receiptNo]) return;
+      highestRcp = Math.max(highestRcp, sbNumSeq(rc.receiptNo));
+    });
+    var patch = {};
+    if (taken.admCounter <= highestAdm) patch.adm_counter = highestAdm + 1;
+    if (taken.receiptCounter <= highestRcp) patch.receipt_counter = highestRcp + 1;
+    if (!Object.keys(patch).length) return { done: true, repaired: repaired, minted: minted };
+    return sbRest('PATCH', 'ss_schools?id=eq.' + encodeURIComponent(schoolId), token, patch, 'return=minimal').then(function (r) {
+      if (!r.ok) throw new Error('patch-counters-' + (r.status || 'fail'));
+      return { done: true, repaired: repaired, minted: minted };
+    });
+  }).then(function (r) {
+    if (changed) saveDB(d);
+    return r;
+  }).catch(function (err) {
+    return { done: false, reason: 'error', detail: (err && err.message) || 'error', repaired: repaired, minted: minted };
+  });
+}
 function sbSyncCycleRun(account, sbUid, token) {
   // v32: ONE serialized cycle — upload-missing first, then pull, then
   // flush. Never run the upload and the pull in parallel again: v31
@@ -1484,7 +1878,12 @@ function sbSyncCycleRun(account, sbUid, token) {
   var tokP = token ? Promise.resolve(token) : sbGetValidToken();
   return tokP.then(function (tok) {
     if (!tok) { sbSetStatus('offline'); return { done: false, reason: 'no-token' }; }
-    return sbSyncUploadMissing(account, sbUid, tok).then(function () {
+    // v33: repair FIRST — re-number colliding rows and mint numbers
+    // for offline-saved rows — so the upload pass below never hits a
+    // unique-constraint failure on a number another device already owns.
+    return sbSyncRepairNumbers(account, sbUid, tok).then(function () {
+      return sbSyncUploadMissing(account, sbUid, tok);
+    }).then(function () {
       return sbSyncPullRun(account, sbUid, tok, null);
     }).then(function (pull) {
       if (pull.reason === 'needs-migration') {
@@ -2628,8 +3027,31 @@ function openImportModal() {
 }
 function confirmImport() {
   var rows = importState.rows || [];
+  // v33: for a server account every number is minted from the server
+  // first (one sequential pass, so no two rows share a number); offline
+  // rows are imported without a number and minted on the next sync.
+  // Local-only accounts mint locally, exactly as before.
+  var act = sbSyncActive();
+  if (act && sbIsOnline()) {
+    var validCount = rows.filter(function (r) { return r.status === 'valid' && r.data; }).length;
+    sbGetValidToken().then(function (tok) {
+      if (!tok) throw new Error('no-token');
+      return sbGetSchoolIdForSync(act.account, act.uid, tok).then(function (schoolId) {
+        if (!schoolId) throw new Error('no-school-id');
+        return sbFetchTakenNumbers(tok, schoolId).then(function (taken) {
+          return sbMintManyAdmNos(tok, schoolId, taken, validCount);
+        });
+      });
+    }).then(function (nums) { confirmImportRun(rows, nums); })
+      .catch(function () { confirmImportRun(rows, 'pending'); });
+    return;
+  }
+  confirmImportRun(rows, act ? 'pending' : null);
+}
+function confirmImportRun(rows, numberSource) {
   var imported = 0, skipped = 0;
   var now = Date.now();
+  var numIdx = 0;
   rows.forEach(function (r, i) {
     if (r.status !== 'valid' || !r.data) { if (r.status === 'error' || r.status === 'duplicate') skipped++; return; }
     // Re-check duplicates at import time, so a second Confirm (or data that
@@ -2637,8 +3059,13 @@ function confirmImport() {
     var dup = findDupStudent(r.data, null);
     if (dup) { r.status = 'duplicate'; r.errors = [t('impErrDup') + ' ' + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' • ' + dup.cls + ')']; skipped++; return; }
     var d = r.data;
-    var admNo = nextAdmNo();
-    var rec = { id: 'stu' + now + '_' + i, att: 100, result: 0, fee: '—', enr: nextEnr(), admissionNo: admNo, status: 'Active' };
+    var nums;
+    if (Array.isArray(numberSource)) nums = numberSource[numIdx++] || { admissionNo: '', enr: '' };
+    else if (numberSource === 'pending') nums = { admissionNo: '', enr: '', numPending: true };
+    else nums = { admissionNo: nextAdmNo(), enr: nextEnr() };
+    var admNo = nums.admissionNo;
+    var rec = { id: 'stu' + now + '_' + i, att: 100, result: 0, fee: '—', enr: nums.enr, admissionNo: admNo, status: 'Active' };
+    if (nums.numPending) rec.numPending = true;
     Object.keys(d).forEach(function (k) { rec[k] = d[k]; });
     rec.parentPin = parentPinFromPhone(rec.phone || '');
     rec.roll = d.roll || nextRoll(d.cls);
@@ -2646,7 +3073,7 @@ function confirmImport() {
     // (The single-admission form adds a ₹6,000 placeholder record; a bulk
     // import of many students must not silently inflate the fee totals.)
     db.students.push(rec);
-    logAudit('Bulk import', rec.name + ' • ' + admNo + ' • ' + rec.cls);
+    logAudit('Bulk import', rec.name + ' • ' + (admNo || 'pending') + ' • ' + rec.cls);
     r.status = 'imported';
     imported++;
   });
@@ -2827,7 +3254,7 @@ var I18N = {
     idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.',
     authParent: 'Parent', parentAdmNo: 'Admission Number', parentPinLabel: 'Parent PIN', parentLoginBtn: 'Login as Parent', parentNote: 'Parent access on this device uses a PIN set by the school. Real password accounts arrive with the server version.', parentSub: 'Parent', parentDashboard: 'My Child', tInvalidParent: 'Invalid admission number or PIN.', tParentScope: 'You can only view your own child\'s profile.', parentAccess: 'Parent Access', parentPinNow: 'Current Parent PIN', parentPinNone: 'No PIN set — parent login unavailable for this student.', parentPinNew: 'New PIN (4–6 digits)', parentPinSetBtn: 'Set PIN', parentPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Parent PIN set.', tPinCleared: 'Parent PIN cleared.', tPinAuto: 'Default PIN is the last 4 digits of the parent\'s mobile.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
     collectFeeBtn: 'Collect Fee', rcptTitle: 'FEE RECEIPT', rcptReceiptNo: 'Receipt No', rcptDate: 'Date', rcptAdmNo: 'Adm No', rcptSession: 'Session', rcptName: 'Name', rcptClass: 'Class', rcptInstallment: 'Installment', rcptCounter: 'Counter No', rcptSlNo: 'Sl.No', rcptDesc: 'Description', rcptDue: 'Due', rcptCon: 'Con', rcptPaid: 'Paid', rcptAdmissionFee: 'Admission Fee', rcptTuitionFee: 'Tuition Fee', rcptCaution: 'Caution Money', rcptAnnual: 'Annual Charges', rcptBusFee: 'Bus Fee', rcptDues: 'Dues', rcptPayModeTitle: 'PAY MODE INFORMATION', rcptPayMode: 'Pay Mode', rcptBank: 'Bank', rcptNumber: 'Number', rcptTotal: 'Total', rcptTotalWords: 'Total in Words', rcptComputerGen: 'This is a computer generated Receipt. Does not required signature.', rcptParentCopy: 'PARENT COPY', rcptCollectorSign: 'Collector\'s Signature', rcptIncludeBus: 'Include Bus/Transport', rcptOtherFees: 'Other Fees', rcptAnnualHint: 'One-time and annual amounts used on the Collect Fee receipt. Set 0 to hide a row.', payModeCash: 'Cash', payModeCheque: 'Cheque', payModeUpi: 'UPI', payModeCard: 'Card', payModeBank: 'Bank Transfer', tFeeCollected: 'Fee collected.', tCollectZero: 'Nothing to collect — enter a Paid amount.', tCollectSaved: 'Fee collected — Receipt ', tCollectNotActive: 'This student is not active — fee cannot be collected.', rcptReceipts: 'Receipts', rcptView: 'View', rcptPrint: 'Print / Save PDF', rcptCollectAgain: 'Collect Again', rcptNoReceipts: 'No receipts yet for this student.', rcptDraft: 'Draft — not saved yet', rcptCollectSave: 'Collect & Save', rcptNoLines: 'Nothing to collect for this period — set the fee amounts in Fee Structure first.',
-    sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.', sbStatusSyncing: 'Syncing with the server…', sbStatusPendingSync: 'Offline — changes will sync when you are back online.', sbSyncDone: 'Synced with the server.', sbSyncFailed: 'Sync did not finish — it will retry on your next login.', sbSyncOffline: 'Offline — your changes are saved here and will sync later.', sbSyncConflict: 'Server had a newer copy — kept the server version.'
+    sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.', sbStatusSyncing: 'Syncing with the server…', sbStatusPendingSync: 'Offline — changes will sync when you are back online.', sbSyncDone: 'Synced with the server.', sbSyncFailed: 'Sync did not finish — it will retry on your next login.', sbSyncOffline: 'Offline — your changes are saved here and will sync later.', sbSyncConflict: 'Server had a newer copy — kept the server version.', sbNumPending: 'Admission saved. The admission number will be assigned when you are back online.', sbNumPendingReceipt: 'Fee saved. The receipt number will be assigned when you are back online.'
   },
   hi: {
     dashboard: 'डैशबोर्ड', settings: 'सेटिंग्स', reports: 'रिपोर्ट', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -2850,7 +3277,8 @@ var I18N = {
     promoTitle: 'छात्रों को प्रोन्नत करें', promoBtn: 'छात्र प्रोन्नत करें', promoSingle: 'छात्र प्रोन्नत करें', promoFromSession: 'वर्तमान सत्र', promoFromClass: 'वर्तमान कक्षा', promoToSession: 'लक्ष्य सत्र', promoToClass: 'लक्ष्य कक्षा', promoToSection: 'लक्ष्य अनुभाग', promoSelectAll: 'सभी चुनें', promoSelectNone: 'कोई नहीं', promoSelected: 'चयनित', promoPromote: 'चयनित को प्रोन्नत करें', promoRetain: 'चयनित को रोकें', promoNoStudents: 'इस कक्षा और सत्र में कोई छात्र नहीं है।', promoNoSelect: 'कृपया कम से कम एक छात्र चुनें।', promoNoop: 'लक्ष्य कक्षा और सत्र वर्तमान जैसे ही हैं — बदलने को कुछ नहीं।', promoNoopRetain: 'लक्ष्य सत्र वर्तमान सत्र जैसा ही है — बदलने को कुछ नहीं।', promoDone: 'प्रोन्नति पूर्ण हुई।', promoPromoted: 'प्रोन्नत हुए', promoRetained: 'रोके गए', promoNote: 'उपस्थिति, शुल्क, परीक्षा अंक और होमवर्क इतिहास सुरक्षित रहता है।', promoSingleNote: 'एक छात्र की प्रोन्नति', promoSkipped: 'छोड़े गए (पहले ही स्थानांतरित)', promoNotEligible: 'केवल सक्रिय या निष्क्रिय छात्र ही प्रोन्नत हो सकते हैं।',
     idcPreview: 'ID कार्ड पूर्वावलोकन', idcPrint: 'छापें', idcPrintCards: 'ID कार्ड छापें', idcSelectAll: 'सभी चुनें', idcClearSel: 'चयन हटाएँ', idcReady: 'ID कार्ड छपाई के लिए तैयार', idcEmergency: 'आपातकालीन संपर्क', idcReturn: 'मिले तो कृपया लौटाएँ', idcNoQr: 'QR कोड नहीं बन सका।',
     authParent: 'अभिभावक', parentAdmNo: 'प्रवेश संख्या', parentPinLabel: 'अभिभावक PIN', parentLoginBtn: 'अभिभावक के रूप में लॉगिन करें', parentNote: 'इस डिवाइस पर अभिभावक लॉगिन स्कूल द्वारा दिए गए PIN से होता है। सर्वर संस्करण में असली पासवर्ड अकाउंट आएँगे।', parentSub: 'अभिभावक', parentDashboard: 'मेरा बच्चा', tInvalidParent: 'प्रवेश संख्या या PIN गलत है।', tParentScope: 'आप केवल अपने बच्चे की प्रोफ़ाइल देख सकते हैं।', parentAccess: 'अभिभावक पहुँच', parentPinNow: 'वर्तमान अभिभावक PIN', parentPinNone: 'कोई PIN नहीं है — इस छात्र के लिए अभिभावक लॉगिन उपलब्ध नहीं है।', parentPinNew: 'नया PIN (4–6 अंक)', parentPinSetBtn: 'PIN सेट करें', parentPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'अभिभावक PIN सेट हो गया।', tPinCleared: 'अभिभावक PIN हटा दिया गया।', tPinAuto: 'डिफ़ॉल्ट PIN अभिभावक के मोबाइल के आखिरी 4 अंक होते हैं।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।',
-    collectFeeBtn: 'शुल्क वसूलें', rcptTitle: 'शुल्क रसीद', rcptReceiptNo: 'रसीद संख्या', rcptDate: 'तारीख', rcptAdmNo: 'प्रवेश संख्या', rcptSession: 'सत्र', rcptName: 'नाम', rcptClass: 'कक्षा', rcptInstallment: 'किस्त', rcptCounter: 'काउंटर संख्या', rcptSlNo: 'क्र.सं.', rcptDesc: 'विवरण', rcptDue: 'देय', rcptCon: 'छूट', rcptPaid: 'जमा', rcptAdmissionFee: 'प्रवेश शुल्क', rcptTuitionFee: 'शिक्षण शुल्क', rcptCaution: 'जमानत राशि', rcptAnnual: 'वार्षिक शुल्क', rcptBusFee: 'बस शुल्क', rcptDues: 'बकाया', rcptPayModeTitle: 'भुगतान जानकारी', rcptPayMode: 'भुगतान माध्यम', rcptBank: 'बैंक', rcptNumber: 'संख्या', rcptTotal: 'कुल', rcptTotalWords: 'कुल (शब्दों में)', rcptComputerGen: 'यह कंप्यूटर द्वारा बनाई गई रसीद है। हस्ताक्षर की आवश्यकता नहीं है।', rcptParentCopy: 'अभिभावक प्रति', rcptCollectorSign: 'वसूलकर्ता के हस्ताक्षर', rcptIncludeBus: 'बस/परिवहन शामिल करें', rcptOtherFees: 'अन्य शुल्क', rcptAnnualHint: 'शुल्क वसूली रसीद पर दिखने वाली एकमुश्त और वार्षिक राशि। छिपाने के लिए 0 रखें।', payModeCash: 'नकद', payModeCheque: 'चेक', payModeUpi: 'UPI', payModeCard: 'कार्ड', payModeBank: 'बैंक ट्रांसफर', tFeeCollected: 'शुल्क वसूल लिया गया।', tCollectZero: 'वसूलने के लिए कुछ नहीं है — जमा राशि डालें।', tCollectSaved: 'शुल्क वसूल लिया गया — रसीद ', tCollectNotActive: 'यह छात्र सक्रिय नहीं है — शुल्क नहीं वसूला जा सकता।', rcptReceipts: 'रसीदें', rcptView: 'देखें', rcptPrint: 'प्रिंट / PDF सहेजें', rcptCollectAgain: 'फिर से वसूलें', rcptNoReceipts: 'इस छात्र की अभी कोई रसीद नहीं है।', rcptDraft: 'मसौदा — अभी सहेजा नहीं गया', rcptCollectSave: 'वसूलें और सहेजें', rcptNoLines: 'इस अवधि के लिए वसूलने को कुछ नहीं है — पहले शुल्क संरचना में राशि डालें।'
+    collectFeeBtn: 'शुल्क वसूलें', rcptTitle: 'शुल्क रसीद', rcptReceiptNo: 'रसीद संख्या', rcptDate: 'तारीख', rcptAdmNo: 'प्रवेश संख्या', rcptSession: 'सत्र', rcptName: 'नाम', rcptClass: 'कक्षा', rcptInstallment: 'किस्त', rcptCounter: 'काउंटर संख्या', rcptSlNo: 'क्र.सं.', rcptDesc: 'विवरण', rcptDue: 'देय', rcptCon: 'छूट', rcptPaid: 'जमा', rcptAdmissionFee: 'प्रवेश शुल्क', rcptTuitionFee: 'शिक्षण शुल्क', rcptCaution: 'जमानत राशि', rcptAnnual: 'वार्षिक शुल्क', rcptBusFee: 'बस शुल्क', rcptDues: 'बकाया', rcptPayModeTitle: 'भुगतान जानकारी', rcptPayMode: 'भुगतान माध्यम', rcptBank: 'बैंक', rcptNumber: 'संख्या', rcptTotal: 'कुल', rcptTotalWords: 'कुल (शब्दों में)', rcptComputerGen: 'यह कंप्यूटर द्वारा बनाई गई रसीद है। हस्ताक्षर की आवश्यकता नहीं है।', rcptParentCopy: 'अभिभावक प्रति', rcptCollectorSign: 'वसूलकर्ता के हस्ताक्षर', rcptIncludeBus: 'बस/परिवहन शामिल करें', rcptOtherFees: 'अन्य शुल्क', rcptAnnualHint: 'शुल्क वसूली रसीद पर दिखने वाली एकमुश्त और वार्षिक राशि। छिपाने के लिए 0 रखें।', payModeCash: 'नकद', payModeCheque: 'चेक', payModeUpi: 'UPI', payModeCard: 'कार्ड', payModeBank: 'बैंक ट्रांसफर', tFeeCollected: 'शुल्क वसूल लिया गया।', tCollectZero: 'वसूलने के लिए कुछ नहीं है — जमा राशि डालें।', tCollectSaved: 'शुल्क वसूल लिया गया — रसीद ', tCollectNotActive: 'यह छात्र सक्रिय नहीं है — शुल्क नहीं वसूला जा सकता।', rcptReceipts: 'रसीदें', rcptView: 'देखें', rcptPrint: 'प्रिंट / PDF सहेजें', rcptCollectAgain: 'फिर से वसूलें', rcptNoReceipts: 'इस छात्र की अभी कोई रसीद नहीं है।', rcptDraft: 'मसौदा — अभी सहेजा नहीं गया', rcptCollectSave: 'वसूलें और सहेजें', rcptNoLines: 'इस अवधि के लिए वसूलने को कुछ नहीं है — पहले शुल्क संरचना में राशि डालें।',
+    sbNumPending: 'प्रवेश सहेजा गया। प्रवेश संख्या ऑनलाइन आने पर दी जाएगी।', sbNumPendingReceipt: 'शुल्क सहेजा गया। रसीद संख्या ऑनलाइन आने पर दी जाएगी।'
   }
 };
 function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || I18N.en[k] || k; }
@@ -3623,7 +4051,10 @@ function studentForm(id) {
     clsPart = pf.classApply || clsPart;
     admPrefill = null; // consumed into the form; the link now lives in fStAdmReq
   }
-  var admNo = s ? (s.admissionNo || '') : nextAdmNo(true);
+  // v33: for a server account the number is minted from the server on
+  // save — the local peek could show a number another device already
+  // owns, so the form shows Auto-generated instead.
+  var admNo = s ? (s.admissionNo || '') : (sbSyncActive() ? t('admNoAuto') : nextAdmNo(true));
   var admDate = s ? (s.admissionDate || '') : todayIST();
   var rollVal = s ? s.roll : nextRoll(clsPart + '-' + secPart);
   openModal('<h3>' + (s ? t('editStudent') : t('addStudent')) + '</h3>' +
@@ -3719,6 +4150,12 @@ function saveStudent(e, id, mode) {
   if (id && !admDateVal) { var ex0 = db.students.find(function (x) { return x.id === id; }); if (ex0) data.admissionDate = ex0.admissionDate || ''; }
   var dup = findDupStudent(data, id || null);
   if (dup) return fail(t('tDupFound') + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' • ' + dup.cls + ')');
+  function finishSave() {
+    pendingPhoto = null;
+    saveDB(db); closeModal();
+    if (mode === 'another') { renderApp(); studentForm(''); }
+    else renderApp();
+  }
   if (id) {
     var s = db.students.find(function (x) { return x.id === id; });
     if (!s) return false;
@@ -3731,10 +4168,13 @@ function saveStudent(e, id, mode) {
     if (pendingPhoto !== null) { if (pendingPhoto) s.photo = pendingPhoto; else delete s.photo; }
     logAudit('Student updated', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
     toast(t('tStudentUpdated'));
-  } else {
-    var nid = 'stu' + Date.now();
-    var admNo = nextAdmNo();
-    var newStu = Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: nextEnr(), admissionNo: admNo, status: mode === 'draft' ? 'Draft' : 'Active', parentPin: parentPinFromPhone(phone) }, data);
+    finishSave();
+    return false;
+  }
+  var nid = 'stu' + Date.now();
+  function createWith(admNo, enr, numPending) {
+    var newStu = Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: enr, admissionNo: admNo, status: mode === 'draft' ? 'Draft' : 'Active', parentPin: parentPinFromPhone(phone) }, data);
+    if (numPending) newStu.numPending = true;
     if (pendingPhoto) newStu.photo = pendingPhoto;
     db.students.push(newStu);
     var reqId = fval('fStAdmReq');
@@ -3742,16 +4182,27 @@ function saveStudent(e, id, mode) {
       var rq = (db.admissionRequests || []).find(function (x) { return x.id === reqId; });
       if (rq && rq.status === 'Pending') {
         rq.status = 'Approved'; rq.studentId = nid;
-        logAudit('Admission request approved', rq.name + ' • ' + admNo + ' • ' + cls);
+        logAudit('Admission request approved', rq.name + ' • ' + (admNo || 'pending') + ' • ' + cls);
       }
     }
-    logAudit(mode === 'draft' ? 'Admission saved as draft' : 'Admission created', name + ' • ' + admNo + ' • ' + cls);
-    toast(mode === 'draft' ? t('tDraftSaved') : t('tAdmCreated') + admNo);
+    logAudit(mode === 'draft' ? 'Admission saved as draft' : 'Admission created', name + ' • ' + (admNo || 'pending') + ' • ' + cls);
+    if (numPending) toast(t('sbNumPending'));
+    else toast(mode === 'draft' ? t('tDraftSaved') : t('tAdmCreated') + admNo);
+    finishSave();
   }
-  pendingPhoto = null;
-  saveDB(db); closeModal();
-  if (mode === 'another') { renderApp(); studentForm(''); }
-  else renderApp();
+  // v33: for a server account the number comes from the server, never
+  // from the local counter — a locally guessed number is exactly what
+  // collided on 9 Nov 2026. Offline the student is saved WITHOUT a
+  // number (numPending) and minted on the next sync. Local-only
+  // accounts mint locally, exactly as before.
+  var act33 = sbSyncActive();
+  if (act33 && sbIsOnline()) {
+    sbMintNewStudentNumbers(act33).then(function (nums) { createWith(nums.admissionNo, nums.enr, false); })
+      .catch(function () { createWith('', '', true); });
+    return false;
+  }
+  if (act33) { createWith('', '', true); return false; }
+  createWith(nextAdmNo(), nextEnr(), false);
   return false;
 }
 function stuActions(id) {
@@ -4871,7 +5322,21 @@ function saveCollectFee(e) {
   if (!s) return false;
   var total = collectDraftTotal(d);
   if (total <= 0) { toast(t('tCollectZero')); return false; }
-  var receiptNo = nextReceiptNo(false);
+  // v33: for a server account the receipt number comes from the server,
+  // never from the local counter. Offline the receipt is saved WITHOUT
+  // a number (numPending) and minted on the next sync. Local-only
+  // accounts mint locally, exactly as before.
+  var act33 = sbSyncActive();
+  if (act33 && sbIsOnline()) {
+    sbMintNewReceiptNumber(act33).then(function (no) { finishCollectFee(d, s, total, no, false); })
+      .catch(function () { finishCollectFee(d, s, total, '', true); });
+    return false;
+  }
+  if (act33) { finishCollectFee(d, s, total, '', true); return false; }
+  finishCollectFee(d, s, total, nextReceiptNo(false), false);
+  return false;
+}
+function finishCollectFee(d, s, total, receiptNo, numPending) {
   var today = d.payDate || todayIST();
   var savedLines = [];
   d.lines.forEach(function (ln, i) {
@@ -4892,12 +5357,22 @@ function saveCollectFee(e) {
     }
   });
   var rc = { receiptNo: receiptNo, studentId: s.id, admissionNo: s.admissionNo || s.enr || '', name: s.name, cls: s.cls, session: s.session || currentSession(), date: today, month: d.month, counterNo: d.counterNo, lines: savedLines, payMode: d.payMode, payDate: d.payDate, bank: d.bank, number: d.number, total: total, totalWords: numberToWords(total), collector: state.user ? state.user.name : '' };
+  if (numPending) rc.numPending = true;
   if (!Array.isArray(db.receipts)) db.receipts = [];
   db.receipts.push(rc);
   refreshStudentFee(s.id);
-  logAudit('Fee collected', s.name + ' • ' + receiptNo + ' • ₹' + total);
-  addActivity('💰', 'green', 'Fee collected', s.name + ' • ' + receiptNo + ' • ' + inr(total));
+  logAudit('Fee collected', s.name + ' • ' + (receiptNo || 'pending') + ' • ₹' + total);
+  addActivity('💰', 'green', 'Fee collected', s.name + ' • ' + (receiptNo || 'pending') + ' • ' + inr(total));
   saveDB(db);
+  if (numPending) {
+    // No receipt number yet: show the student's fee profile instead of
+    // a receipt view (there is no receipt number to open).
+    state.savedReceiptId = null; state.feeStudent = s.id; collectDraft = null;
+    histReplaceTop({ view: 'fees', sub: 'profile:' + s.id });
+    renderApp();
+    toast(t('sbNumPendingReceipt'));
+    return false;
+  }
   state.savedReceiptId = receiptNo; collectDraft = null;
   histReplaceTop({ view: 'fees', sub: 'receipt:' + receiptNo }); // Back from the saved receipt goes to the fee profile, not the spent collect form
   renderApp();
