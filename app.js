@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 48;
+var APP_VERSION = 49;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -5031,9 +5031,11 @@ function renderApp() {
   var u = state.user;
   var me = state.role === 'student' ? meStudent() : null;
   var whoPhoto = me ? me.photo : null;
+  var schoolLogo = (db.profile && db.profile.logo) || null;
   var wa = $('whoAvatar');
-  if (whoPhoto) { wa.innerHTML = '<img src="' + esc(whoPhoto) + '" alt="">'; wa.classList.add('has-photo'); }
-  else { wa.textContent = initialsOf(u.name); wa.classList.remove('has-photo'); }
+  if (schoolLogo) { wa.innerHTML = '<img src="' + esc(schoolLogo) + '" alt="">'; wa.classList.add('has-logo'); wa.classList.remove('has-photo'); }
+  else if (whoPhoto) { wa.innerHTML = '<img src="' + esc(whoPhoto) + '" alt="">'; wa.classList.add('has-photo'); wa.classList.remove('has-logo'); }
+  else { wa.textContent = initialsOf(u.name); wa.classList.remove('has-photo'); wa.classList.remove('has-logo'); }
   $('whoName').textContent = u.name;
   $('whoRole').textContent = u.sub;
   var prof = db.profile;

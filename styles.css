@@ -355,6 +355,8 @@ tbody tr:hover{background:#F8FAFC}
 .mini-avatar img,.big-avatar img,.photo-prev img,.avatar img{width:100%;height:100%;object-fit:cover;display:block}
 .big-avatar{width:64px;height:64px;border-radius:50%;background:var(--navy);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:24px;flex:none;overflow:hidden}
 .avatar.has-photo{background:transparent}
+.topbar .who .avatar.has-logo{background:#fff;overflow:hidden}
+.topbar .who .avatar.has-logo img{object-fit:contain}
 .prof-head{display:flex;gap:14px;align-items:flex-start}
 .photo-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .photo-row input[type=file]{flex:1;min-width:180px}
