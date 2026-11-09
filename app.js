@@ -182,18 +182,13 @@ function sbLoginNewSchool(meta, email, pw, uid, token, serverSchool) {
   state.sb = { uid: uid, email: email };
   $('loginErr').classList.add('hidden');
   loginAs(a);
-  sbMaybeMigrate(a, uid, token); // fire-and-forget: never blocks login
-  // v30: second device — this school already has a server row, so pull
-  // its data down into the fresh empty workspace. Skipped for a fresh
-  // signup (no server row yet: nothing to download) and skipped entirely
-  // when the local store is not empty (download never overwrites).
-  // v31: after the download, start the server-first sync (pull + flush),
-  // so this device keeps matching the server from here on.
-  if (serverSchool && serverSchool.id) {
-    sbDownloadSchoolData(a, uid, token, serverSchool.id).then(function () { sbSyncStart(a, uid, token).catch(function () {}); }).catch(function () {});
-  } else {
-    sbSyncStart(a, uid, token).catch(function () {});
-  }
+  // v32: one serialized cycle does it all — upload-missing into the
+  // existing school row, then pull (for a fresh empty workspace the pull
+  // IS the download), then flush. No separate download step and no
+  // parallel migration: the v31 login fired both at once, and a
+  // laptop-first login left the phone's student stranded.
+  sbSyncCycle(a, uid, token).catch(function () {});
+  sbSyncAutoStart();
 }
 function sbShowNoSchool() {
   // v28: a Supabase account with no school tied to it (no local school
@@ -223,12 +218,10 @@ function sbFinishSupabaseLogin(data, email, pw) {
     state.sb = { uid: uid, email: email };
     $('loginErr').classList.add('hidden');
     loginAs(a);
-    sbMaybeMigrate(a, uid, data.access_token); // fire-and-forget: never blocks login
-    // v31: server-first — pull the server state (server wins) and flush
-    // the outbox, so this device matches every other device on this
-    // school account. Runs after the migration call; the sync's own
-    // guard handles the never-migrated case.
-    sbSyncStart(a, uid, data.access_token).catch(function () {});
+    // v32: one serialized cycle (upload-missing -> pull -> flush).
+    // Never fire the migration and the pull in parallel again.
+    sbSyncCycle(a, uid, data.access_token).catch(function () {});
+    sbSyncAutoStart();
     return;
   }
   // No local account for this Supabase user. A school is recognised in
@@ -353,17 +346,10 @@ function sbBoot() {
   // pending backup. Never blocks the local session.
   if (!state.user || !state.sb) return;
   if (state.user.role !== 'school') return;
-  if (sbLoadMig(state.sb.uid)) {
-    // v31: already backed up — pull the server state and flush the outbox.
-    sbSyncStart(state.user, state.sb.uid, null).catch(function () {});
-    return;
-  }
-  sbGetValidToken().then(function (tok) {
-    if (!tok) return;
-    sbMaybeMigrate(state.user, state.sb.uid, tok).then(function () {
-      sbSyncStart(state.user, state.sb.uid, tok).catch(function () {});
-    });
-  }).catch(function () { /* offline — retry on next login */ });
+  // v32: one serialized cycle covers both the never-migrated and the
+  // already-backed-up cases (upload-missing -> pull -> flush).
+  sbSyncCycle(state.user, state.sb.uid, null).catch(function () {});
+  sbSyncAutoStart();
 }
 
 /* ================= One-time migration upload (v27) =================
@@ -519,7 +505,159 @@ function sbVerifyCounts(token, schoolId, counts) {
   });
   return chain;
 }
+/* v32: upload-missing pass — the core of the automatic sync. Every local
+   row the server lacks goes up into the EXISTING server school row
+   (sbEnsureServerSchool finds it, never duplicates it). Runs on EVERY
+   sync cycle, never blocked by the migration flag (the flag only records
+   that the first full migration completed) and never skipped because a
+   server school row already exists — that skip is exactly what stranded
+   the phone's student in the live VM School failure (laptop logged in
+   first and created an empty server school; the phone's re-login then
+   took the pull path and its upload never ran). Idempotent:
+   sbUploadMissing dedupes by local_id. Rows already in the sync
+   snapshot were synced before, so their absence on the server means
+   they were deleted elsewhere — the pull drops them locally instead of
+   resurrecting them. Never rejects: a failed pass returns {done:false}
+   and the cycle's pull + needs-migration fallback still runs. */
+function sbSyncUploadMissing(account, sbUid, token) {
+  if (sbMigPromise) return sbMigPromise;
+  if (!account || account.role !== 'school') return Promise.resolve({ done: false, reason: 'not-school' });
+  if (!sbIsOnline()) return Promise.resolve({ done: false, reason: 'offline' });
+  var d = db; // the account's DB is loaded by loginAs before this runs
+  var schoolId = null, stuMap = {}, examMap = {};
+  var byId = {};
+  (d.students || []).forEach(function (s) { byId[s.id] = s; });
+  var snap = sbSnapLoad(account.uid);
+  function notSynced(table, key) { return !(snap[table] && snap[table][key] !== undefined); }
+  function freshRows(table, rows, keyFn) {
+    return rows.filter(function (row) { return notSynced(table, keyFn(row)); });
+  }
+  // Pre-check (one cycle, before any upload): does the server school
+  // already hold real data, and what are its counters? The school-row
+  // PATCH below must never clobber a populated server row's profile
+  // (the v31 pull test: server adm_counter 3 + admission_fee 200 must
+  // survive a fresh device's empty profile), but the counters must
+  // never go backwards either (offline admissions on this device).
+  var serverHasStudents = false, serverAdmCounter = 1, serverReceiptCounter = 1;
+  sbMigPromise = sbEnsureServerSchool(account, sbUid, token, d).then(function (id) {
+    schoolId = id;
+    if (!schoolId) throw new Error('no-school-id');
+    return Promise.all([
+      sbRest('GET', 'ss_students?select=id&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=1', token),
+      sbRest('GET', 'ss_schools?select=adm_counter,receipt_counter&id=eq.' + encodeURIComponent(schoolId), token)
+    ]);
+  }).then(function (res) {
+    serverHasStudents = !!(res[0].ok && Array.isArray(res[0].data) && res[0].data.length);
+    var row = (res[1].ok && Array.isArray(res[1].data) && res[1].data[0]) || null;
+    if (row) {
+      serverAdmCounter = row.adm_counter || 1;
+      serverReceiptCounter = row.receipt_counter || 1;
+    }
+    return sbUploadMissing(token, schoolId, 'ss_fee_structure', 'cls,fee_type',
+      freshRows('ss_fee_structure', (d.feeStructure || []).map(function (f) { return sbMapFeeStructure(f, schoolId); }),
+        function (row) { return row.cls + '|' + row.fee_type; }),
+      function (row) { return row.cls + '|' + row.fee_type; });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_students', 'local_id,id',
+      freshRows('ss_students', (d.students || []).map(function (s) { return sbMapStudent(s, schoolId); }),
+        function (row) { return row.local_id; }),
+      function (row) { return row.local_id; },
+      function (rows) { rows.forEach(function (r) { if (r.local_id) stuMap[r.local_id] = r.id; }); });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_teachers', 'local_id',
+      freshRows('ss_teachers', (d.teachers || []).map(function (te) { return sbMapTeacher(te, schoolId); }),
+        function (row) { return row.local_id; }),
+      function (row) { return row.local_id; });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_exams', 'local_id,id',
+      freshRows('ss_exams', (d.exams || []).map(function (e) { return sbMapExam(e, schoolId); }),
+        function (row) { return row.local_id; }),
+      function (row) { return row.local_id; },
+      function (rows) { rows.forEach(function (r) { if (r.local_id) examMap[r.local_id] = r.id; }); });
+  }).then(function () {
+    var feeRows = (d.feeRecords || []).map(function (r) { return sbMapFeeRecord(r, schoolId, stuMap); }).filter(function (p) { return !!p.student_id; });
+    return sbUploadMissing(token, schoolId, 'ss_fee_records', 'local_id',
+      freshRows('ss_fee_records', feeRows, function (row) { return row.local_id; }),
+      function (row) { return row.local_id; });
+  }).then(function () {
+    var attRows = sbFlattenAttendance(d).filter(function (a) { return !!stuMap[a.studentId]; })
+      .filter(function (a) { return notSynced('ss_attendance', a.date + '|' + a.cls + '|' + a.studentId); })
+      .map(function (a) {
+        return { school_id: schoolId, att_date: a.date, cls: a.cls, student_id: stuMap[a.studentId], status: a.status };
+      });
+    return sbUploadMissing(token, schoolId, 'ss_attendance', 'att_date,cls,student_id', attRows,
+      function (row) { return row.att_date + '|' + row.cls + '|' + row.student_id; });
+  }).then(function () {
+    var rcRows = (d.receipts || []).map(function (rc) { return sbMapReceipt(rc, schoolId, stuMap, byId); }).filter(function (p) { return !!p.student_id; });
+    return sbUploadMissing(token, schoolId, 'ss_receipts', 'receipt_no',
+      freshRows('ss_receipts', rcRows, function (row) { return row.receipt_no; }),
+      function (row) { return row.receipt_no; });
+  }).then(function () {
+    var markRows = (d.marks || []).filter(function (m) { return examMap[m.examId] && stuMap[m.studentId]; })
+      .filter(function (m) { return notSynced('ss_marks', m.examId + '|' + m.studentId); })
+      .map(function (m) {
+        return { school_id: schoolId, exam_id: examMap[m.examId], student_id: stuMap[m.studentId], marks: m.marks };
+      });
+    return sbUploadMissing(token, schoolId, 'ss_marks', 'exam_id,student_id', markRows,
+      function (row) { return row.exam_id + '|' + row.student_id; });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_homework', 'local_id',
+      freshRows('ss_homework', (d.homework || []).map(function (h) { return sbMapHomework(h, schoolId, stuMap); }),
+        function (row) { return row.local_id; }),
+      function (row) { return row.local_id; });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_notices', 'local_id',
+      freshRows('ss_notices', (d.notices || []).map(function (n) { return sbMapNotice(n, schoolId); }),
+        function (row) { return row.local_id; }),
+      function (row) { return row.local_id; });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_audit_log', 'ts,actor,action,details',
+      freshRows('ss_audit_log', (d.auditLog || []).map(function (a) { return sbMapAudit(a, schoolId); }),
+        function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; }),
+      function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; });
+  }).then(function () {
+    return sbUploadMissing(token, schoolId, 'ss_activities', 'title,sub',
+      freshRows('ss_activities', (d.activities || []).map(function (a) { return sbMapActivity(a, schoolId); }),
+        function (row) { return row.title + '|' + row.sub; }),
+      function (row) { return row.title + '|' + row.sub; });
+  }).then(function () {
+    // School profile + counters, last in the chain so a failure here
+    // can never block the table uploads. Two cases:
+    // - Server school is EMPTY (no students yet — e.g. created by
+    //   another device logging in first): push the full local profile
+    //   and counters, so the next pull does not reset them (an admission
+    //   counter reset to 1 would mint a duplicate admission number).
+    // - Server school already holds real data: push ONLY the counters,
+    //   and only upwards (max of local/server) — never clobber the
+    //   populated server row's profile with this device's stale one.
+    // Runs only when this device never synced the school row (no
+    // ss_schools entry in the snapshot) and the local profile has a
+    // name — a fresh device with an empty profile must never blank the
+    // server row's name.
+    if ((!snap.ss_schools || snap.ss_schools.school === undefined) && d.profile && d.profile.name) {
+      var payload = serverHasStudents
+        ? { adm_counter: Math.max(d.admCounter || 1, serverAdmCounter), receipt_counter: Math.max(d.receiptCounter || 1, serverReceiptCounter) }
+        : sbSyncSchoolPayload(d);
+      return sbRest('PATCH', 'ss_schools?id=eq.' + encodeURIComponent(schoolId), token, payload, 'return=minimal').then(function (r) {
+        if (!r.ok) throw new Error('patch-school');
+      });
+    }
+  }).then(function () {
+    sbMigPromise = null;
+    return { done: true, reason: 'ok', schoolId: schoolId };
+  }).catch(function (err) {
+    sbMigPromise = null;
+    return { done: false, reason: 'error', detail: (err && err.message) || 'error' };
+  });
+  return sbMigPromise;
+}
 function sbMaybeMigrate(account, sbUid, token, force) {
+  // One-time full migration (v27): the upload pass plus a read-back
+  // count verification; only then is the account marked migrated. Used
+  // by the Back Up Now button (forced) and by the cycle's
+  // needs-migration fallback. The everyday path is the cycle's upload
+  // pass (sbSyncUploadMissing), which runs without the flag or the
+  // verification gate.
   if (sbMigPromise) return sbMigPromise;
   if (!account || account.role !== 'school') return Promise.resolve({ done: false, reason: 'not-school' });
   if (!force && sbLoadMig(sbUid)) return Promise.resolve({ done: true, reason: 'already' });
@@ -527,82 +665,26 @@ function sbMaybeMigrate(account, sbUid, token, force) {
   sbSetStatus('uploading');
   var d = db; // the account's DB is loaded by loginAs before this runs
   var counts = sbLocalCounts(d);
-  var schoolId = null, stuMap = {}, examMap = {};
-  var byId = {};
-  (d.students || []).forEach(function (s) { byId[s.id] = s; });
-  sbMigPromise = sbEnsureServerSchool(account, sbUid, token, d).then(function (id) {
-    schoolId = id;
-    if (!schoolId) throw new Error('no-school-id');
-    return sbUploadMissing(token, schoolId, 'ss_fee_structure', 'cls,fee_type',
-      (d.feeStructure || []).map(function (f) { return sbMapFeeStructure(f, schoolId); }),
-      function (row) { return row.cls + '|' + row.fee_type; });
-  }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_students', 'local_id,id',
-      (d.students || []).map(function (s) { return sbMapStudent(s, schoolId); }),
-      function (row) { return row.local_id; },
-      function (rows) { rows.forEach(function (r) { if (r.local_id) stuMap[r.local_id] = r.id; }); });
-  }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_teachers', 'local_id',
-      (d.teachers || []).map(function (te) { return sbMapTeacher(te, schoolId); }),
-      function (row) { return row.local_id; });
-  }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_exams', 'local_id,id',
-      (d.exams || []).map(function (e) { return sbMapExam(e, schoolId); }),
-      function (row) { return row.local_id; },
-      function (rows) { rows.forEach(function (r) { if (r.local_id) examMap[r.local_id] = r.id; }); });
-  }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_fee_records', 'local_id',
-      (d.feeRecords || []).map(function (r) { return sbMapFeeRecord(r, schoolId, stuMap); }),
-      function (row) { return row.local_id; });
-  }).then(function () {
-    var attRows = sbFlattenAttendance(d).filter(function (a) { return !!stuMap[a.studentId]; }).map(function (a) {
-      return { school_id: schoolId, att_date: a.date, cls: a.cls, student_id: stuMap[a.studentId], status: a.status };
-    });
-    return sbUploadMissing(token, schoolId, 'ss_attendance', 'att_date,cls,student_id', attRows,
-      function (row) { return row.att_date + '|' + row.cls + '|' + row.student_id; });
-  }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_receipts', 'receipt_no',
-      (d.receipts || []).map(function (rc) { return sbMapReceipt(rc, schoolId, stuMap, byId); }),
-      function (row) { return row.receipt_no; });
-  }).then(function () {
-    var markRows = (d.marks || []).filter(function (m) { return examMap[m.examId] && stuMap[m.studentId]; }).map(function (m) {
-      return { school_id: schoolId, exam_id: examMap[m.examId], student_id: stuMap[m.studentId], marks: m.marks };
-    });
-    return sbUploadMissing(token, schoolId, 'ss_marks', 'exam_id,student_id', markRows,
-      function (row) { return row.exam_id + '|' + row.student_id; });
-  }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_homework', 'local_id',
-      (d.homework || []).map(function (h) { return sbMapHomework(h, schoolId, stuMap); }),
-      function (row) { return row.local_id; });
-  }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_notices', 'local_id',
-      (d.notices || []).map(function (n) { return sbMapNotice(n, schoolId); }),
-      function (row) { return row.local_id; });
-  }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_audit_log', 'ts,actor,action,details',
-      (d.auditLog || []).map(function (a) { return sbMapAudit(a, schoolId); }),
-      function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; });
-  }).then(function () {
-    return sbUploadMissing(token, schoolId, 'ss_activities', 'title,sub',
-      (d.activities || []).map(function (a) { return sbMapActivity(a, schoolId); }),
-      function (row) { return row.title + '|' + row.sub; });
-  }).then(function () {
-    return sbVerifyCounts(token, schoolId, counts);
-  }).then(function (v) {
-    sbMigPromise = null;
-    if (!v.ok) {
-      sbSetStatus('failed', v.detail);
-      return { done: false, reason: 'verify', detail: v.detail };
+  return sbSyncUploadMissing(account, sbUid, token).then(function (up) {
+    if (!up.done) {
+      sbSetStatus('failed', up.detail || '');
+      return { done: false, reason: up.reason || 'error', detail: up.detail || '' };
     }
-    sbSaveMig(sbUid, { at: new Date().toISOString(), schoolId: schoolId, counts: counts });
-    sbSetStatus('synced');
-    return { done: true, reason: 'ok', schoolId: schoolId, counts: counts };
+    return sbVerifyCounts(token, up.schoolId, counts).then(function (v) {
+      sbMigPromise = null;
+      if (!v.ok) {
+        sbSetStatus('failed', v.detail);
+        return { done: false, reason: 'verify', detail: v.detail };
+      }
+      sbSaveMig(sbUid, { at: new Date().toISOString(), schoolId: up.schoolId, counts: counts });
+      sbSetStatus('synced');
+      return { done: true, reason: 'ok', schoolId: up.schoolId, counts: counts };
+    });
   }).catch(function (err) {
     sbMigPromise = null;
     sbSetStatus('failed', (err && err.message) || 'error');
     return { done: false, reason: 'error', detail: (err && err.message) || 'error' };
   });
-  return sbMigPromise;
 }
 function sbRetryMigration() {
   if (!state.user || state.user.role !== 'school') { toast(t('sbStatusNotSchool')); return; }
@@ -785,7 +867,17 @@ function sbRetryDownload() {
    push and pull are serialised through the lock so they can never
    interleave. The outbox carries the full local row (not just a key), so
    a pull that replaces the mirror mid-flight cannot lose an offline edit:
-   the flush pushes the queued row, then a second pull restores it. */
+   the flush pushes the queued row, then a second pull restores it.
+   v32: FULLY AUTOMATIC — one serialized cycle (upload-missing -> pull
+   -> flush) on login, app start, focus / visibilitychange, the online
+   event, a 30s interval while open, and after every local save's push.
+   The upload pass runs on every cycle (never blocked by the migration
+   flag, never skipped because a server school row exists) into the
+   existing school row — the v31 login fired the migration and the pull
+   in parallel, so a laptop-first login left the phone's student stranded
+   until the user pressed Back Up Now. That manual step is gone: the
+   buttons in Settings stay as manual overrides only. At most one cycle
+   runs at a time; a second trigger queues one follow-up, never two. */
 var SB_OUTBOX_KEY = 'schoolSaathiOutbox'; // per Supabase uid: [{table,key,op,row,at}]
 var SB_SRVID_KEY = 'schoolSaathiSrvIds'; // per Supabase uid: {table: {localKey: serverUuid}}
 var SB_SNAP_KEY = 'schoolSaathiSyncSnap'; // per local account uid: {table: {key: hash}}
@@ -841,6 +933,28 @@ function sbSnapClear(uid) { try { localStorage.removeItem(SB_SNAP_KEY + ':' + ui
 function sbSyncResetMemory() {
   if (sbSyncTimer) { clearTimeout(sbSyncTimer); sbSyncTimer = null; }
   sbSyncSnapshot = null; sbSyncSnapUid = null;
+}
+/* v32: automatic pull — no button, no refresh, no logout/login. While
+   the app is open and a school is logged in, the full cycle runs on a
+   30s interval plus every foreground event (focus / visibilitychange /
+   online) and after every local save's push. The cycle itself re-checks
+   the session and connectivity, so the tick stays a one-liner. Local-
+   only accounts never start the interval (sbSyncAutoStart is called
+   only from the Supabase login/boot paths). */
+var sbSyncIntervalMs = 30000;
+var sbSyncIntervalId = null;
+function sbSyncAutoTick() {
+  if (sbSyncActive() && sbIsOnline()) sbSyncCycle().catch(function () {});
+}
+function sbSyncAutoStart() {
+  if (sbSyncIntervalId) return; // idempotent: one interval per session
+  if (typeof setInterval !== 'function') return;
+  sbSyncIntervalId = setInterval(sbSyncAutoTick, sbSyncIntervalMs);
+}
+function sbSyncAutoStop() {
+  if (!sbSyncIntervalId) return;
+  if (typeof clearInterval === 'function') clearInterval(sbSyncIntervalId);
+  sbSyncIntervalId = null;
 }
 function sbSyncActive() {
   // Server-first sync applies only to a school with a live Supabase
@@ -1075,7 +1189,11 @@ function sbSyncOnSave() {
 }
 function sbSyncScheduleFlush() {
   if (sbSyncTimer) clearTimeout(sbSyncTimer);
-  sbSyncTimer = setTimeout(function () { sbSyncTimer = null; sbSyncFlushNow().catch(function () {}); }, sbSyncDebounceMs);
+  // v32: after a local save, run the full cycle (not just a push): the
+  // cycle uploads, pulls other devices' changes, then flushes. A pull
+  // after the push is how this device sees another device's edits
+  // without any manual step.
+  sbSyncTimer = setTimeout(function () { sbSyncTimer = null; sbSyncCycle().catch(function () {}); }, sbSyncDebounceMs);
 }
 function sbSyncLocalRow(entry) {
   // The current local row for an outbox entry (null when it vanished).
@@ -1344,10 +1462,15 @@ function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
 function sbSyncPull(account, sbUid, token, serverSchoolId) {
   return sbSyncWithLock(function () { return sbSyncPullRun(account, sbUid, token, serverSchoolId); });
 }
-function sbSyncStartRun(account, sbUid, token) {
-  // Full sync: pull (server wins, guarded) -> flush the outbox -> pull
-  // again when the flush pushed anything (restores flushed rows into
-  // the mirror and picks up concurrent changes from other devices).
+function sbSyncCycleRun(account, sbUid, token) {
+  // v32: ONE serialized cycle — upload-missing first, then pull, then
+  // flush. Never run the upload and the pull in parallel again: v31
+  // login fired sbMaybeMigrate and sbSyncStart side by side, and a
+  // laptop-first login left the phone's student stranded (the pull saw
+  // the empty server school while the upload never ran). Upload first
+  // guarantees local rows land on the server before the server-wins
+  // pull can see them; the pull then brings them back into the mirror
+  // and picks up other devices' changes; the flush pushes the outbox.
   var act = sbSyncActive();
   if (!act) return Promise.resolve({ done: false, reason: 'no-session' });
   account = account || act.account;
@@ -1361,10 +1484,13 @@ function sbSyncStartRun(account, sbUid, token) {
   var tokP = token ? Promise.resolve(token) : sbGetValidToken();
   return tokP.then(function (tok) {
     if (!tok) { sbSetStatus('offline'); return { done: false, reason: 'no-token' }; }
-    return sbSyncPullRun(account, sbUid, tok, null).then(function (pull) {
+    return sbSyncUploadMissing(account, sbUid, tok).then(function () {
+      return sbSyncPullRun(account, sbUid, tok, null);
+    }).then(function (pull) {
       if (pull.reason === 'needs-migration') {
-        // Never migrated + local data + empty server: upload first,
-        // then pull the (now populated) server state.
+        // The guard still hit (the upload pass could not land a row):
+        // run the legacy full migration once, then pull the (now
+        // populated) server state.
         return sbMaybeMigrate(account, sbUid, tok, true).then(function () {
           return sbSyncPullRun(account, sbUid, tok, null);
         });
@@ -1401,8 +1527,29 @@ function sbSyncStartRun(account, sbUid, token) {
     return r;
   });
 }
+var sbSyncCyclePending = null; // the single queued follow-up cycle, if any
+function sbSyncCycle(account, sbUid, token) {
+  // One cycle at a time, at most one queued follow-up: rapid triggers
+  // (focus + interval + online at once) coalesce instead of stacking
+  // overlapping runs. Callers that arrive while a run is in flight join
+  // the queued follow-up instead of starting their own.
+  if (sbSyncPromise) {
+    if (!sbSyncCyclePending) {
+      sbSyncCyclePending = sbSyncPromise.then(function () {
+        sbSyncCyclePending = null;
+        return sbSyncCycle(account, sbUid, token);
+      }, function () {
+        sbSyncCyclePending = null;
+        return sbSyncCycle(account, sbUid, token);
+      });
+    }
+    return sbSyncCyclePending;
+  }
+  return sbSyncWithLock(function () { return sbSyncCycleRun(account, sbUid, token); });
+}
 function sbSyncStart(account, sbUid, token) {
-  return sbSyncWithLock(function () { return sbSyncStartRun(account, sbUid, token); });
+  // v31 name, kept for the Settings buttons and older call sites.
+  return sbSyncCycle(account, sbUid, token);
 }
 
 // Public Apply form -> server (anon). MUST use return=minimal: anon has no
@@ -2920,6 +3067,7 @@ function logout() {
   sbClearSession();
   state.sb = null;
   sbSyncResetMemory(); // v31: drop the in-memory snapshot + pending flush timer (the persisted outbox/snapshot stay for the next login)
+  sbSyncAutoStop(); // v32: stop the auto-pull interval (restarts on the next login)
   lastBackAt = 0; histExiting = false;
   histReset('login'); // back after logout cannot re-enter the app
   $('loginId').value = ''; $('loginPw').value = '';
@@ -5123,10 +5271,17 @@ document.addEventListener('DOMContentLoaded', function () {
   sbBoot(); // password-reset links + stored server session / pending backup
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('popstate', onPopState); // Android back button
-    // v31: reconnect — flush the outbox and pull changes from other
-    // devices. Fire-and-forget; a failed sync retries on next login.
+    // v32: reconnect + foreground — pull other devices' changes the
+    // moment the app comes back (online, tab visible, window focused).
+    // Fire-and-forget; a failed cycle retries on the next trigger.
     window.addEventListener('online', function () {
-      if (state.user && state.user.role === 'school' && state.sb) sbSyncStart(state.user, state.sb.uid, null).catch(function () {});
+      if (state.user && state.user.role === 'school' && state.sb) sbSyncCycle(state.user, state.sb.uid, null).catch(function () {});
+    });
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible' && state.user && state.user.role === 'school' && state.sb) sbSyncCycle(state.user, state.sb.uid, null).catch(function () {});
+    });
+    window.addEventListener('focus', function () {
+      if (state.user && state.user.role === 'school' && state.sb) sbSyncCycle(state.user, state.sb.uid, null).catch(function () {});
     });
   }
   if ('serviceWorker' in navigator && window.location.protocol.indexOf('http') === 0) {
@@ -5135,3 +5290,5 @@ document.addEventListener('DOMContentLoaded', function () {
     } catch (e) { /* ignore — app works without SW */ }
   }
 });
+
+
