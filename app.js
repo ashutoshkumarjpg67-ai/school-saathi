@@ -3021,9 +3021,6 @@ function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
     return { done: false, reason: 'error', detail: (err && err.message) || 'error' };
   });
 }
-function sbSyncPull(account, sbUid, token, serverSchoolId) {
-  return sbSyncWithLock(function () { return sbSyncPullRun(account, sbUid, token, serverSchoolId); });
-}
 /* ================= v33: atomic server-side numbering =================
    The live bug (9 Nov 2026, VM School): the phone added Ankit Kumar
    (ADM-2025-001 / ENR-001); the laptop, whose local store was empty,
@@ -7336,16 +7333,6 @@ function toggleStuSelAll(checked) {
 }
 function clearStuSel() { state.stuSel = {}; renderPage(); }
 function stuSelCount() { return Object.keys(state.stuSel || {}).length; }
-function collectFee(id) {
-  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
-  var r = db.feeRecords.find(function (x) { return x.id === id; });
-  if (!r || r.status !== 'Pending') return;
-  r.status = 'Collected';
-  logAudit('Fee collected', r.student + ' • ' + inr(r.amount));
-  addActivity('💰', 'green', 'New fee payment received', 'by ' + r.student + ' • ' + inr(r.amount));
-  saveDB(db); renderApp();
-  toast('✓ ' + inr(r.amount) + ' ' + t('tCollectedFrom') + ' ' + r.student + '.');
-}
 
 /* ================= Phase 5: fee collection receipt (v13) =================
    Modelled on the DPS fee receipt the user sent: school header, FEE RECEIPT
