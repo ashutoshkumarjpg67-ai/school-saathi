@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>School Saathi — Smart Education. Better Tomorrow.</title>
+<meta name="description" content="School Saathi — a school management app for schools in Bihar: attendance, fees & receipts, exams & marks, homework, notices and WhatsApp alerts.">
+<meta name="theme-color" content="#0A1E4B">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<style>
+  :root{
+    --navy:#0A1E4B; --navy2:#122a63; --gold:#F5B301; --ink:#1e293b;
+    --muted:#64748b; --line:#e2e8f0; --bg:#f8fafc; --card:#ffffff; --green:#15803d;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans",sans-serif;color:var(--ink);background:var(--bg);line-height:1.6}
+  a{color:var(--navy2)}
+  .wrap{max-width:960px;margin:0 auto;padding:0 20px}
+  header.top{background:var(--navy);color:#fff;padding:14px 0}
+  header.top .wrap{display:flex;align-items:center;gap:12px}
+  header.top img{width:40px;height:40px}
+  header.top b{font-size:20px}
+  header.top small{display:block;color:#cbd5e1;font-size:13px;line-height:1.3}
+  header.top .spacer{flex:1}
+  .btn{display:inline-block;background:var(--gold);color:#1e293b;font-weight:700;text-decoration:none;padding:12px 22px;border-radius:10px;border:0;cursor:pointer}
+  .btn.ghost{background:transparent;color:#fff;border:1.5px solid #fff}
+  .btn.dark{background:var(--navy);color:#fff}
+  .hero{background:linear-gradient(180deg,var(--navy),var(--navy2));color:#fff;text-align:center;padding:56px 20px 64px}
+  .hero img{width:84px;height:84px}
+  .hero h1{font-size:40px;margin:16px 0 4px;line-height:1.15}
+  .hero h1 span{color:var(--gold)}
+  .hero .tagline{font-size:19px;color:#e2e8f0;margin:0 0 8px}
+  .hero .tagline-hi{font-size:16px;color:#cbd5e1;margin:0 0 20px}
+  .hero p.lede{max-width:640px;margin:0 auto 28px;font-size:17px;color:#e2e8f0}
+  .hero .cta-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  .hero .note{margin-top:18px;font-size:13px;color:#cbd5e1}
+  section{padding:44px 0}
+  section h2{font-size:26px;margin:0 0 4px;color:var(--navy)}
+  section h2 .hi{font-size:18px;color:var(--muted);font-weight:400}
+  section .sub{color:var(--muted);margin:0 0 24px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px}
+  .card .ico{font-size:28px}
+  .card h3{margin:8px 0 4px;font-size:17px;color:var(--navy)}
+  .card p{margin:0;color:var(--muted);font-size:15px}
+  .steps{counter-reset:step;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+  .step{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px}
+  .step .n{display:inline-block;background:var(--navy);color:#fff;width:34px;height:34px;line-height:34px;text-align:center;border-radius:50%;font-weight:700}
+  .step h3{margin:12px 0 4px;font-size:17px;color:var(--navy)}
+  .step p{margin:0;color:var(--muted);font-size:15px}
+  .shots{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+  .shot{background:#e2e8f0;border:1px dashed #94a3b8;border-radius:14px;min-height:180px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:20px;color:var(--muted)}
+  .shot b{color:var(--ink)}
+  .shot .badge{display:inline-block;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700;margin-top:8px}
+  .shot img{max-width:100%;border-radius:8px}
+  .price-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:28px;text-align:center;max-width:520px;margin:0 auto}
+  .price-card .tbd{font-size:30px;font-weight:800;color:var(--navy)}
+  .faq details{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin-bottom:10px}
+  .faq summary{font-weight:700;color:var(--navy);cursor:pointer}
+  .faq p{margin:8px 0 0;color:var(--muted);font-size:15px}
+  .legal-links{display:flex;gap:24px;flex-wrap:wrap}
+  .legal-links a{font-weight:600}
+  .soon{font-size:12px;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;border-radius:999px;padding:1px 8px;font-weight:700;white-space:nowrap}
+  footer{background:var(--navy);color:#cbd5e1;padding:28px 0;font-size:14px}
+  footer a{color:#fff}
+  footer .wrap p{margin:6px 0}
+  .status-note{background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:14px 18px;font-size:14px;color:#78350f}
+  @media (max-width:560px){.hero h1{font-size:30px}}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <img src="icons/logo.svg" alt="School Saathi logo" width="40" height="40">
+    <div><b>School Saathi</b><small>Smart Education. Better Tomorrow.</small></div>
+    <span class="spacer"></span>
+    <a class="btn ghost" href="index.html">Open the app</a>
+  </div>
+</header>
+
+<div class="hero">
+  <img src="icons/logo.svg" alt="School Saathi logo" width="84" height="84">
+  <h1>School <span>Saathi</span></h1>
+  <p class="tagline">Smart Education. Better Tomorrow.</p>
+  <p class="tagline-hi">बिहार के स्कूलों के लिए एक सरल स्कूल मैनेजमेंट ऐप।</p>
+  <p class="lede">School Saathi helps a school keep attendance, fees, exams, homework and notices in one place — on the school's own device, with a backup to the server when online.</p>
+  <div class="cta-row">
+    <a class="btn" href="index.html">Open the app →</a>
+    <a class="btn ghost" href="index.html">Create a school account</a>
+  </div>
+  <p class="note">New school? Create your account inside the app — one account per school. No download needed; it works in the browser and can be installed as an app.</p>
+</div>
+
+<main class="wrap">
+
+  <section id="features">
+    <h2>What you get <span class="hi">— आपको क्या मिलता है</span></h2>
+    <p class="sub">The same features shown on the app's login screen — nothing more, nothing invented.</p>
+    <div class="grid">
+      <div class="card"><div class="ico">✓</div><h3>Attendance</h3><p>Mark daily attendance class-wise, and see who is present or absent.</p></div>
+      <div class="card"><div class="ico">💰</div><h3>Fees &amp; Receipts</h3><p>Record fee payments and print receipts for parents.</p></div>
+      <div class="card"><div class="ico">📝</div><h3>Exams &amp; Marks</h3><p>Create exams, enter marks and see results.</p></div>
+      <div class="card"><div class="ico">📚</div><h3>Homework</h3><p>Give homework and keep track of it class-wise.</p></div>
+      <div class="card"><div class="ico">💬</div><h3>WhatsApp Alerts</h3><p>Send fee and attendance reminders to parents on WhatsApp.</p></div>
+      <div class="card"><div class="ico">📢</div><h3>Notices</h3><p>Share school notices with students and staff.</p></div>
+      <div class="card"><div class="ico">📊</div><h3>Reports</h3><p>See fee collection and attendance reports for your school.</p></div>
+      <div class="card"><div class="ico">📶</div><h3>Works offline</h3><p>Your data stays on your device and backs up to the server when you are online.</p></div>
+    </div>
+  </section>
+
+  <section id="how-it-works">
+    <h2>How it works <span class="hi">— कैसे काम करता है</span></h2>
+    <p class="sub">Three steps, and the school is running on School Saathi.</p>
+    <div class="steps">
+      <div class="step"><span class="n">1</span><h3>School signs up</h3><p>Open the app and create a school account with the school name, your name, email and password. Each school gets its own account.</p></div>
+      <div class="step"><span class="n">2</span><h3>Add students</h3><p>Add students class-wise (Nursery to Class 12). The school sets each student's admission number and PIN.</p></div>
+      <div class="step"><span class="n">3</span><h3>Attendance, fees, exams</h3><p>Mark attendance daily, collect fees with receipts, create exams and share homework and notices.</p></div>
+    </div>
+  </section>
+
+  <section id="screenshots">
+    <h2>Screenshots</h2>
+    <p class="sub">Real screenshots of the app will appear here. The slots below are placeholders — no screenshot has been added yet.</p>
+    <div class="shots">
+      <div class="shot"><b>Dashboard</b><span>School dashboard view</span><img src="screenshots/dashboard.png" alt="Dashboard screenshot — pending" style="display:none" onerror="this.remove()"><span class="badge">Screenshot pending</span></div>
+      <div class="shot"><b>Attendance</b><span>Marking attendance for a class</span><img src="screenshots/attendance.png" alt="Attendance screenshot — pending" style="display:none" onerror="this.remove()"><span class="badge">Screenshot pending</span></div>
+      <div class="shot"><b>Fees &amp; Receipts</b><span>Fee collection and a receipt</span><img src="screenshots/fees.png" alt="Fees screenshot — pending" style="display:none" onerror="this.remove()"><span class="badge">Screenshot pending</span></div>
+      <div class="shot"><b>Exams &amp; Marks</b><span>Exam results view</span><img src="screenshots/exams.png" alt="Exams screenshot — pending" style="display:none" onerror="this.remove()"><span class="badge">Screenshot pending</span></div>
+    </div>
+    <p style="color:var(--muted);font-size:14px">Planned image files: <code>screenshots/dashboard.png</code>, <code>screenshots/attendance.png</code>, <code>screenshots/fees.png</code>, <code>screenshots/exams.png</code> — none of these files exist yet.</p>
+  </section>
+
+  <section id="pricing">
+    <h2>Pricing <span class="hi">— कीमत</span></h2>
+    <div class="price-card">
+      <div class="tbd">TBD — pricing not decided yet</div>
+      <p style="color:var(--muted)">School Saathi's pricing has not been decided yet. There is no price, plan or payment option on this page because none has been fixed. This section will be updated once the pricing is decided.</p>
+    </div>
+  </section>
+
+  <section id="legal">
+    <h2>Privacy &amp; Terms</h2>
+    <p class="sub">The Privacy Policy and Terms of Use are being written. The links below point to where they will live — the pages do not exist yet.</p>
+    <div class="legal-links">
+      <span><a href="privacy-policy.html">Privacy Policy</a> <span class="soon">Coming soon</span></span>
+      <span><a href="terms.html">Terms of Use</a> <span class="soon">Coming soon</span></span>
+    </div>
+    <p style="color:var(--muted);font-size:14px;margin-top:14px">Note: no policy text is published here. The policy and terms will be added only after they are written and approved.</p>
+  </section>
+
+  <section id="contact">
+    <h2>Contact &amp; support <span class="hi">— संपर्क</span></h2>
+    <p class="sub">For help with your school account, write to the support address listed in the app:</p>
+    <p><b>Email:</b> <a href="mailto:support@school-saathi.in">support@school-saathi.in</a></p>
+    <p style="color:var(--muted);font-size:14px">This is the address listed in the app's records. Whether this mailbox is actively monitored has not been verified yet.</p>
+  </section>
+
+  <section id="faq" class="faq">
+    <h2>Frequently asked questions <span class="hi">— अक्सर पूछे जाने वाले सवाल</span></h2>
+    <p class="sub">Answered only from what the app actually does today.</p>
+    <details>
+      <summary>Is School Saathi free?</summary>
+      <p>Pricing has not been decided yet, so we cannot say it is free or paid. The pricing section above will be updated once a decision is made.</p>
+    </details>
+    <details>
+      <summary>Which classes does it support?</summary>
+      <p>Nursery to Class 12. Students are added class-wise, and attendance, fees, exams and homework are all managed per class.</p>
+    </details>
+    <details>
+      <summary>Does it work without internet?</summary>
+      <p>Yes. The app works offline — data stays on the school's device and backs up to the server when the device is online again.</p>
+    </details>
+    <details>
+      <summary>How does a school sign up?</summary>
+      <p>Open the app, choose "Create a school account" and fill in the school name, your name, email and password. Each school has its own account, and a new school starts empty.</p>
+    </details>
+    <details>
+      <summary>How do students log in?</summary>
+      <p>Students log in with their admission number and a PIN set by the school. If a student does not know the PIN, the school provides it. Teachers log in with an account created by the school admin.</p>
+    </details>
+  </section>
+
+  <section>
+    <div class="status-note"><b>Please note:</b> This page is a standalone introduction to School Saathi. It is <b>not</b> the app's entry point — the app still opens at <a href="index.html">index.html</a>, and this page changes nothing about how the app is installed or opened. Wiring this page as the site's front page is a separate decision (see <code>docs/landing-hosting-options.md</code>).</div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p><b style="color:#fff">School Saathi</b> — Smart Education. Better Tomorrow.</p>
+    <p><a href="index.html">Open the app</a> · <a href="privacy-policy.html">Privacy Policy</a> (coming soon) · <a href="terms.html">Terms of Use</a> (coming soon) · <a href="mailto:support@school-saathi.in">support@school-saathi.in</a></p>
+    <p>© 2026 School Saathi</p>
+  </div>
+</footer>
+
+</body>
+</html>
