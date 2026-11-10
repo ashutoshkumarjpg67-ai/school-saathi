@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 55;
+var APP_VERSION = 56;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -1734,7 +1734,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // v47 extends the same keep to attendance and marks, whose merges
   // used to drop a queued row on snapshot grounds with no outbox
   // check at all.
-  var outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {} };
+  var outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {} };
   try {
     var uid46 = (account && account.sbUid) || (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
     if (uid46) {
@@ -1744,6 +1744,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
           if (e.table === 'ss_receipts') outboxUpsert46.receipts[e.key] = true;
           if (e.table === 'ss_attendance') outboxUpsert46.attendance[e.key] = true;
           if (e.table === 'ss_marks') outboxUpsert46.marks[e.key] = true;
+          if (e.table === 'ss_students') outboxUpsert46.students[e.key] = true;
         }
       });
     }
@@ -1813,6 +1814,29 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   var stuMap = {}, examMap = {};
   var oldStudents = d.students || [];
   d.students = mergeById('ss_students', oldStudents, byTable.ss_students || [], function (row) { var s = sbRowToStudent(row); stuMap[row.id] = s.id; return s; });
+  // v56: a student with a pending outbox upsert keeps its LOCAL row through the pull —
+  // the server row is the pre-change version, and letting it win wipes the unconfirmed
+  // local change. Live v55: the admin re-set the PIN to 2108 (queued), the pull replaced
+  // the local hash(2108) with the server's stale hash(0000), the flush pushed 2108, and
+  // the pass-1 tail re-diff then re-queued the stale local row (0000) and pass 2
+  // re-uploaded it — undoing the push in the same flush, so the login kept failing.
+  // Same class as the v46/v47 keeps for fee records, receipts, attendance and marks;
+  // students were the one table without it. A row deleted elsewhere has no pending
+  // upsert, so it still drops; a seed row never carries a pending upsert (the diff
+  // never queues it) and is excluded here too. The kept row stays out of the snapshot
+  // (via keep()) until the flush confirms it, exactly like the other keeps.
+  (function () {
+    var oldById56 = {};
+    oldStudents.forEach(function (s) { oldById56[s.id] = s; });
+    d.students = d.students.map(function (s) {
+      var old = oldById56[s.id];
+      if (old && outboxUpsert46.students[s.id] && !sbIsSeedRow('ss_students', old, d)) {
+        keep('ss_students', s.id);
+        return old;
+      }
+      return s;
+    });
+  })();
   // v55: merge-keep for the student PIN — a server row carrying no PIN
   // must never wipe the local PIN/hash. The pull replaces the row
   // wholesale (server wins), so when the server has no parent_pin,
