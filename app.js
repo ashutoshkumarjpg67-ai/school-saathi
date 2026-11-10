@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 65;
+var APP_VERSION = 66;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -9315,6 +9315,13 @@ function studentDashboard() {
   if (state.profileStudent === me.id) return studentProfilePage(me.id);
   var myHw = db.homework.filter(function (h) { return h.cls === me.cls; });
   var doneCount = myHw.filter(function (h) { return h.doneBy.indexOf(me.id) !== -1; }).length;
+  // v66: the Results tile showed the STORED result field (0 when the
+  // school never set one) even when live marks existed — Ankit scored
+  // 42/50 but the tile read 0%. The profile overview already prefers
+  // the live marks (latestExamPct); the tile follows it, falling back
+  // to the stored value only when no marks exist at all.
+  var lex66 = latestExamPct(me);
+  var resShow66 = lex66 ? lex66.pct : (me.result || 0);
   var hwItems = myHw.map(function (h) {
     var done = h.doneBy.indexOf(me.id) !== -1;
     return '<div class="hw-item ' + (done ? 'done' : '') + '"><input type="checkbox" ' + (done ? 'checked' : '') + ' onchange="toggleHw(\'' + h.id + '\', this.checked)" aria-label="Mark done"><div><b>' + esc(h.title) + '</b><span>' + esc(h.subject) + ' • Due ' + esc(h.due) + '</span></div></div>';
@@ -9328,7 +9335,7 @@ function studentDashboard() {
     '<div class="tile-grid">' +
     '<div class="tile green" onclick="go(\'attendance\')" style="cursor:pointer"><div class="n">' + studentAttPct(me) + '%</div><div class="l">' + t('tileAtt') + '</div></div>' +
     '<div class="tile yellow" onclick="go(\'fees\')" style="cursor:pointer"><div class="n">' + studentFeeStatus(me.id) + '</div><div class="l">' + t('tileFees') + '</div></div>' +
-    '<div class="tile purple" onclick="go(\'results\')" style="cursor:pointer"><div class="n">' + me.result + '%</div><div class="l">' + t('tileResults') + '</div></div>' +
+    '<div class="tile purple" onclick="go(\'results\')" style="cursor:pointer"><div class="n">' + resShow66 + '%</div><div class="l">' + t('tileResults') + '</div></div>' +
     '<div class="tile blue" onclick="go(\'homework\')" style="cursor:pointer"><div class="n">' + myHw.length + '</div><div class="l">' + t('tileHw') + ' (' + doneCount + ' ' + t('doneSuffix') + ')</div></div>' +
     '</div></div>' +
     '<div class="card" style="margin-top:16px"><h3>' + t('myHomework') + '</h3><p class="card-sub">' + t('myHwSub') + '</p>' + hwItems + '</div>' +
