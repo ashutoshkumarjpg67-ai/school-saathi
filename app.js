@@ -753,14 +753,22 @@ function doRecover(e) {
   });
   return false;
 }
+// Shared form-error helper (was 4 nested `fail` copies in doResetPassword,
+// doSignup, saveStudent and saveTeacher): shows msg in el (if present),
+// optionally also as a toast, and returns false so submit handlers can
+// `return failInto(...)`.
+function failInto(el, msg, withToast) {
+  if (el) { el.textContent = msg; el.classList.remove('hidden'); }
+  if (withToast) toast(msg);
+  return false;
+}
 function doResetPassword(e) {
   e.preventDefault();
   var pw = $('resetPw').value, pw2 = $('resetPw2').value;
   var err = $('resetErr');
-  function fail(msg) { err.textContent = msg; err.classList.remove('hidden'); return false; }
-  if (pw.length < 6) return fail(t('tPwShort'));
-  if (pw !== pw2) return fail(t('tPwMismatch'));
-  if (!sbRecoveryToken) return fail(t('sbResetFailed'));
+  if (pw.length < 6) return failInto(err, t('tPwShort'));
+  if (pw !== pw2) return failInto(err, t('tPwMismatch'));
+  if (!sbRecoveryToken) return failInto(err, t('sbResetFailed'));
   var tok = sbRecoveryToken;
   sbSetNewPassword(tok, pw).then(function (r) {
     if (!r.ok) { err.textContent = t('sbResetFailed'); err.classList.remove('hidden'); return; }
@@ -3328,39 +3336,51 @@ function sbFetchTakenNumbers(token, schoolId) {
     return taken;
   });
 }
-function sbMintAdmNo(token, schoolId, taken) {
+// Generic mint-with-retry (was 2 nested `tryOnce` copies in sbMintAdmNo /
+// sbMintReceiptNo): rpcFn mints one fresh value; while taken(value) is true
+// it retries, up to maxAttempts times, then throws exhaustedMsg.
+function mintWithRetry(rpcFn, taken, maxAttempts, exhaustedMsg) {
+  maxAttempts = maxAttempts || 8;
   var attempts = 0;
-  function tryOnce() {
+  function attempt() {
     attempts++;
+    return rpcFn().then(function (val) {
+      if (taken(val)) {
+        if (attempts >= maxAttempts) throw new Error(exhaustedMsg || 'mint-exhausted');
+        return attempt();
+      }
+      return val;
+    });
+  }
+  return attempt();
+}
+function sbMintAdmNo(token, schoolId, taken) {
+  return mintWithRetry(function () {
     return sbRest('POST', 'rpc/ss_next_adm_no', token, { p_school_id: schoolId }).then(function (r) {
       if (!r.ok || typeof r.data !== 'string' || !r.data) throw new Error('rpc-adm-' + (r.status || 'fail'));
-      var adm = r.data, enr = sbEnrFromAdm(adm);
-      if ((taken.adm && taken.adm[adm]) || (taken.enr && taken.enr[enr])) {
-        if (attempts >= 8) throw new Error('rpc-adm-exhausted');
-        return tryOnce();
-      }
-      if (taken.adm) taken.adm[adm] = 'minted';
-      if (taken.enr) taken.enr[enr] = 'minted';
-      return { admissionNo: adm, enr: enr };
-    });
-  }
-  return tryOnce();
-}
-function sbMintReceiptNo(token, schoolId, takenRcp) {
-  var attempts = 0;
-  function tryOnce() {
-    attempts++;
-    return sbRest('POST', 'rpc/ss_next_receipt_no', token, { p_school_id: schoolId }).then(function (r) {
-      if (!r.ok || typeof r.data !== 'string' || !r.data) throw new Error('rpc-rcp-' + (r.status || 'fail'));
-      if (takenRcp && takenRcp[r.data]) {
-        if (attempts >= 8) throw new Error('rpc-rcp-exhausted');
-        return tryOnce();
-      }
-      if (takenRcp) takenRcp[r.data] = true;
       return r.data;
     });
-  }
-  return tryOnce();
+  }, function (adm) {
+    return (taken.adm && taken.adm[adm]) || (taken.enr && taken.enr[sbEnrFromAdm(adm)]);
+  }, 8, 'rpc-adm-exhausted').then(function (adm) {
+    var enr = sbEnrFromAdm(adm);
+    if (taken.adm) taken.adm[adm] = 'minted';
+    if (taken.enr) taken.enr[enr] = 'minted';
+    return { admissionNo: adm, enr: enr };
+  });
+}
+function sbMintReceiptNo(token, schoolId, takenRcp) {
+  return mintWithRetry(function () {
+    return sbRest('POST', 'rpc/ss_next_receipt_no', token, { p_school_id: schoolId }).then(function (r) {
+      if (!r.ok || typeof r.data !== 'string' || !r.data) throw new Error('rpc-rcp-' + (r.status || 'fail'));
+      return r.data;
+    });
+  }, function (no) {
+    return !!(takenRcp && takenRcp[no]);
+  }, 8, 'rpc-rcp-exhausted').then(function (no) {
+    if (takenRcp) takenRcp[no] = true;
+    return no;
+  });
 }
 function sbMintNewStudentNumbers(act) {
   // One fresh (admissionNo, enr) pair from the server for a new student.
@@ -4493,7 +4513,28 @@ function studentFeeStatus(id) {
 var GENDERS = ['Boy', 'Girl', 'Other'];
 var BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
 var CATEGORIES = ['General', 'OBC', 'SC', 'ST', 'Other'];
-var SESSIONS = ['2025–26', '2024–25', '2026–27'];
+// Session options derive from the current academic year (Apr–Mar via
+// sessionOfDate/todayIST), so the list never goes stale: the two past
+// sessions, the current one, and next year. (Was a hardcoded 3-item list.)
+function dynamicSessions() {
+  var cur = sessionOfDate(todayIST());
+  var m = /^(\d{4})/.exec(cur || '');
+  var y = m ? parseInt(m[1], 10) : 2025;
+  var out = [];
+  [y - 2, y - 1, y, y + 1].forEach(function (yy) {
+    out.push(yy + '–' + String((yy + 1) % 100).padStart(2, '0'));
+  });
+  return out;
+}
+var SESSIONS = dynamicSessions();
+// Session <option> markup for a <select>: the dynamic SESSIONS list, plus
+// the current value if it falls outside the range (e.g. an old profile
+// session), so the saved value is never silently dropped from the list.
+function sessionSelectOpts(cur) {
+  var opts = SESSIONS.slice();
+  if (cur && opts.indexOf(cur) === -1) opts.push(cur);
+  return opts.map(function (s) { return '<option ' + (s === cur ? 'selected' : '') + '>' + s + '</option>'; }).join('');
+}
 var SECTIONS = ['A', 'B', 'C'];
 var STU_PAGE_SIZE = 10;
 var STU_STATUSES = ['Active', 'Inactive', 'Draft', 'Cancelled'];
@@ -5786,12 +5827,11 @@ function doSignup(e) {
   var err = $('signupErr');
   var school = $('suSchool').value.trim(), name = $('suName').value.trim(),
       email = $('suEmail').value.trim().toLowerCase(), pw = $('suPw').value, pw2 = $('suPw2').value;
-  function fail(msg) { err.textContent = msg; err.classList.remove('hidden'); return false; }
-  if (!school || !name || !email || !pw || !pw2) return fail(t('tFillAll'));
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail(t('tInvalidEmail'));
-  if (pw.length < 6) return fail(t('tPwShort'));
-  if (pw !== pw2) return fail(t('tPwMismatch'));
-  if (findAccount(email)) return fail(t('tEmailTaken'));
+  if (!school || !name || !email || !pw || !pw2) return failInto(err, t('tFillAll'));
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return failInto(err, t('tInvalidEmail'));
+  if (pw.length < 6) return failInto(err, t('tPwShort'));
+  if (pw !== pw2) return failInto(err, t('tPwMismatch'));
+  if (findAccount(email)) return failInto(err, t('tEmailTaken'));
   var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: hashPwNew(pw), hashScheme: 'sha256', role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: null };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   err.classList.add('hidden');
@@ -6088,7 +6128,7 @@ function renderApp() {
   $('sideSchoolInfo').innerHTML = '<b style="color:#fff">' + esc(prof.name) + '</b><br>' + esc(prof.city) + ', Bihar';
   var sess = $('sessionSel');
   if (!sess.options.length) {
-    ['2025–26', '2024–25', '2026–27'].forEach(function (s) {
+    SESSIONS.forEach(function (s) {
       var o = document.createElement('option'); o.value = s; o.textContent = s; sess.appendChild(o);
     });
   }
@@ -6613,7 +6653,7 @@ function studentForm(id) {
     '<div><label>' + t('fPhone') + ' *</label><input id="fStPh" value="' + esc(s ? s.phone : (pf ? pf.phone : '')) + '" placeholder="98XXXXXXXX"></div>' +
     '<div><label>' + t('fPhone2') + '</label><input id="fStPh2" value="' + esc(s ? (s.mobile2 || '') : '') + '" placeholder="98XXXXXXXX"></div>' +
     '<div><label>' + t('fParentEmail') + '</label><input id="fStParentEmail" type="email" value="' + esc(s ? (s.parentEmail || '') : '') + '" placeholder="parent@email.com"></div>' +
-    '<div><label>' + t('stuPinField') + '</label><input id="fStPinLogin" inputmode="numeric" maxlength="6" value="" placeholder="' + t('stuPinPh') + '"></div>' +
+    '<div><label>' + t('stuPinField') + '</label><input id="fStPinLogin" type="password" inputmode="numeric" maxlength="6" autocomplete="off" value="" placeholder="' + t('stuPinPh') + '"></div>' +
     '<div><label>' + t('fOccupation') + '</label><input id="fStOccupation" value="' + esc(s ? (s.occupation || '') : '') + '" placeholder="e.g. Farmer"></div>' +
     '<div class="full sec-title">' + t('secDocs') + '</div>' +
     '<div><label class="check"><input type="checkbox" id="fStBirthCert" ' + (d.birthCert ? 'checked' : '') + '> ' + t('fBirthCert') + '</label></div>' +
@@ -6634,24 +6674,23 @@ function saveStudent(e, id, mode) {
   e.preventDefault();
   mode = mode || 'active';
   var errEl = $('fStErr');
-  function fail(msg) { if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); } toast(msg); return false; }
   var fval = function (fid) { var el = $(fid); return el ? (el.value || '') : ''; };
   var name = fval('fStName').trim();
   var clsRaw = fval('fStCls');
   var secRaw = fval('fStSec');
   var cls = clsRaw.indexOf('-') !== -1 ? clsRaw : (clsRaw + '-' + (secRaw || 'A'));
   var phone = fval('fStPh').trim();
-  if (!name || !phone || !clsRaw) return fail(t('tReqFields'));
-  if (digitsOnly(phone).length !== 10) return fail(t('tInvalidMobile'));
+  if (!name || !phone || !clsRaw) return failInto(errEl, t('tReqFields'), true);
+  if (digitsOnly(phone).length !== 10) return failInto(errEl, t('tInvalidMobile'), true);
   var pin = fval('fStPin').trim();
-  if (pin && !/^\d{6}$/.test(pin)) return fail(t('tInvalidPin'));
+  if (pin && !/^\d{6}$/.test(pin)) return failInto(errEl, t('tInvalidPin'), true);
   var pinLogin = digitsOnly(fval('fStPinLogin'));
-  if (pinLogin && (pinLogin.length < 4 || pinLogin.length > 6)) return fail(t('tPinLen'));
+  if (pinLogin && (pinLogin.length < 4 || pinLogin.length > 6)) return failInto(errEl, t('tPinLen'), true);
   var aadhaar = digitsOnly(fval('fStAadhaar'));
   // v36: a fresh 12-digit number is accepted but only its last 4 are
   // stored; a 4-digit value (the stored last 4, shown on edit) saves
   // as-is. The full number is never persisted anywhere.
-  if (aadhaar && aadhaar.length !== 12 && aadhaar.length !== 4) return fail(t('tInvalidAadhaar'));
+  if (aadhaar && aadhaar.length !== 12 && aadhaar.length !== 4) return failInto(errEl, t('tInvalidAadhaar'), true);
   var admDateVal = fval('fStAdmDate');
   var dob = fval('fStDob');
   var data = { name: name, cls: cls, roll: parseInt(fval('fStRoll'), 10) || 1,
@@ -6676,7 +6715,7 @@ function saveStudent(e, id, mode) {
   // Edit with a blank date field keeps the stored date (never fabricate one on edit).
   if (id && !admDateVal) { var ex0 = db.students.find(function (x) { return x.id === id; }); if (ex0) data.admissionDate = ex0.admissionDate || ''; }
   var dup = findDupStudent(data, id || null);
-  if (dup) return fail(t('tDupFound') + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' • ' + dup.cls + ')');
+  if (dup) return failInto(errEl, t('tDupFound') + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' • ' + dup.cls + ')', true);
   function finishSave() {
     pendingPhoto = null;
     saveDB(db); closeModal();
@@ -7065,7 +7104,7 @@ function profileTabBody(s, tab) {
     var pinBox = '<div class="card" style="margin-top:16px"><h3>' + t('stuPinTitle') + '</h3>' +
       '<div class="kv"><b>' + t('stuPinNow') + '</b><span>' + (pinSet54 ? t('stuPinSet') : '—') + '</span></div>' +
       '<p class="muted" style="margin:8px 0">' + t('tPinAuto') + (pinSet54 ? '' : ' ' + t('stuPinNone')) + '</p>' +
-      '<div class="form-grid"><div><label>' + t('stuPinNew') + '</label><input id="fStuPinNew" inputmode="numeric" maxlength="6" placeholder="4–6 digits"></div></div>' +
+      '<div class="form-grid"><div><label>' + t('stuPinNew') + '</label><input id="fStuPinNew" type="password" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="4–6 digits"></div></div>' +
       '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="setStudentPin(\'' + s.id + '\')">' + t('stuPinSetBtn') + '</button>' +
       '<button class="btn ghost" onclick="clearStudentPin(\'' + s.id + '\')">' + t('stuPinClear') + '</button></div></div>';
     return base + pinBox;
@@ -8891,7 +8930,7 @@ function settingsPage() {
   '<div><label>' + t('fPrincipal') + '</label><input id="fPfPr" value="' + esc(p.principal) + '"></div>' +
   '<div><label>' + t('fPhone') + '</label><input id="fPfPh" value="' + esc(p.phone) + '"></div>' +
   '<div><label>' + t('fEmail') + '</label><input id="fPfEm" value="' + esc(p.email) + '"></div>' +
-  '<div><label>' + t('fSession') + '</label><select id="fPfSe"><option ' + (p.session === '2025–26' ? 'selected' : '') + '>2025–26</option><option ' + (p.session === '2024–25' ? 'selected' : '') + '>2024–25</option><option ' + (p.session === '2026–27' ? 'selected' : '') + '>2026–27</option></select></div>' +
+  '<div><label>' + t('fSession') + '</label><select id="fPfSe">' + sessionSelectOpts(p.session) + '</select></div>' +
   '<div class="full"><label>' + t('fAddress') + '</label><input id="fPfAd" value="' + esc(p.address) + '"></div>' +
   '<div class="full"><label>' + t('logoLabel') + '</label><div class="photo-row"><span id="fPfLogoPrev">' + (p.logo ? '<img class="photo-prev" src="' + esc(p.logo) + '" alt="">' : '<span class="photo-prev">🎓</span>') + '</span>' +
   '<input type="file" id="fPfLogo" accept="image/*" onchange="onSchoolLogo(this)">' +
@@ -8963,21 +9002,20 @@ function saveTeacher(e, id) {
   if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
   e.preventDefault();
   var errEl = $('fTchrErr');
-  function fail(msg) { if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); } toast(msg); return false; }
   var name = ($('fTchrName') ? $('fTchrName').value : '').trim();
   var email = ($('fTchrEmail') ? $('fTchrEmail').value : '').trim().toLowerCase();
   var pw = $('fTchrPw') ? $('fTchrPw').value : '';
   var subject = $('fTchrSub') ? $('fTchrSub').value : '';
-  if (!name || !email) return fail(t('tFillAll'));
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail(t('tInvalidEmail'));
-  if (!tchrFormClasses.length) return fail(t('tchrNoClasses'));
+  if (!name || !email) return failInto(errEl, t('tFillAll'), true);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return failInto(errEl, t('tInvalidEmail'), true);
+  if (!tchrFormClasses.length) return failInto(errEl, t('tchrNoClasses'), true);
   var list = loadAccounts();
   var te = id ? db.teachers.find(function (x) { return x.id === id; }) : null;
   var ownAcct = te ? list.find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; }) : null;
   var existing = list.find(function (a) { return a.email === email; });
-  if (existing && (!ownAcct || existing.uid !== ownAcct.uid)) return fail(t('tchrEmailTaken'));
-  if (!ownAcct && pw.length < 6) return fail(t('tPwShort'));
-  if (ownAcct && pw && pw.length < 6) return fail(t('tPwShort'));
+  if (existing && (!ownAcct || existing.uid !== ownAcct.uid)) return failInto(errEl, t('tchrEmailTaken'), true);
+  if (!ownAcct && pw.length < 6) return failInto(errEl, t('tPwShort'), true);
+  if (ownAcct && pw && pw.length < 6) return failInto(errEl, t('tPwShort'), true);
   if (!te) {
     te = { id: uniqueId('t'), name: name, subject: subject, cls: tchrFormClasses[0], classes: tchrFormClasses.slice() };
     db.teachers.push(te);
@@ -9030,7 +9068,7 @@ var PAGE_STUDENT = { dashboard: studentDashboard, homework: homeworkPage, notice
 var PAGE_TEACHER = { dashboard: teacherDashboard, attendance: attendancePage, exams: examsPage, homework: homeworkPage, notices: noticesPage };
 
 /* ================= init ================= */
-/* ================= App-update check (v37) =================
+/* ================= App-update check (v61) =================
    Why: a stale service worker can keep serving the OLD app shell on
    the plain URL even after a new build is live (v36 was reached only
    via a brand-new query URL after ?v=36, reloads, fresh tabs and
@@ -9038,7 +9076,7 @@ var PAGE_TEACHER = { dashboard: teacherDashboard, attendance: attendancePage, ex
    OLD worker is the one answering until the browser installs the new
    one — so the app checks for a newer build itself.
    Mechanism:
-   - version.json ({"version": 37}) is fetched with a cache-busting
+   - version.json ({"version": 61}) is fetched with a cache-busting
      query and cache:'no-store', so even a cache-first old worker
      misses its cache and the request reaches the network.
    - If the live version is newer: ask the SW registration to update,
