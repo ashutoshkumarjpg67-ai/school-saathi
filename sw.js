@@ -18,7 +18,8 @@ var APP_SHELL = [
   'icons/icon-192.png',
   'icons/icon-512.png',
   'icons/icon-512-maskable.png',
-  'icons/apple-touch-icon.png'
+  'icons/apple-touch-icon.png',
+  'icons/logo.svg'
 ];
 
 self.addEventListener('install', function (event) {
