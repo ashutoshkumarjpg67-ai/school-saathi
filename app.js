@@ -1647,8 +1647,8 @@ function sbRowToStudent(row) {
     previousSchool: row.previous_school || '', previousClass: row.previous_class || '',
     admissionNo: row.admission_no || '', admissionDate: row.admission_date || '',
     session: row.session || '', status: row.status || 'Active', result: (row.result === undefined || row.result === null) ? null : row.result,
-    parentPin: (row.parent_pin && String(row.parent_pin).indexOf('s256$') !== 0) ? row.parent_pin : undefined, // v55: no server PIN leaves the field UNDEFINED (never null) — a null used to land here and migrateV12 only refills `undefined`, so a null permanently killed the phone-derived PIN (live V21/2108 loss, v54)
-    parentPinHash: (row.parent_pin && String(row.parent_pin).indexOf('s256$') === 0) ? row.parent_pin : undefined, // v55: same — a hash arrives here, a missing PIN leaves the field unset
+    parentPin: undefined, // Phase 1 (H-3): a server PIN is NEVER stored as plaintext locally. A missing PIN leaves the field unset (v55: never null — a null used to land here and migrateV12 only refilled `undefined`, the live V21/2108 loss, v54).
+    parentPinHash: (!row.parent_pin ? undefined : (String(row.parent_pin).indexOf('s256$') === 0 ? String(row.parent_pin) : hashPin(row.parent_pin))), // Phase 1 (H-3): a hash arrives as-is; a legacy PLAINTEXT server PIN is hashed immediately on pull (hashPin is sync — hand-rolled SHA-256 — so this is safe in the pull path). The hash uploads on the next sync and heals the server row; until then one pull may re-hash with a fresh salt, exactly like the old migrateV54 flow. Dropping the value instead would have locked those students out until an admin reset each PIN.
     photo: row.photo_data_url || null,
     documents: row.documents || { birthCert: false, tc: false, tcNumber: '', other: '' },
     aadhaar: aadhaarLast4(row.aadhaar) }; // v36: a full number from an old server row is reduced on pull too
@@ -1857,7 +1857,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
       if (!old) return;
       if (old.parentPinHash) s.parentPinHash = old.parentPinHash;
       else if (old.parentPin === '') s.parentPin = '';
-      else if (typeof old.parentPin === 'string' && old.parentPin) s.parentPin = old.parentPin;
+      else if (typeof old.parentPin === 'string' && old.parentPin) s.parentPinHash = hashPin(old.parentPin); // Phase 1 (H-3): a legacy plaintext PIN is hashed, never kept as plaintext (loadDB normally hashes it before the sync runs, so this is a backstop, not the main path)
     });
   })();
   d.teachers = mergeById('ss_teachers', d.teachers || [], byTable.ss_teachers || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [] }; });
@@ -4039,16 +4039,22 @@ function migrateStudentsV9(d) {
 
 /* ================= Phase 4: parent portal + admission requests =================
    Static scope: no server. A parent logs in with Admission No. + PIN on the
-   device where the school's data lives; the PIN is the last 4 digits of the
-   primary mobile unless the school set a custom one. Real password accounts
-   arrive with the server phase. (v35: the parent portal is gone — student
-   login replaced it. The PIN now belongs to the STUDENT login.) */
-function parentPinFromPhone(phone) { var d = digitsOnly(phone); return d.length >= 4 ? d.slice(-4) : ''; } // v36: LEGACY only — migrateV12 below fills it for records that predate the PIN feature, so existing students keep logging in. No NEW student ever gets a phone-derived PIN (saveStudent / import generate a random one).
+   device where the school's data lives. (v35: the parent portal is gone —
+   student login replaced it. The PIN now belongs to the STUDENT login.)
+   Phase 1 (H-3): a PIN is NEVER derived from the phone number anymore.
+   The phone number sits in the same record (and in CSV exports), so a
+   phone-last-4 PIN was guessable. Records with no PIN at all get a fresh
+   RANDOM PIN, stored only as a salted hash (same as new students in
+   saveStudent / import) — the value is never shown anywhere; the admin
+   sets a known PIN via the profile when the student needs to log in. */
 function migrateV12(d) {
   // Phase 4 migration for existing v2 DBs: parent PINs + admission requests.
   // Idempotent; never changes existing values, amounts or statuses.
+  // Phase 1 (H-3): a PIN-less record (no hash, parentPin undefined/null)
+  // gets a fresh RANDOM PIN hash — never the phone's last 4 digits, never
+  // plaintext. '' stays cleared: the admin deliberately removed the PIN.
   (d.students || []).forEach(function (s) {
-    if ((s.parentPin === undefined || s.parentPin === null) && !s.parentPinHash) s.parentPin = parentPinFromPhone(s.phone); // v54 (A1): never re-fill a plaintext PIN once the student already carries a hash — otherwise every load would re-hash with a fresh salt and the sync payload would churn on every login. v55: a null (left by an older pull that materialized the server's null — the live V21/2108 loss) is the same as "no PIN set yet" and refills from the phone, exactly like undefined. '' stays cleared: the admin deliberately removed the PIN.
+    if ((s.parentPin === undefined || s.parentPin === null) && !s.parentPinHash) s.parentPinHash = hashPin(randomPin());
   });
   if (!Array.isArray(d.admissionRequests)) d.admissionRequests = [];
   return d;
@@ -4057,10 +4063,11 @@ function migrateV54(d) {
   // v54 (A1): hash every plaintext student PIN once, then drop the
   // plaintext field. Idempotent — a second run finds no plaintext left
   // (a stored hash is never re-hashed). A student with no PIN at all
-  // keeps none: login stays unavailable until the admin sets one.
-  // Only a NON-EMPTY plaintext PIN is deleted: an empty '' is the v36
-  // cleared-PIN sentinel, and deleting it would let migrateV12 re-derive
-  // the PIN from the phone on the next load (a cleared PIN would come back).
+  // already got a random one from migrateV12/migrateV55 earlier in the
+  // chain; only the '' cleared-PIN sentinel keeps none. Only a NON-EMPTY
+  // plaintext PIN is deleted: an empty '' is the v36 cleared-PIN
+  // sentinel, and deleting it would let a later migration re-assign a
+  // PIN on the next load (a cleared PIN would come back).
   (d.students || []).forEach(function (s) {
     if (typeof s.parentPin === 'string' && s.parentPin && !s.parentPinHash) s.parentPinHash = hashPin(s.parentPin);
     if (s.parentPin) delete s.parentPin;
@@ -4069,19 +4076,16 @@ function migrateV54(d) {
 }
 function migrateV55(d) {
   // v55: one-time repair for the records v54 (and earlier pulls) stripped —
-  // no hash, parentPin null/undefined, phone present. Re-derive the legacy
-  // phone-derived PIN so the student can log in again; migrateV54 (the
-  // outer step) hashes it on the same pass. Idempotent: once a hash
-  // exists the record is untouched. '' is NOT repaired — it is the
-  // cleared-PIN sentinel and must stay cleared. (migrateV12 above now
-  // refills nulls too, so the repair also holds as a permanent guard;
-  // the two steps overlap deliberately — the repair names the incident,
-  // the guard keeps it from recurring.)
+  // no hash, parentPin null/undefined. Phase 1 (H-3): the repair gives a
+  // fresh RANDOM PIN hash, never the phone-derived PIN (the old repair
+  // re-derived the PIN from the phone, which made it guessable). Idempotent:
+  // once a hash exists the record is untouched. '' is NOT repaired — it is
+  // the cleared-PIN sentinel and must stay cleared. (migrateV12 above now
+  // refills nulls too, so the repair also holds as a permanent guard; the
+  // two steps overlap deliberately — the repair names the incident, the
+  // guard keeps it from recurring.)
   (d.students || []).forEach(function (s) {
-    if (!s.parentPinHash && (s.parentPin === undefined || s.parentPin === null)) {
-      var pin = parentPinFromPhone(s.phone);
-      if (pin) s.parentPin = pin;
-    }
+    if (!s.parentPinHash && (s.parentPin === undefined || s.parentPin === null)) s.parentPinHash = hashPin(randomPin());
   });
   return d;
 }
@@ -5346,9 +5350,12 @@ function doStudentLogin(e) {
   var ok = false;
   if (stu && digitsOnly(pin).length >= 4) {
     if (stu.parentPinHash) ok = verifyPin(pin, stu);
-    // Pre-v54 records still carry a plaintext parentPin: it verifies
+    // Fallback for a record that still carries a plaintext parentPin
+    // (findStudentByAdmNoInSchool normally upgrades it via migrateV54
+    // before this compare, so this branch rarely fires). It verifies
     // once here, and the hash upgrade is persisted by loginAs, which
-    // reloads the DB through loadDB -> migrateV54.
+    // reloads the DB through loadDB -> migrateV54 -> saveDB — so after
+    // a successful legacy login no plaintext PIN is left in localStorage.
     else if (stu.parentPin) ok = digitsOnly(pin) === digitsOnly(stu.parentPin);
   }
   if (!found || !ok) {
@@ -6795,7 +6802,7 @@ function setStudentPin(id) {
 function clearStudentPin(id) {
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s || state.role !== 'school') return;
-  delete s.parentPinHash; s.parentPin = ''; // v54 (A1): clearing removes the hash and leaves the empty-string sentinel — deleting the field too would let migrateV12 re-derive the PIN from the phone on the next load
+  delete s.parentPinHash; s.parentPin = ''; // v54 (A1): clearing removes the hash and leaves the empty-string sentinel — deleting the field too would let migrateV12 assign a fresh random PIN hash on the next load (a cleared PIN would come back)
   logAudit('Student PIN cleared', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
   saveDB(db); renderPage();
   toast(t('tPinCleared'));
