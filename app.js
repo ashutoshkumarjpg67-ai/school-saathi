@@ -38,6 +38,7 @@
 var APP_VERSION = 58;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
+var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
 var FEE_MONTHS = [ // monthly ledger — sums MUST equal 8,45,000 collected / 1,20,000 pending
   { m: 'Apr', collected: 165000, pending: 25000 },
@@ -326,6 +327,25 @@ function sbGetValidToken() {
     var s2 = sbStoreSession(r.data);
     return s2 ? s2.access_token : null;
   }).catch(function () { return null; });
+}
+// Phase 1 (CR-1/H-1): boot-time server validation for a server-linked
+// school session. Returns Promise<boolean>. true = the server still
+// accepts the session — OR the network failed, in which case the boot
+// falls back to the local session exactly as before (offline boot is
+// unchanged). false = the SERVER rejected the token (revoked/expired),
+// and the stored session must be dropped. The boot never hangs on a
+// dead connection: after 10s the validation gives up and treats the
+// device as offline (the sync cycle retries in the background, and its
+// own session-expired handling then applies).
+function sbValidateSchoolSession() {
+  var checked = sbGetValidToken().then(function (tok) {
+    if (!tok) return !sbSessionExpired; // no token: offline (keep) unless the server rejected the refresh (drop)
+    return sbGetUser(tok).then(function (r) {
+      return !!r.ok; // non-2xx = the server rejected this token
+    }, function () { return true; }); // network error = offline, keep the local session
+  }, function () { return true; }); // network error = offline, keep the local session
+  var giveUp = new Promise(function (resolve) { setTimeout(function () { resolve(true); }, 10000); });
+  return Promise.race([checked, giveUp]);
 }
 function sbIsLocalOnlySchool() {
   // v37: a school account with NO server session — no sbUid on the
@@ -5187,10 +5207,29 @@ function showLogin() { showView('login'); try { $('sbStatus').textContent = sbSt
 function persistSession() {
   // The session lives in localStorage so it survives closing and reopening
   // the app (sessionStorage died with the tab/PWA, forcing a fresh login).
+  // Phase 1 (CR-1/H-1): the stored session carries `at` — the time of
+  // the interactive login. The 30-day max age is ABSOLUTE: re-persisting
+  // (view changes, restores) keeps the original `at` when the account
+  // is unchanged, so using the app never extends the lifetime. A fresh
+  // `at` is stamped only when there is no stored session for this
+  // account (fresh login, or a different account).
   try {
-    if (state.role && state.user) localStorage.setItem(SESSION_KEY, JSON.stringify({ role: state.role, email: state.user.email, view: state.view }));
-    else localStorage.removeItem(SESSION_KEY);
+    if (state.role && state.user) {
+      var at = Date.now();
+      try {
+        var prev = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+        if (prev && prev.role === state.role && prev.email === state.user.email && typeof prev.at === 'number' && !isNaN(prev.at)) at = prev.at;
+      } catch (e) {}
+      localStorage.setItem(SESSION_KEY, JSON.stringify({ role: state.role, email: state.user.email, view: state.view, at: at }));
+    } else localStorage.removeItem(SESSION_KEY);
   } catch (e) { /* private mode — session just won't survive */ }
+}
+function clearStoredSession() {
+  // Phase 1 (CR-1/H-1): drop every trace of the stored session — the
+  // local session key (both storages) and the Supabase tokens.
+  try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+  try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
+  sbClearSession();
 }
 function loginAs(a, opts) {
   state.role = a.role; state.user = a; state.view = 'dashboard';
@@ -5202,6 +5241,10 @@ function loginAs(a, opts) {
   histArmGuard(); // fresh history for this account: [dashboard, guard] — back from the dashboard warns first, it never re-enters another account
   if (!opts || !opts.silent) toast(t('tLoggedIn') + ' ' + a.name);
 }
+// Phase 1 (CR-1/H-1): restoreSession is ASYNC now — it returns
+// Promise<boolean>. A server-linked school session is validated against
+// the server before loginAs when the device is online; offline boot is
+// unchanged (no validation attempt, no forced logout).
 function restoreSession() {
   try {
     var raw = null;
@@ -5218,8 +5261,19 @@ function restoreSession() {
         }
       } catch (e4) {}
     }
-    if (!raw) return false;
+    if (!raw) return Promise.resolve(false);
     var sv = JSON.parse(raw);
+    // Phase 1 (CR-1/H-1): absolute 30-day max age, counted from the
+    // interactive login (persistSession never refreshes `at`). A session
+    // stored before this change has no timestamp and is treated as
+    // expired, so every pre-fix session needs one fresh login after the
+    // update. `at` is not a signature — anyone who can edit localStorage
+    // can forge it; the server check below is the real boundary for
+    // online school accounts.
+    if (typeof sv.at !== 'number' || isNaN(sv.at) || Date.now() - sv.at > SESSION_MAX_AGE_MS) {
+      clearStoredSession();
+      return Promise.resolve(false);
+    }
     if (sv.role === 'student' && typeof sv.email === 'string' && sv.email.indexOf('student:') === 0) {
       // Student sessions are not in schoolSaathiAccounts: the session
       // email carries schoolUid + studentId (student:<uid>:<id>).
@@ -5228,7 +5282,7 @@ function restoreSession() {
       var parts = sv.email.split(':');
       var stuKey = 'schoolSaathiDB_' + (parts[1] || '');
       var stuDb = readDbByKey(stuKey);
-      if (!stuDb) return false;
+      if (!stuDb) return Promise.resolve(false);
       migrateV54(migrateV55(migrateV12(stuDb)));
       var stu = (stuDb.students || []).find(function (x) { return x.id === parts[2]; });
       if (stu && (stu.parentPinHash || stu.parentPin)) {
@@ -5236,22 +5290,40 @@ function restoreSession() {
         loginAs({ role: 'student', name: stu.name, sub: t('stuSub') + ' • ' + stu.name, email: sv.email, uid: 'student-' + stu.id, studentId: stu.id, schoolUid: parts[1] }, { silent: true });
         state.view = 'dashboard';
         renderApp();
-        return true;
+        return Promise.resolve(true);
       }
-      return false;
+      return Promise.resolve(false);
     }
     var a = findAccount(sv.email);
-    if (!a || a.role !== sv.role) return false;
-    if (a.role === 'teacher' && !readDbByKey(dbKeyFor(a))) return false; // the school's data left this device — no DB to open
-    loginAs(a, { silent: true });
-    var ss = sbLoadSession();
-    if (ss && ss.user_id && (!ss.email || ss.email === sv.email)) state.sb = { uid: ss.user_id, email: ss.email || sv.email };
-    state.view = (NAV[a.role] || []).some(function (n) { return n[0] === sv.view; }) ? sv.view : 'dashboard';
-    if (state.view !== 'dashboard') histReplaceTop({ view: state.view }); // drop the guard: the restored view sits on top
-    renderApp();
-    persistSession(); // re-persist AFTER applying the view — the stored view must match what the user sees
-    return true;
-  } catch (e) { return false; }
+    if (!a || a.role !== sv.role) return Promise.resolve(false);
+    if (a.role === 'teacher' && !readDbByKey(dbKeyFor(a))) return Promise.resolve(false); // the school's data left this device — no DB to open
+    // Shared tail for school + teacher restores (loginAs + view).
+    function finishRestore() {
+      loginAs(a, { silent: true });
+      var ss = sbLoadSession();
+      if (ss && ss.user_id && (!ss.email || ss.email === sv.email)) state.sb = { uid: ss.user_id, email: ss.email || sv.email };
+      state.view = (NAV[a.role] || []).some(function (n) { return n[0] === sv.view; }) ? sv.view : 'dashboard';
+      if (state.view !== 'dashboard') histReplaceTop({ view: state.view }); // drop the guard: the restored view sits on top
+      renderApp();
+      persistSession(); // re-persist AFTER applying the view — the stored view must match what the user sees (`at` is preserved, see persistSession)
+      return true;
+    }
+    // Phase 1 (CR-1/H-1): a server-linked school session is validated
+    // before loginAs — but ONLY when online. Offline boot never attempts
+    // validation and never forces a logout. Local-only schools and
+    // teachers keep the old local-only restore path.
+    if (a.role === 'school' && sbIsOnline() && (a.sbUid || sbLoadSession())) {
+      return sbValidateSchoolSession().then(function (valid) {
+        if (!valid) {
+          clearStoredSession();
+          try { toast(t('sbStatusSessionExpired')); } catch (e) {}
+          return false;
+        }
+        return finishRestore();
+      });
+    }
+    return Promise.resolve(finishRestore());
+  } catch (e) { return Promise.resolve(false); }
 }
 function switchAuth(tab) {
   var tabs = { login: ['tabLogin', 'loginForm', 'loginErr', 'loginId'], signup: ['tabSignup', 'signupForm', 'signupErr', 'suSchool'], student: ['tabStudent', 'studentForm', 'studentErr', 'studentAdmNo'], teacher: ['tabTeacher', 'teacherForm', 'teacherErr', 'teacherEmail'] };
@@ -8724,8 +8796,13 @@ function triggerSwUpdateReload() {
 
 document.addEventListener('DOMContentLoaded', function () {
   applyI18n();
-  if (!restoreSession()) showLogin();
-  sbBoot(); // password-reset links + stored server session / pending backup
+  // Phase 1 (CR-1/H-1): restoreSession is async now — the online server
+  // validation runs before the app view is shown. sbBoot waits for it
+  // so the first sync cycle never starts on a rejected session.
+  restoreSession().then(function (ok) {
+    if (!ok) showLogin();
+    sbBoot(); // password-reset links + stored server session / pending backup
+  });
   // v37: check for a newer build (stale-SW flip) — fire-and-forget.
   try { checkAppUpdate().catch(function () {}); } catch (e) {}
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
