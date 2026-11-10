@@ -6,19 +6,20 @@
    an icon not yet uploaded) must not fail the whole app shell.
    v37: version.json is network-first too — the in-app update check must see the
    LIVE version, never a cached marker. */
-var CACHE_NAME = 'school-saathi-v56';
+var CACHE_NAME = 'school-saathi-v57';
 var APP_SHELL = [
   './',
   'index.html',
-  'styles.css?v=56',
-  'app.js?v=56',
-  'qrgen.js?v=56',
+  'styles.css?v=57',
+  'app.js?v=57',
+  'qrgen.js?v=57',
   'version.json',
   'manifest.json',
   'icons/icon-192.png',
   'icons/icon-512.png',
   'icons/icon-512-maskable.png',
-  'icons/apple-touch-icon.png'
+  'icons/apple-touch-icon.png',
+  'icons/logo.svg'
 ];
 
 self.addEventListener('install', function (event) {

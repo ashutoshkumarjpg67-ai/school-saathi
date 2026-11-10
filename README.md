@@ -1,6 +1,6 @@
 # School Saathi
 
-**School Saathi — Smart Education. Better Tomorrow.** Multi-school management system for schools in Bihar with Super Admin, School Admin & Student dashboards — attendance, fees, exams, homework, notices & reports.
+**School Saathi — Smart Education. Better Tomorrow.** Multi-school management system for schools in Bihar — School Admin, Teacher & Student dashboards: attendance, fees, exams, homework, notices & reports.
 
 ## Run
 
@@ -8,26 +8,24 @@ Static site — no build step, no server, no npm. Open `index.html` in any brows
 
 ## Features
 
-- **Landing page** — hero, live platform stats, features, role demos
-- **Super Admin dashboard** — 24 schools, 12,450 users, growth chart, 75% subscription donut, Top 5 schools, approve/remove schools, users, subscriptions, analytics, reports
-- **School Admin dashboard (St. Xavier School, Patna)** — 1,250 students, 85 teachers, ₹8,45,000 fee collected, 92% attendance donut, fee trend Apr–Aug, recent activities
-- **Working modules** — student management (add/edit/delete), attendance marking, fee collection, exams & marks entry, homework, notices, CSV reports, settings
-- **Student view** — Riya Kumari, Class 10th-A: attendance 92%, fees paid, results 95%, homework with done toggle
-- **Animated charts** — donut sweep, growing bars, drawing line chart, count-up numbers, hover tooltips, toasts
+- **School Admin dashboard** — students, attendance, fees & receipts, exams & marks, homework, notices, CSV reports, settings
+- **Student login** — admission number + PIN, school-scoped; attendance, fees, results & homework
+- **Teacher login** — email + password, assigned classes only
+- **Fees** — collection with printable receipts (QR), defaulter list, WhatsApp reminders via wa.me (manual send)
+- **Attendance** — class-wise marking
+- **Exams & marks** — exam creation, marks entry, results
+- **Backup & restore** — full school data backup and restore from Settings
+- **Sync** — Supabase-backed sync with offline localStorage fallback
 - **Hindi + English** toggle in the top bar
 - **PWA-ready** — installable, works offline after first load (manifest + service worker, network-first navigation)
 
-## Demo logins (one-tap on the login screen)
+## Accounts
 
-| Role | Email | Password |
-| --- | --- | --- |
-| Super Admin | super@school-saathi.in | admin123 |
-| School Admin (Rahul Kumar) | rahul@stxavier.in | admin123 |
-| Student (Riya Kumari) | riya@student.in | student123 |
+There are no demo logins. Each school creates its own account from the login screen ("New school? Create a school account"). New schools start empty — no demo data is seeded.
 
 ## Data
 
-Demo data is seeded once into `localStorage` (`schoolSaathiDBv1`) and never overwritten on reload — your edits persist on the device. Use **Reset Demo Data** (Settings) to restore the seed.
+Each school's data is stored per school (Supabase + localStorage on the device). Use **Backup** (Settings) to export a full copy of your school's data.
 
 ## Deploy (GitHub Pages)
 
