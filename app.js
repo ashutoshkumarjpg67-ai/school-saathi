@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 62;
+var APP_VERSION = 63;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -5597,6 +5597,27 @@ function sbStudentCloudLogin(serverId, adm, pin) {
     return r.data;
   }).catch(function () { return null; });
 }
+// v63: server-side rate limit for the SCHOOL login (SQL 19). The school
+// password is verified by GoTrue, which only rate-limits per IP — it has
+// no per-account attempt counter. These RPCs hold the per-account lock:
+// 5 wrong passwords lock the email for 15 minutes, on the server, on
+// every device. The RPCs only ever lock emails that HAVE a Supabase Auth
+// account — a local-only school (no server account) is never locked out
+// of its local login, and an unknown email never creates a row.
+function sbSchoolLoginPrecheck(email) {
+  return sbRest('POST', 'rpc/ss_school_login_precheck', SB_ANON_KEY, { p_email: email }).then(function (r) {
+    if (!r || !r.ok || !r.data || typeof r.data !== 'object') return null;
+    return r.data;
+  }).catch(function () { return null; });
+}
+function sbSchoolLoginFailed(email) {
+  return sbRest('POST', 'rpc/ss_school_login_failed', SB_ANON_KEY, { p_email: email }).then(function (r) {
+    return (r && r.data) || null;
+  }).catch(function () { return null; });
+}
+function sbSchoolLoginOk(email) {
+  return sbRest('POST', 'rpc/ss_school_login_ok', SB_ANON_KEY, { p_email: email }).catch(function () {});
+}
 function sbPublicSchools() {
   if (cloudSchoolsCache) return Promise.resolve(cloudSchoolsCache);
   return sbRest('POST', 'rpc/ss_public_schools', SB_ANON_KEY, {}).then(function (r) {
@@ -5898,8 +5919,26 @@ function doLogin(e) {
     // NOTE: this returns false synchronously — the promise chain runs in the
     // background. Never return the promise: onsubmit treats a truthy
     // return as "submit the form" and the page would reload.
-    sbSignIn(id, pw).then(function (res) {
-      if (res.ok && res.data && res.data.access_token) { sbFinishSupabaseLogin(res.data, id, pw); return; }
+    // v63: server-side rate limit (SQL 19) — check the per-account lock
+    // BEFORE GoTrue sees the password. A locked email never reaches
+    // sbSignIn. A failed precheck (network/RPC error) fails OPEN: GoTrue
+    // still checks the password, only the lock is not enforced that once.
+    sbSchoolLoginPrecheck(id).then(function (pre) {
+      if (pre && pre.locked) {
+        err.textContent = t('tPinLocked');
+        err.classList.remove('hidden');
+        return;
+      }
+      sbSignIn(id, pw).then(function (res) {
+      if (res.ok && res.data && res.data.access_token) { sbSchoolLoginOk(id); sbFinishSupabaseLogin(res.data, id, pw); return; }
+      // v63: record a wrong-password failure BEFORE any branch — even
+      // when this device has no local account for the email (a fresh
+      // device must still count attempts, or the lock would never engage
+      // for an attacker who never logged in here). The RPC itself no-ops
+      // for emails with no server account, so unknown emails never
+      // create a row. Only a 400 counts — never a 429 (GoTrue already
+      // throttled) or a network failure.
+      if (res.status === 400) sbSchoolLoginFailed(id);
       var acct = findAccount(id);
       // Local-only school (no server account): fall back to the local
       // login even while online. sbLocalLogin shows the generic error
@@ -5933,6 +5972,7 @@ function doLogin(e) {
       err.classList.remove('hidden');
       return;
     }).catch(function () { sbLocalLogin(id, pw, err, true); });
+    });
   } else {
     sbLocalLogin(id, pw, err, true);
   }
