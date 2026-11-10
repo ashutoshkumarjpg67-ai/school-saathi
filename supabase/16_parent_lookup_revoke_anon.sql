@@ -67,20 +67,29 @@
 -- Step 1 (REVOKE — the change; one DO block, run as a single
 --   statement; idempotent and safe to re-run; mirrors Spider's
 --   fix commit 05a0b34 on PR #14 / supabase/15):
+--   CORRECTED 10 Nov 2026 (live apply): the first version of this
+--   block compared pg_get_function_identity_arguments(p.oid) to
+--   'text, text, uuid' — but that function returns NAMED args
+--   ('p_admission_no text, p_pin text, p_school_id uuid'), so BOTH
+--   checks were false and the block ran clean (HTTP 201) while
+--   revoking NOTHING. The live revoke was then done with direct
+--   REVOKE statements (Step 1b) and verified (Step 2: 2 rows).
+--   Do NOT go back to the identity-args string comparison. The
+--   checks below use to_regprocedure, which resolves by name+types
+--   and returns NULL when the overload is absent. (Spider's 05a0b34
+--   carries the same latent bug — its SQL would also silently do
+--   nothing if applied as written; fix it the same way before
+--   PR #14's SQL is ever run.)
 --   do $$
 --   begin
---     if exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
---       where n.nspname = 'public' and p.proname = 'ss_parent_lookup'
---       and pg_get_function_identity_arguments(p.oid) = 'text, text, uuid') then
+--     if to_regprocedure('public.ss_parent_lookup(text, text, uuid)') is not null then
 --       execute 'revoke execute on function public.ss_parent_lookup(text, text, uuid) from public';
 --       execute 'revoke execute on function public.ss_parent_lookup(text, text, uuid) from anon';
 --       raise notice 'revoked public + anon execute on ss_parent_lookup(text, text, uuid)';
 --     else
 --       raise notice 'ss_parent_lookup(text, text, uuid) not found — nothing to revoke';
 --     end if;
---     if exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
---       where n.nspname = 'public' and p.proname = 'ss_parent_lookup'
---       and pg_get_function_identity_arguments(p.oid) = 'text, text') then
+--     if to_regprocedure('public.ss_parent_lookup(text, text)') is not null then
 --       execute 'revoke execute on function public.ss_parent_lookup(text, text) from public';
 --       execute 'revoke execute on function public.ss_parent_lookup(text, text) from anon';
 --       raise notice 'revoked public + anon execute on ss_parent_lookup(text, text)';
