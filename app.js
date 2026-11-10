@@ -1836,7 +1836,23 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     });
   })();
   d.teachers = mergeById('ss_teachers', d.teachers || [], byTable.ss_teachers || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [] }; });
+  var oldExams = d.exams || [];
   d.exams = mergeById('ss_exams', d.exams || [], byTable.ss_exams || [], function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; examMap[row.id] = e.id; return e; });
+  // B6 (exam soft-delete): the server row carries no deleted flag
+  // (ss_exams has no such column — adding one needs SQL, not this
+  // change), so the pull above would wipe the local flag on every
+  // cycle and the exam would come back. Restore it from the
+  // pre-merge row, same class of keep as the v55 student-PIN keep
+  // above. Consequence to know: a delete made on THIS device stays
+  // deleted here, but it does NOT travel to other devices — the
+  // server row stays, so a second device re-downloads the exam as
+  // active. A server column (follow-up SQL) is needed before a
+  // delete can sync across devices.
+  (function () {
+    var oldById = {};
+    oldExams.forEach(function (e) { oldById[e.id] = e; });
+    d.exams.forEach(function (e) { var old = oldById[e.id]; if (old && old.deleted) e.deleted = true; });
+  })();
   d.feeRecords = mergeById('ss_fee_records', d.feeRecords || [], byTable.ss_fee_records || [], function (row) { return sbRowToFeeRecord(row, stuMap); });
   // Attendance: server rows fold back into the 'date|cls' map, then
   // local attendance that has NOT uploaded yet is kept — for ANY
@@ -4336,6 +4352,9 @@ var STU_STATUSES = ['Active', 'Inactive', 'Draft', 'Cancelled'];
 // never get dues and never appear on a roster. Inactive students DO keep
 // dues (they are still enrolled; only their attendance/marks stop).
 function isEnrolledStudent(s) { var stt = (s && s.status) || 'Active'; return stt === 'Active' || stt === 'Inactive'; }
+// B6: an exam is active unless it was soft-deleted (deleted: true).
+// Marks, lists and stats all filter through this one helper.
+function isActiveExam(e) { return !!e && !e.deleted; }
 function classParts() {
   var out = [];
   CLASSES.forEach(function (c) { var p = c.split('-')[0]; if (out.indexOf(p) === -1) out.push(p); });
@@ -4500,7 +4519,7 @@ function feeSummaryFor(sid) {
   return { s: s, recs: recs, billed: billed, paid: paid, pend: pend, byType: byType };
 }
 function latestExamPct(s) {
-  var exs = db.exams.filter(function (e) { return e.cls === s.cls; }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
+  var exs = db.exams.filter(function (e) { return e.cls === s.cls && isActiveExam(e); }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
   for (var i = 0; i < exs.length; i++) {
     var mk = db.marks.find(function (m) { return m.examId === exs[i].id && m.studentId === s.id; });
     if (mk) return { pct: Math.round(mk.marks / exs[i].total * 100), name: exs[i].name };
@@ -4976,7 +4995,7 @@ var I18N = {
     authStudent: 'Student', authTeacher: 'Teacher', stuAdmNo: 'Admission Number', stuPinLabel: 'Student PIN', stuLoginBtn: 'Login as Student', stuNote: 'Student login uses the PIN set by the school. Ask your school if you do not know it.', stuSub: 'Student', stuDashboard: 'My Profile', tInvalidStudent: 'Invalid admission number or PIN.', stuPinField: 'Student login PIN (optional)', stuPinPh: 'Leave blank — a random PIN is generated', stuPinTitle: 'Student PIN', stuPinNow: 'Current Student PIN', stuPinSet: 'PIN set', stuPinNone: 'No PIN set — student login unavailable for this student.', stuPinNew: 'New PIN (4–6 digits)', stuPinSetBtn: 'Set PIN', stuPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Student PIN set.', tPinLocked: 'Too many wrong attempts \u2014 try again in 15 minutes.', tPinCleared: 'Student PIN cleared.', tPinAuto: 'The PIN is set by the school at admission. If the student forgets it, set a new one here.', tNotAllowed: 'Your login cannot open this section.', tOwnProfileOnly: 'You can only view your own profile.', todayW: 'Today', tchrLoginBtn: 'Login as Teacher', tchrNote: 'Teacher accounts are created by the school admin.', tchrSub: 'Teacher', tchrDashboard: 'Teacher Dashboard', tchrNoDb: 'School data is not on this device — log in on the school device first.', teachers: 'Teachers', teachersSub: 'Teacher accounts and the classes they teach.', tchrAdd: 'Add Teacher', tchrEdit: 'Edit Teacher', tchrName: 'Teacher Name', tchrSubject: 'Subject', tchrClasses: 'Classes Taught', tchrEmail: 'Email', tchrPw: 'Password', tchrPwHint: 'At least 6 characters. Leave blank to keep the current password.', tchrNoLogin: 'No login', tchrSaved: 'Teacher saved.', tchrNoClasses: 'Choose at least one class.', tchrEmailTaken: 'This email is already used by another account.', tchrMyClasses: 'My Classes', tchrStudents: 'Students in my classes', tchrNoClassesYet: 'No classes assigned yet — ask the school admin to assign classes.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
     collectFeeBtn: 'Collect Fee', rcptTitle: 'FEE RECEIPT', rcptReceiptNo: 'Receipt No', rcptDate: 'Date', rcptAdmNo: 'Adm No', rcptSession: 'Session', rcptName: 'Name', rcptClass: 'Class', rcptInstallment: 'Installment', rcptCounter: 'Counter No', rcptSlNo: 'Sl.No', rcptDesc: 'Description', rcptDue: 'Due', rcptCon: 'Con', rcptPaid: 'Paid', rcptAdmissionFee: 'Admission Fee', rcptTuitionFee: 'Tuition Fee', rcptCaution: 'Caution Money', rcptAnnual: 'Annual Charges', rcptBusFee: 'Bus Fee', rcptDues: 'Dues', rcptPayModeTitle: 'PAY MODE INFORMATION', rcptPayMode: 'Pay Mode', rcptBank: 'Bank', rcptNumber: 'Number', rcptTotal: 'Total', rcptTotalWords: 'Total in Words', rcptComputerGen: 'This is a computer generated Receipt. Does not required signature.', rcptParentCopy: 'PARENT COPY', rcptCollectorSign: 'Collector\'s Signature', rcptIncludeBus: 'Include Bus/Transport', rcptOtherFees: 'Other Fees', rcptAnnualHint: 'One-time and annual amounts used on the Collect Fee receipt. Set 0 to hide a row.', payModeCash: 'Cash', payModeCheque: 'Cheque', payModeUpi: 'UPI', payModeCard: 'Card', payModeBank: 'Bank Transfer', tFeeCollected: 'Fee collected.', tCollectZero: 'Nothing to collect — enter a Paid amount.', tCollectSaved: 'Fee collected — Receipt ', tCollectNotActive: 'This student is not active — fee cannot be collected.', rcptReceipts: 'Receipts', rcptView: 'View', rcptPrint: 'Print / Save PDF', rcptCollectAgain: 'Collect Again', rcptNoReceipts: 'No receipts yet for this student.', rcptDraft: 'Draft — not saved yet', rcptCollectSave: 'Collect & Save', rcptNoLines: 'Nothing to collect for this period — set the fee amounts in Fee Structure first.',
     sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbLastAttempt: 'Last attempt', sbSyncDetailsTitle: 'Sync details', sbSyncPendingUploads: 'Pending uploads', sbSyncLastCycle: 'Last cycle', sbSyncLastFlush: 'Last flush', sbSyncLastError: 'Last error', sbSyncPushed: 'pushed', sbSyncConflicts: 'conflicts', sbSyncLeftover: 'left over', sbSyncCalls: 'calls', sbSyncQueued: 'Queued entries', sbSyncAndMore: 'and {n} more', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.', sbStatusSyncing: 'Syncing with the server…', sbStatusPendingSync: 'Offline — changes will sync when you are back online.', sbSyncDone: 'Synced with the server.', sbSyncFailed: 'Sync did not finish — it will retry on your next login.', sbSyncOffline: 'Offline — your changes are saved here and will sync later.', sbSyncConflict: 'Server had a newer copy — kept the server version.', sbNumPending: 'Admission saved. The admission number will be assigned when you are back online.', sbNumPendingReceipt: 'Fee saved. The receipt number will be assigned when you are back online.', sbStatusSessionExpired: 'Session expired — please log in again.', sbStatusNotLinked: 'Not linked to the server yet — it will link when you log in.', sbLinkServer: 'Link to Server', sbLinkDone: 'Server account linked.', sbLinkFailed: 'Could not link the server account — check your connection and try again.', sbLinkPwTitle: 'Link the server account', sbNumAssigning: 'Assigning number…', tWrongPasswordServer: 'Wrong password for the server account.', tCollectCapped: 'The paid amount was more than the due — only the due amount was taken.', resetPwHintServer: 'This deletes the data on THIS device only. The server copy will come back on the next sync unless you also wipe the server.', resetConfirmMsgServer: 'Delete this device’s data only? The server copy will return on the next sync — choose “Delete on server too” to remove it everywhere.', resetDeviceOnly: 'This device only', resetWipeServerBtn: 'Delete on server too', resetWipeServerDone: 'Server data deleted.', resetWipeServerFailed: 'Could not delete the server data — nothing was reset. Check your connection and try again.', supportQueued: 'Support request saved — it will be sent when you are back online.', admReqQueued: 'Application saved — it will be sent when you are back online.', admReqLoadingSchools: 'Loading schools…', attNotMarked: 'Not marked',
-    createExam: 'Create Exam', examName: 'Exam Name', examTotal: 'Total Marks', tExamCreated: 'Exam created.', tExamInvalid: 'Please fill the exam name, class and total marks.', tNoTeachers: 'No teachers yet.',
+    createExam: 'Create Exam', examName: 'Exam Name', examTotal: 'Total Marks', tExamCreated: 'Exam created.', tExamInvalid: 'Please fill the exam name, class and total marks.', editExam: 'Edit Exam', deleteExam: 'Delete Exam', restoreExam: 'Restore', examDeletedH: 'Deleted Exams', examDelNote: 'A deleted exam keeps its marks — the marks stay saved but are hidden everywhere until the exam is restored.', delExamMsg: 'Delete this exam? Its marks will be kept but hidden — restore the exam to see them again.', tExamDeleted: 'Exam deleted. Its marks are kept — restore the exam to see them again.', tExamUpdated: 'Exam updated.', tExamRestored: 'Exam restored.', examClsLocked: 'Class cannot be changed — the marks belong to this class.', examMarksKept: 'Marks already entered stay as they are — percentages are recalculated with the new total.', tNoTeachers: 'No teachers yet.',
     fullBackup: 'Full Backup & Restore', fullBackupSub: 'Download all school data as one file, or restore from a backup file. Restoring replaces the data on this device.', backupExport: 'Download Full Backup', backupImport: 'Restore from Backup File', tBackupExported: 'Full backup downloaded.', tBackupRestored: 'Backup restored.', tBackupBadFile: 'This file is not a valid School Saathi backup — nothing was changed.', backupRestoreConfirm: 'Restore will REPLACE all current data on this device with the backup file. A safety backup of your current data will be downloaded first.',
     sbStatusLocalOnly: 'Not linked to the server — your data stays on this device. Link to back up.',
     waReminderBtn: 'WhatsApp Reminder', waNotifyBtn: 'Notify Parent', waShareReceiptBtn: 'Share on WhatsApp', waChatBtn: 'WhatsApp', waNotifyCol: 'Notify',
@@ -5013,7 +5032,7 @@ var I18N = {
     authStudent: 'छात्र', authTeacher: 'शिक्षक', stuAdmNo: 'प्रवेश संख्या', stuPinLabel: 'छात्र PIN', stuLoginBtn: 'छात्र के रूप में लॉगिन करें', stuNote: 'छात्र लॉगिन स्कूल द्वारा दिए गए PIN से होता है। PIN न पता हो तो अपने स्कूल से पूछें।', stuSub: 'छात्र', stuDashboard: 'मेरी प्रोफ़ाइल', tInvalidStudent: 'प्रवेश संख्या या PIN गलत है।', stuPinField: 'छात्र लॉगिन PIN (वैकल्पिक)', stuPinPh: 'खाली छोड़ें — रैंडम PIN बनेगा', stuPinTitle: 'छात्र PIN', stuPinNow: 'वर्तमान छात्र PIN', stuPinSet: 'PIN सेट है', stuPinNone: 'कोई PIN नहीं है — इस छात्र के लिए छात्र लॉगिन उपलब्ध नहीं है।', stuPinNew: 'नया PIN (4–6 अंक)', stuPinSetBtn: 'PIN सेट करें', stuPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'छात्र PIN सेट हो गया।', tPinLocked: 'बहुत ज़्यादा गलत कोशिशें \u2014 15 मिनट बाद फिर कोशिश करें।', tPinCleared: 'छात्र PIN हटा दिया गया।', tPinAuto: 'PIN स्कूल द्वारा प्रवेश के समय दिया जाता है। छात्र भूल जाए तो यहाँ से नया PIN सेट करें।', tNotAllowed: 'आपकी लॉगिन इस सेक्शन को नहीं खोल सकती।', tOwnProfileOnly: 'आप केवल अपनी प्रोफ़ाइल देख सकते हैं।', todayW: 'आज', tchrLoginBtn: 'शिक्षक के रूप में लॉगिन करें', tchrNote: 'शिक्षक अकाउंट स्कूल एडमिन बनाता है।', tchrSub: 'शिक्षक', tchrDashboard: 'शिक्षक डैशबोर्ड', tchrNoDb: 'इस डिवाइस पर स्कूल का डेटा नहीं है — पहले स्कूल के डिवाइस पर लॉगिन करें।', teachers: 'शिक्षक', teachersSub: 'शिक्षक अकाउंट और वे जो कक्षाएँ पढ़ाते हैं।', tchrAdd: 'शिक्षक जोड़ें', tchrEdit: 'शिक्षक बदलें', tchrName: 'शिक्षक का नाम', tchrSubject: 'विषय', tchrClasses: 'पढ़ाई जाने वाली कक्षाएँ', tchrEmail: 'ईमेल', tchrPw: 'पासवर्ड', tchrPwHint: 'कम से कम 6 अक्षर। मौजूदा पासवर्ड रखने के लिए खाली छोड़ें।', tchrNoLogin: 'कोई लॉगिन नहीं', tchrSaved: 'शिक्षक सहेजा गया।', tchrNoClasses: 'कम से कम एक कक्षा चुनें।', tchrEmailTaken: 'यह ईमेल किसी और अकाउंट में इस्तेमाल हो रहा है।', tchrMyClasses: 'मेरी कक्षाएँ', tchrStudents: 'मेरी कक्षाओं के छात्र', tchrNoClassesYet: 'अभी कोई कक्षा नहीं दी गई है — स्कूल एडमिन से कक्षा देने को कहें।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।',
     collectFeeBtn: 'शुल्क वसूलें', rcptTitle: 'शुल्क रसीद', rcptReceiptNo: 'रसीद संख्या', rcptDate: 'तारीख', rcptAdmNo: 'प्रवेश संख्या', rcptSession: 'सत्र', rcptName: 'नाम', rcptClass: 'कक्षा', rcptInstallment: 'किस्त', rcptCounter: 'काउंटर संख्या', rcptSlNo: 'क्र.सं.', rcptDesc: 'विवरण', rcptDue: 'देय', rcptCon: 'छूट', rcptPaid: 'जमा', rcptAdmissionFee: 'प्रवेश शुल्क', rcptTuitionFee: 'शिक्षण शुल्क', rcptCaution: 'जमानत राशि', rcptAnnual: 'वार्षिक शुल्क', rcptBusFee: 'बस शुल्क', rcptDues: 'बकाया', rcptPayModeTitle: 'भुगतान जानकारी', rcptPayMode: 'भुगतान माध्यम', rcptBank: 'बैंक', rcptNumber: 'संख्या', rcptTotal: 'कुल', rcptTotalWords: 'कुल (शब्दों में)', rcptComputerGen: 'यह कंप्यूटर द्वारा बनाई गई रसीद है। हस्ताक्षर की आवश्यकता नहीं है।', rcptParentCopy: 'अभिभावक प्रति', rcptCollectorSign: 'वसूलकर्ता के हस्ताक्षर', rcptIncludeBus: 'बस/परिवहन शामिल करें', rcptOtherFees: 'अन्य शुल्क', rcptAnnualHint: 'शुल्क वसूली रसीद पर दिखने वाली एकमुश्त और वार्षिक राशि। छिपाने के लिए 0 रखें।', payModeCash: 'नकद', payModeCheque: 'चेक', payModeUpi: 'UPI', payModeCard: 'कार्ड', payModeBank: 'बैंक ट्रांसफर', tFeeCollected: 'शुल्क वसूल लिया गया।', tCollectZero: 'वसूलने के लिए कुछ नहीं है — जमा राशि डालें।', tCollectSaved: 'शुल्क वसूल लिया गया — रसीद ', tCollectNotActive: 'यह छात्र सक्रिय नहीं है — शुल्क नहीं वसूला जा सकता।', rcptReceipts: 'रसीदें', rcptView: 'देखें', rcptPrint: 'प्रिंट / PDF सहेजें', rcptCollectAgain: 'फिर से वसूलें', rcptNoReceipts: 'इस छात्र की अभी कोई रसीद नहीं है।', rcptDraft: 'मसौदा — अभी सहेजा नहीं गया', rcptCollectSave: 'वसूलें और सहेजें', rcptNoLines: 'इस अवधि के लिए वसूलने को कुछ नहीं है — पहले शुल्क संरचना में राशि डालें।',
     sbNumPending: 'प्रवेश सहेजा गया। प्रवेश संख्या ऑनलाइन आने पर दी जाएगी।', sbNumPendingReceipt: 'शुल्क सहेजा गया। रसीद संख्या ऑनलाइन आने पर दी जाएगी।', sbStatusSessionExpired: 'सत्र समाप्त हो गया — कृपया दोबारा लॉग इन करें।', sbStatusNotLinked: 'अभी सर्वर से जुड़ा नहीं है — लॉग इन पर जुड़ जाएगा।', sbBackupDone: 'बैकअप पूरा हुआ।', sbBackupFailed: 'बैकअप पूरा नहीं हुआ — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkServer: 'सर्वर से जोड़ें', sbLinkDone: 'सर्वर अकाउंट जुड़ गया।', sbLinkFailed: 'सर्वर अकाउंट जुड़ा नहीं जा सका — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkPwTitle: 'सर्वर अकाउंट जोड़ें', sbNumAssigning: 'नंबर मिल रहा है…', tWrongPasswordServer: 'सर्वर अकाउंट के लिए पासवर्ड गलत है।', tCollectCapped: 'दी गई राशि बकाया से ज़्यादा थी — सिर्फ बकाया राशि ली गई।', resetPwHintServer: 'इससे सिर्फ इस डिवाइस का डेटा मिटेगा। सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी, जब तक आप सर्वर भी न मिटाएँ।', resetConfirmMsgServer: 'सिर्फ इस डिवाइस का डेटा मिटाएँ? सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी — हर जगह से मिटाने के लिए “सर्वर से भी मिटाएँ” चुनें।', resetDeviceOnly: 'सिर्फ यह डिवाइस', resetWipeServerBtn: 'सर्वर से भी मिटाएँ', resetWipeServerDone: 'सर्वर का डेटा मिट गया।', resetWipeServerFailed: 'सर्वर का डेटा मिटा नहीं जा सका — कुछ भी रीसेट नहीं हुआ। कनेक्शन जाँचकर फिर कोशिश करें।', supportQueued: 'सहायता अनुरोध सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqQueued: 'आवेदन सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqLoadingSchools: 'स्कूल लोड हो रहे हैं…', attNotMarked: 'दर्ज नहीं',
-    createExam: 'परीक्षा बनाएँ', examName: 'परीक्षा का नाम', examTotal: 'कुल अंक', tExamCreated: 'परीक्षा बन गई।', tExamInvalid: 'कृपया परीक्षा का नाम, कक्षा और कुल अंक भरें।', tNoTeachers: 'अभी कोई शिक्षक नहीं है।',
+    createExam: 'परीक्षा बनाएँ', examName: 'परीक्षा का नाम', examTotal: 'कुल अंक', tExamCreated: 'परीक्षा बन गई।', tExamInvalid: 'कृपया परीक्षा का नाम, कक्षा और कुल अंक भरें।', editExam: 'परीक्षा बदलें', deleteExam: 'परीक्षा हटाएँ', restoreExam: 'वापस लाएँ', examDeletedH: 'हटाई गई परीक्षाएँ', examDelNote: 'हटाई गई परीक्षा के अंक रखे रहते हैं — वे हर जगह छिप जाते हैं और परीक्षा वापस लाने पर फिर दिखते हैं।', delExamMsg: 'यह परीक्षा हटाएँ? इसके अंक रखे रहेंगे पर दिखेंगे नहीं — परीक्षा वापस लाने पर अंक फिर दिखेंगे।', tExamDeleted: 'परीक्षा हटा दी गई। इसके अंक रखे हुए हैं — परीक्षा वापस लाने पर अंक फिर दिखेंगे।', tExamUpdated: 'परीक्षा अपडेट हो गई।', tExamRestored: 'परीक्षा वापस आ गई।', examClsLocked: 'कक्षा नहीं बदली जा सकती — अंक इसी कक्षा के हैं।', examMarksKept: 'पहले से डाले गए अंक वैसे ही रहेंगे — प्रतिशत नए कुल अंक से फिर निकलेगा।', tNoTeachers: 'अभी कोई शिक्षक नहीं है।',
     fullBackup: 'पूरा बैकअप और रिस्टोर', fullBackupSub: 'स्कूल का सारा डेटा एक फ़ाइल में डाउनलोड करें, या बैकअप फ़ाइल से वापस लाएँ। रिस्टोर करने से इस डिवाइस का डेटा बदल जाएगा।', backupExport: 'पूरा बैकअप डाउनलोड करें', backupImport: 'बैकअप फ़ाइल से रिस्टोर करें', tBackupExported: 'पूरा बैकअप डाउनलोड हो गया।', tBackupRestored: 'बैकअप रिस्टोर हो गया।', tBackupBadFile: 'यह फ़ाइल सही School Saathi बैकअप नहीं है — कुछ भी नहीं बदला।', backupRestoreConfirm: 'रिस्टोर करने से इस डिवाइस का मौजूदा सारा डेटा बैकअप फ़ाइल से बदल जाएगा। पहले आपके मौजूदा डेटा का सुरक्षा बैकअप डाउनलोड होगा।',
     sbStatusLocalOnly: 'सर्वर से जुड़ा नहीं है — डेटा इसी डिवाइस पर है। बैकअप के लिए लिंक करें।', sbLastAttempt: 'अंतिम प्रयास', sbSyncDetailsTitle: 'सिंक विवरण', sbSyncPendingUploads: 'बाकी अपलोड', sbSyncLastCycle: 'आखिरी साइकिल', sbSyncLastFlush: 'आखिरी फ्लश', sbSyncLastError: 'आखिरी गलती', sbSyncPushed: 'भेजे गए', sbSyncConflicts: 'टकराव', sbSyncLeftover: 'बचे हुए', sbSyncCalls: 'कॉल', sbSyncQueued: 'कतार में', sbSyncAndMore: 'और {n} और',
     waReminderBtn: 'WhatsApp रिमाइंडर', waNotifyBtn: 'अभिभावक को बताएं', waShareReceiptBtn: 'WhatsApp पर भेजें', waChatBtn: 'WhatsApp', waNotifyCol: 'सूचित करें',
@@ -6281,7 +6300,7 @@ function viewStudentResults(id) {
   if (state.role === 'student' || !canViewStudent(id)) { toast(t('tNotAllowed')); return; }
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
-  var ex = db.exams.find(function (e) { return e.cls === s.cls; });
+  var ex = db.exams.find(function (e) { return e.cls === s.cls && isActiveExam(e); });
   if (ex) state.examId = ex.id;
   go('exams');
 }
@@ -6602,7 +6621,7 @@ function profileTabBody(s, tab) {
       (state.role !== 'school' ? '' : '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="viewStudentFees(\'' + s.id + '\')">' + t('openFees') + '</button></div>') + '</div>';
   }
   if (tab === 'results') {
-    var exs = db.exams.filter(function (e) { return e.cls === s.cls; }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
+    var exs = db.exams.filter(function (e) { return e.cls === s.cls && isActiveExam(e); }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
     var rtrs = exs.map(function (ex) {
       var mk = db.marks.find(function (m) { return m.examId === ex.id && m.studentId === s.id; });
       var pct = mk ? Math.round(mk.marks / ex.total * 100) + '%' : '—';
@@ -7935,7 +7954,11 @@ function doRejectAdmissionRequest(e, id) {
 }
 /* ================= exams / homework / notices / reports / settings ================= */
 function examsPage() {
-  var ex = db.exams.find(function (e) { return e.id === state.examId; }) || db.exams[0];
+  // B6: deleted exams never appear in the picker, the list or the
+  // marks table — they live only in the "Deleted exams" card below
+  // (school only), where they can be restored.
+  var activeExams = db.exams.filter(isActiveExam);
+  var ex = activeExams.find(function (e) { return e.id === state.examId; }) || activeExams[0];
   // v35: a teacher only ever sees exams for their own assigned classes.
   // v37: a teacher WITH classes but no exams in them falls through to
   // the "no exams yet" card below (with the Create button) — the old
@@ -7943,11 +7966,11 @@ function examsPage() {
   if (state.role === 'teacher') {
     var myClasses37 = teacherClasses();
     if (!myClasses37.length) return '<div class="page-head"><div><h2>' + t('exams') + '</h2></div></div><div class="card"><div class="empty">' + t('tchrNoClassesYet') + '</div></div>';
-    var myExams35 = db.exams.filter(function (e) { return myClasses37.indexOf(e.cls) !== -1; });
+    var myExams35 = activeExams.filter(function (e) { return myClasses37.indexOf(e.cls) !== -1; });
     ex = myExams35.find(function (e) { return e.id === state.examId; }) || myExams35[0];
   }
   // v37: even with no exams yet, the school/teacher can create the first one.
-  if (!ex) return '<div class="page-head"><div><h2>' + t('exams') + '</h2></div><div class="toolbar"><button class="btn" onclick="examForm()">+ ' + t('createExam') + '</button></div></div><div class="card"><div class="empty">' + t('tNoExams') + '</div></div>';
+  if (!ex) return '<div class="page-head"><div><h2>' + t('exams') + '</h2></div><div class="toolbar"><button class="btn" onclick="examForm()">+ ' + t('createExam') + '</button></div></div><div class="card"><div class="empty">' + t('tNoExams') + '</div></div>' + deletedExamsSection();
   // v34 (P1-10): marks roster is enrolled students only — Cancelled/
   // Draft never get a marks row.
   var roster = db.students.filter(function (s) { return s.cls === ex.cls && isEnrolledStudent(s); });
@@ -7957,20 +7980,35 @@ function examsPage() {
       '<td><input type="number" min="0" step="0.5" max="' + ex.total + '" value="' + (mk ? mk.marks : '') + '" placeholder="—" style="width:90px" id="mk-' + s.id + '"> / ' + ex.total + '</td>' +
       '<td>' + (mk ? '<b>' + Math.round(mk.marks / ex.total * 100) + '%</b>' : '<span class="muted">' + t('tNotEntered') + '</span>') + '</td></tr>';
   }).join('');
-  var examList35 = state.role === 'teacher' ? db.exams.filter(function (e) { return teacherClasses().indexOf(e.cls) !== -1; }) : db.exams;
+  var examList35 = state.role === 'teacher' ? activeExams.filter(function (e) { return teacherClasses().indexOf(e.cls) !== -1; }) : activeExams;
   var opts = examList35.map(function (e) { return '<option value="' + e.id + '" ' + (ex.id === e.id ? 'selected' : '') + '>' + esc(e.name) + ' — ' + esc(e.cls) + ' (' + esc(e.subject) + ')</option>'; }).join('');
   var avg = 0, n = 0;
   db.marks.forEach(function (m) { if (m.examId === ex.id) { avg += m.marks; n++; } });
   return '<div class="page-head"><div><h2>' + t('exams') + '</h2><p>' + esc(ex.name) + ' • ' + esc(ex.cls) + ' • ' + esc(ex.subject) + ' • ' + esc(ex.date) + '</p></div>' +
     '<div class="toolbar"><select onchange="state.examId=this.value;renderPage()">' + opts + '</select>' +
     '<button class="btn" onclick="examForm()">+ ' + t('createExam') + '</button>' +
+    '<button class="btn" onclick="editExam(\'' + ex.id + '\')">✎ ' + t('editExam') + '</button>' +
+    (state.role === 'school' ? '<button class="btn danger" onclick="deleteExam(\'' + ex.id + '\')">🗑 ' + t('deleteExam') + '</button>' : '') +
     '<button class="btn green" onclick="saveMarks(\'' + ex.id + '\')">✓ ' + t('saveMarks') + '</button></div></div>' +
     '<div class="card"><div class="head-row"><div><h3>' + t('enterMarks') + '</h3><p class="card-sub">' + (n ? t('classAvg') + ': ' + Math.round(avg / n / ex.total * 100) + '% (' + n + ' ' + t('studentsMarked') + ')' : t('tNoMarks')) + '</p></div></div>' +
-    '<div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thMarks') + '</th><th>' + t('thResult') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>';
+    '<div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thMarks') + '</th><th>' + t('thResult') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>' + deletedExamsSection();
+}
+function deletedExamsSection() {
+  // B6: soft-deleted exams, school only, with a Restore button each.
+  // Teachers never see deleted exams. The note states the linked-data
+  // rule: marks are kept but hidden until the exam is restored.
+  if (state.role !== 'school') return '';
+  var del = db.exams.filter(function (e) { return !!e.deleted; });
+  if (!del.length) return '';
+  var rows = del.map(function (e) {
+    return '<div class="hw-item"><div><b>' + esc(e.name) + '</b><span>' + esc(e.cls) + ' • ' + esc(e.subject) + ' • ' + esc(e.date) + '</span></div>' +
+      '<button class="btn" style="margin-left:auto" onclick="restoreExam(\'' + e.id + '\')">' + t('restoreExam') + '</button></div>';
+  }).join('');
+  return '<div class="card" style="margin-top:16px"><h3>' + t('examDeletedH') + '</h3><p class="card-sub">' + t('examDelNote') + '</p>' + rows + '</div>';
 }
 function saveMarks(examId) {
   var ex = db.exams.find(function (e) { return e.id === examId; });
-  if (!ex) return;
+  if (!ex || !isActiveExam(ex)) return; // B6: never enter marks on a deleted exam
   // v35: a teacher enters marks only for their own assigned class.
   if (state.role === 'teacher' && teacherClasses().indexOf(ex.cls) === -1) { toast(t('tNotAllowed')); return; }
   var saved = 0, bad = [];
@@ -7999,22 +8037,35 @@ function saveMarks(examId) {
   else if (saved) toast('✓ ' + t('tMarksSaved') + ' ' + saved + ' ' + t('tStudentsWord') + '.');
   else toast(t('tNoChanges'));
 }
-function examForm() {
+function examForm(editId) {
   // v37: exam creation (audit item 6). A teacher only ever sees their
   // own assigned classes in the picker — the save re-checks it, so a
   // crafted value cannot slip through.
+  // B6: with an id this is the EDIT form — same fields, prefilled.
+  // Class is locked on edit (disabled select): the marks rows belong
+  // to that class's roster, so changing it would strand them.
   if (state.role !== 'school' && state.role !== 'teacher') { toast(t('tNotAllowed')); return; }
+  var editing = null;
+  if (editId) {
+    editing = db.exams.find(function (e) { return e.id === editId && isActiveExam(e); });
+    if (!editing) { toast(t('tNotAllowed')); return; }
+    if (state.role === 'teacher' && teacherClasses().indexOf(editing.cls) === -1) { toast(t('tNotAllowed')); return; }
+    state.editExamId = editing.id;
+  } else state.editExamId = null;
   var clsList = state.role === 'teacher' ? teacherClasses() : CLASSES;
   if (!clsList.length) { toast(t('tchrNoClassesYet')); return; }
-  var clsOpts = clsList.map(function (c) { return '<option>' + c + '</option>'; }).join('');
-  var subOpts = SUBJECTS.map(function (s) { return '<option>' + s + '</option>'; }).join('') + '<option>All Subjects</option>';
-  openModal('<h3>' + t('createExam') + '</h3><form onsubmit="return saveExam(event)"><div class="form-grid">' +
-    '<div class="full"><label>' + t('examName') + ' *</label><input id="fExName" required placeholder="e.g. Unit Test 3"></div>' +
-    '<div><label>' + t('fClass') + ' *</label><select id="fExCls">' + clsOpts + '</select></div>' +
+  var clsOpts = editing
+    ? '<option selected>' + esc(editing.cls) + '</option>'
+    : clsList.map(function (c) { return '<option>' + c + '</option>'; }).join('');
+  var subOpts = SUBJECTS.map(function (s) { return '<option' + (editing && editing.subject === s ? ' selected' : '') + '>' + s + '</option>'; }).join('') + '<option' + (editing && editing.subject === 'All Subjects' ? ' selected' : '') + '>All Subjects</option>';
+  openModal('<h3>' + (editing ? t('editExam') : t('createExam')) + '</h3><form onsubmit="return saveExam(event)"><div class="form-grid">' +
+    '<div class="full"><label>' + t('examName') + ' *</label><input id="fExName" required placeholder="e.g. Unit Test 3" value="' + (editing ? esc(editing.name) : '') + '"></div>' +
+    '<div><label>' + t('fClass') + ' *</label><select id="fExCls"' + (editing ? ' disabled' : '') + '>' + clsOpts + '</select></div>' +
     '<div><label>' + t('fSubject') + '</label><select id="fExSub">' + subOpts + '</select></div>' +
-    '<div><label>' + t('fDate') + '</label><input id="fExDate" type="date" value="' + todayIST() + '" required></div>' +
-    '<div><label>' + t('examTotal') + ' *</label><input id="fExTotal" type="number" min="1" step="1" value="100" required></div>' +
-    '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + t('createExam') + '</button></div></form>');
+    '<div><label>' + t('fDate') + '</label><input id="fExDate" type="date" value="' + (editing ? esc(editing.date) : todayIST()) + '" required></div>' +
+    '<div><label>' + t('examTotal') + ' *</label><input id="fExTotal" type="number" min="1" step="1" value="' + (editing ? editing.total : 100) + '" required></div>' +
+    '</div>' + (editing ? '<p class="muted" style="margin-top:8px">' + t('examClsLocked') + ' ' + t('examMarksKept') + '</p>' : '') +
+    '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + (editing ? t('saveBtn') : t('createExam')) + '</button></div></form>');
 }
 function saveExam(e) {
   e.preventDefault();
@@ -8027,6 +8078,23 @@ function saveExam(e) {
   if (!name || !cls || !date || !total || total < 1) { toast(t('tExamInvalid')); return false; }
   // v37: a teacher creates exams only for their own assigned classes.
   if (state.role === 'teacher' && teacherClasses().indexOf(cls) === -1) { toast(t('tNotAllowed')); return false; }
+  if (state.editExamId) {
+    // B6: EDIT — update in place. Class never changes (see examForm):
+    // the marks rows belong to that class's roster. Marks already
+    // entered stay exactly as entered — never silently changed or
+    // deleted; percentages are recalculated against the new total,
+    // and a mark above a lowered total is kept and flagged on the
+    // next marks save (saveMarks rejects over-total values).
+    var ex0 = db.exams.find(function (e) { return e.id === state.editExamId; });
+    if (!ex0 || !isActiveExam(ex0)) { state.editExamId = null; toast(t('tNotAllowed')); return false; }
+    var oldName = ex0.name;
+    ex0.name = name; ex0.subject = subject; ex0.date = date; ex0.total = total;
+    logAudit('Exam updated', oldName + ' → ' + name + ' • ' + ex0.cls + ' • ' + subject + ' • ' + date + ' • ' + total + ' marks');
+    state.editExamId = null;
+    saveDB(db); closeModal(); renderApp();
+    toast('✓ ' + t('tExamUpdated'));
+    return false;
+  }
   var ex = { id: uniqueId('ex'), name: name, cls: cls, subject: subject, date: date, total: total };
   db.exams.push(ex);
   logAudit('Exam created', name + ' • ' + cls + ' • ' + subject + ' • ' + date + ' • ' + total + ' marks');
@@ -8034,6 +8102,47 @@ function saveExam(e) {
   saveDB(db); closeModal(); renderApp();
   toast('✓ ' + t('tExamCreated'));
   return false;
+}
+function editExam(id) {
+  // B6: opens the same form as create, prefilled. School + teacher
+  // (own classes only) — the role/class checks live in examForm.
+  examForm(id);
+}
+function deleteExam(id) {
+  // B6: school only, same pattern as deleteStudent (soft delete).
+  // SOFT DELETE only: the exam row and ALL of its marks stay saved —
+  // nothing is ever hard-deleted here. The marks are hidden
+  // everywhere (exam lists, results, latest-exam %) until the exam
+  // is restored from the "Deleted exams" card. The row itself keeps
+  // syncing as a normal exam (sbMapExam carries no deleted flag — no
+  // SQL in this change), so the delete is local to this device; the
+  // merge-keep by the ss_exams pull keeps the flag alive across
+  // sync cycles, but a second device re-downloads the exam as active
+  // until a server column exists (follow-up SQL, not this change).
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
+  var ex = db.exams.find(function (e) { return e.id === id && isActiveExam(e); });
+  if (!ex) return;
+  confirmModal(t('delExamMsg') + ' — ' + ex.name + ' • ' + ex.cls + ' • ' + ex.subject + '?', function () {
+    ex.deleted = true;
+    if (state.examId === id) {
+      var next = db.exams.filter(isActiveExam)[0];
+      state.examId = next ? next.id : null;
+    }
+    logAudit('Exam deleted', ex.name + ' • ' + ex.cls + ' • ' + ex.subject + ' • ' + ex.date + ' (soft delete — exam and marks kept)');
+    saveDB(db); renderApp();
+    toast(t('tExamDeleted'));
+  });
+}
+function restoreExam(id) {
+  // B6: undoes a soft delete — the exam and its marks come back
+  // everywhere at once, because neither was ever removed.
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
+  var ex = db.exams.find(function (e) { return e.id === id && !!e.deleted; });
+  if (!ex) return;
+  ex.deleted = false;
+  logAudit('Exam restored', ex.name + ' • ' + ex.cls + ' • ' + ex.subject + ' • ' + ex.date);
+  saveDB(db); renderApp();
+  toast('✓ ' + t('tExamRestored'));
 }
 function meStudent() {
   // v35: the logged-in student is found by id, never by name and never
