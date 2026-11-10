@@ -1,7 +1,7 @@
 -- School Saathi backend — 01_schema.sql
--- Target Academy project (atdynurhryjqawvqhvan). ALL School Saathi tables
--- use the ss_ prefix: the project already has unprefixed tables named
--- attendance, fee_records, audit_logs etc. — never touch those.
+-- School Saathi project (bsjqeeeemwimzldrehpw). Run ONLY against this
+-- project — never against the Target Academy project (atdynurhryjqawvqhvan).
+-- ALL School Saathi tables use the ss_ prefix.
 -- Idempotent: safe to re-run (CREATE TABLE IF NOT EXISTS, CREATE OR REPLACE).
 -- Money is numeric(12,2). IDs are uuid. Local app ids (stu1, fee1, ar...)
 -- are kept in local_id columns for the migration mapping only.
