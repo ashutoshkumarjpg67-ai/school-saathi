@@ -5319,7 +5319,12 @@ function restoreSession() {
           try { toast(t('sbStatusSessionExpired')); } catch (e) {}
           return false;
         }
-        return finishRestore();
+        // BAT review fix: finishRestore runs outside restoreSession's
+        // try/catch (it is inside this .then), so a render/load error
+        // here used to reject the boot promise with no handler — blank
+        // app, no login screen, no sbBoot. Fail safe instead: false
+        // shows the login screen, exactly like the sync path below.
+        try { return finishRestore(); } catch (e2) { return false; }
       });
     }
     return Promise.resolve(finishRestore());
