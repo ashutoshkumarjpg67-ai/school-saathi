@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 59;
+var APP_VERSION = 60;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -5126,7 +5126,7 @@ var I18N = {
     loginWelcome: 'Log in or sign up<br>to continue', loginWelcomeBack: 'Welcome back', loginNewSchool: 'New school?', loginCreateAccount: 'Create a school account →', featTitle: 'WHAT YOU GET', featAttendance: 'Attendance', featFees: 'Fees & Receipts', featExams: 'Exams & Marks', featHomework: 'Homework', featWhatsApp: 'WhatsApp Alerts', loginEmail: 'Email', loginPassword: 'Password', loginEmailPh: 'you@school.edu.in', loginPwPh: '••••••••', loginBtn: 'Log In', authLogin: 'Log In', authSignup: 'Sign Up', authNote: 'One account per school.', suSchool: 'School Name', suYourName: 'Your Name', suEmail: 'Email', suPw: 'Password', suPw2: 'Confirm Password', suBtn: 'Create Account', loginOr: 'Or continue with', demoTitle: '— One-tap demo login —', loginBack: '← Back to website',
     schoolDashboard: 'School Admin Dashboard', studentDashboard: 'Student Dashboard',
     confirmTitle: 'Confirm', cancel: 'Cancel', confirmYes: 'Yes, continue', saveBtn: 'Save',
-    addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmTitle: 'Reset — choose what to delete', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', resetNameTitle: 'Type the school name to confirm', resetNameHint: 'This is the last step before everything is deleted. Type the exact school name.', resetNameLabel: 'School name', resetNameWrong: 'That name does not match — nothing was reset.', resetNameGo: 'Confirm Reset', publishBtn: 'Publish', assignHw: 'Assign Homework', saveStudentBtn: 'Save Student',
+    addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', delAccount: 'Delete Account', delPwTitle: 'Delete this account?', delPwHint: 'This deletes the school account from THIS device only. Enter your password to continue.', delNameTitle: 'Type the school name to confirm', delNameHint: 'This is the last step before the account is deleted. Type the exact school name.', delConfirmMsg: 'Delete this school account from this device? Login, students, fees, attendance — everything for this school on this device goes. The server copy (if any) is NOT deleted; logging in again with the same email would bring a server-linked school back. A school that was never linked is gone for good.', delDone: 'Account deleted.', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmTitle: 'Reset — choose what to delete', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', resetNameTitle: 'Type the school name to confirm', resetNameHint: 'This is the last step before everything is deleted. Type the exact school name.', resetNameLabel: 'School name', resetNameWrong: 'That name does not match — nothing was reset.', resetNameGo: 'Confirm Reset', publishBtn: 'Publish', assignHw: 'Assign Homework', saveStudentBtn: 'Save Student',
     attOverview: 'Attendance Overview', todayAtt: 'Today\'s Attendance', feeTrend: 'Fee Collection Trend', feeTrendSub: 'Apr – Mar (Collected vs Pending)', feeTrendSub2: 'Apr to Mar (Collected vs Pending)', recentAct: 'Recent Activities', activityLog: 'Activity Log', actLogSub: 'Full audit history — newest first.', thDetails: 'Details', actBy: 'By', supYourName: 'Your name', quickLinks: 'Quick Links', jumpTask: 'Jump to a task', enterMarks: 'Enter Marks', myHomework: 'My Homework', noticesH: 'Notices', latestNotices: 'Latest from school', contactSub: 'We reply within one working day', studentsReport: 'Students Report', feesReport: 'Fees Report', attReport: 'Attendance Report', thName: 'Name', thClass: 'Class', thRoll: 'Roll', thGuardian: 'Guardian', thPhone: 'Phone', thAtt: 'Att.', thFee: 'Fee', thAction: 'Action', thReceipt: 'Receipt', thStudent: 'Student', thMonth: 'Month', thAmount: 'Amount', thDate: 'Date', thStatus: 'Status', thMarks: 'Marks', thResult: 'Result', thRole: 'Role',
     subReports: 'Download CSV reports', subStudents: 'St. Xavier School, Patna', subAttendance: 'Mark & view attendance', subFees: 'Fee collection & pending dues', subExams: 'Exams & marks entry', subHomework: 'Assign & track homework', subNotices: 'Notice board',
     fSchoolName: 'School Name', fCity: 'City', fStudentName: 'Student Name', fClass: 'Class', fRoll: 'Roll No', fGuardian: 'Guardian', fPhone: 'Phone', fTitle: 'Title', fSubject: 'Subject', fDue: 'Due Date', fMessage: 'Message', fPrincipal: 'Principal / Admin', fEmail: 'Email', fAddress: 'Address', fSession: 'Academic Session',
@@ -5163,7 +5163,7 @@ var I18N = {
     loginWelcome: 'लॉग इन करें या साइन अप करें<br>जारी रखने के लिए', loginWelcomeBack: 'फिर से स्वागत है', loginNewSchool: 'नया स्कूल?', loginCreateAccount: 'स्कूल अकाउंट बनाएँ →', featTitle: 'आपको क्या मिलेगा', featAttendance: 'उपस्थिति', featFees: 'फीस व रसीद', featExams: 'परीक्षा व अंक', featHomework: 'गृहकार्य', featWhatsApp: 'WhatsApp अलर्ट', loginEmail: 'ईमेल', loginPassword: 'पासवर्ड', loginEmailPh: 'आप@school.edu.in', loginPwPh: '••••••••', loginBtn: 'लॉग इन करें', authLogin: 'लॉग इन', authSignup: 'साइन अप', authNote: 'एक स्कूल, एक अकाउंट।', suSchool: 'स्कूल का नाम', suYourName: 'आपका नाम', suEmail: 'ईमेल', suPw: 'पासवर्ड', suPw2: 'पासवर्ड दोबारा डालें', suBtn: 'अकाउंट बनाएँ', loginOr: 'या जारी रखें', demoTitle: '— एक टैप में डेमो लॉगिन —', loginBack: '← वेबसाइट पर वापस',
     schoolDashboard: 'स्कूल एडमिन डैशबोर्ड', studentDashboard: 'छात्र डैशबोर्ड',
     confirmTitle: 'पुष्टि करें', cancel: 'रद्द करें', confirmYes: 'हाँ, जारी रखें', saveBtn: 'सहेजें',
-    addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmTitle: 'रीसेट — क्या मिटाना है चुनें', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', resetNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', resetNameHint: 'सब कुछ मिटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', resetNameLabel: 'स्कूल का नाम', resetNameWrong: 'यह नाम मेल नहीं खाता — कुछ भी रीसेट नहीं हुआ।', resetNameGo: 'रीसेट की पुष्टि करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveStudentBtn: 'छात्र सहेजें',
+    addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', delAccount: 'अकाउंट हटाएँ', delPwTitle: 'यह अकाउंट हटाएँ?', delPwHint: 'इससे स्कूल का अकाउंट सिर्फ इस डिवाइस से हटेगा। जारी रखने के लिए अपना पासवर्ड डालें।', delNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', delNameHint: 'अकाउंट हटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', delConfirmMsg: 'इस डिवाइस से यह स्कूल अकाउंट हटा दें? लॉगिन, छात्र, फीस, उपस्थिति — इस डिवाइस पर इस स्कूल का सब कुछ चला जाएगा। सर्वर की कॉपी (अगर है तो) नहीं मिटेगी; उसी ईमेल से दोबारा लॉगिन करने पर सर्वर से जुड़ा स्कूल वापस आ जाएगा। जो स्कूल कभी जुड़ा ही नहीं, वह हमेशा के लिए चला जाएगा।', delDone: 'अकाउंट हटा दिया गया।', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmTitle: 'रीसेट — क्या मिटाना है चुनें', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', resetNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', resetNameHint: 'सब कुछ मिटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', resetNameLabel: 'स्कूल का नाम', resetNameWrong: 'यह नाम मेल नहीं खाता — कुछ भी रीसेट नहीं हुआ।', resetNameGo: 'रीसेट की पुष्टि करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveStudentBtn: 'छात्र सहेजें',
     attOverview: 'उपस्थिति अवलोकन', todayAtt: 'आज की उपस्थिति', feeTrend: 'शुल्क संग्रह प्रवृत्ति', feeTrendSub: 'अप्रैल – मार्च (संग्रह बनाम बकाया)', feeTrendSub2: 'अप्रैल से मार्च (संग्रह बनाम बकाया)', recentAct: 'हाल की गतिविधियाँ', activityLog: 'गतिविधि लॉग', actLogSub: 'पूरी ऑडिट हिस्ट्री — नई पहले।', thDetails: 'विवरण', actBy: 'द्वारा', supYourName: 'आपका नाम', quickLinks: 'त्वरित लिंक', jumpTask: 'किसी कार्य पर जाएँ', enterMarks: 'अंक भरें', myHomework: 'मेरा होमवर्क', noticesH: 'नोटिस', latestNotices: 'स्कूल से नवीनतम', contactSub: 'हम एक कार्य दिवस के भीतर जवाब देते हैं', studentsReport: 'छात्र रिपोर्ट', feesReport: 'शुल्क रिपोर्ट', attReport: 'उपस्थिति रिपोर्ट', thName: 'नाम', thClass: 'कक्षा', thRoll: 'रोल', thGuardian: 'अभिभावक', thPhone: 'फ़ोन', thAtt: 'उप.', thFee: 'शुल्क', thAction: 'कार्रवाई', thReceipt: 'रसीद', thStudent: 'छात्र', thMonth: 'महीना', thAmount: 'राशि', thDate: 'तारीख', thStatus: 'स्थिति', thMarks: 'अंक', thResult: 'परिणाम', thRole: 'भूमिका',
     subReports: 'CSV रिपोर्ट डाउनलोड करें', subStudents: 'सेंट ज़ेवियर स्कूल, पटना', subAttendance: 'उपस्थिति दर्ज करें और देखें', subFees: 'शुल्क संग्रह और बकाया', subExams: 'परीक्षा और अंक प्रविष्टि', subHomework: 'होमवर्क सौंपें और देखें', subNotices: 'नोटिस बोर्ड',
     fSchoolName: 'स्कूल का नाम', fCity: 'शहर', fStudentName: 'छात्र का नाम', fClass: 'कक्षा', fRoll: 'रोल नंबर', fGuardian: 'अभिभावक', fPhone: 'फ़ोन', fTitle: 'शीर्षक', fSubject: 'विषय', fDue: 'देय तारीख', fMessage: 'संदेश', fPrincipal: 'प्रधानाचार्य / एडमिन', fEmail: 'ईमेल', fAddress: 'पता', fSession: 'शैक्षणिक सत्र',
@@ -6163,6 +6163,81 @@ function resetAllConfirmed() {
   // v34 (P1-5): the server-wipe path stops the auto interval before
   // wiping — restart it here so the 30s auto-pull keeps running.
   if (state.sb && state.sb.uid) sbSyncAutoStart();
+}
+// v60: Delete Account — removes THIS school account from THIS device only.
+// The server copy (if any) is NOT deleted: a server-linked school comes
+// back on the next login with the same email; a local-only school is gone
+// for good. Same double gate as Reset All Data (password + exact school
+// name). Only this account's keys are removed — every other account on
+// the device, and every other app on this origin, is untouched.
+function deleteAccount() {
+  if (!state.role || !state.user || state.role !== 'school') return;
+  openModal('<h3>' + t('delPwTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('delPwHint') + '</p>' +
+    '<form onsubmit="return submitDeletePw(event)"><div class="form-grid"><div class="full"><label>' + t('resetPwLabel') + '</label>' +
+    '<input id="delPwInput" type="password" autocomplete="current-password" placeholder="••••••••"></div></div>' +
+    '<div id="delPwErr" class="err hidden"></div>' +
+    '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    '<button class="btn danger" type="submit">' + t('resetPwGo') + '</button></div></form>');
+  setTimeout(function () { var el = $('delPwInput'); if (el) el.focus(); }, 50);
+}
+function submitDeletePw(e) {
+  if (e) e.preventDefault();
+  var pw = $('delPwInput') ? $('delPwInput').value : '';
+  if (!resetPwCheck(pw)) {
+    var err = $('delPwErr');
+    if (err) { err.textContent = t('resetPwWrong'); err.classList.remove('hidden'); }
+    return false;
+  }
+  closeModal();
+  openDeleteNamePrompt();
+  return false;
+}
+function openDeleteNamePrompt() {
+  openModal('<h3>' + t('delNameTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('delNameHint') + '</p>' +
+    '<form onsubmit="return submitDeleteName(event)"><div class="form-grid"><div class="full"><label>' + t('resetNameLabel') + '</label>' +
+    '<input id="delNameInput" autocomplete="off" placeholder="' + t('resetNameLabel') + '"></div></div>' +
+    '<div id="delNameErr" class="err hidden"></div>' +
+    '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    '<button class="btn danger" type="submit">' + t('resetNameGo') + '</button></div></form>');
+  setTimeout(function () { var el = $('delNameInput'); if (el) el.focus(); }, 50);
+}
+function submitDeleteName(e) {
+  if (e) e.preventDefault();
+  var typed = ($('delNameInput') ? $('delNameInput').value : '').trim();
+  if (typed !== (db.profile.name || '').trim()) {
+    var err = $('delNameErr');
+    if (err) { err.textContent = t('resetNameWrong'); err.classList.remove('hidden'); }
+    return false;
+  }
+  closeModal();
+  confirmModal(t('delConfirmMsg'), deleteAccountConfirmed);
+  return false;
+}
+function deleteAccountConfirmed() {
+  var a = state.user;
+  if (!a || a.role !== 'school') return;
+  var email = (a.email || '').toLowerCase();
+  var uid = a.uid;
+  var sbUid = (state.sb && state.sb.uid) || a.sbUid || null;
+  sbSyncAutoStop();
+  sbSyncResetMemory();
+  // Best-effort server sign-out (clears the server session, deletes nothing).
+  try { var s = sbLoadSession(); if (s && s.access_token) sbSignOut(s.access_token).catch(function () {}); } catch (e2) {}
+  sbClearSession();
+  // Remove the account from the device list — other accounts untouched.
+  var list = loadAccounts().filter(function (x) { return (x.email || '').toLowerCase() !== email; });
+  saveAccounts(list);
+  // Remove this account's data + sync state — keyed by its own uids only.
+  try { localStorage.removeItem(dbKeyFor(a)); } catch (e3) {}
+  if (sbUid) { sbOutboxClear(sbUid); sbSrvIdsClear(sbUid); try { localStorage.removeItem(SB_MIGRATED_KEY + ':' + sbUid); } catch (e5) {} }
+  sbOutboxClear(uid); sbSrvIdsClear(uid); sbSnapClear(uid);
+  sbClearServerSchool(uid);
+  // Log out to the login screen (clears session keys + form fields).
+  logout();
+  // logout() settles a status line for the deleted account — drop it:
+  // there is no account left for it to describe.
+  try { localStorage.removeItem(SB_STATUS_KEY); } catch (e6) {}
+  toast(t('delDone'));
 }
 function openSupportForm() {
   openModal('<h3>' + t('raiseSupport') + '</h3><p style="color:var(--muted);font-size:14px">' + t('contactSub') + '</p>' +
@@ -8676,7 +8751,8 @@ function settingsPage() {
   '<button type="button" class="btn ghost sm" onclick="clearSchoolLogo()">' + t('removeLogo') + '</button></div>' +
   '<p class="muted">' + t('logoHint') + '</p></div>' +
   '</div><div class="actions" style="justify-content:flex-start"><button class="btn" type="submit">' + t('saveSettingsBtn') + '</button>' +
-  '<button type="button" class="btn danger" onclick="resetAllData()">' + t('resetAllData') + '</button></div></form></div>' +
+  '<button type="button" class="btn danger" onclick="resetAllData()">' + t('resetAllData') + '</button>' +
+  '<button type="button" class="btn danger" onclick="deleteAccount()">' + t('delAccount') + '</button></div></form></div>' +
   '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub" id="sbStatusLine">' + sbStatusText() + '</p><div id="sbSyncDetails">' + sbSyncDetailsHtml() + '</div><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration()">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload()">' + t('sbDownloadNow') + '</button>' + (state.user && state.user.role === 'school' && !state.user.sbUid ? '<button type="button" class="btn ghost" onclick="openLinkServerModal()">' + t('sbLinkServer') + '</button>' : '') + (sbSessionExpired ? '<button type="button" class="btn ghost" onclick="logout()">' + t('authLogin') + '</button>' : '') + '</div></div>' +
   '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('fullBackup') + '</h3><p class="card-sub">' + t('fullBackupSub') + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="exportFullBackup()">' + t('backupExport') + '</button><label class="btn ghost" style="cursor:pointer">' + t('backupImport') + '<input type="file" accept="application/json,.json" style="display:none" onchange="onBackupFileChosen(this)"></label></div></div>' +
   '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('raiseSupport') + '</h3><p class="card-sub">' + t('contactSub') + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="openSupportForm()">' + t('raiseSupport') + '</button></div></div>';
