@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 66;
+var APP_VERSION = 67;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -876,7 +876,7 @@ function sbMapTeacher(te, schoolId) {
 }
 function sbMapExam(e, schoolId) {
   return { school_id: schoolId, local_id: e.id, name: e.name || '', cls: e.cls || '', subject: e.subject || '',
-    exam_date: sbNullIfEmpty(e.date), total: e.total || 100 };
+    exam_date: sbNullIfEmpty(e.date), total: e.total || 100, deleted: !!e.deleted }; // v67 (SQL 20): the deleted flag rides the upload, so a soft delete travels
 }
 function sbMapHomework(h, schoolId, stuMap) {
   return { school_id: schoolId, local_id: h.id, cls: h.cls || '', subject: h.subject || '', title: h.title || '',
@@ -1948,22 +1948,15 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   })();
   d.teachers = mergeById('ss_teachers', d.teachers || [], byTable.ss_teachers || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [] }; });
   var oldExams = d.exams || [];
-  d.exams = mergeById('ss_exams', d.exams || [], byTable.ss_exams || [], function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; examMap[row.id] = e.id; return e; });
-  // B6 (exam soft-delete): the server row carries no deleted flag
-  // (ss_exams has no such column — adding one needs SQL, not this
-  // change), so the pull above would wipe the local flag on every
-  // cycle and the exam would come back. Restore it from the
-  // pre-merge row, same class of keep as the v55 student-PIN keep
-  // above. Consequence to know: a delete made on THIS device stays
-  // deleted here, but it does NOT travel to other devices — the
-  // server row stays, so a second device re-downloads the exam as
-  // active. A server column (follow-up SQL) is needed before a
-  // delete can sync across devices.
-  (function () {
-    var oldById = {};
-    oldExams.forEach(function (e) { oldById[e.id] = e; });
-    d.exams.forEach(function (e) { var old = oldById[e.id]; if (old && old.deleted) e.deleted = true; });
-  })();
+  d.exams = mergeById('ss_exams', d.exams || [], byTable.ss_exams || [], function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100, deleted: !!row.deleted }; examMap[row.id] = e.id; return e; });
+  // v67 (SQL 20): the server row now carries the deleted flag, so the
+  // pull above reads it — a delete from another device applies, and a
+  // restore from another device applies too. The old B6 unconditional
+  // keep (which forced the local flag back on every cycle) is GONE:
+  // it would have blocked exactly that restore. The only local
+  // override left is the v58 pending-upsert keep below — a delete or
+  // restore queued on THIS device but not yet flushed still holds its
+  // local flag through a pull, keyed on the outbox entry.
   // v58: a pending exam upsert keeps its LOCAL row through the pull —
   // the same class as the v56 students keep. Live v57 (10 Nov 2026):
   // the admin edited an exam name, the pull replaced the local edit
@@ -5665,7 +5658,7 @@ function mapCloudStudentPayload(p) {
   if (p.student && p.student.id) stuMap[p.student.id] = stu.id;
   d.students = [stu];
   var examMap = {};
-  d.exams = (p.exams || []).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; examMap[row.id] = e.id; return e; });
+  d.exams = (p.exams || []).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100, deleted: !!row.deleted }; examMap[row.id] = e.id; return e; });
   d.feeRecords = (p.fees || []).map(function (row) { return sbRowToFeeRecord(row, stuMap); });
   d.attendance = {};
   (p.attendance || []).forEach(function (row) {
@@ -5768,7 +5761,7 @@ function mapCloudTeacherPayload(p) {
   d.students = (p.students || []).filter(function (row) { return tClasses.indexOf(row.cls) !== -1; }).map(function (row) { var s = sbRowToStudent(row); if (row.id) { stuMap[row.id] = s.id; s.srvId = row.id; } return s; });
   d.teachers = [{ id: (p.teacher && p.teacher.local_id) || ('srv-' + (p.teacher && p.teacher.id)), name: (p.teacher && p.teacher.name) || '', subject: (p.teacher && p.teacher.subject) || '', cls: (p.teacher && p.teacher.cls) || '', classes: Array.isArray(p.teacher && p.teacher.classes) ? p.teacher.classes.slice() : [] }];
   var examMap = {};
-  d.exams = (p.exams || []).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; if (row.id) { examMap[row.id] = e.id; e.srvId = row.id; } return e; });
+  d.exams = (p.exams || []).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100, deleted: !!row.deleted }; if (row.id) { examMap[row.id] = e.id; e.srvId = row.id; } return e; });
   d.attendance = {};
   (p.attendance || []).forEach(function (row) {
     if (tClasses.indexOf(row.cls) === -1) return;
@@ -8898,13 +8891,13 @@ function sbQueueExamChange58(ex) {
   // (ss_exams has no deleted column), so the diff never queues it —
   // and without a pending outbox entry the v58 pull keep above has
   // nothing to key on. Queue it explicitly so the keep holds the
-  // flag until the flush resolves it. The push itself is a no-op
-  // PATCH (the server row already carries the same content) and
-  // resolves the entry, so the outbox still drains and the status
-  // still reaches 'synced'. Local-only accounts skip this entirely
-  // (no pull can clobber the flag there). A server column for the
-  // flag (cross-device delete sync) is a follow-up SQL change, not
-  // this version — the delete stays local to this device until then.
+  // flag until the flush resolves it. v67 (SQL 20): the server row
+  // now HAS the deleted column and sbMapExam carries it, so the
+  // flush PATCH actually writes the flag — the push is no longer a
+  // no-op, and the delete/restore travels to other devices. The
+  // queue itself is still needed: the diff alone never queues a
+  // delete, because only the flag changes. Local-only accounts skip
+  // this entirely (no pull can clobber the flag there).
   try {
     if (!sbSyncActive()) return;
     var uid58 = (state.sb && state.sb.uid) || '';
@@ -8917,12 +8910,11 @@ function deleteExam(id) {
   // SOFT DELETE only: the exam row and ALL of its marks stay saved —
   // nothing is ever hard-deleted here. The marks are hidden
   // everywhere (exam lists, results, latest-exam %) until the exam
-  // is restored from the "Deleted exams" card. The row itself keeps
-  // syncing as a normal exam (sbMapExam carries no deleted flag — no
-  // SQL in this change), so the delete is local to this device; the
-  // merge-keep by the ss_exams pull keeps the flag alive across
-  // sync cycles, but a second device re-downloads the exam as active
-  // until a server column exists (follow-up SQL, not this change).
+  // is restored from the "Deleted exams" card. v67 (SQL 20): the
+  // flag now rides the server row, so the delete syncs to other
+  // devices — the merge-keep by the ss_exams pull holds it only
+  // while the outbox entry is pending; once flushed, the server
+  // value is the truth on every device.
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   var ex = db.exams.find(function (e) { return e.id === id && isActiveExam(e); });
   if (!ex) return;
