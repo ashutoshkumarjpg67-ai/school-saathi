@@ -2,7 +2,7 @@
 
 **Status: PLAN ONLY — no test in this plan has been executed yet.**
 **Audit item:** M-32 (Phase 0 audit, §4) — "Two-device conflict (LWW) — live UNVERIFIED".
-**Base:** v63, origin/main `88a26c35abfff435332f314326717cea7ccf7ae0`. **Applies to:** server-linked school accounts only
+**Base:** v64, origin/main `cfdac970d835d1178bc00e95eccf0d704ffba73b`. **Applies to:** server-linked school accounts only
 (Supabase project `bsjqeeeemwimzldrehpw`). Local-only accounts never sync, so
 none of these tests apply to them.
 
@@ -16,7 +16,7 @@ difference in Notes instead.
 
 ## 1. How the code says conflicts resolve (read before testing)
 
-Every claim below is from the v63 code, not from a live test. If a test
+Every claim below is from the v64 code, not from a live test. If a test
 disagrees with this section, the code reading is what is wrong — or the code
 is — and the disagreement itself is the finding.
 
@@ -29,9 +29,9 @@ is — and the disagreement itself is the finding.
   tables. Every server-side UPDATE stamps `new.updated_at = now()` —
   **server clock**.
 - A local save queues an outbox entry whose `at` field is the **device clock**
-  at queue time (`app.js:2628`: `at: new Date().toISOString()`).
+  at queue time (`app.js:2657`: `at: new Date().toISOString()`).
 - On push, `sbSyncPushEntry` reads the server row first and compares
-  (`app.js:2903`, same check for the school row at `app.js:2841`):
+  (`app.js:2932`, same check for the school row at `app.js:2870`):
 
   `if (row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at))
   return { pushed: false, conflict: true };`
@@ -42,40 +42,42 @@ is — and the disagreement itself is the finding.
 
 ### 1.2 What the loser sees
 
-- The losing outbox entry is **dropped** (not retried): `app.js:3012-3016`
+- The losing outbox entry is **dropped** (not retried): `app.js:3041-3045`
   counts it (`conflicts++`) and removes it from the outbox.
-- `sbSyncSnapSetFromLocalRow` (`app.js:2589-2600`) marks the losing row quiet
+- `sbSyncSnapSetFromLocalRow` (`app.js:2618-2629`) marks the losing row quiet
   at its current local hash so the next diff does not re-queue the same losing
   change forever.
 - The **next pull restores the server version** on the losing device
-  (`app.js:2166-2175`, header comment). Until that pull runs, the losing
+  (`app.js:2195-2204`, header comment). Until that pull runs, the losing
   device still shows its own (losing) value.
 - The conflict is visible only in **Settings → Sync details → Last flush**
   ("conflicts N", `app.js:479`). The string `sbSyncConflict` ("Server had a
-  newer copy — kept the server version.", `app.js:5160`) exists in I18N; whether
+  newer copy — kept the server version.", `app.js:5189`) exists in I18N; whether
   a toast is actually shown on a conflict was not verified in code — check
   during the tests and record it.
 
 ### 1.3 The pull merges, never replaces
 
-`sbSyncPullRun` (`app.js:3113`) fetches the school row plus 11 tables
-(`app.js:3133`: `ss_fee_structure`, `ss_students`, `ss_teachers`, `ss_exams`,
+`sbSyncPullRun` (`app.js:3142`) fetches the school row plus 11 tables
+(`app.js:3158`: `ss_fee_structure`, `ss_students`, `ss_teachers`, `ss_exams`,
 `ss_fee_records`, `ss_attendance`, `ss_receipts`, `ss_marks`, `ss_homework`,
-`ss_notices`, `ss_admission_requests`). `sbApplyServerRows` (`app.js:1738`)
+`ss_notices`, `ss_admission_requests`). Since v64 the fetches page through
+`sbFetchAllPages` (`app.js:997`) instead of a single `limit=5000` fetch, so a
+table with more than 5000 rows no longer truncates on pull. `sbApplyServerRows` (`app.js:1767`)
 **merges**: a local row that has not reached the server yet is kept
-(`app.js:1755-1765`), and a row that **is** in the last synced snapshot but is
+(`app.js:1780-1790`), and a row that **is** in the last synced snapshot but is
 absent on the server "was deleted elsewhere and still drops"
-(`app.js:1766-1775`). A row with a **pending outbox upsert is kept** even if
-the snapshot says it was synced (`app.js:1785-1800`) — this matters for T3.
+(`app.js:1780-1790`). A row with a **pending outbox upsert is kept** even if
+the snapshot says it was synced (`app.js:1808-1829`) — this matters for T3.
 
 ### 1.4 Deletes are special, and only for four tables
 
 - Only `SB_SYNC_DELETABLE = ['ss_fee_records', 'ss_fee_structure',
-  'ss_attendance', 'ss_marks']` (`app.js:2477`) propagates a local delete to
-  the server (`app.js:2632-2641`). A row deleted locally in any other table
+  'ss_attendance', 'ss_marks']` (`app.js:2506`) propagates a local delete to
+  the server (`app.js:2661-2670`). A row deleted locally in any other table
   (students, teachers, exams, homework, notices, receipts, …) is **restored
   by the next pull** — the delete never leaves the device.
-- The delete path (`app.js:2801-2811`) issues a plain `DELETE` against the
+- The delete path (`app.js:2830-2840`) issues a plain `DELETE` against the
   server row and performs **no `updated_at` comparison** — a delete does not
   lose to a newer server edit the way an upsert does. (T3 checks what that
   means in practice.)
@@ -89,11 +91,11 @@ the snapshot says it was synced (`app.js:1785-1800`) — this matters for T3.
 - The RPC alone is not the whole story: the live counter can sit behind the
   highest used number, so the app checks each candidate against the server's
   taken set and retries until a free number comes back ("mint-until-free",
-  `app.js:2187-2188`). A row saved while offline gets **no number at all**
-  (`numPending`) and is numbered on the next online cycle (`app.js:2187-2210`
+  `app.js:2216-2217`). A row saved while offline gets **no number at all**
+  (`numPending`) and is numbered on the next online cycle (`app.js:2216-2239`
   comment) — a device never guesses a number for a server account.
 - History: a 9 Nov 2026 live incident produced 192 duplicate receipts when
-  the same-number check misfired (v41 fix, `app.js:2881-2900` comment). T4/T5
+  the same-number check misfired (v41 fix, `app.js:2910-2929` comment). T4/T5
   re-prove the fixed behaviour under real contention.
 
 ### 1.6 Known weak spots this plan is designed to expose
@@ -128,7 +130,7 @@ the snapshot says it was synced (`app.js:1785-1800`) — this matters for T3.
    (close/reopen the app, or Settings → Back Up Now / Download from Server)
    and wait for status "Synced" before judging the result. The automatic
    cycle also runs every 30 s while the app is open and on focus/online
-   (`app.js:2178-2185`).
+   (`app.js:2207-2214`).
 5. **Cleanup (after all tests):** delete the scratch student and its fee
    records/receipts from device A, sync, confirm they are gone on device B,
    and note the cleanup in the results table.
@@ -180,7 +182,7 @@ toast appeared, and the final value on each device.
 
 **Expected outcome:** B's `9000000012` wins — when A's queued change flushes,
 the server row's `updated_at` (B's write) is newer than A's queued `at`, so
-A's push is skipped as a conflict (`app.js:2903`) and A's next pull restores
+A's push is skipped as a conflict (`app.js:2932`) and A's next pull restores
 `9000000012` on A. A's offline edit is lost, silently except for the
 conflicts counter.
 
@@ -209,10 +211,10 @@ Run as two sub-cases.
    after one more sync cycle.
 
 **Expected outcome (code reading):** A's delete removes the server row
-(the delete path has no `updated_at` check, `app.js:2801-2811`). On B's
+(the delete path has no `updated_at` check, `app.js:2830-2840`). On B's
 pull, the record is in B's snapshot but absent on the server — **but** B
 has a pending upsert for it, and the merge keep-rule
-(`app.js:1785-1800`) keeps rows with a pending upsert. So the expected
+(`app.js:1808-1829`) keeps rows with a pending upsert. So the expected
 sequence is: B's record survives B's pull, B's flush then re-pushes it
 (no server row to conflict against, so it re-inserts), and the record
 **resurrects on the server and on A**. If instead the record stays deleted
@@ -233,7 +235,7 @@ linked to the record, if any, is in the same state on both devices.
 3. Take B off airplane mode, wait for B to sync, then check A again.
 
 **Expected outcome:** the student delete never propagates — students are
-not in `SB_SYNC_DELETABLE` (`app.js:2477`), so A has no delete op to push
+not in `SB_SYNC_DELETABLE` (`app.js:2506`), so A has no delete op to push
 and the next pull **restores the student on A**. B's edit (`9000000022`)
 syncs normally and wins. End state: the student exists on both devices
 with B's value.
@@ -261,7 +263,7 @@ contention (regression check for the 9 Nov 2026 duplicate-receipt incident).
 number; no two receipts share a number on either device or in
 `ss_receipts` on the server; no receipt is lost (the count of receipts for
 the students equals the number collected); offline-collected receipts get
-their numbers only after reconnecting (`numPending`, `app.js:2187-2210`)
+their numbers only after reconnecting (`numPending`, `app.js:2216-2239`)
 and never show a locally guessed number while offline.
 
 **Pass means:** (a) all receipt numbers unique across both devices and the
@@ -352,8 +354,8 @@ Device clock offsets recorded at setup (§2 step 2): A: ____  B: ____
   Live two-device edit test is audit me nahi hua."
 - `supabase/04_server_first.sql` — `updated_at` columns + touch trigger.
 - `supabase/01_schema.sql:329-375` — `ss_next_adm_no` / `ss_next_receipt_no`.
-- `app.js` (v63): push LWW check `:2841`, `:2903`; outbox queue `:2628`;
-  conflict drop + count `:3012-3016`; snapshot quieting `:2589-2600`; pull
-  `:3113`, table list `:3133`; merge rules `:1738-1800`; deletable tables
-  `:2477`, `:2632-2641`; delete path `:2801-2811`; numbering
-  `:2187-2210`; Sync details `:479`.
+- `app.js` (v64): push LWW check `:2870`, `:2932`; outbox queue `:2657`;
+  conflict drop + count `:3041-3045`; snapshot quieting `:2618-2629`; pull
+  `:3142`, table list `:3158`; merge rules `:1767-1829`; deletable tables
+  `:2506`, `:2661-2670`; delete path `:2830-2840`; numbering
+  `:2216-2239`; Sync details `:479`.
