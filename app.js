@@ -5163,7 +5163,7 @@ var I18N = {
     loginWelcome: 'Log in or sign up<br>to continue', loginWelcomeBack: 'Welcome back', loginNewSchool: 'New school?', loginCreateAccount: 'Create a school account →', featTitle: 'WHAT YOU GET', featAttendance: 'Attendance', featFees: 'Fees & Receipts', featExams: 'Exams & Marks', featHomework: 'Homework', featWhatsApp: 'WhatsApp Alerts', loginEmail: 'Email', loginPassword: 'Password', loginEmailPh: 'you@school.edu.in', loginPwPh: '••••••••', loginBtn: 'Log In', authLogin: 'Log In', authSignup: 'Sign Up', authNote: 'One account per school.', suSchool: 'School Name', suYourName: 'Your Name', suEmail: 'Email', suPw: 'Password', suPw2: 'Confirm Password', suBtn: 'Create Account', loginOr: 'Or continue with', demoTitle: '— One-tap demo login —', loginBack: '← Back to website',
     schoolDashboard: 'School Admin Dashboard', studentDashboard: 'Student Dashboard',
     confirmTitle: 'Confirm', cancel: 'Cancel', confirmYes: 'Yes, continue', saveBtn: 'Save',
-    addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', delAccount: 'Delete Account', delPwTitle: 'Delete this account?', delPwHint: 'This deletes the school account from THIS device only. Enter your password to continue.', delNameTitle: 'Type the school name to confirm', delNameHint: 'This is the last step before the account is deleted. Type the exact school name.', delConfirmMsg: 'Delete this school account from this device? Login, students, fees, attendance — everything for this school on this device goes. The server copy (if any) is NOT deleted; logging in again with the same email would bring a server-linked school back. A school that was never linked is gone for good.', delDone: 'Account deleted.', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmTitle: 'Reset — choose what to delete', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', resetNameTitle: 'Type the school name to confirm', resetNameHint: 'This is the last step before everything is deleted. Type the exact school name.', resetNameLabel: 'School name', resetNameWrong: 'That name does not match — nothing was reset.', resetNameGo: 'Confirm Reset', publishBtn: 'Publish', assignHw: 'Assign Homework', saveStudentBtn: 'Save Student',
+    addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', delAccount: 'Delete Account', delPwTitle: 'Delete this account?', delPwHint: 'This deletes the school account from THIS device only. Enter your password to continue.', delNameTitle: 'Type the school name to confirm', delNameHint: 'This is the last step before the account is deleted. Type the exact school name.', delConfirmMsg: 'Delete this school account from this device? Login, students, fees, attendance — everything for this school on this device goes. The server copy (if any) is NOT deleted; logging in again with the same email would bring a server-linked school back. A school that was never linked is gone for good.', delDone: 'Account deleted.', delServerTitle: 'Delete this account everywhere?', delServerMsg: 'This permanently deletes the school account from the SERVER too — students, fees, attendance, everything — on all devices. You will not be able to log in with this email again. This cannot be undone.', delServerBtn: 'Delete from server too', delServerDone: 'Account deleted from the server and this device.', delServerFailed: 'Could not delete the server account — nothing was deleted. Check your connection and try again.', delServerNotSetup: 'Server deletion is not set up yet — your data on this device was deleted. The server copy remains.', delServerNoSchool: 'No school was found on the server — your data on this device was deleted.', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmTitle: 'Reset — choose what to delete', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', resetNameTitle: 'Type the school name to confirm', resetNameHint: 'This is the last step before everything is deleted. Type the exact school name.', resetNameLabel: 'School name', resetNameWrong: 'That name does not match — nothing was reset.', resetNameGo: 'Confirm Reset', publishBtn: 'Publish', assignHw: 'Assign Homework', saveStudentBtn: 'Save Student',
     attOverview: 'Attendance Overview', todayAtt: 'Today\'s Attendance', feeTrend: 'Fee Collection Trend', feeTrendSub: 'Apr – Mar (Collected vs Pending)', feeTrendSub2: 'Apr to Mar (Collected vs Pending)', recentAct: 'Recent Activities', activityLog: 'Activity Log', actLogSub: 'Full audit history — newest first.', thDetails: 'Details', actBy: 'By', supYourName: 'Your name', quickLinks: 'Quick Links', jumpTask: 'Jump to a task', enterMarks: 'Enter Marks', myHomework: 'My Homework', noticesH: 'Notices', latestNotices: 'Latest from school', contactSub: 'We reply within one working day', studentsReport: 'Students Report', feesReport: 'Fees Report', attReport: 'Attendance Report', thName: 'Name', thClass: 'Class', thRoll: 'Roll', thGuardian: 'Guardian', thPhone: 'Phone', thAtt: 'Att.', thFee: 'Fee', thAction: 'Action', thReceipt: 'Receipt', thStudent: 'Student', thMonth: 'Month', thAmount: 'Amount', thDate: 'Date', thStatus: 'Status', thMarks: 'Marks', thResult: 'Result', thRole: 'Role',
     subReports: 'Download CSV reports', subStudents: 'St. Xavier School, Patna', subAttendance: 'Mark & view attendance', subFees: 'Fee collection & pending dues', subExams: 'Exams & marks entry', subHomework: 'Assign & track homework', subNotices: 'Notice board',
     fSchoolName: 'School Name', fCity: 'City', fStudentName: 'Student Name', fClass: 'Class', fRoll: 'Roll No', fGuardian: 'Guardian', fPhone: 'Phone', fTitle: 'Title', fSubject: 'Subject', fDue: 'Due Date', fMessage: 'Message', fPrincipal: 'Principal / Admin', fEmail: 'Email', fAddress: 'Address', fSession: 'Academic Session',
@@ -5200,7 +5200,7 @@ var I18N = {
     loginWelcome: 'लॉग इन करें या साइन अप करें<br>जारी रखने के लिए', loginWelcomeBack: 'फिर से स्वागत है', loginNewSchool: 'नया स्कूल?', loginCreateAccount: 'स्कूल अकाउंट बनाएँ →', featTitle: 'आपको क्या मिलेगा', featAttendance: 'उपस्थिति', featFees: 'फीस व रसीद', featExams: 'परीक्षा व अंक', featHomework: 'गृहकार्य', featWhatsApp: 'WhatsApp अलर्ट', loginEmail: 'ईमेल', loginPassword: 'पासवर्ड', loginEmailPh: 'आप@school.edu.in', loginPwPh: '••••••••', loginBtn: 'लॉग इन करें', authLogin: 'लॉग इन', authSignup: 'साइन अप', authNote: 'एक स्कूल, एक अकाउंट।', suSchool: 'स्कूल का नाम', suYourName: 'आपका नाम', suEmail: 'ईमेल', suPw: 'पासवर्ड', suPw2: 'पासवर्ड दोबारा डालें', suBtn: 'अकाउंट बनाएँ', loginOr: 'या जारी रखें', demoTitle: '— एक टैप में डेमो लॉगिन —', loginBack: '← वेबसाइट पर वापस',
     schoolDashboard: 'स्कूल एडमिन डैशबोर्ड', studentDashboard: 'छात्र डैशबोर्ड',
     confirmTitle: 'पुष्टि करें', cancel: 'रद्द करें', confirmYes: 'हाँ, जारी रखें', saveBtn: 'सहेजें',
-    addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', delAccount: 'अकाउंट हटाएँ', delPwTitle: 'यह अकाउंट हटाएँ?', delPwHint: 'इससे स्कूल का अकाउंट सिर्फ इस डिवाइस से हटेगा। जारी रखने के लिए अपना पासवर्ड डालें।', delNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', delNameHint: 'अकाउंट हटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', delConfirmMsg: 'इस डिवाइस से यह स्कूल अकाउंट हटा दें? लॉगिन, छात्र, फीस, उपस्थिति — इस डिवाइस पर इस स्कूल का सब कुछ चला जाएगा। सर्वर की कॉपी (अगर है तो) नहीं मिटेगी; उसी ईमेल से दोबारा लॉगिन करने पर सर्वर से जुड़ा स्कूल वापस आ जाएगा। जो स्कूल कभी जुड़ा ही नहीं, वह हमेशा के लिए चला जाएगा।', delDone: 'अकाउंट हटा दिया गया।', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmTitle: 'रीसेट — क्या मिटाना है चुनें', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', resetNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', resetNameHint: 'सब कुछ मिटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', resetNameLabel: 'स्कूल का नाम', resetNameWrong: 'यह नाम मेल नहीं खाता — कुछ भी रीसेट नहीं हुआ।', resetNameGo: 'रीसेट की पुष्टि करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveStudentBtn: 'छात्र सहेजें',
+    addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', delAccount: 'अकाउंट हटाएँ', delPwTitle: 'यह अकाउंट हटाएँ?', delPwHint: 'इससे स्कूल का अकाउंट सिर्फ इस डिवाइस से हटेगा। जारी रखने के लिए अपना पासवर्ड डालें।', delNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', delNameHint: 'अकाउंट हटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', delConfirmMsg: 'इस डिवाइस से यह स्कूल अकाउंट हटा दें? लॉगिन, छात्र, फीस, उपस्थिति — इस डिवाइस पर इस स्कूल का सब कुछ चला जाएगा। सर्वर की कॉपी (अगर है तो) नहीं मिटेगी; उसी ईमेल से दोबारा लॉगिन करने पर सर्वर से जुड़ा स्कूल वापस आ जाएगा। जो स्कूल कभी जुड़ा ही नहीं, वह हमेशा के लिए चला जाएगा।', delDone: 'अकाउंट हटा दिया गया।', delServerTitle: 'अकाउंट हर जगह से हटाएँ?', delServerMsg: 'इससे स्कूल का अकाउंट सर्वर से भी हमेशा के लिए मिट जाएगा — छात्र, फीस, उपस्थिति, सब कुछ — सभी डिवाइसों से। आप इस ईमेल से दोबारा लॉग इन नहीं कर पाएँगे। यह वापस नहीं होगा।', delServerBtn: 'सर्वर से भी हटाएँ', delServerDone: 'अकाउंट सर्वर और इस डिवाइस से हट गया।', delServerFailed: 'सर्वर अकाउंट हटा नहीं जा सका — कुछ भी नहीं हटा। कनेक्शन जाँचकर फिर कोशिश करें।', delServerNotSetup: 'सर्वर से हटाना अभी तैयार नहीं है — इस डिवाइस का डेटा हटा दिया गया। सर्वर की कॉपी अभी बाकी है।', delServerNoSchool: 'सर्वर पर कोई स्कूल नहीं मिला — इस डिवाइस का डेटा हटा दिया गया।', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmTitle: 'रीसेट — क्या मिटाना है चुनें', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', resetNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', resetNameHint: 'सब कुछ मिटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', resetNameLabel: 'स्कूल का नाम', resetNameWrong: 'यह नाम मेल नहीं खाता — कुछ भी रीसेट नहीं हुआ।', resetNameGo: 'रीसेट की पुष्टि करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveStudentBtn: 'छात्र सहेजें',
     attOverview: 'उपस्थिति अवलोकन', todayAtt: 'आज की उपस्थिति', feeTrend: 'शुल्क संग्रह प्रवृत्ति', feeTrendSub: 'अप्रैल – मार्च (संग्रह बनाम बकाया)', feeTrendSub2: 'अप्रैल से मार्च (संग्रह बनाम बकाया)', recentAct: 'हाल की गतिविधियाँ', activityLog: 'गतिविधि लॉग', actLogSub: 'पूरी ऑडिट हिस्ट्री — नई पहले।', thDetails: 'विवरण', actBy: 'द्वारा', supYourName: 'आपका नाम', quickLinks: 'त्वरित लिंक', jumpTask: 'किसी कार्य पर जाएँ', enterMarks: 'अंक भरें', myHomework: 'मेरा होमवर्क', noticesH: 'नोटिस', latestNotices: 'स्कूल से नवीनतम', contactSub: 'हम एक कार्य दिवस के भीतर जवाब देते हैं', studentsReport: 'छात्र रिपोर्ट', feesReport: 'शुल्क रिपोर्ट', attReport: 'उपस्थिति रिपोर्ट', thName: 'नाम', thClass: 'कक्षा', thRoll: 'रोल', thGuardian: 'अभिभावक', thPhone: 'फ़ोन', thAtt: 'उप.', thFee: 'शुल्क', thAction: 'कार्रवाई', thReceipt: 'रसीद', thStudent: 'छात्र', thMonth: 'महीना', thAmount: 'राशि', thDate: 'तारीख', thStatus: 'स्थिति', thMarks: 'अंक', thResult: 'परिणाम', thRole: 'भूमिका',
     subReports: 'CSV रिपोर्ट डाउनलोड करें', subStudents: 'सेंट ज़ेवियर स्कूल, पटना', subAttendance: 'उपस्थिति दर्ज करें और देखें', subFees: 'शुल्क संग्रह और बकाया', subExams: 'परीक्षा और अंक प्रविष्टि', subHomework: 'होमवर्क सौंपें और देखें', subNotices: 'नोटिस बोर्ड',
     fSchoolName: 'स्कूल का नाम', fCity: 'शहर', fStudentName: 'छात्र का नाम', fClass: 'कक्षा', fRoll: 'रोल नंबर', fGuardian: 'अभिभावक', fPhone: 'फ़ोन', fTitle: 'शीर्षक', fSubject: 'विषय', fDue: 'देय तारीख', fMessage: 'संदेश', fPrincipal: 'प्रधानाचार्य / एडमिन', fEmail: 'ईमेल', fAddress: 'पता', fSession: 'शैक्षणिक सत्र',
@@ -6578,10 +6578,65 @@ function submitDeleteName(e) {
     return false;
   }
   closeModal();
+  // Phase D (CR-6): a server-linked school that is online gets a real
+  // choice — delete from this device only (the v60 behaviour, unchanged)
+  // or delete from the server too. Offline or local-only schools keep
+  // exactly the old device-only confirm.
+  if (state.sb && state.sb.uid && sbIsOnline()) { openDeleteServerChoice(); return false; }
   confirmModal(t('delConfirmMsg'), deleteAccountConfirmed);
   return false;
 }
-function deleteAccountConfirmed() {
+function openDeleteServerChoice() {
+  // The server choice is explained BEFORE confirming: server deletion is
+  // permanent and removes the account from all devices, not just this one.
+  openModal('<h3>' + t('delServerTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('delServerMsg') + '</p>' +
+    '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    '<button type="button" class="btn" onclick="closeModal();confirmModal(t(\'delConfirmMsg\'), deleteAccountConfirmed)">' + t('resetDeviceOnly') + '</button>' +
+    '<button type="button" class="btn danger" onclick="closeModal();deleteAccountOnServer()">' + t('delServerBtn') + '</button></div>');
+}
+function sbCallDeleteAccountFunction(token) {
+  // Calls the delete-account Edge Function (supabase/functions/
+  // delete-account). sbAuthFetch sends the anon apikey + the caller's
+  // JWT, which the function verifies before deleting anything.
+  return sbAuthFetch('/functions/v1/delete-account', { method: 'POST', token: token, body: {} });
+}
+function deleteAccountOnServer() {
+  // Phase D (CR-6): server-side Delete Account. The server delete runs
+  // FIRST: if it fails (other than "not deployed" / "no school"), nothing
+  // is deleted locally either, so the two copies never disagree — the
+  // same fail-closed rule as resetAllServerWipe. The two honest
+  // exceptions: the function is not deployed yet (404 with no function
+  // body) or the server has no school for this account — then the
+  // device-only deletion still runs, but the toast says exactly that and
+  // never claims the server delete happened.
+  if (!state.sb || !state.sb.uid) { deleteAccountConfirmed(); return; }
+  sbSyncAutoStop();
+  sbSyncWithLock(function () {
+    return sbGetValidToken().then(function (tok) {
+      if (!tok) throw new Error('no-token');
+      return sbCallDeleteAccountFunction(tok);
+    });
+  }).then(function (r) {
+    if (r && r.ok && r.data && r.data.deleted) {
+      deleteAccountConfirmed(true);
+    } else if (r && r.data && r.data.error === 'no-school') {
+      deleteAccountConfirmed(false);
+      toast(t('delServerNoSchool'));
+    } else if (r && r.status === 404) {
+      deleteAccountConfirmed(false);
+      toast(t('delServerNotSetup'));
+    } else {
+      toast(t('delServerFailed'));
+      sbSyncAutoStart();
+      renderApp();
+    }
+  }).catch(function () {
+    toast(t('delServerFailed'));
+    sbSyncAutoStart();
+    renderApp();
+  });
+}
+function deleteAccountConfirmed(serverDeleted) {
   var a = state.user;
   if (!a || a.role !== 'school') return;
   var email = (a.email || '').toLowerCase();
@@ -6605,7 +6660,7 @@ function deleteAccountConfirmed() {
   // logout() settles a status line for the deleted account — drop it:
   // there is no account left for it to describe.
   try { localStorage.removeItem(SB_STATUS_KEY); } catch (e6) {}
-  toast(t('delDone'));
+  toast(t(serverDeleted ? 'delServerDone' : 'delDone'));
 }
 function openSupportForm() {
   openModal('<h3>' + t('raiseSupport') + '</h3><p style="color:var(--muted);font-size:14px">' + t('contactSub') + '</p>' +
