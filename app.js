@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 50;
+var APP_VERSION = 51;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -1220,7 +1220,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
         // memory, so a row uploaded (or re-created) by this pass left
         // the stored map pointing at a deleted id, and every later
         // push trusted that stale id and 409'd on admission_no.
-        function (rows) { rows.forEach(function (r) { if (r.local_id) { stuMap[r.local_id] = r.id; sbSrvIdSet(account.uid, 'ss_students', r.local_id, r.id); } }); });
+        function (rows) { rows.forEach(function (r) { if (r.local_id) { stuMap[r.local_id] = r.id; sbSrvIdSet(sbUid, 'ss_students', r.local_id, r.id); } }); });
     });
   }).then(function () {
     return step('ss_teachers', function () {
@@ -1245,7 +1245,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
         function (row) { return row.local_id; },
         // v44: same map persist as students — a row uploaded by this
         // pass must not leave a stale stored id behind.
-        function (rows) { rows.forEach(function (r) { if (r.local_id) { examMap[r.local_id] = r.id; sbSrvIdSet(account.uid, 'ss_exams', r.local_id, r.id); } }); });
+        function (rows) { rows.forEach(function (r) { if (r.local_id) { examMap[r.local_id] = r.id; sbSrvIdSet(sbUid, 'ss_exams', r.local_id, r.id); } }); });
     });
   }).then(function () {
     return step('ss_fee_records', function () {
@@ -2388,13 +2388,45 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid) {
   // already has its server id.
   var payload2 = sbSyncMapRow(table, entry.row, schoolId, maps, db);
   if (!payload2) return Promise.resolve({ pushed: false, skipped: true });
-  if (!sbSyncPayloadReady(table, payload2)) return Promise.resolve({ pushed: false, skipped: true, keep: true });
+  // v51: a row whose parent has no server id yet waits — but ONLY
+  // while its local row still exists. Once the local row is gone the
+  // parent can never resolve (a fresh student/exam never reuses a
+  // dead local id), so waiting keeps the entry queued forever and
+  // the flush can never write 'synced' — live v50: the status stayed
+  // 'Backup pending' for 6 minutes although every upload succeeded,
+  // because the flush ends sbSetStatus(left ? 'pending' : 'synced')
+  // and the cycle tail only writes 'synced' on an empty outbox. A
+  // vanished local row drops as skipped: the row is already gone,
+  // so nothing is lost by dropping its entry. The quarantine cannot
+  // save such an entry either — sbIsSeedStudentId needs the local
+  // row to prove seedness, and the row is gone.
+  if (!sbSyncPayloadReady(table, payload2)) {
+    if (!sbSyncLocalRow(entry)) return Promise.resolve({ pushed: false, skipped: true });
+    return Promise.resolve({ pushed: false, skipped: true, keep: true });
+  }
   return sbSyncFindServerRow(table, entry, token, schoolId, maps, uid).then(function (row) {
     if (row) {
       // v33: a receipt found by number is only patched when its content
       // matches this receipt — same number, different receipt is a
       // collision, and the entry stays queued for the repair pass.
-      if (table === 'ss_receipts' && !sbReceiptSameServer(row, payload2)) return { pushed: false, skipped: true, keep: true };
+      // v51: the repair pass can only re-number a receipt that still
+      // exists locally. When the local receipt is gone the server row
+      // wins — drop the entry instead of keeping it forever (the same
+      // stuck-outbox trap as the zombie attendance above: the flush
+      // never drains, so the status never reaches 'synced').
+      if (table === 'ss_receipts' && !sbReceiptSameServer(row, payload2)) {
+        // v51: the repair pass can only re-number a receipt that
+        // still exists locally AND still carries this entry's content.
+        // A queued entry for a number whose local row is gone — or
+        // whose local row is a DIFFERENT receipt sharing the number
+        // (the server's row, pulled down into the mirror) — is a
+        // phantom the repair can never see: drop it instead of
+        // keeping it forever. Only a live local receipt with matching
+        // content keeps waiting for the repair pass.
+        var localRc51 = sbSyncLocalRow(entry);
+        if (localRc51 && sbReceiptSame(localRc51, entry.row || {})) return { pushed: false, skipped: true, keep: true };
+        return { pushed: false, skipped: true };
+      }
       // Last-write-wins: a newer server copy beats this local change.
       if (row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true };
       // v44: a student found by admission_no/enr (not by local_id) is
