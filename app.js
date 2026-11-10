@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 57;
+var APP_VERSION = 58;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -1734,7 +1734,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // v47 extends the same keep to attendance and marks, whose merges
   // used to drop a queued row on snapshot grounds with no outbox
   // check at all.
-  var outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {} };
+  var outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {} };
   try {
     var uid46 = (account && account.sbUid) || (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
     if (uid46) {
@@ -1745,6 +1745,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
           if (e.table === 'ss_attendance') outboxUpsert46.attendance[e.key] = true;
           if (e.table === 'ss_marks') outboxUpsert46.marks[e.key] = true;
           if (e.table === 'ss_students') outboxUpsert46.students[e.key] = true;
+          if (e.table === 'ss_exams') outboxUpsert46.exams[e.key] = true;
         }
       });
     }
@@ -1876,6 +1877,32 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     var oldById = {};
     oldExams.forEach(function (e) { oldById[e.id] = e; });
     d.exams.forEach(function (e) { var old = oldById[e.id]; if (old && old.deleted) e.deleted = true; });
+  })();
+  // v58: a pending exam upsert keeps its LOCAL row through the pull —
+  // the same class as the v56 students keep. Live v57 (10 Nov 2026):
+  // the admin edited an exam name, the pull replaced the local edit
+  // with the server's stale row before the flush could PATCH it, the
+  // flush pushed the edit, and the pass-1 tail re-diff re-queued the
+  // stale local row and pass 2 re-uploaded it — undoing the push in
+  // the same flush, so the edit reverted on reload. A soft-deleted
+  // exam queued the same way (see sbQueueExamChange58) keeps its
+  // deleted flag through the pull as well. A row deleted elsewhere
+  // has no pending upsert, so it still drops; a seed row never
+  // carries a pending upsert (the diff never queues it) and is
+  // excluded here too. The kept row stays out of the snapshot (via
+  // keep()) until the flush confirms it, exactly like the students
+  // keep in v56.
+  (function () {
+    var oldById58 = {};
+    oldExams.forEach(function (e) { oldById58[e.id] = e; });
+    d.exams = d.exams.map(function (e) {
+      var old = oldById58[e.id];
+      if (old && outboxUpsert46.exams[e.id] && !sbIsSeedRow('ss_exams', old, d)) {
+        keep('ss_exams', e.id);
+        return old;
+      }
+      return e;
+    });
   })();
   d.feeRecords = mergeById('ss_fee_records', d.feeRecords || [], byTable.ss_fee_records || [], function (row) { return sbRowToFeeRecord(row, stuMap); });
   // Attendance: server rows fold back into the 'date|cls' map, then
@@ -8200,6 +8227,25 @@ function editExam(id) {
   // (own classes only) — the role/class checks live in examForm.
   examForm(id);
 }
+function sbQueueExamChange58(ex) {
+  // v58: a soft-delete / restore changes NO server payload field
+  // (ss_exams has no deleted column), so the diff never queues it —
+  // and without a pending outbox entry the v58 pull keep above has
+  // nothing to key on. Queue it explicitly so the keep holds the
+  // flag until the flush resolves it. The push itself is a no-op
+  // PATCH (the server row already carries the same content) and
+  // resolves the entry, so the outbox still drains and the status
+  // still reaches 'synced'. Local-only accounts skip this entirely
+  // (no pull can clobber the flag there). A server column for the
+  // flag (cross-device delete sync) is a follow-up SQL change, not
+  // this version — the delete stays local to this device until then.
+  try {
+    if (!sbSyncActive()) return;
+    var uid58 = (state.sb && state.sb.uid) || '';
+    if (!uid58 || !ex || !ex.id) return;
+    sbOutboxAdd(uid58, { table: 'ss_exams', key: ex.id, op: 'upsert', row: JSON.parse(JSON.stringify(ex)), at: new Date().toISOString() });
+  } catch (e58) {}
+}
 function deleteExam(id) {
   // B6: school only, same pattern as deleteStudent (soft delete).
   // SOFT DELETE only: the exam row and ALL of its marks stay saved —
@@ -8216,6 +8262,7 @@ function deleteExam(id) {
   if (!ex) return;
   confirmModal(t('delExamMsg') + ' — ' + ex.name + ' • ' + ex.cls + ' • ' + ex.subject + '?', function () {
     ex.deleted = true;
+    sbQueueExamChange58(ex); // v58: the diff never queues a delete (no payload field changes) — queue it so the pull keep holds the flag
     if (state.examId === id) {
       var next = db.exams.filter(isActiveExam)[0];
       state.examId = next ? next.id : null;
@@ -8232,6 +8279,7 @@ function restoreExam(id) {
   var ex = db.exams.find(function (e) { return e.id === id && !!e.deleted; });
   if (!ex) return;
   ex.deleted = false;
+  sbQueueExamChange58(ex); // v58: same as deleteExam — the diff never queues a restore on its own
   logAudit('Exam restored', ex.name + ' • ' + ex.cls + ' • ' + ex.subject + ' • ' + ex.date);
   saveDB(db); renderApp();
   toast('✓ ' + t('tExamRestored'));
