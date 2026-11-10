@@ -876,7 +876,12 @@ function sbMapTeacher(te, schoolId) {
 }
 function sbMapExam(e, schoolId) {
   return { school_id: schoolId, local_id: e.id, name: e.name || '', cls: e.cls || '', subject: e.subject || '',
-    exam_date: sbNullIfEmpty(e.date), total: e.total || 100 };
+    exam_date: sbNullIfEmpty(e.date), total: e.total || 100,
+    // B15-app (M-14): the soft-delete flag travels with the exam
+    // (SQL 23 adds `deleted`/`deleted_at` to ss_exams — merge order
+    // is SQL-first; pushing before SQL 23 is applied 400s on the
+    // unknown column, so the outbox entry keeps retrying until then).
+    deleted: !!e.deleted, deleted_at: sbNullIfEmpty(e.deletedAt) };
 }
 function sbMapHomework(h, schoolId, stuMap) {
   return { school_id: schoolId, local_id: h.id, cls: h.cls || '', subject: h.subject || '', title: h.title || '',
@@ -1948,22 +1953,16 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   })();
   d.teachers = mergeById('ss_teachers', d.teachers || [], byTable.ss_teachers || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [] }; });
   var oldExams = d.exams || [];
-  d.exams = mergeById('ss_exams', d.exams || [], byTable.ss_exams || [], function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; examMap[row.id] = e.id; return e; });
-  // B6 (exam soft-delete): the server row carries no deleted flag
-  // (ss_exams has no such column — adding one needs SQL, not this
-  // change), so the pull above would wipe the local flag on every
-  // cycle and the exam would come back. Restore it from the
-  // pre-merge row, same class of keep as the v55 student-PIN keep
-  // above. Consequence to know: a delete made on THIS device stays
-  // deleted here, but it does NOT travel to other devices — the
-  // server row stays, so a second device re-downloads the exam as
-  // active. A server column (follow-up SQL) is needed before a
-  // delete can sync across devices.
-  (function () {
-    var oldById = {};
-    oldExams.forEach(function (e) { oldById[e.id] = e; });
-    d.exams.forEach(function (e) { var old = oldById[e.id]; if (old && old.deleted) e.deleted = true; });
-  })();
+  d.exams = mergeById('ss_exams', d.exams || [], byTable.ss_exams || [], function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100, deleted: !!row.deleted, deletedAt: row.deleted_at || '' }; examMap[row.id] = e.id; return e; });
+  // B15-app (M-14): the pull now carries the server's deleted flag
+  // (SQL 23), so a delete/restore on another device lands here and a
+  // restore from elsewhere is NOT resurrected by a stale local flag.
+  // The old B6 keep (restore the local flag unconditionally) is gone
+  // for exactly that reason: it would re-delete an exam another
+  // device restored. An UNPUSHED local delete is still protected —
+  // by the v58 keep below, which holds the local row while its
+  // outbox upsert is pending (and the diff now queues that upsert
+  // itself, because the payload carries the flag).
   // v58: a pending exam upsert keeps its LOCAL row through the pull —
   // the same class as the v56 students keep. Live v57 (10 Nov 2026):
   // the admin edited an exam name, the pull replaced the local edit
@@ -2063,7 +2062,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     var deduped = [];
     d.receipts.forEach(function (r) {
       if (!r.receiptNo) { deduped.push(r); return; }
-      var k = sbReceiptContentKey(r);
+      var k = receiptKeyString(r);
       var cur = earliestByContent[k];
       if (!cur) { earliestByContent[k] = r; deduped.push(r); return; }
       if (r.receiptNo < cur.receiptNo) {
@@ -2092,7 +2091,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
       keep('ss_receipts', rc.receiptNo);
       return;
     }
-    if (sbReceiptSame(srv, rc)) return;
+    if (receiptsEqual(srv, rc, 'basic')) return;
     d.receipts.push(rc);
     keep('ss_receipts', rc.receiptNo);
   });
@@ -2503,7 +2502,30 @@ var SB_SYNC_TABLES = {
   ss_homework: { local: 'homework', key: 'id' }, ss_notices: { local: 'notices', key: 'id' },
   ss_admission_requests: { local: 'admissionRequests', key: 'id' }, ss_receipts: { local: 'receipts', key: 'receiptNo' }
 };
-var SB_SYNC_DELETABLE = ['ss_fee_records', 'ss_fee_structure', 'ss_attendance', 'ss_marks'];
+// B16 (M-15): deletes propagate for every synced table whose rows
+// can vanish locally. The only local hard-deletes today are fee
+// records, fee structure rows, attendance cells and marks (a mark
+// cleared to null) — but the mechanism is the same generic path for
+// all of them, so the set lists every table: a row that is in the
+// snapshot and gone locally queues an outbox-delete, and the flush
+// DELETEs the server row. Two deliberate exclusions:
+//   - ss_exams: soft-deleted only — the row stays local with
+//     deleted=true (B15-app, SQL 23). A hard DELETE would cascade
+//     the exam's marks (ss_marks.exam_id ON DELETE CASCADE).
+//   - ss_schools: the school profile row is never deleted; account
+//     deletion is the separate CR-6 flow.
+// Students/teachers/admission-requests soft-delete today (status
+// Cancelled / Rejected — the row stays and syncs by upsert), so no
+// delete queues for them in practice; homework/notices/receipts/
+// audit-log/activities have no local delete UI at all. The entries
+// are dormant-but-ready: if a row ever vanishes, its delete now
+// propagates instead of resurrecting on the next pull. (Receipts
+// have one live vanishing path: the pull-mirror dedupe drops a later
+// duplicate number — its delete now removes the duplicate server
+// row too, the same cleanup the dedup SQL does.)
+var SB_SYNC_DELETABLE = ['ss_fee_records', 'ss_fee_structure', 'ss_attendance', 'ss_marks',
+  'ss_students', 'ss_teachers', 'ss_homework', 'ss_notices', 'ss_admission_requests',
+  'ss_receipts', 'ss_audit_log', 'ss_activities'];
 function sbSyncTableHashes(d, schoolId, maps) {
   // Canonical hash per row = the exact server payload it would push.
   // Local rows and server-derived rows hash identically when their
@@ -2658,8 +2680,10 @@ function sbSyncQueueDiff() {
         queued++;
       }
     });
-    // Rows that vanished locally: only the tables the app hard-deletes
-    // propagate the delete. Anything else is restored by the next pull.
+    // Rows that vanished locally: the SB_SYNC_DELETABLE tables
+    // propagate the delete (B16: every synced table except ss_exams,
+    // which soft-deletes by flag, and ss_schools, which is never
+    // deleted). Anything else is restored by the next pull.
     if (SB_SYNC_DELETABLE.indexOf(table) !== -1) {
       Object.keys(snapTable).forEach(function (key) {
         if (!seen[key]) {
@@ -2915,7 +2939,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
       // wins — drop the entry instead of keeping it forever (the same
       // stuck-outbox trap as the zombie attendance above: the flush
       // never drains, so the status never reaches 'synced').
-      if (table === 'ss_receipts' && !sbReceiptSameServer(row, payload2)) {
+      if (table === 'ss_receipts' && !receiptsEqual(row, payload2, 'server')) {
         // v51: the repair pass can only re-number a receipt that
         // still exists locally AND still carries this entry's content.
         // A queued entry for a number whose local row is gone — or
@@ -2925,7 +2949,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
         // keeping it forever. Only a live local receipt with matching
         // content keeps waiting for the repair pass.
         var localRc51 = sbSyncLocalRow(entry);
-        if (localRc51 && sbReceiptSame(localRc51, entry.row || {})) return { pushed: false, skipped: true, keep: true };
+        if (localRc51 && receiptsEqual(localRc51, entry.row || {}, 'basic')) return { pushed: false, skipped: true, keep: true };
         return { pushed: false, skipped: true };
       }
       // Last-write-wins: a newer server copy beats this local change.
@@ -3230,71 +3254,72 @@ function sbNumSeq(num) {
   return m ? parseInt(m[1], 10) : 0;
 }
 function sbEnrFromAdm(admNo) { return 'ENR-' + String(sbNumSeq(admNo)).padStart(3, '0'); }
-function sbReceiptSame(a, b) {
-  // Same receipt? Server-mapped receipt vs local receipt: number is
-  // checked by the caller; content is student name + total + date +
-  // month. (Receipts carry no local_id on the server, so content is
-  // the only identity available.)
-  return (a.name || '') === (b.name || '') && Number(a.total || 0) === Number(b.total || 0)
-    && (a.date || '') === (b.date || '') && (a.month || '') === (b.month || '');
+// B20 (H-11): ONE canonical receipt identity + ONE equality.
+// The five old comparators (sbReceiptSame, sbReceiptSameServer,
+// sbReceiptContentMatches, sbFindReceiptByContent's match,
+// sbReceiptContentKey) each compared a different slice of the same
+// fields, on different shapes (local receipt vs server row vs push
+// payload). They are replaced by receiptKey() (canonical parts, from
+// ANY shape) + receiptsEqual() (one equality, with a level selecting
+// which parts compare — the old verdicts, verbatim):
+//   'basic'   — sbReceiptSame: local vs local, name+total+date+month.
+//               Lines and student are ignored, exactly as before.
+//   'server'  — sbReceiptSameServer: server row vs push payload, with
+//               the v41 rule: an unknown student id on the PAYLOAD
+//               side is not a mismatch (the repair runs before the
+//               pull that would save the id map).
+//   'content' — sbReceiptContentMatches: server row vs local receipt.
+//               Record ids must agree when BOTH sides carry them
+//               (B2: two same-day same-amount collections of one fee
+//               type are different collections); fee types must
+//               overlap when BOTH sides carry lines; an unmapped local
+//               student (no stuMap entry) is not a mismatch.
+// receiptKeyString() is the string form of the 'content' key, in the
+// exact layout sbReceiptContentKey built, so the pull-mirror dedupe
+// groups rows identically.
+function receiptKey(x, ctx) {
+  var lines = (x && x.lines) || [];
+  var types = [], ids = [];
+  lines.forEach(function (ln) { if (ln.type) types.push(ln.type); if (ln.recordId) ids.push(String(ln.recordId)); });
+  types.sort(); ids.sort();
+  var student = (x && (x.studentId || x.student_id)) || '';
+  if (ctx && ctx.stuMap && x && x.studentId) {
+    // A local receipt resolves through the id map; an id with no map
+    // entry yet is UNKNOWN (v41), not a different student.
+    student = ctx.stuMap[x.studentId] || '';
+  }
+  var name = (x && (x.name || x.student_name)) || '';
+  if (!name && ctx && ctx.byId && x && x.studentId && ctx.byId[x.studentId]) name = ctx.byId[x.studentId].name || '';
+  return { student: String(student || ''), name: String(name || ''), total: Number((x && x.total) || 0),
+    date: String((x && (x.date || x.receipt_date)) || ''), month: String((x && x.month) || ''),
+    types: types.join(','), ids: ids.join(',') };
 }
-function sbReceiptSameServer(row, payload) {
-  // The server row found by receipt_no is THIS receipt only when its
-  // content matches the push payload — same number, different receipt
-  // is a collision, and patching it would overwrite another device's
-  // receipt.
-  if (!row || !payload) return false;
-  // v41: an UNKNOWN student_id (no id-map entry yet — the repair runs
-  // before the pull that would save the map) is not a DIFFERENT
-  // student. Every other field matching means this is the same
-  // receipt; treating null as a mismatch minted a new server number
-  // for every receipt on every cycle (live: 192 duplicate receipts,
-  // the counter climbing 3 per render). When both ids are known they
-  // must still agree.
-  var idOk = !payload.student_id || String(row.student_id || '') === String(payload.student_id || '');
-  return idOk
-    && Number(row.total || 0) === Number(payload.total || 0)
-    && String(row.receipt_date || '') === String(payload.receipt_date || '')
-    && String(row.month || '') === String(payload.month || '')
-    && String(row.student_name || '') === String(payload.student_name || '');
+function receiptKeyString(x, ctx) {
+  var k = receiptKey(x, ctx);
+  var s = [k.student, k.month, k.total, k.date, k.name, k.types].join('|');
+  return k.ids ? s + '|fee:' + k.ids : s;
 }
-function sbReceiptContentMatches(srvRow, rc, stuMap, byId) {
-  // Does this server receipt hold the same collection as the local
-  // receipt — same student, month, total, date and name, and (where
-  // both sides carry lines) the same fee type? Used by the
-  // adopt-before-mint step: a receipt whose content already exists on
-  // the server under another number links to that number instead of
-  // minting a duplicate. The fee-type check matters: two genuinely
-  // different same-day collections (e.g. Tuition 800 and Transport
-  // 800) share every other field and must never be merged.
-  // B2: the fee-type check alone cannot tell two same-day same-amount
-  // collections of the SAME fee type apart (Tuition 800 paid twice).
-  // When both sides carry Collected fee-record ids on their lines
-  // (receipts made after the fix stamp them in finishCollectFee),
-  // the id sets must agree — two different collections never share
-  // a fee record. When either side has no ids (a receipt made
-  // before the fix), the field comparison below decides, exactly
-  // as before, so old receipts still adopt and merge as they did.
-  var srvIds = [];
-  (srvRow.lines || []).forEach(function (ln) { if (ln.recordId) srvIds.push(String(ln.recordId)); });
-  var rcIds = [];
-  (rc.lines || []).forEach(function (ln) { if (ln.recordId) rcIds.push(String(ln.recordId)); });
-  srvIds.sort(); rcIds.sort();
-  if (srvIds.length && rcIds.length && srvIds.join(',') !== rcIds.join(',')) return false;
-  var s = byId[rc.studentId] || {};
-  var stuId = (stuMap && stuMap[rc.studentId]) || null;
-  var idOk = !stuId || String(srvRow.student_id || '') === String(stuId);
+function receiptsEqual(a, b, level, ctx) {
+  var ka = receiptKey(a, ctx), kb = receiptKey(b, ctx);
+  if (level === 'basic') return ka.name === kb.name && ka.total === kb.total && ka.date === kb.date && ka.month === kb.month;
+  // 'server' and 'content' share the unknown-student rule: the second
+  // side (payload / local receipt) may carry an id the first side
+  // cannot know yet — that is not a mismatch. The first side's id is
+  // always known (a server row), so an empty first id never matches
+  // a known second one — exactly the old verdicts.
+  var idOk = !kb.student || ka.student === kb.student;
+  if (level === 'server') {
+    return idOk && ka.total === kb.total && ka.date === kb.date && ka.month === kb.month && ka.name === kb.name;
+  }
+  // 'content' (default level)
+  if (ka.ids && kb.ids && ka.ids !== kb.ids) return false;
   if (!idOk) return false;
-  if (Number(srvRow.total || 0) !== Number(rc.total || 0)) return false;
-  if (String(srvRow.receipt_date || '') !== String(rc.date || '')) return false;
-  if (String(srvRow.month || '') !== String(rc.month || '')) return false;
-  if (String(srvRow.student_name || '') !== String(rc.name || s.name || '')) return false;
-  var srvLines = srvRow.lines || [];
-  var rcLines = rc.lines || [];
-  if (srvLines.length && rcLines.length) {
-    var srvTypes = {};
-    srvLines.forEach(function (ln) { if (ln.type) srvTypes[ln.type] = true; });
-    if (!rcLines.some(function (ln) { return ln.type && srvTypes[ln.type]; })) return false;
+  if (ka.total !== kb.total || ka.date !== kb.date || ka.month !== kb.month || ka.name !== kb.name) return false;
+  if (ka.types && kb.types) {
+    var ta = ka.types.split(','), tb = kb.types.split(',');
+    var shared = false;
+    ta.forEach(function (t) { if (tb.indexOf(t) !== -1) shared = true; });
+    if (!shared) return false;
   }
   return true;
 }
@@ -3303,42 +3328,13 @@ function sbFindReceiptByContent(serverReceipts, rc, stuMap, byId) {
   // null. Earliest, so a receipt re-numbered by a previous cycle
   // links back to its original number, not to a later duplicate.
   var best = null;
+  var ctx = { stuMap: stuMap, byId: byId };
   (serverReceipts || []).forEach(function (r) {
     if (!r.receipt_no) return;
-    if (!sbReceiptContentMatches(r, rc, stuMap, byId)) return;
+    if (!receiptsEqual(r, rc, 'content', ctx)) return;
     if (best === null || r.receipt_no < best) best = r.receipt_no;
   });
   return best;
-}
-function sbReceiptContentKey(rc) {
-  // v42: canonical identity of one collection, for collapsing
-  // duplicate server rows in the pull mirror: student + month +
-  // total + date + name + fee types (when lines exist). Two rows
-  // with the same key are the same collection minted twice — the
-  // earliest number wins. A genuinely different collection
-  // (different total, date or fee type) has a different key and
-  // keeps its own row.
-  // B2: the fields above cannot tell two genuinely different
-  // same-day same-amount collections of the same fee type apart
-  // (Tuition 800 paid twice in one day for the same student and
-  // month) — they shared one key and collapsed into one receipt.
-  // The key now also carries the Collected fee-record ids stamped
-  // on the receipt's lines (finishCollectFee): two different
-  // collections always paid different fee records, so they never
-  // share a key. Receipts made before the fix carry no record ids
-  // and fall back to the legacy key, so old receipts (including
-  // the v41 duplicates) still collapse exactly as before. The
-  // receipt NUMBER sequence is untouched: the key only decides
-  // which rows are the same collection, never which number a
-  // receipt gets.
-  var types = [];
-  (rc.lines || []).forEach(function (ln) { if (ln.type) types.push(ln.type); });
-  types.sort();
-  var ids = [];
-  (rc.lines || []).forEach(function (ln) { if (ln.recordId) ids.push(String(ln.recordId)); });
-  ids.sort();
-  var key = [rc.studentId || '', rc.month || '', Number(rc.total || 0), rc.date || '', rc.name || '', types.join(',')].join('|');
-  return ids.length ? key + '|fee:' + ids.join(',') : key;
 }
 function sbGetSchoolIdForSync(account, sbUid, token) {
   var cached = sbServerSchoolMap()[account.uid];
@@ -3426,6 +3422,20 @@ function sbMintNewReceiptNumber(act) {
       });
     });
   });
+}
+function sbGetReceiptNo(act) {
+  // B20 (H-11): the ONE entry point for minting a receipt number.
+  // Server account + online -> the server RPC (the single source of
+  // truth for the sequence); server account + offline -> no number
+  // yet (numPending — the repair pass mints it on the next cycle);
+  // local-only account -> the local counter, exactly as before. The
+  // repair pass keeps calling sbMintReceiptNo directly: it already
+  // holds the token, school and taken-set, so it is the same
+  // primitive, not a second path. Resolves {no, numPending}; rejects
+  // only when the online RPC fails (the caller then saves pending).
+  if (!act) return Promise.resolve({ no: nextReceiptNo(false), numPending: false });
+  if (!sbIsOnline()) return Promise.resolve({ no: '', numPending: true });
+  return sbMintNewReceiptNumber(act).then(function (no) { return { no: no, numPending: false }; });
 }
 function sbMintManyAdmNos(token, schoolId, taken, count) {
   // Sequential mints for a bulk import: each mint updates the taken
@@ -3561,7 +3571,7 @@ function sbSyncRepairNumbers(account, sbUid, token) {
           // content matches (student, total, date, month); otherwise
           // it is a collision with another device's receipt.
           var mapped = sbMapReceipt(rc, schoolId, maps.stu, byId);
-          collides = !sbReceiptSameServer(srv, mapped);
+          collides = !receiptsEqual(srv, mapped, 'server');
         }
         if (!collides && !rc.numPending && rc.receiptNo) {
           // v42: the number may be on the server (srv) AND an EARLIER
@@ -4241,11 +4251,127 @@ function loadDB(override) {
   return fresh;
 }
 var MEM_FALLBACK = null;
+function sbDbSizeBytes(s) {
+  // B19 (H-10): UTF-8 byte length of the stringified DB (base64 photos
+  // are ASCII, so length alone would do — the encode step keeps the
+  // estimate honest for Hindi names/notes too).
+  try { return unescape(encodeURIComponent(s)).length; } catch (e) { return s.length; }
+}
+var SB_LOCAL_QUOTA_BYTES = 5 * 1024 * 1024; // localStorage is ~5MB in most browsers; no size API exists, so the 80% line uses this convention
+function sbStorageQuotaCheck(s) {
+  // B19 (H-10): warn at 80% of the device quota, BEFORE the save
+  // lands — with the "remove photos" action (the sticky bar below).
+  // Clears again when the DB shrinks back under the line (photos
+  // removed, data deleted). Never breaks a save.
+  try {
+    var size = sbDbSizeBytes(s);
+    if (size >= SB_LOCAL_QUOTA_BYTES * 0.8) sbStorageWarnSet('near', String(Math.round(size / SB_LOCAL_QUOTA_BYTES * 100)));
+    else { var cur = sbStorageWarnLoad(); if (cur && cur.kind === 'near') sbStorageWarnClear('near'); }
+  } catch (e) {}
+}
 function saveDB(db) {
-  try { localStorage.setItem(DB_KEY, JSON.stringify(db)); }
-  catch (e) { MEM_FALLBACK = db; }
+  // B19 (H-10): stringify once — the size check reuses the same
+  // string the write stores, so the check costs no extra pass.
+  // Returns true when the write landed (sbStorageFreePhotos relies
+  // on it); a failed write still falls back to memory, as before.
+  var ok = false;
+  try {
+    var s = JSON.stringify(db);
+    sbStorageQuotaCheck(s);
+    localStorage.setItem(DB_KEY, s);
+    ok = true;
+  } catch (e) { MEM_FALLBACK = db; }
   MEM_FALLBACK = db;
   sbSyncOnSave(); // v31: server-first — queue + push local changes (no-op for local-only accounts)
+  return ok;
+}
+
+/* ================= storage warnings (B19; shared with Phase B storage PR) ================= */
+// A sticky (non-toast) warning bar: it survives reloads until the
+// condition is resolved, because a 2.6 s toast is not enough for
+// "your data did not save". The marker lives in localStorage; the bar
+// is rendered by renderApp(). This block is shared verbatim with the
+// Phase B storage PR (B17/B18: 'quota'/'corrupt' kinds) — this PR
+// adds only the 'near' kind (B19: 80% of quota) on top of it, so the
+// two PRs merge as a clean union.
+var SB_STORAGE_WARN_KEY = 'schoolSaathiStorageWarn';
+var sbStorageWarnCur = null; // in-memory current warning — the source of truth for this session (on a quota-full device even the marker write can fail, so the bar must not depend on it)
+var sbStorageWarnDismissed = false; // session-only: a dismiss hides the bar until the next reload
+function sbStorageWarnLoad() {
+  if (sbStorageWarnCur) return sbStorageWarnCur;
+  try { var r = localStorage.getItem(SB_STORAGE_WARN_KEY); return r ? JSON.parse(r) : null; }
+  catch (e) { return null; }
+}
+function sbStorageWarnSet(kind, detail) {
+  sbStorageWarnCur = { kind: kind, at: new Date().toISOString(), detail: detail || '' };
+  try { localStorage.setItem(SB_STORAGE_WARN_KEY, JSON.stringify(sbStorageWarnCur)); } catch (e) {}
+  sbStorageWarnDismissed = false;
+  sbStorageWarnRender();
+}
+function sbStorageWarnClear(kind) {
+  var cur = sbStorageWarnLoad();
+  if (kind && cur && cur.kind !== kind) return;
+  sbStorageWarnCur = null;
+  try { localStorage.removeItem(SB_STORAGE_WARN_KEY); } catch (e) {}
+  sbStorageWarnRender();
+}
+function sbStorageWarnDismiss() { sbStorageWarnDismissed = true; sbStorageWarnRender(); }
+function sbStorageWarnRender() {
+  try {
+    if (typeof document === 'undefined' || !document.getElementById) return;
+    var warn = sbStorageWarnDismissed ? null : sbStorageWarnLoad();
+    var bar = document.getElementById('storageWarn');
+    if (!warn) { if (bar && bar.classList) bar.classList.add('hidden'); return; }
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'storageWarn';
+      bar.style.cssText = 'margin:8px 12px 0;padding:10px 12px;border:1px solid #f59e0b;background:#fffbeb;border-radius:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:14px;';
+      var main = (document.querySelector && document.querySelector('.main')) || null;
+      var page = document.getElementById('page');
+      if (main && page && main.insertBefore) main.insertBefore(bar, page);
+      else if (main && main.appendChild) main.appendChild(bar);
+      else if (document.body && document.body.appendChild) document.body.appendChild(bar);
+      else return;
+    }
+    // B19: the 'near' kind shows the % used; 'quota' and 'corrupt'
+    // are the storage PR's kinds (same bar, same actions).
+    var msg = warn.kind === 'quota' ? t('sbStorageQuota') : warn.kind === 'near' ? t('sbStorageNearQuota').replace('{n}', String(warn.detail || '')) : t('sbDataCorrupt');
+    var act = warn.kind === 'corrupt'
+      ? '<button type="button" class="btn sm" onclick="sbStorageOpenRestore()">' + esc(t('sbStorageRestoreBackup')) + '</button>'
+      : '<button type="button" class="btn sm" onclick="sbStorageFreePhotos()">' + esc(t('sbStorageRemovePhotos')) + '</button>';
+    bar.innerHTML = '<span>' + esc(msg) + '</span> ' + act + ' <button type="button" class="btn ghost sm" onclick="sbStorageWarnDismiss()">' + esc(t('closeW')) + '</button>';
+    if (bar.classList) bar.classList.remove('hidden');
+  } catch (e) {}
+}
+function sbStorageOpenRestore() {
+  // B17: the corrupt-data bar sends the user to Settings, where the
+  // backup-restore file picker lives (restoring also clears the
+  // warning — see restoreFullBackup).
+  try { if (state && state.user) go('settings'); } catch (e) {}
+}
+function sbStorageFreePhotos() {
+  // B18 (H-9) / B19 (H-10): remove student photos oldest-first until
+  // a save succeeds, or until no photos are left. Only runs on an
+  // explicit tap of the warning bar's button; every removal is logged.
+  var students = (db.students || []).filter(function (s) { return s.photo; });
+  students.sort(function (a, b) {
+    var da = String(a.admissionDate || ''), dbb = String(b.admissionDate || '');
+    return da < dbb ? -1 : (da > dbb ? 1 : 0);
+  });
+  var removed = 0;
+  while (students.length) {
+    var s = students.shift();
+    s.photo = '';
+    removed++;
+    if (saveDB(db)) {
+      try { logAudit('Photos removed to free storage', removed + ' oldest photos removed'); } catch (eL) {}
+      toast(t('sbPhotosRemoved').replace('{n}', String(removed)));
+      try { renderApp(); } catch (eR) {}
+      return removed;
+    }
+  }
+  // No photos left (or none at all) — the sticky warning stays up.
+  return 0;
 }
 var db = loadDB();
 
@@ -4290,7 +4416,7 @@ function compressAttempts(w, h, opts) {
   }
   return list;
 }
-var PHOTO_MAX = 512, PHOTO_CAP = 120 * 1024, LOGO_MAX = 256, LOGO_CAP = 250 * 1024;
+var PHOTO_MAX = 512, PHOTO_CAP = 80 * 1024, LOGO_MAX = 256, LOGO_CAP = 250 * 1024;
 var pendingPhoto = null, pendingLogo = null;
 function compressImageFile(file, opts, cb) {
   if (typeof FileReader === 'undefined' || typeof Image === 'undefined' || typeof document === 'undefined' || !document.createElement) { cb(null, 'not-supported'); return; }
@@ -5180,7 +5306,7 @@ var I18N = {
     dlStudents: 'Download Students CSV', dlFees: 'Download Fees CSV', dlAtt: 'Download Attendance CSV', repStudentsSub: 'Name, class, roll, guardian, phone, attendance, fee status', repFeesSub: 'Student, class, month, amount, status — Apr to Mar',
     subSettingsS: 'School profile', settingsSub: 'Edit and save — changes sync to the server when you are online.',
     studentsW: 'Students', perSchool: '2 per school',
-    raiseSupport: 'Raise a Support Request', supportNoted: 'Support request noted — we will call you back.', collectedW: 'Collected', pendingW: 'Pending', allW: 'All', editStudent: 'Edit Student', feeTypeTuition: 'Tuition', feeTypeAdmission: 'Admission', feeTypeTransport: 'Transport', feeTypeExam: 'Exam', feeTypeLibrary: 'Library', feeTypeActivity: 'Activity', feeTypeComputer: 'Computer Lab', feeTypeOther: 'Other', allTypes: 'All Types', searchFee: 'Search name, enrollment no. or class…', thEnr: 'Enr. No.', thType: 'Type', feeByType: 'Fee by Type', feeByTypeSub: 'Collected and pending per fee type, computed live.', addFee: 'Add Fee', addFeeSub: 'Add one fee record manually for any student.', feeStruct: 'Fee Structure', feeStructSub: 'Monthly amount per class. Generate uses this to create fee records.', genFees: 'Generate Fees', saveStruct: 'Save Structure', addRow: 'Add Row', customType: 'Custom…', typeCustomPh: 'Type a custom fee type', fStudent: 'Student', fMonth: 'Month', fType: 'Fee Type', fAmount: 'Amount (₹)', fStatus: 'Status', fDate: 'Date', printList: 'Print List', printStmt: 'Print Statement', backFees: 'Back to All Fees', totalBilled: 'Total Billed', totalPaid: 'Paid', totalPending: 'Pending', feeRecsH: 'Fee Records', feeProfileSub: 'All fee records for this student in one place.', tFeeAdded: 'Fee record added.', delFeeMsg: 'Delete this pending fee record?', tFeeDeleted: 'Fee record deleted.', tPickStudent: 'Please choose a student.', tAmtPositive: 'Amount must be more than 0.', tTypeRequired: 'Please type the custom fee type.', tStructSaved: 'Fee structure saved.', tStructAdded: 'Structure row added.', tStructRemoved: 'Structure row removed.', tGenRecords: 'fee records generated for', tGenSkipped: 'already existed', tGenNotAdmitted: 'not yet admitted', tNoFeeRecs: 'No fee records yet for this student.', printTitle: 'Fee Statement', printListTitle: 'Fee List', printGenOn: 'Generated on', closeW: 'Close', saveFeeBtn: 'Save Fee', photoLabel: 'Student Photo', photoHint: 'Photo is compressed automatically (max 512px, ~120KB).', removePhoto: 'Remove photo', logoLabel: 'School Logo', logoHint: 'Logo is compressed automatically (max 256px, PNG keeps transparency).', removeLogo: 'Remove logo', tPhotoTooBig: 'That photo is too large even after compression. Please choose a smaller photo.', tLogoTooBig: 'That logo is too large even after compression. Please choose a smaller logo.', tPhotoError: 'Could not read that image. Please choose another file.', aadhaarHint: 'Optional. Only the last 4 digits are stored — the full number is never saved.', actActivate: 'Activate Student', actAtt: 'View Attendance', actDeactivate: 'Deactivate Student', actDownload: 'Download Details', actEdit: 'Edit Student', actFees: 'View Fees', actIdCard: 'Print ID Card', actResults: 'View Results', actTransfer: 'Transfer Student', actView: 'View Profile', actionsW: 'Actions', admNoAuto: 'Auto-generated', allClasses: 'All Classes', allFeeSt: 'All Fee Status', allGenders: 'All Genders', allSections: 'All Sections', allSessions: 'All Sessions', allStatus: 'All Statuses', attPct: 'Attendance', backDir: 'Back to Directory', cancelAdm: 'Cancel Admission', cancelAdmMsg: 'Cancel this admission? The student record will be kept with status Cancelled.', docMissing: 'Not received', docStatus: 'Received', docsNote: 'Document files will be uploaded in the server phase. This checklist records what has been received.', exportCsv: 'Export CSV', fAadhaar: 'Aadhaar Number (optional)', fAdmDate: 'Admission Date', fAdmNo: 'Admission Number', fBirthCert: 'Birth Certificate', fBlood: 'Blood Group', fCategory: 'Category', fDistrict: 'District', fDob: 'Date of Birth', fDocsOther: 'Other Documents (notes)', fFather: 'Father\'s Name', fGender: 'Gender', fMother: 'Mother\'s Name', fOccupation: 'Occupation', fParentEmail: 'Parent Email', fPhone2: 'Secondary Mobile', fPin: 'PIN Code', fPrevClass: 'Previous Class', fPrevSchool: 'Previous School', fSection: 'Section', fState: 'State', fTc: 'Transfer Certificate (TC)', fTcNo: 'Transfer Certificate No.', feeSt: 'Fee Status', hwDone: 'Done', hwPend: 'Pending', hwPending: 'Homework Pending', latestExam: 'Latest Exam', nextW: 'Next', noActivity: 'No activity recorded yet.', noAttRecs: 'No attendance records yet for this student.', noExamRecs: 'No examination results yet.', noHwRecs: 'No homework records for this class.', openFees: 'Open Fee Page', pgOf: 'of', pgPage: 'Page', phase3W: 'Phase 3', prevW: 'Previous', saveAddAnother: 'Save & Add Another', saveDraft: 'Save as Draft', secAcademic: 'Academic Details', secDocs: 'Documents', secParent: 'Parent / Guardian Details', secPersonal: 'Personal Details', stActive: 'Active Students', stAvgAtt: 'Average Attendance', stBoys: 'Boys', stByClass: 'Students by Class', stByClassSub: 'Number of students in each class-section.', stGenderDist: 'Boys & Girls', stGenderSub: 'Gender distribution across the school.', stGirls: 'Girls', stInactive: 'Inactive Students', stNewAdm: 'New Admissions', stNotSpec: 'Not specified', stPendFee: 'Students with Pending Fees', stTotal: 'Total Students', stuSearchPh: 'Search name, admission no. or mobile…', tActMsg: 'Activate student', tActivated: 'Student activated.', tAdmCancelled: 'Admission cancelled. The record is kept.', tAdmCreated: 'Admission saved. Admission No. ', tCsvExported: 'Student list exported.', tDeactMsg: 'Deactivate student', tDeactivated: 'Student deactivated.', tDraftSaved: 'Draft saved.', tDupFound: 'A matching student already exists: ', tInvalidAadhaar: 'Aadhaar must be 12 digits (or the last 4) — optional.', tInvalidMobile: 'Enter a valid 10-digit mobile number.', tInvalidPin: 'PIN code must be 6 digits.', tPickClass: 'Please choose a class.', tReqFields: 'Please fill Student Name, Primary Mobile, Class and Section.', tStuCsvOne: 'Student details downloaded.', tTransferred: 'Student transferred.', tabAcademic: 'Academic Records', tabActivity: 'Activity History', tabAttendance: 'Attendance History', tabDocs: 'Documents', tabFees: 'Fee History', tabHomework: 'Homework Records', tabOverview: 'Overview', tabParent: 'Parent Information', tabPersonal: 'Personal Information', tabResults: 'Examination Results', thAdmNo: 'Admission No.', thExam: 'Exam', thFather: 'Father\'s Name', transferTitle: 'Transfer Student', transferTo: 'New Class & Section', idCardSoon: 'ID Card generator comes in Phase 3.',
+    raiseSupport: 'Raise a Support Request', supportNoted: 'Support request noted — we will call you back.', collectedW: 'Collected', pendingW: 'Pending', allW: 'All', editStudent: 'Edit Student', feeTypeTuition: 'Tuition', feeTypeAdmission: 'Admission', feeTypeTransport: 'Transport', feeTypeExam: 'Exam', feeTypeLibrary: 'Library', feeTypeActivity: 'Activity', feeTypeComputer: 'Computer Lab', feeTypeOther: 'Other', allTypes: 'All Types', searchFee: 'Search name, enrollment no. or class…', thEnr: 'Enr. No.', thType: 'Type', feeByType: 'Fee by Type', feeByTypeSub: 'Collected and pending per fee type, computed live.', addFee: 'Add Fee', addFeeSub: 'Add one fee record manually for any student.', feeStruct: 'Fee Structure', feeStructSub: 'Monthly amount per class. Generate uses this to create fee records.', genFees: 'Generate Fees', saveStruct: 'Save Structure', addRow: 'Add Row', customType: 'Custom…', typeCustomPh: 'Type a custom fee type', fStudent: 'Student', fMonth: 'Month', fType: 'Fee Type', fAmount: 'Amount (₹)', fStatus: 'Status', fDate: 'Date', printList: 'Print List', printStmt: 'Print Statement', backFees: 'Back to All Fees', totalBilled: 'Total Billed', totalPaid: 'Paid', totalPending: 'Pending', feeRecsH: 'Fee Records', feeProfileSub: 'All fee records for this student in one place.', tFeeAdded: 'Fee record added.', delFeeMsg: 'Delete this pending fee record?', tFeeDeleted: 'Fee record deleted.', tPickStudent: 'Please choose a student.', tAmtPositive: 'Amount must be more than 0.', tTypeRequired: 'Please type the custom fee type.', tStructSaved: 'Fee structure saved.', tStructAdded: 'Structure row added.', tStructRemoved: 'Structure row removed.', tGenRecords: 'fee records generated for', tGenSkipped: 'already existed', tGenNotAdmitted: 'not yet admitted', tNoFeeRecs: 'No fee records yet for this student.', printTitle: 'Fee Statement', printListTitle: 'Fee List', printGenOn: 'Generated on', closeW: 'Close', saveFeeBtn: 'Save Fee', photoLabel: 'Student Photo', photoHint: 'Photo is compressed automatically (max 512px, ~80KB).', removePhoto: 'Remove photo', logoLabel: 'School Logo', logoHint: 'Logo is compressed automatically (max 256px, PNG keeps transparency).', removeLogo: 'Remove logo', tPhotoTooBig: 'That photo is too large even after compression. Please choose a smaller photo.', tLogoTooBig: 'That logo is too large even after compression. Please choose a smaller logo.', tPhotoError: 'Could not read that image. Please choose another file.', aadhaarHint: 'Optional. Only the last 4 digits are stored — the full number is never saved.', actActivate: 'Activate Student', actAtt: 'View Attendance', actDeactivate: 'Deactivate Student', actDownload: 'Download Details', actEdit: 'Edit Student', actFees: 'View Fees', actIdCard: 'Print ID Card', actResults: 'View Results', actTransfer: 'Transfer Student', actView: 'View Profile', actionsW: 'Actions', admNoAuto: 'Auto-generated', allClasses: 'All Classes', allFeeSt: 'All Fee Status', allGenders: 'All Genders', allSections: 'All Sections', allSessions: 'All Sessions', allStatus: 'All Statuses', attPct: 'Attendance', backDir: 'Back to Directory', cancelAdm: 'Cancel Admission', cancelAdmMsg: 'Cancel this admission? The student record will be kept with status Cancelled.', docMissing: 'Not received', docStatus: 'Received', docsNote: 'Document files will be uploaded in the server phase. This checklist records what has been received.', exportCsv: 'Export CSV', fAadhaar: 'Aadhaar Number (optional)', fAdmDate: 'Admission Date', fAdmNo: 'Admission Number', fBirthCert: 'Birth Certificate', fBlood: 'Blood Group', fCategory: 'Category', fDistrict: 'District', fDob: 'Date of Birth', fDocsOther: 'Other Documents (notes)', fFather: 'Father\'s Name', fGender: 'Gender', fMother: 'Mother\'s Name', fOccupation: 'Occupation', fParentEmail: 'Parent Email', fPhone2: 'Secondary Mobile', fPin: 'PIN Code', fPrevClass: 'Previous Class', fPrevSchool: 'Previous School', fSection: 'Section', fState: 'State', fTc: 'Transfer Certificate (TC)', fTcNo: 'Transfer Certificate No.', feeSt: 'Fee Status', hwDone: 'Done', hwPend: 'Pending', hwPending: 'Homework Pending', latestExam: 'Latest Exam', nextW: 'Next', noActivity: 'No activity recorded yet.', noAttRecs: 'No attendance records yet for this student.', noExamRecs: 'No examination results yet.', noHwRecs: 'No homework records for this class.', openFees: 'Open Fee Page', pgOf: 'of', pgPage: 'Page', phase3W: 'Phase 3', prevW: 'Previous', saveAddAnother: 'Save & Add Another', saveDraft: 'Save as Draft', secAcademic: 'Academic Details', secDocs: 'Documents', secParent: 'Parent / Guardian Details', secPersonal: 'Personal Details', stActive: 'Active Students', stAvgAtt: 'Average Attendance', stBoys: 'Boys', stByClass: 'Students by Class', stByClassSub: 'Number of students in each class-section.', stGenderDist: 'Boys & Girls', stGenderSub: 'Gender distribution across the school.', stGirls: 'Girls', stInactive: 'Inactive Students', stNewAdm: 'New Admissions', stNotSpec: 'Not specified', stPendFee: 'Students with Pending Fees', stTotal: 'Total Students', stuSearchPh: 'Search name, admission no. or mobile…', tActMsg: 'Activate student', tActivated: 'Student activated.', tAdmCancelled: 'Admission cancelled. The record is kept.', tAdmCreated: 'Admission saved. Admission No. ', tCsvExported: 'Student list exported.', tDeactMsg: 'Deactivate student', tDeactivated: 'Student deactivated.', tDraftSaved: 'Draft saved.', tDupFound: 'A matching student already exists: ', tInvalidAadhaar: 'Aadhaar must be 12 digits (or the last 4) — optional.', tInvalidMobile: 'Enter a valid 10-digit mobile number.', tInvalidPin: 'PIN code must be 6 digits.', tPickClass: 'Please choose a class.', tReqFields: 'Please fill Student Name, Primary Mobile, Class and Section.', tStuCsvOne: 'Student details downloaded.', tTransferred: 'Student transferred.', tabAcademic: 'Academic Records', tabActivity: 'Activity History', tabAttendance: 'Attendance History', tabDocs: 'Documents', tabFees: 'Fee History', tabHomework: 'Homework Records', tabOverview: 'Overview', tabParent: 'Parent Information', tabPersonal: 'Personal Information', tabResults: 'Examination Results', thAdmNo: 'Admission No.', thExam: 'Exam', thFather: 'Father\'s Name', transferTitle: 'Transfer Student', transferTo: 'New Class & Section', idCardSoon: 'ID Card generator comes in Phase 3.',
     impTitle: 'Bulk Import Students', impImportBtn: 'Import Students', impTemplate: 'Download Sample Template', impTemplateSub: 'CSV format only — Excel (.xlsx) files cannot be read here. Use the template columns.', impChooseFile: 'Choose CSV File', impPreview: 'Import Preview', impSummary: 'Import Summary', impValid: 'Valid', impError: 'Error', impDuplicate: 'Duplicate', impReason: 'Reason', impConfirm: 'Import Valid Rows', impDone: 'Done', impNoRows: 'No rows found in this file. Please check the template.', impBadHeader: 'This file does not look like the student template — the Name column is missing.', impNoFile: 'Please choose a CSV file first.', impNoValid: 'No valid rows to import.', impImported: 'imported', impSkipped: 'skipped', impErrName: 'Name is required', impErrMobile: 'Mobile must be 10 digits', impErrMobile2: 'Secondary mobile must be 10 digits', impErrClass: 'Class is not valid', impErrSection: 'Section must be A, B or C', impErrPin: 'PIN must be 6 digits', impErrAadhaar: 'Aadhaar must be 12 digits', impErrDob: 'Date of birth is not a valid date', impErrAdmDate: 'Admission date is not a valid date', impErrSession: 'Session is not valid (e.g. 2025–26)', impErrGender: 'Gender must be Boy, Girl or Other', impErrBlood: 'Blood group is not valid', impErrCategory: 'Category must be General, OBC, SC, ST or Other', impErrEmail: 'Parent email is not valid', impErrRoll: 'Roll must be a positive number', impErrBool: 'Must be Yes or No', impErrDup: 'Duplicate of', impErrDupFile: 'Duplicate in this file', tImpDone: 'Bulk import complete.', tImpTemplate: 'Sample template downloaded.',
     promoTitle: 'Promote Students', promoBtn: 'Promote Students', promoSingle: 'Promote Student', promoFromSession: 'Current Session', promoFromClass: 'Current Class', promoToSession: 'Target Session', promoToClass: 'Target Class', promoToSection: 'Target Section', promoSelectAll: 'Select All', promoSelectNone: 'Select None', promoSelected: 'selected', promoPromote: 'Promote Selected', promoRetain: 'Retain Selected', promoNoStudents: 'No students in this class and session.', promoNoSelect: 'Please select at least one student.', promoNoop: 'Target class and session are the same as current — nothing to change.', promoNoopRetain: 'Target session is the same as the current session — nothing to change.', promoDone: 'Promotion complete.', promoPromoted: 'promoted', promoRetained: 'retained', promoNote: 'Attendance, fees, exam marks and homework history are preserved.', promoSingleNote: 'Single student promotion', promoSkipped: 'skipped (already moved)', promoNotEligible: 'Only Active or Inactive students can be promoted.',
     idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.',
@@ -5199,7 +5325,13 @@ var I18N = {
     waLateMsg: 'Namaste, this is {school}. {student} (Class {cls}) arrived late to school today ({date}). Please ensure timely arrival. Thank you.',
     waReceiptMsg: 'Namaste, this is {school}. Fee receipt {receipt} — {student} (Class {cls}), {amount} paid for {month} on {date}. Thank you.',
     waGreetMsg: 'Namaste, this is {school}. This is regarding {student} (Class {cls}).',
-    waSchoolContact: 'School'
+    waSchoolContact: 'School',
+    sbStorageQuota: 'Storage full — remove photos or export a backup.',
+    sbDataCorrupt: 'Data corrupt — restore from backup.',
+    sbPhotosRemoved: 'Removed {n} oldest photos — storage freed.',
+    sbStorageRemovePhotos: 'Remove oldest photos',
+    sbStorageRestoreBackup: 'Open backup restore',
+    sbStorageNearQuota: 'Storage is {n}% full — remove photos or export a backup.'
   },
   hi: {
     dashboard: 'डैशबोर्ड', settings: 'सेटिंग्स', reports: 'रिपोर्ट', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -5217,7 +5349,7 @@ var I18N = {
     dlStudents: 'छात्र CSV डाउनलोड करें', dlFees: 'शुल्क CSV डाउनलोड करें', dlAtt: 'उपस्थिति CSV डाउनलोड करें', repStudentsSub: 'नाम, कक्षा, रोल, अभिभावक, फ़ोन, उपस्थिति, शुल्क स्थिति', repFeesSub: 'छात्र, कक्षा, महीना, राशि, स्थिति — अप्रैल से मार्च',
     subSettingsS: 'स्कूल प्रोफ़ाइल', settingsSub: 'बदलें और सहेजें — ऑनलाइन होने पर बदलाव सर्वर पर सिंक होते हैं।',
     studentsW: 'छात्र', perSchool: 'प्रति स्कूल 2',
-    raiseSupport: 'सहायता अनुरोध भेजें', supportNoted: 'सहायता अनुरोध दर्ज हुआ — हम आपको कॉल करेंगे।', collectedW: 'संग्रह', pendingW: 'बकाया', allW: 'सभी', editStudent: 'छात्र बदलें', feeTypeTuition: 'ट्यूशन', feeTypeAdmission: 'प्रवेश', feeTypeTransport: 'परिवहन', feeTypeExam: 'परीक्षा', feeTypeLibrary: 'पुस्तकालय', feeTypeActivity: 'गतिविधि', feeTypeComputer: 'कंप्यूटर लैब', feeTypeOther: 'अन्य', allTypes: 'सभी प्रकार', searchFee: 'नाम, नामांकन संख्या या कक्षा खोजें…', thEnr: 'नामांकन सं.', thType: 'प्रकार', feeByType: 'प्रकार के अनुसार शुल्क', feeByTypeSub: 'प्रति प्रकार संग्रह और बकाया, लाइव गणना।', addFee: 'शुल्क जोड़ें', addFeeSub: 'किसी भी छात्र के लिए एक शुल्क रिकॉर्ड जोड़ें।', feeStruct: 'शुल्क संरचना', feeStructSub: 'प्रति कक्षा मासिक राशि। Generate इसी से रिकॉर्ड बनाता है।', genFees: 'शुल्क बनाएँ', saveStruct: 'संरचना सहेजें', addRow: 'पंक्ति जोड़ें', customType: 'कस्टम…', typeCustomPh: 'शुल्क का प्रकार लिखें', fStudent: 'छात्र', fMonth: 'महीना', fType: 'शुल्क प्रकार', fAmount: 'राशि (₹)', fStatus: 'स्थिति', fDate: 'तारीख', printList: 'सूची छापें', printStmt: 'विवरण छापें', backFees: 'सभी शुल्क पर वापस', totalBilled: 'कुल बिल', totalPaid: 'जमा', totalPending: 'बकाया', feeRecsH: 'शुल्क रिकॉर्ड', feeProfileSub: 'इस छात्र के सभी शुल्क रिकॉर्ड एक ही जगह।', tFeeAdded: 'शुल्क रिकॉर्ड जुड़ गया।', delFeeMsg: 'यह बकाया शुल्क रिकॉर्ड हटाएँ?', tFeeDeleted: 'शुल्क रिकॉर्ड हटा दिया गया।', tPickStudent: 'कृपया छात्र चुनें।', tAmtPositive: 'राशि 0 से अधिक होनी चाहिए।', tTypeRequired: 'कृपया शुल्क का प्रकार लिखें।', tStructSaved: 'शुल्क संरचना सहेजी गई।', tStructAdded: 'संरचना पंक्ति जुड़ी।', tStructRemoved: 'संरचना पंक्ति हटाई गई।', tGenRecords: 'शुल्क रिकॉर्ड बने', tGenSkipped: 'पहले से थे', tGenNotAdmitted: 'अभी प्रवेश नहीं हुआ', tNoFeeRecs: 'इस छात्र के लिए अभी कोई शुल्क रिकॉर्ड नहीं है।', printTitle: 'शुल्क विवरण', printListTitle: 'शुल्क सूची', printGenOn: 'बनाया गया', closeW: 'बंद करें', saveFeeBtn: 'शुल्क सहेजें', photoLabel: 'छात्र की फ़ोटो', photoHint: 'फ़ोटो अपने आप छोटी हो जाती है (अधिकतम 512px, ~120KB)।', removePhoto: 'फ़ोटो हटाएँ', logoLabel: 'स्कूल का लोगो', logoHint: 'लोगो अपने आप छोटा हो जाता है (अधिकतम 256px, PNG में पारदर्शिता रहती है)।', removeLogo: 'लोगो हटाएँ', tPhotoTooBig: 'यह फ़ोटो छोटी करने के बाद भी बड़ी है। कृपया छोटी फ़ोटो चुनें।', tLogoTooBig: 'यह लोगो छोटा करने के बाद भी बड़ा है। कृपया छोटा लोगो चुनें।', tPhotoError: 'यह तस्वीर पढ़ी नहीं जा सकी। कृपया दूसरी फ़ाइल चुनें।', aadhaarHint: 'वैकल्पिक। केवल आखिरी 4 अंक सहेजे जाते हैं — पूरा नंबर कभी सहेजा नहीं जाता।', actActivate: 'छात्र सक्रिय करें', actAtt: 'उपस्थिति देखें', actDeactivate: 'छात्र निष्क्रिय करें', actDownload: 'विवरण डाउनलोड करें', actEdit: 'छात्र बदलें', actFees: 'शुल्क देखें', actIdCard: 'ID कार्ड छापें', actResults: 'परिणाम देखें', actTransfer: 'छात्र स्थानांतरित करें', actView: 'प्रोफ़ाइल देखें', actionsW: 'कार्रवाई', admNoAuto: 'स्वतः निर्मित', allClasses: 'सभी कक्षाएँ', allFeeSt: 'सभी शुल्क स्थितियाँ', allGenders: 'सभी लिंग', allSections: 'सभी अनुभाग', allSessions: 'सभी सत्र', allStatus: 'सभी स्थितियाँ', attPct: 'उपस्थिति', backDir: 'सूची पर वापस', cancelAdm: 'प्रवेश रद्द करें', cancelAdmMsg: 'यह प्रवेश रद्द करें? छात्र का रिकॉर्ड Cancelled स्थिति के साथ रखा जाएगा।', docMissing: 'प्राप्त नहीं', docStatus: 'प्राप्त', docsNote: 'दस्तावेज़ फ़ाइलें सर्वर चरण में अपलोड होंगी। यह सूची बताती है कि क्या प्राप्त हुआ है।', exportCsv: 'CSV निर्यात करें', fAadhaar: 'आधार संख्या (वैकल्पिक)', fAdmDate: 'प्रवेश तिथि', fAdmNo: 'प्रवेश संख्या', fBirthCert: 'जन्म प्रमाण पत्र', fBlood: 'रक्त समूह', fCategory: 'श्रेणी', fDistrict: 'जिला', fDob: 'जन्म तिथि', fDocsOther: 'अन्य दस्तावेज़ (नोट)', fFather: 'पिता का नाम', fGender: 'लिंग', fMother: 'माता का नाम', fOccupation: 'व्यवसाय', fParentEmail: 'अभिभावक ईमेल', fPhone2: 'दूसरा मोबाइल', fPin: 'पिन कोड', fPrevClass: 'पिछली कक्षा', fPrevSchool: 'पिछला स्कूल', fSection: 'अनुभाग', fState: 'राज्य', fTc: 'स्थानांतरण प्रमाण पत्र (TC)', fTcNo: 'TC संख्या', feeSt: 'शुल्क स्थिति', hwDone: 'पूर्ण', hwPend: 'बाकी', hwPending: 'होमवर्क बाकी', latestExam: 'हाल की परीक्षा', nextW: 'अगला', noActivity: 'अभी कोई गतिविधि दर्ज नहीं है।', noAttRecs: 'इस छात्र के लिए अभी कोई उपस्थिति रिकॉर्ड नहीं है।', noExamRecs: 'अभी कोई परीक्षा परिणाम नहीं है।', noHwRecs: 'इस कक्षा के लिए कोई होमवर्क रिकॉर्ड नहीं है।', openFees: 'शुल्क पेज खोलें', pgOf: 'का', pgPage: 'पृष्ठ', phase3W: 'Phase 3', prevW: 'पिछला', saveAddAnother: 'सहेजें और नया जोड़ें', saveDraft: 'ड्राफ़्ट सहेजें', secAcademic: 'शैक्षणिक विवरण', secDocs: 'दस्तावेज़', secParent: 'माता-पिता / अभिभावक विवरण', secPersonal: 'व्यक्तिगत विवरण', stActive: 'सक्रिय छात्र', stAvgAtt: 'औसत उपस्थिति', stBoys: 'लड़के', stByClass: 'कक्षा अनुसार छात्र', stByClassSub: 'प्रत्येक कक्षा-अनुभाग में छात्रों की संख्या।', stGenderDist: 'लड़के और लड़कियाँ', stGenderSub: 'पूरे स्कूल में लिंग वितरण।', stGirls: 'लड़कियाँ', stInactive: 'निष्क्रिय छात्र', stNewAdm: 'नए प्रवेश', stNotSpec: 'निर्दिष्ट नहीं', stPendFee: 'बकाया शुल्क वाले छात्र', stTotal: 'कुल छात्र', stuSearchPh: 'नाम, प्रवेश संख्या या मोबाइल खोजें…', tActMsg: 'छात्र सक्रिय करें', tActivated: 'छात्र सक्रिय हुआ।', tAdmCancelled: 'प्रवेश रद्द हुआ। रिकॉर्ड रखा गया है।', tAdmCreated: 'प्रवेश सहेजा गया। प्रवेश संख्या ', tCsvExported: 'छात्र सूची निर्यात हुई।', tDeactMsg: 'छात्र निष्क्रिय करें', tDeactivated: 'छात्र निष्क्रिय हुआ।', tDraftSaved: 'ड्राफ़्ट सहेजा गया।', tDupFound: 'मेल खाता छात्र पहले से मौजूद है: ', tInvalidAadhaar: 'आधार 12 अंकों का होना चाहिए (या आखिरी 4) — वैकल्पिक।', tInvalidMobile: 'सही 10 अंकों का मोबाइल नंबर डालें।', tInvalidPin: 'पिन कोड 6 अंकों का होना चाहिए।', tPickClass: 'कृपया कक्षा चुनें।', tReqFields: 'कृपया छात्र का नाम, मुख्य मोबाइल, कक्षा और अनुभाग भरें।', tStuCsvOne: 'छात्र का विवरण डाउनलोड हुआ।', tTransferred: 'छात्र स्थानांतरित हुआ।', tabAcademic: 'शैक्षणिक रिकॉर्ड', tabActivity: 'गतिविधि इतिहास', tabAttendance: 'उपस्थिति इतिहास', tabDocs: 'दस्तावेज़', tabFees: 'शुल्क इतिहास', tabHomework: 'होमवर्क रिकॉर्ड', tabOverview: 'सारांश', tabParent: 'अभिभावक जानकारी', tabPersonal: 'व्यक्तिगत जानकारी', tabResults: 'परीक्षा परिणाम', thAdmNo: 'प्रवेश सं.', thExam: 'परीक्षा', thFather: 'पिता का नाम', transferTitle: 'छात्र स्थानांतरण', transferTo: 'नई कक्षा और अनुभाग', idCardSoon: 'ID कार्ड जनरेटर Phase 3 में आएगा।',
+    raiseSupport: 'सहायता अनुरोध भेजें', supportNoted: 'सहायता अनुरोध दर्ज हुआ — हम आपको कॉल करेंगे।', collectedW: 'संग्रह', pendingW: 'बकाया', allW: 'सभी', editStudent: 'छात्र बदलें', feeTypeTuition: 'ट्यूशन', feeTypeAdmission: 'प्रवेश', feeTypeTransport: 'परिवहन', feeTypeExam: 'परीक्षा', feeTypeLibrary: 'पुस्तकालय', feeTypeActivity: 'गतिविधि', feeTypeComputer: 'कंप्यूटर लैब', feeTypeOther: 'अन्य', allTypes: 'सभी प्रकार', searchFee: 'नाम, नामांकन संख्या या कक्षा खोजें…', thEnr: 'नामांकन सं.', thType: 'प्रकार', feeByType: 'प्रकार के अनुसार शुल्क', feeByTypeSub: 'प्रति प्रकार संग्रह और बकाया, लाइव गणना।', addFee: 'शुल्क जोड़ें', addFeeSub: 'किसी भी छात्र के लिए एक शुल्क रिकॉर्ड जोड़ें।', feeStruct: 'शुल्क संरचना', feeStructSub: 'प्रति कक्षा मासिक राशि। Generate इसी से रिकॉर्ड बनाता है।', genFees: 'शुल्क बनाएँ', saveStruct: 'संरचना सहेजें', addRow: 'पंक्ति जोड़ें', customType: 'कस्टम…', typeCustomPh: 'शुल्क का प्रकार लिखें', fStudent: 'छात्र', fMonth: 'महीना', fType: 'शुल्क प्रकार', fAmount: 'राशि (₹)', fStatus: 'स्थिति', fDate: 'तारीख', printList: 'सूची छापें', printStmt: 'विवरण छापें', backFees: 'सभी शुल्क पर वापस', totalBilled: 'कुल बिल', totalPaid: 'जमा', totalPending: 'बकाया', feeRecsH: 'शुल्क रिकॉर्ड', feeProfileSub: 'इस छात्र के सभी शुल्क रिकॉर्ड एक ही जगह।', tFeeAdded: 'शुल्क रिकॉर्ड जुड़ गया।', delFeeMsg: 'यह बकाया शुल्क रिकॉर्ड हटाएँ?', tFeeDeleted: 'शुल्क रिकॉर्ड हटा दिया गया।', tPickStudent: 'कृपया छात्र चुनें।', tAmtPositive: 'राशि 0 से अधिक होनी चाहिए।', tTypeRequired: 'कृपया शुल्क का प्रकार लिखें।', tStructSaved: 'शुल्क संरचना सहेजी गई।', tStructAdded: 'संरचना पंक्ति जुड़ी।', tStructRemoved: 'संरचना पंक्ति हटाई गई।', tGenRecords: 'शुल्क रिकॉर्ड बने', tGenSkipped: 'पहले से थे', tGenNotAdmitted: 'अभी प्रवेश नहीं हुआ', tNoFeeRecs: 'इस छात्र के लिए अभी कोई शुल्क रिकॉर्ड नहीं है।', printTitle: 'शुल्क विवरण', printListTitle: 'शुल्क सूची', printGenOn: 'बनाया गया', closeW: 'बंद करें', saveFeeBtn: 'शुल्क सहेजें', photoLabel: 'छात्र की फ़ोटो', photoHint: 'फ़ोटो अपने आप छोटी हो जाती है (अधिकतम 512px, ~80KB)।', removePhoto: 'फ़ोटो हटाएँ', logoLabel: 'स्कूल का लोगो', logoHint: 'लोगो अपने आप छोटा हो जाता है (अधिकतम 256px, PNG में पारदर्शिता रहती है)।', removeLogo: 'लोगो हटाएँ', tPhotoTooBig: 'यह फ़ोटो छोटी करने के बाद भी बड़ी है। कृपया छोटी फ़ोटो चुनें।', tLogoTooBig: 'यह लोगो छोटा करने के बाद भी बड़ा है। कृपया छोटा लोगो चुनें।', tPhotoError: 'यह तस्वीर पढ़ी नहीं जा सकी। कृपया दूसरी फ़ाइल चुनें।', aadhaarHint: 'वैकल्पिक। केवल आखिरी 4 अंक सहेजे जाते हैं — पूरा नंबर कभी सहेजा नहीं जाता।', actActivate: 'छात्र सक्रिय करें', actAtt: 'उपस्थिति देखें', actDeactivate: 'छात्र निष्क्रिय करें', actDownload: 'विवरण डाउनलोड करें', actEdit: 'छात्र बदलें', actFees: 'शुल्क देखें', actIdCard: 'ID कार्ड छापें', actResults: 'परिणाम देखें', actTransfer: 'छात्र स्थानांतरित करें', actView: 'प्रोफ़ाइल देखें', actionsW: 'कार्रवाई', admNoAuto: 'स्वतः निर्मित', allClasses: 'सभी कक्षाएँ', allFeeSt: 'सभी शुल्क स्थितियाँ', allGenders: 'सभी लिंग', allSections: 'सभी अनुभाग', allSessions: 'सभी सत्र', allStatus: 'सभी स्थितियाँ', attPct: 'उपस्थिति', backDir: 'सूची पर वापस', cancelAdm: 'प्रवेश रद्द करें', cancelAdmMsg: 'यह प्रवेश रद्द करें? छात्र का रिकॉर्ड Cancelled स्थिति के साथ रखा जाएगा।', docMissing: 'प्राप्त नहीं', docStatus: 'प्राप्त', docsNote: 'दस्तावेज़ फ़ाइलें सर्वर चरण में अपलोड होंगी। यह सूची बताती है कि क्या प्राप्त हुआ है।', exportCsv: 'CSV निर्यात करें', fAadhaar: 'आधार संख्या (वैकल्पिक)', fAdmDate: 'प्रवेश तिथि', fAdmNo: 'प्रवेश संख्या', fBirthCert: 'जन्म प्रमाण पत्र', fBlood: 'रक्त समूह', fCategory: 'श्रेणी', fDistrict: 'जिला', fDob: 'जन्म तिथि', fDocsOther: 'अन्य दस्तावेज़ (नोट)', fFather: 'पिता का नाम', fGender: 'लिंग', fMother: 'माता का नाम', fOccupation: 'व्यवसाय', fParentEmail: 'अभिभावक ईमेल', fPhone2: 'दूसरा मोबाइल', fPin: 'पिन कोड', fPrevClass: 'पिछली कक्षा', fPrevSchool: 'पिछला स्कूल', fSection: 'अनुभाग', fState: 'राज्य', fTc: 'स्थानांतरण प्रमाण पत्र (TC)', fTcNo: 'TC संख्या', feeSt: 'शुल्क स्थिति', hwDone: 'पूर्ण', hwPend: 'बाकी', hwPending: 'होमवर्क बाकी', latestExam: 'हाल की परीक्षा', nextW: 'अगला', noActivity: 'अभी कोई गतिविधि दर्ज नहीं है।', noAttRecs: 'इस छात्र के लिए अभी कोई उपस्थिति रिकॉर्ड नहीं है।', noExamRecs: 'अभी कोई परीक्षा परिणाम नहीं है।', noHwRecs: 'इस कक्षा के लिए कोई होमवर्क रिकॉर्ड नहीं है।', openFees: 'शुल्क पेज खोलें', pgOf: 'का', pgPage: 'पृष्ठ', phase3W: 'Phase 3', prevW: 'पिछला', saveAddAnother: 'सहेजें और नया जोड़ें', saveDraft: 'ड्राफ़्ट सहेजें', secAcademic: 'शैक्षणिक विवरण', secDocs: 'दस्तावेज़', secParent: 'माता-पिता / अभिभावक विवरण', secPersonal: 'व्यक्तिगत विवरण', stActive: 'सक्रिय छात्र', stAvgAtt: 'औसत उपस्थिति', stBoys: 'लड़के', stByClass: 'कक्षा अनुसार छात्र', stByClassSub: 'प्रत्येक कक्षा-अनुभाग में छात्रों की संख्या।', stGenderDist: 'लड़के और लड़कियाँ', stGenderSub: 'पूरे स्कूल में लिंग वितरण।', stGirls: 'लड़कियाँ', stInactive: 'निष्क्रिय छात्र', stNewAdm: 'नए प्रवेश', stNotSpec: 'निर्दिष्ट नहीं', stPendFee: 'बकाया शुल्क वाले छात्र', stTotal: 'कुल छात्र', stuSearchPh: 'नाम, प्रवेश संख्या या मोबाइल खोजें…', tActMsg: 'छात्र सक्रिय करें', tActivated: 'छात्र सक्रिय हुआ।', tAdmCancelled: 'प्रवेश रद्द हुआ। रिकॉर्ड रखा गया है।', tAdmCreated: 'प्रवेश सहेजा गया। प्रवेश संख्या ', tCsvExported: 'छात्र सूची निर्यात हुई।', tDeactMsg: 'छात्र निष्क्रिय करें', tDeactivated: 'छात्र निष्क्रिय हुआ।', tDraftSaved: 'ड्राफ़्ट सहेजा गया।', tDupFound: 'मेल खाता छात्र पहले से मौजूद है: ', tInvalidAadhaar: 'आधार 12 अंकों का होना चाहिए (या आखिरी 4) — वैकल्पिक।', tInvalidMobile: 'सही 10 अंकों का मोबाइल नंबर डालें।', tInvalidPin: 'पिन कोड 6 अंकों का होना चाहिए।', tPickClass: 'कृपया कक्षा चुनें।', tReqFields: 'कृपया छात्र का नाम, मुख्य मोबाइल, कक्षा और अनुभाग भरें।', tStuCsvOne: 'छात्र का विवरण डाउनलोड हुआ।', tTransferred: 'छात्र स्थानांतरित हुआ।', tabAcademic: 'शैक्षणिक रिकॉर्ड', tabActivity: 'गतिविधि इतिहास', tabAttendance: 'उपस्थिति इतिहास', tabDocs: 'दस्तावेज़', tabFees: 'शुल्क इतिहास', tabHomework: 'होमवर्क रिकॉर्ड', tabOverview: 'सारांश', tabParent: 'अभिभावक जानकारी', tabPersonal: 'व्यक्तिगत जानकारी', tabResults: 'परीक्षा परिणाम', thAdmNo: 'प्रवेश सं.', thExam: 'परीक्षा', thFather: 'पिता का नाम', transferTitle: 'छात्र स्थानांतरण', transferTo: 'नई कक्षा और अनुभाग', idCardSoon: 'ID कार्ड जनरेटर Phase 3 में आएगा।',
     impTitle: 'छात्रों का बल्क आयात', impImportBtn: 'छात्र आयात करें', impTemplate: 'नमूना टेम्पलेट डाउनलोड करें', impTemplateSub: 'सिर्फ CSV प्रारूप — Excel (.xlsx) फ़ाइल यहाँ पढ़ी नहीं जा सकती। टेम्पलेट के कॉलम इस्तेमाल करें।', impChooseFile: 'CSV फ़ाइल चुनें', impPreview: 'आयात पूर्वावलोकन', impSummary: 'आयात सारांश', impValid: 'सही', impError: 'त्रुटि', impDuplicate: 'दोहरा', impReason: 'कारण', impConfirm: 'सही पंक्तियाँ आयात करें', impDone: 'पूर्ण', impNoRows: 'इस फ़ाइल में कोई पंक्ति नहीं मिली। कृपया टेम्पलेट जाँचें।', impBadHeader: 'यह फ़ाइल छात्र टेम्पलेट जैसी नहीं लगती — नाम वाला कॉलम नहीं मिला।', impNoFile: 'कृपया पहले CSV फ़ाइल चुनें।', impNoValid: 'आयात के लिए कोई सही पंक्ति नहीं है।', impImported: 'आयात हुए', impSkipped: 'छोड़े गए', impErrName: 'नाम आवश्यक है', impErrMobile: 'मोबाइल 10 अंकों का होना चाहिए', impErrMobile2: 'दूसरा मोबाइल 10 अंकों का होना चाहिए', impErrClass: 'कक्षा सही नहीं है', impErrSection: 'अनुभाग A, B या C होना चाहिए', impErrPin: 'पिन 6 अंकों का होना चाहिए', impErrAadhaar: 'आधार 12 अंकों का होना चाहिए', impErrDob: 'जन्म तिथि सही तारीख नहीं है', impErrAdmDate: 'प्रवेश तिथि सही तारीख नहीं है', impErrSession: 'सत्र सही नहीं है (जैसे 2025–26)', impErrGender: 'लिंग Boy, Girl या Other होना चाहिए', impErrBlood: 'रक्त समूह सही नहीं है', impErrCategory: 'श्रेणी General, OBC, SC, ST या Other होनी चाहिए', impErrEmail: 'अभिभावक ईमेल सही नहीं है', impErrRoll: 'रोल धनात्मक संख्या होनी चाहिए', impErrBool: 'Yes या No होना चाहिए', impErrDup: 'इसकी प्रतिलिपि', impErrDupFile: 'इस फ़ाइल में दोहरा', tImpDone: 'बल्क आयात पूर्ण हुआ।', tImpTemplate: 'नमूना टेम्पलेट डाउनलोड हुआ।',
     promoTitle: 'छात्रों को प्रोन्नत करें', promoBtn: 'छात्र प्रोन्नत करें', promoSingle: 'छात्र प्रोन्नत करें', promoFromSession: 'वर्तमान सत्र', promoFromClass: 'वर्तमान कक्षा', promoToSession: 'लक्ष्य सत्र', promoToClass: 'लक्ष्य कक्षा', promoToSection: 'लक्ष्य अनुभाग', promoSelectAll: 'सभी चुनें', promoSelectNone: 'कोई नहीं', promoSelected: 'चयनित', promoPromote: 'चयनित को प्रोन्नत करें', promoRetain: 'चयनित को रोकें', promoNoStudents: 'इस कक्षा और सत्र में कोई छात्र नहीं है।', promoNoSelect: 'कृपया कम से कम एक छात्र चुनें।', promoNoop: 'लक्ष्य कक्षा और सत्र वर्तमान जैसे ही हैं — बदलने को कुछ नहीं।', promoNoopRetain: 'लक्ष्य सत्र वर्तमान सत्र जैसा ही है — बदलने को कुछ नहीं।', promoDone: 'प्रोन्नति पूर्ण हुई।', promoPromoted: 'प्रोन्नत हुए', promoRetained: 'रोके गए', promoNote: 'उपस्थिति, शुल्क, परीक्षा अंक और होमवर्क इतिहास सुरक्षित रहता है।', promoSingleNote: 'एक छात्र की प्रोन्नति', promoSkipped: 'छोड़े गए (पहले ही स्थानांतरित)', promoNotEligible: 'केवल सक्रिय या निष्क्रिय छात्र ही प्रोन्नत हो सकते हैं।',
     idcPreview: 'ID कार्ड पूर्वावलोकन', idcPrint: 'छापें', idcPrintCards: 'ID कार्ड छापें', idcSelectAll: 'सभी चुनें', idcClearSel: 'चयन हटाएँ', idcReady: 'ID कार्ड छपाई के लिए तैयार', idcEmergency: 'आपातकालीन संपर्क', idcReturn: 'मिले तो कृपया लौटाएँ', idcNoQr: 'QR कोड नहीं बन सका।',
@@ -5236,7 +5368,13 @@ var I18N = {
     waLateMsg: 'नमस्ते, यह {school} है। {student} (कक्षा {cls}) आज ({date}) स्कूल देर से आया/आई। कृपया समय पर भेजें। धन्यवाद।',
     waReceiptMsg: 'नमस्ते, यह {school} है। फीस रसीद {receipt} — {student} (कक्षा {cls}), {month} के लिए {amount} का भुगतान {date} को हुआ। धन्यवाद।',
     waGreetMsg: 'नमस्ते, यह {school} है। {student} (कक्षा {cls}) के बारे में बात करनी है।',
-    waSchoolContact: 'स्कूल'
+    waSchoolContact: 'स्कूल',
+    sbStorageQuota: 'स्टोरेज भर गया है — फ़ोटो हटाएँ या बैकअप निर्यात करें।',
+    sbDataCorrupt: 'डेटा खराब हो गया है — बैकअप से रिस्टोर करें।',
+    sbPhotosRemoved: '{n} सबसे पुरानी फ़ोटो हटाई गईं — स्टोरेज खाली हुआ।',
+    sbStorageRemovePhotos: 'सबसे पुरानी फ़ोटो हटाएँ',
+    sbStorageRestoreBackup: 'बैकअप रिस्टोर खोलें',
+    sbStorageNearQuota: 'स्टोरेज {n}% भर गया है — फ़ोटो हटाएँ या बैकअप निर्यात करें।'
   }
 };
 function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || I18N.en[k] || k; }
@@ -6329,6 +6467,7 @@ function renderApp() {
   $('topTitle').textContent = t(state.view) === state.view ? vt[0] : t(state.view);
   if (state.view === 'dashboard') $('topTitle').textContent = t('dashboard');
   $('topCrumb').textContent = state.role === 'school' ? prof.name + ', ' + prof.city : (state.role === 'student' ? t('stuDashboard') : t('tchrDashboard'));
+  sbStorageWarnRender(); // B19: re-show the sticky storage warning (if any) on every render
   renderPage();
 }
 function changeSession(v) {
@@ -8422,15 +8561,12 @@ function saveCollectFee(e) {
   // v33: for a server account the receipt number comes from the server,
   // never from the local counter. Offline the receipt is saved WITHOUT
   // a number (numPending) and minted on the next sync. Local-only
-  // accounts mint locally, exactly as before.
+  // accounts mint locally, exactly as before. The choice lives in
+  // sbGetReceiptNo (B20) — this flow only consumes its answer, and an
+  // RPC failure saves pending exactly as before.
   var act33 = sbSyncActive();
-  if (act33 && sbIsOnline()) {
-    sbMintNewReceiptNumber(act33).then(function (no) { finishCollectFee(d, s, total, no, false); })
-      .catch(function () { finishCollectFee(d, s, total, '', true); });
-    return false;
-  }
-  if (act33) { finishCollectFee(d, s, total, '', true); return false; }
-  finishCollectFee(d, s, total, nextReceiptNo(false), false);
+  sbGetReceiptNo(act33).then(function (m) { finishCollectFee(d, s, total, m.no, m.numPending); })
+    .catch(function () { finishCollectFee(d, s, total, '', true); });
   return false;
 }
 function finishCollectFee(d, s, total, receiptNo, numPending) {
@@ -8894,17 +9030,15 @@ function editExam(id) {
   examForm(id);
 }
 function sbQueueExamChange58(ex) {
-  // v58: a soft-delete / restore changes NO server payload field
-  // (ss_exams has no deleted column), so the diff never queues it —
-  // and without a pending outbox entry the v58 pull keep above has
-  // nothing to key on. Queue it explicitly so the keep holds the
-  // flag until the flush resolves it. The push itself is a no-op
-  // PATCH (the server row already carries the same content) and
-  // resolves the entry, so the outbox still drains and the status
-  // still reaches 'synced'. Local-only accounts skip this entirely
-  // (no pull can clobber the flag there). A server column for the
-  // flag (cross-device delete sync) is a follow-up SQL change, not
-  // this version — the delete stays local to this device until then.
+  // v58: a soft-delete / restore used to change NO server payload
+  // field (ss_exams had no deleted column), so the diff never queued
+  // it — and without a pending outbox entry the v58 pull keep above
+  // had nothing to key on. B15-app (M-14): the payload now carries
+  // the flag (SQL 23), so the diff queues the change itself; this
+  // explicit queue stays as belt-and-braces (same entry, deduped by
+  // sbOutboxAdd) so the keep holds the flag from the same tick the
+  // user taps Delete/Restore. Local-only accounts skip this entirely
+  // (no pull can clobber the flag there).
   try {
     if (!sbSyncActive()) return;
     var uid58 = (state.sb && state.sb.uid) || '';
@@ -8917,17 +9051,16 @@ function deleteExam(id) {
   // SOFT DELETE only: the exam row and ALL of its marks stay saved —
   // nothing is ever hard-deleted here. The marks are hidden
   // everywhere (exam lists, results, latest-exam %) until the exam
-  // is restored from the "Deleted exams" card. The row itself keeps
-  // syncing as a normal exam (sbMapExam carries no deleted flag — no
-  // SQL in this change), so the delete is local to this device; the
-  // merge-keep by the ss_exams pull keeps the flag alive across
-  // sync cycles, but a second device re-downloads the exam as active
-  // until a server column exists (follow-up SQL, not this change).
+  // is restored from the "Deleted exams" card. B15-app (M-14): the
+  // flag + timestamp now travel to the server (SQL 23), so a second
+  // device pulls the exam as deleted too — and restores it when this
+  // device restores it.
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   var ex = db.exams.find(function (e) { return e.id === id && isActiveExam(e); });
   if (!ex) return;
   confirmModal(t('delExamMsg') + ' — ' + ex.name + ' • ' + ex.cls + ' • ' + ex.subject + '?', function () {
     ex.deleted = true;
+    ex.deletedAt = new Date().toISOString(); // B15-app: the server's deleted_at (SQL 23)
     sbQueueExamChange58(ex); // v58: the diff never queues a delete (no payload field changes) — queue it so the pull keep holds the flag
     if (state.examId === id) {
       var next = db.exams.filter(isActiveExam)[0];
@@ -8945,6 +9078,7 @@ function restoreExam(id) {
   var ex = db.exams.find(function (e) { return e.id === id && !!e.deleted; });
   if (!ex) return;
   ex.deleted = false;
+  ex.deletedAt = ''; // B15-app: cleared, so the server's deleted_at goes back to NULL (SQL 23)
   sbQueueExamChange58(ex); // v58: same as deleteExam — the diff never queues a restore on its own
   logAudit('Exam restored', ex.name + ' • ' + ex.cls + ' • ' + ex.subject + ' • ' + ex.date);
   saveDB(db); renderApp();
