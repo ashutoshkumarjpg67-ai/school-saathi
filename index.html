@@ -13,9 +13,9 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=60">
-<script src="qrgen.js?v=60" defer></script>
-<script src="app.js?v=60" defer></script>
+<link rel="stylesheet" href="styles.css?v=61">
+<script src="qrgen.js?v=61" defer></script>
+<script src="app.js?v=61" defer></script>
 </head>
 <body>
 
@@ -72,7 +72,8 @@
       </form>
       <div id="studentErr" class="err hidden"></div>
       <form id="studentForm" class="hidden" onsubmit="return doStudentLogin(event)">
-        <div class="field"><label data-i18n="admReqSchool">School</label><select id="studentSchool"></select></div>
+        <div class="field"><label data-i18n="admReqSchool">School</label><select id="studentSchool" onchange="onStudentSchoolChange()"></select></div>
+        <p id="studentCloudHint" class="hidden" style="text-align:center;font-size:12.5px;color:var(--muted)" data-i18n="stuCloudHint">Cloud login — this school is not on this device. Your admission number and PIN are checked on the server.</p>
         <div class="field"><label data-i18n="stuAdmNo">Admission Number</label><input id="studentAdmNo" type="text" placeholder="e.g. ADM-2025-001" autocomplete="off"></div>
         <div class="field"><label data-i18n="stuPinLabel">Student PIN</label><input id="studentPin" type="password" inputmode="numeric" maxlength="6" placeholder="4–6 digits" autocomplete="off"></div>
         <button class="btn" type="submit" style="width:100%" data-i18n="stuLoginBtn">Login as Student</button>
@@ -103,7 +104,7 @@
         <div id="sideSchoolInfo"></div>
         <label style="color:#94A3B8;margin-top:10px">Academic Session</label>
         <select id="sessionSel" onchange="changeSession(this.value)"></select>
-        <div style="margin-top:12px">v60<br>© 2026 School Saathi</div>
+        <div style="margin-top:12px">v61<br>© 2026 School Saathi</div>
       </div>
     </aside>
     <div class="main">
