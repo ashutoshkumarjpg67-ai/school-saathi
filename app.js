@@ -571,6 +571,13 @@ function sbFinishSupabaseLogin(data, email, pw) {
     var list = loadAccounts();
     for (var i = 0; i < list.length; i++) if (list[i].email === email) list[i] = a;
     saveAccounts(list);
+    // B2 (M-11): GoTrue just authenticated this user, so a legacy djb2
+    // hash on the local account is upgraded here — the same upgrade
+    // sbLocalLogin does. verifyPw must still agree with the typed
+    // password: a server-side password change leaves the local hash
+    // stale, and then there is nothing safe to upgrade from.
+    var chkB2 = verifyPw(pw, a);
+    if (chkB2.ok && chkB2.legacy) upgradePwHash(a, pw);
     state.sb = { uid: uid, email: email };
     $('loginErr').classList.add('hidden');
     loginAs(a);
@@ -763,7 +770,10 @@ function doResetPassword(e) {
   if (!sbRecoveryToken) return fail(t('sbResetFailed'));
   var tok = sbRecoveryToken;
   sbSetNewPassword(tok, pw).then(function (r) {
-    if (!r.ok) { err.textContent = t('sbResetFailed'); err.classList.remove('hidden'); return; }
+    // B9 (M-3): the server rejected the token — that is an expired /
+    // invalid link, so say so explicitly instead of the generic error.
+    // A network failure lands in the .catch below and keeps sbResetFailed.
+    if (!r.ok) { err.textContent = t('sbResetExpired'); err.classList.remove('hidden'); return; }
     // Keep the device account in sync so offline login keeps working.
     sbGetUser(tok).then(function (u) {
       var em = u && u.data && u.data.email;
@@ -800,6 +810,10 @@ function sbBoot() {
       h.slice(1).split('&').forEach(function (p) { var kv = p.split('='); params[kv[0]] = decodeURIComponent(kv[1] || ''); });
       if (params.type === 'recovery' && params.access_token) {
         sbRecoveryToken = params.access_token;
+        // B9 (M-3): strip the token from the URL hash the moment it is
+        // received — never leave it in the address bar / history until
+        // a successful reset. (doResetPassword still strips on success.)
+        try { history.replaceState(null, '', location.pathname); } catch (e2) {}
         showView('login'); switchAuth('login');
         $('loginForm').classList.add('hidden');
         $('resetForm').classList.remove('hidden');
@@ -5199,7 +5213,8 @@ var I18N = {
     waLateMsg: 'Namaste, this is {school}. {student} (Class {cls}) arrived late to school today ({date}). Please ensure timely arrival. Thank you.',
     waReceiptMsg: 'Namaste, this is {school}. Fee receipt {receipt} — {student} (Class {cls}), {amount} paid for {month} on {date}. Thank you.',
     waGreetMsg: 'Namaste, this is {school}. This is regarding {student} (Class {cls}).',
-    waSchoolContact: 'School'
+    waSchoolContact: 'School',
+    sbSignupPending: 'Account created on this device — server backup pending.', sbSignupFailed: 'Could not create the server account — check your connection and try again.', sbSignupRegistered: 'This email is already registered — log in instead, or check your inbox to confirm your email.', sbResetExpired: 'This reset link has expired — request a new one.'
   },
   hi: {
     dashboard: 'डैशबोर्ड', settings: 'सेटिंग्स', reports: 'रिपोर्ट', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -5236,7 +5251,8 @@ var I18N = {
     waLateMsg: 'नमस्ते, यह {school} है। {student} (कक्षा {cls}) आज ({date}) स्कूल देर से आया/आई। कृपया समय पर भेजें। धन्यवाद।',
     waReceiptMsg: 'नमस्ते, यह {school} है। फीस रसीद {receipt} — {student} (कक्षा {cls}), {month} के लिए {amount} का भुगतान {date} को हुआ। धन्यवाद।',
     waGreetMsg: 'नमस्ते, यह {school} है। {student} (कक्षा {cls}) के बारे में बात करनी है।',
-    waSchoolContact: 'स्कूल'
+    waSchoolContact: 'स्कूल',
+    sbSignupPending: 'खाता इसी डिवाइस पर बना है — सर्वर बैकअप बाकी है।', sbSignupFailed: 'सर्वर खाता नहीं बन सका — कनेक्शन जाँचें और फिर कोशिश करें।', sbSignupRegistered: 'यह ईमेल पहले से दर्ज है — लॉग इन करें, या ईमेल पक्का करने के लिए इनबॉक्स देखें।', sbResetExpired: 'यह रीसेट लिंक समाप्त हो गया है — नया लिंक माँगें।'
   }
 };
 function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || I18N.en[k] || k; }
@@ -5386,7 +5402,7 @@ function restoreSession() {
       var stuKey = 'schoolSaathiDB_' + (parts[1] || '');
       var stuDb = readDbByKey(stuKey);
       if (!stuDb) return Promise.resolve(false);
-      migrateV54(migrateV55(migrateV12(stuDb)));
+      migrateV54(migrateV55(migrateV16(migrateV12(stuDb)))); // B1 (M-10): the short restore chain strips full Aadhaar too — same as loadDB
       var stu = (stuDb.students || []).find(function (x) { return x.id === parts[2]; });
       if (stu && (stu.parentPinHash || stu.parentPin)) {
         DB_KEY = stuKey;
@@ -5518,7 +5534,7 @@ function findStudentByAdmNoInSchool(admNo, accountUid) {
   var key = dbKeyFor(a);
   var d = readDbByKey(key);
   if (!d) return null;
-  migrateV54(migrateV55(migrateV12(d)));
+  migrateV54(migrateV55(migrateV16(migrateV12(d)))); // B1 (M-10): strip full Aadhaar here too — same as loadDB
   var found = null;
   (d.students || []).some(function (s) {
     if (String(s.admissionNo || '').trim().toLowerCase() === want) { found = { student: s, dbKey: key, db: d }; return true; }
@@ -6018,26 +6034,58 @@ function doSignup(e) {
   if (pw.length < 6) return fail(t('tPwShort'));
   if (pw !== pw2) return fail(t('tPwMismatch'));
   if (findAccount(email)) return fail(t('tEmailTaken'));
-  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: hashPwNew(pw), hashScheme: 'sha256', role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: null };
-  var list = loadAccounts(); list.push(a); saveAccounts(list);
-  err.classList.add('hidden');
-  toast(t('tAccountCreated') + name);
-  // Create the server account too, best-effort and in the background.
-  // The local account above already works offline, so a server failure
-  // (offline, rate-limited) never blocks signup.
-  if (sbIsOnline()) {
-    sbSignUp(email, pw, school, name).then(function (res) {
-      if (res.status === 429) { toast(t('sbTooMany')); sbSetStatus('not-linked', 'rate-limited'); return; }
-      if (!res.ok || !res.data || !res.data.user || !res.data.user.id) { sbSetStatus('not-linked', 'signup-failed'); return; }
-      a.sbUid = res.data.user.id;
-      var l2 = loadAccounts();
-      for (var i = 0; i < l2.length; i++) if (l2[i].email === email) l2[i] = a;
-      saveAccounts(l2);
-      if (res.data.access_token) { sbStoreSession(res.data); state.sb = { uid: res.data.user.id, email: email }; }
-      else toast(t('sbEmailConfirm'));
-    }).catch(function () { sbSetStatus('not-linked', 'offline'); /* offline mid-flight — local account stands */ });
+  // B10 (M-2): online signup is gated on the GoTrue account — loginAs
+  // only runs after the server account exists. Offline signup keeps
+  // working as a local-only account, with the honest pending-backup
+  // toast (B4/M-23) instead of a bare "Account created".
+  // NOTE: whether GoTrue requires email confirmation is a server
+  // setting (UNVERIFIED from the client). A signup answer with no
+  // access_token means confirmation is required: no local account is
+  // created and nobody is logged in — the user confirms first, then
+  // logs in, and sbLoginNewSchool creates the local account.
+  function createLocal(sbUid) {
+    var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: hashPwNew(pw), hashScheme: 'sha256', role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: sbUid || null };
+    var list = loadAccounts(); list.push(a); saveAccounts(list);
+    return a;
   }
-  loginAs(a, { silent: true });
+  if (!sbIsOnline()) {
+    var aOff = createLocal(null);
+    err.classList.add('hidden');
+    toast(t('sbSignupPending'));
+    loginAs(aOff, { silent: true });
+    return false;
+  }
+  sbSignUp(email, pw, school, name).then(function (res) {
+    if (res.status === 429) { err.textContent = t('sbTooMany'); err.classList.remove('hidden'); return; }
+    if (!res.ok || !res.data || !res.data.user || !res.data.user.id) {
+      var msg = (res.data && (res.data.msg || res.data.error_description || res.data.error)) || '';
+      var already = res.status === 400 && ((res.data && res.data.error_code === 'email_exists') || /already registered/i.test(String(msg)));
+      err.textContent = t(already ? 'sbSignupRegistered' : 'sbSignupFailed');
+      err.classList.remove('hidden');
+      return;
+    }
+    if (!res.data.access_token) {
+      // Server account created, email confirmation pending — do NOT
+      // create a local account or log in (see the NOTE above).
+      err.textContent = t('sbEmailConfirm');
+      err.classList.remove('hidden');
+      return;
+    }
+    var a = createLocal(res.data.user.id);
+    sbStoreSession(res.data); state.sb = { uid: res.data.user.id, email: email };
+    err.classList.add('hidden');
+    toast(t('tAccountCreated') + name);
+    loginAs(a, { silent: true });
+  }).catch(function () {
+    // Network dropped mid-flight: the server may or may not have
+    // created the account. Fall back to the local-only signup (the
+    // v34 link retry on the next login links the server account, and
+    // signs in instead if the email is already registered there).
+    var aNet = createLocal(null);
+    err.classList.add('hidden');
+    toast(t('sbSignupPending'));
+    loginAs(aNet, { silent: true });
+  });
   return false;
 }
 function logout() {
@@ -8530,7 +8578,7 @@ function validateAdmissionRequest(r) {
 function saveAdmissionRequestToSchool(dbKey, req) {
   var d = readDbByKey(dbKey);
   if (!d) return false;
-  migrateV12(d);
+  migrateV16(migrateV12(d)); // B1 (M-10): a full Aadhaar on any student in this DB is stripped to last-4 on this write path too
   d.admissionRequests.push(req);
   writeDbByKey(dbKey, d);
   if (DB_KEY === dbKey) db = d; // keep the in-memory DB in sync
