@@ -30,3 +30,7 @@ Each school's data is stored per school (Supabase + localStorage on the device).
 ## Deploy (GitHub Pages)
 
 Push this folder to the `school-saathi` repo, then enable **Settings → Pages → Deploy from branch → main → /(root)**. The live site works in Chrome on PC and mobile; the service worker is network-first for navigation, so new deploys reach users (bump `CACHE_NAME` in `sw.js` on each release).
+
+## Contributing / Verifying a change
+
+Before pushing, run the pre-push checks in `TESTING.md` (`node --check` on the four JS files + `node scripts/check-version.mjs`), then live-test on the test school only — never on real student data. Fill in every box of the pull-request template, including the live-test line (or the "live test skipped" reason + who said so). CI runs the same checks automatically on every push and PR.
