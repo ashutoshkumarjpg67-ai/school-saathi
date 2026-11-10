@@ -58,15 +58,18 @@
 -- (the 2-arg function was already dropped by 07, so an unguarded revoke
 -- on it would error on a DB where 07 was applied).
 
+-- FIX 2026-11-10 (same bug BAT caught on SQL 16 live apply, commit
+-- 231908b2): the existence checks below used to compare
+-- pg_get_function_identity_arguments(p.oid) to 'text, text, uuid' —
+-- but that function returns NAMED args ('p_admission_no text,
+-- p_pin text, p_school_id uuid'), so the comparison was always false
+-- and the block ran clean while revoking NOTHING. The checks now use
+-- to_regprocedure, which resolves by name+types and returns NULL when
+-- the overload is absent. Do NOT go back to the identity-args string
+-- comparison.
 do $$
 begin
-  if exists (
-    select 1 from pg_proc p
-    join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public'
-      and p.proname = 'ss_parent_lookup'
-      and pg_get_function_identity_arguments(p.oid) = 'text, text, uuid'
-  ) then
+  if to_regprocedure('public.ss_parent_lookup(text, text, uuid)') is not null then
     execute 'revoke execute on function public.ss_parent_lookup(text, text, uuid) from public';
     execute 'revoke execute on function public.ss_parent_lookup(text, text, uuid) from anon';
     raise notice 'revoked public + anon execute on ss_parent_lookup(text, text, uuid)';
@@ -74,13 +77,7 @@ begin
     raise notice 'ss_parent_lookup(text, text, uuid) not found — nothing to revoke';
   end if;
 
-  if exists (
-    select 1 from pg_proc p
-    join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public'
-      and p.proname = 'ss_parent_lookup'
-      and pg_get_function_identity_arguments(p.oid) = 'text, text'
-  ) then
+  if to_regprocedure('public.ss_parent_lookup(text, text)') is not null then
     execute 'revoke execute on function public.ss_parent_lookup(text, text) from public';
     execute 'revoke execute on function public.ss_parent_lookup(text, text) from anon';
     raise notice 'revoked public + anon execute on ss_parent_lookup(text, text)';
