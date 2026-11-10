@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 63;
+var APP_VERSION = 64;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -982,6 +982,38 @@ function sbLocalCountsReal(d) {
     marks: sbCountUnique((d.marks || []).filter(function (m) { return !sbIsSeedExamId(m.examId, d) && !sbIsSeedStudentId(m.studentId, d); }), function (m) { return m.examId + '|' + m.studentId; }),
     homework: real('ss_homework', d.homework), notices: real('ss_notices', d.notices) };
 }
+// v64: paged fetch — the sync pull/download/verify/upload-dedupe used to
+// fetch each table with a single `limit=5000`, so a table with more than
+// 5000 rows was silently truncated: a new device downloaded a partial
+// school, the pull never saw the missing rows, and the verify failed
+// forever (5000/5001). Pages of 5000 follow the server's id order with
+// a keyset cursor (id=gt.<last id>), so a row inserted by another device
+// mid-pull can neither be skipped nor duplicated, and the loop stops
+// the moment a page comes back short. If a page returns rows but the
+// cursor does not advance, the server is misbehaving — throw instead of
+// looping forever. Returns the sbRest shape ({ok, data}) so every
+// existing caller keeps working unchanged.
+var SB_PAGE_SIZE = 5000;
+function sbFetchAllPages(table, selectCols, schoolId, token) {
+  var parts = String(selectCols || '*').split(',').map(function (s) { return s.trim(); });
+  var cols = (parts.length === 1 && parts[0] === '*') ? '*' : (parts.indexOf('id') === -1 ? parts.concat(['id']).join(',') : selectCols);
+  var all = [];
+  var after = null;
+  function nextPage() {
+    var q = table + '?select=' + cols + '&school_id=eq.' + encodeURIComponent(schoolId) + '&order=id.asc&limit=' + SB_PAGE_SIZE + (after ? '&id=gt.' + encodeURIComponent(after) : '');
+    return sbRest('GET', q, token).then(function (r) {
+      if (!r.ok) throw new Error('read-' + table);
+      var rows = Array.isArray(r.data) ? r.data : [];
+      all = all.concat(rows);
+      if (rows.length < SB_PAGE_SIZE) return { ok: true, status: 200, data: all };
+      var last = rows[rows.length - 1] && rows[rows.length - 1].id;
+      if (!last || last === after) throw new Error('page-stuck-' + table);
+      after = last;
+      return nextPage();
+    });
+  }
+  return nextPage();
+}
 function sbNormTs(v) { return String(v || '').slice(0, 19); }
 // Upload rows that are not on the server yet. keyFn builds the dedupe key
 // from a row (local or server). onInserted receives ALL rows for the table
@@ -998,14 +1030,12 @@ function sbUploadMissing(token, schoolId, table, selectCols, rows, keyFn, onInse
     // fallback (or never, when that failed too). Callers without an
     // onInserted callback keep the fast path.
     if (!onInserted) return Promise.resolve(0);
-    return sbRest('GET', table + '?select=' + selectCols + '&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token).then(function (r) {
-      if (!r.ok) throw new Error('read-' + table);
+    return sbFetchAllPages(table, selectCols, schoolId, token).then(function (r) {
       onInserted(Array.isArray(r.data) ? r.data : []);
       return 0;
     });
   }
-  return sbRest('GET', table + '?select=' + selectCols + '&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token).then(function (r) {
-    if (!r.ok) throw new Error('read-' + table);
+  return sbFetchAllPages(table, selectCols, schoolId, token).then(function (r) {
     var existing = Array.isArray(r.data) ? r.data : [];
     var seen = {};
     existing.forEach(function (row) { seen[keyFn(row)] = true; });
@@ -1078,14 +1108,13 @@ function sbVerifyCounts(token, schoolId, counts) {
   // in one batch; the first failure is still reported in table order,
   // exactly as before.
   return Promise.all(checks.map(function (c) {
-    return sbRest('GET', c[0] + '?select=' + c[1] + '&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token).then(function (r) {
-      if (!r.ok) return { ok: false, detail: 'verify-' + c[0] };
+    return sbFetchAllPages(c[0], c[1], schoolId, token).then(function (r) {
       var got = Array.isArray(r.data) ? r.data.length : 0;
       // Server may hold MORE rows than this device (another device already
       // migrated) — that is fine. Fewer means this upload did not land.
       if (got < c[2]) return { ok: false, detail: c[0] + ' ' + got + '/' + c[2] };
       return { ok: true, detail: '' };
-    });
+    }).catch(function () { return { ok: false, detail: 'verify-' + c[0] }; });
   })).then(function (results) {
     for (var i = 0; i < results.length; i++) if (!results[i].ok) return results[i];
     return { ok: true, detail: '' };
@@ -2115,7 +2144,7 @@ function sbDownloadSchoolData(account, sbUid, token, serverSchoolId) {
     var tables = ['ss_fee_structure', 'ss_students', 'ss_teachers', 'ss_exams', 'ss_fee_records', 'ss_attendance', 'ss_receipts', 'ss_marks', 'ss_homework', 'ss_notices'];
     var gets = [sbRest('GET', 'ss_schools?select=*&id=eq.' + encodeURIComponent(sid), token)];
     tables.forEach(function (t) {
-      gets.push(sbRest('GET', t + '?select=*&school_id=eq.' + encodeURIComponent(sid) + '&limit=5000', token));
+      gets.push(sbFetchAllPages(t, '*', sid, token));
     });
     return Promise.all(gets).then(function (res) {
       var i;
@@ -3128,7 +3157,7 @@ function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
     if (!sid) return { done: false, reason: 'no-server-school' };
     var tables = ['ss_fee_structure', 'ss_students', 'ss_teachers', 'ss_exams', 'ss_fee_records', 'ss_attendance', 'ss_receipts', 'ss_marks', 'ss_homework', 'ss_notices', 'ss_admission_requests'];
     var gets = [sbRest('GET', 'ss_schools?select=*&id=eq.' + encodeURIComponent(sid), token)];
-    tables.forEach(function (t) { gets.push(sbRest('GET', t + '?select=*&school_id=eq.' + encodeURIComponent(sid) + '&limit=5000', token)); });
+    tables.forEach(function (t) { gets.push(sbFetchAllPages(t, '*', sid, token)); });
     return Promise.all(gets).then(function (res) {
       var i;
       for (i = 0; i < res.length; i++) if (!res[i].ok || !Array.isArray(res[i].data)) throw new Error('read-failed');
@@ -3321,8 +3350,8 @@ function sbFetchTakenNumbers(token, schoolId) {
   // and the repair pass. Also the server counters and the highest used
   // sequences, for the counter heal.
   return Promise.all([
-    sbRest('GET', 'ss_students?select=local_id,admission_no,enr&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token),
-    sbRest('GET', 'ss_receipts?select=receipt_no,student_id,total,receipt_date,student_name,month,lines&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token),
+    sbFetchAllPages('ss_students', 'local_id,admission_no,enr', schoolId, token),
+    sbFetchAllPages('ss_receipts', 'receipt_no,student_id,total,receipt_date,student_name,month,lines', schoolId, token),
     sbRest('GET', 'ss_schools?select=adm_counter,receipt_counter&id=eq.' + encodeURIComponent(schoolId), token)
   ]).then(function (res) {
     var students = (res[0].ok && Array.isArray(res[0].data)) ? res[0].data : [];
