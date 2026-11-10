@@ -531,7 +531,14 @@ function sbShowNoSchool() {
 }
 function sbFinishSupabaseLogin(data, email, pw) {
   var uid = data.user && data.user.id;
-  if (!uid) { sbLocalLogin(email, pw, $('loginErr')); return; }
+  // v59 (H-2): a token answer without a user id cannot be trusted to
+  // identify anyone — never fall back to the local account on it.
+  if (!uid) {
+    var err59 = $('loginErr');
+    err59.textContent = t('tInvalidCreds');
+    err59.classList.remove('hidden');
+    return;
+  }
   sbStoreSession(data);
   var meta = (data.user && data.user.user_metadata) || {};
   var a = findAccount(email);
@@ -568,18 +575,33 @@ function sbFinishSupabaseLogin(data, email, pw) {
     else sbShowNoSchool();
   });
 }
-function sbLocalLogin(id, pw, err) {
+function sbLocalLogin(id, pw, err, offline) {
   var a = findAccount(id);
+  // v59 (H-4): local rate limit — 5 wrong guesses lock this email's LOCAL
+  // login on this device for 15 minutes (same pattern as the student PIN
+  // lockout). Only a real account counts; an unknown email never locks
+  // anything. The lock never blocks a server login, only this local check.
+  if (a && loginLockUntil(id)) {
+    err.textContent = t('tPinLocked'); // text is generic ("too many wrong attempts"), not PIN-specific
+    err.classList.remove('hidden');
+    return false;
+  }
   var chk = verifyPw(pw, a);
   var ok = chk.ok;
   if (ok && chk.legacy) upgradePwHash(a, pw); // v36: old djb2 hash verifies, then upgrades to salted SHA-256 on this login
   if (!a || !ok) {
+    if (a) loginFailRecord(id);
     err.textContent = t('tInvalidCreds');
     err.classList.remove('hidden');
     return false;
   }
+  if (a) loginFailClear(id);
   err.classList.add('hidden');
   loginAs(a);
+  // v59 (H-2): this login ran on the local account because the server
+  // could not be reached — say so out loud instead of logging in
+  // silently with sync off.
+  if (offline) toast(t('sbOfflineLogin'));
   // v34 (P0-1): a school account that never got its server account (the
   // v27 signup was best-effort) is linked now, in the background, with
   // the password that just unlocked the local account.
@@ -5327,6 +5349,28 @@ function pinFailRecord(schoolUid, studentId) {
   m[k] = r; pinFailsSave(m); return r.lockedUntil;
 }
 function pinFailClear(schoolUid, studentId) { var m = pinFailsLoad(); var k = pinFailKey(schoolUid, studentId); if (m[k]) { delete m[k]; pinFailsSave(m); } }
+/* v59 (H-4): local rate limit on school/teacher password guesses — the
+   same pattern as the student PIN lockout above. 5 wrong attempts lock
+   that email's LOCAL login on this device for 15 minutes. The record
+   lives in localStorage, so it survives reloads — but clearing
+   localStorage resets it. This stops casual guessing, not a determined
+   local attacker with device access (stated honestly, per the triage).
+   It never blocks a server login: the lock only gates the local
+   password check in sbLocalLogin / doTeacherLogin. */
+var LOGIN_FAIL_KEY = 'schoolSaathiLoginFails';
+var LOGIN_MAX_FAILS = 5;
+var LOGIN_LOCK_MS = 15 * 60 * 1000;
+function loginFailKey(email) { return String(email || '').trim().toLowerCase(); }
+function loginFailsLoad() { try { var r = localStorage.getItem(LOGIN_FAIL_KEY); if (r) { var m = JSON.parse(r); if (m && typeof m === 'object') return m; } } catch (e) {} return {}; }
+function loginFailsSave(m) { try { localStorage.setItem(LOGIN_FAIL_KEY, JSON.stringify(m)); } catch (e) {} }
+function loginLockUntil(email) { var r = loginFailsLoad()[loginFailKey(email)]; if (r && r.lockedUntil && Date.now() < r.lockedUntil) return r.lockedUntil; return 0; }
+function loginFailRecord(email) {
+  var m = loginFailsLoad(); var k = loginFailKey(email); var r = m[k] || { n: 0, lockedUntil: 0 };
+  r.n++;
+  if (r.n >= LOGIN_MAX_FAILS) { r.lockedUntil = Date.now() + LOGIN_LOCK_MS; r.n = 0; }
+  m[k] = r; loginFailsSave(m); return r.lockedUntil;
+}
+function loginFailClear(email) { var m = loginFailsLoad(); var k = loginFailKey(email); if (m[k]) { delete m[k]; loginFailsSave(m); } }
 function doStudentLogin(e) {
   e.preventDefault();
   var adm = $('studentAdmNo').value.trim();
@@ -5373,14 +5417,24 @@ function doTeacherLogin(e) {
   // Local-only login (v35): teacher accounts live in schoolSaathiAccounts
   // on this device, with no server account — no Supabase attempt.
   var a = findAccount(id);
+  // v59 (H-4): same device-local rate limit as the school login — 5 wrong
+  // guesses lock this email's local login on this device for 15 minutes.
+  // Only a real account counts; an unknown email never locks anything.
+  if (a && loginLockUntil(id)) {
+    err.textContent = t('tPinLocked'); // text is generic ("too many wrong attempts"), not PIN-specific
+    err.classList.remove('hidden');
+    return false;
+  }
   var chk = verifyPw(pw, a);
   var ok = a && a.role === 'teacher' && !!a.pwHash && chk.ok;
   if (ok && chk.legacy) upgradePwHash(a, pw); // v36: old djb2 hash verifies, then upgrades to salted SHA-256 on this login
   if (!ok) {
+    if (a) loginFailRecord(id);
     err.textContent = t('tInvalidCreds');
     err.classList.remove('hidden');
     return false;
   }
+  if (a) loginFailClear(id);
   // The teacher opens the SCHOOL's DB — if it is not on this device
   // there is nothing to open (loginAs would seed a demo DB instead).
   if (!readDbByKey(dbKeyFor(a))) {
@@ -5453,34 +5507,40 @@ function doLogin(e) {
     return false;
   }
   if (sbIsOnline()) {
-    // Server first when we can reach it; the device account is the fallback
-    // (offline, or the server says the password is wrong there).
+    // Server first when we can reach it. The device account is the
+    // fallback ONLY when the server cannot be reached at all (a network
+    // failure, .catch below). A server answer that rejects these
+    // credentials never falls back to the local account (v59 H-2).
     // NOTE: this returns false synchronously — the promise chain runs in the
     // background. Never return the promise: onsubmit treats a truthy
     // return as "submit the form" and the page would reload.
     sbSignIn(id, pw).then(function (res) {
       if (res.ok && res.data && res.data.access_token) { sbFinishSupabaseLogin(res.data, id, pw); return; }
-      // v34 (P1-4): the server is reachable and REJECTED these
+      // v59 (H-2): the server is reachable and did NOT accept these
       // credentials. For an account that already has a server account
-      // (sbUid), a 400 means the password is wrong — do NOT fall back to
-      // the local account silently, or sync stays off without the user
-      // knowing. Fall back only for local-only accounts (which have no
-      // server account for the server to check) and for network errors.
-      var acct = findAccount(id);
-      if (acct && acct.sbUid && res.status === 400) {
-        err.textContent = t('tWrongPasswordServer');
-        err.classList.remove('hidden');
-        return;
-      }
-      if (acct && acct.sbUid && res.status === 429) {
+      // (sbUid) this was already the rule (v34 P1-4) — now it holds for
+      // every account, local-only ones included: a password changed or
+      // revoked on the server must not still log in locally with sync
+      // silently off. Fall back only on a proven network failure (the
+      // .catch below). A local-only account whose server signup never
+      // completed sees this error while online; it can still log in
+      // offline and link from Settings → Server Backup.
+      if (res.status === 429) {
         err.textContent = t('sbTooMany');
         err.classList.remove('hidden');
         return;
       }
-      sbLocalLogin(id, pw, err);
-    }).catch(function () { sbLocalLogin(id, pw, err); });
+      if (res.status === 400) {
+        err.textContent = t('tWrongPasswordServer');
+        err.classList.remove('hidden');
+        return;
+      }
+      err.textContent = t('tInvalidCreds');
+      err.classList.remove('hidden');
+      return;
+    }).catch(function () { sbLocalLogin(id, pw, err, true); });
   } else {
-    sbLocalLogin(id, pw, err);
+    sbLocalLogin(id, pw, err, true);
   }
   return false;
 }
