@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 51;
+var APP_VERSION = 52;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -823,17 +823,31 @@ function sbFlattenAttendance(d) {
   });
   return out;
 }
+function sbCountUnique(arr, keyFn) {
+  // v52: the migration verify counts what the server can hold — one row
+  // per dedupe key. A legacy local DB can hold two rows for one id
+  // (the v46 double-POST), and counting both made the verify fail
+  // forever ("ss_fee_records 3/6") even when every unique row had
+  // uploaded. Rows without a key cannot be on the server and count 0.
+  var seen = {}, n = 0;
+  (arr || []).forEach(function (r) { var k = keyFn(r); if (k === undefined || k === null || k === '') return; if (!seen[k]) { seen[k] = true; n++; } });
+  return n;
+}
 function sbLocalCounts(d) {
-  return { students: (d.students || []).length, feeRecords: (d.feeRecords || []).length,
-    feeStructure: (d.feeStructure || []).length, attendance: sbFlattenAttendance(d).length,
+  return { students: sbCountUnique(d.students, function (s) { return s.id; }), feeRecords: sbCountUnique(d.feeRecords, function (r) { return r.id; }),
+    feeStructure: sbCountUnique(d.feeStructure, function (f) { return (f.cls || '') + '|' + (f.type || 'Tuition'); }), attendance: sbFlattenAttendance(d).length,
     // v39: only NUMBERED receipts count — a receipt saved offline has
     // no number yet and can never be on the server, so counting it
     // made the migration verify fail forever ("ss_receipts 0/1") even
     // when every numbered receipt had uploaded.
-    receipts: (d.receipts || []).filter(function (rc) { return !!rc.receiptNo; }).length, auditLog: (d.auditLog || []).length,
-    activities: (d.activities || []).length, teachers: (d.teachers || []).length,
-    exams: (d.exams || []).length, marks: (d.marks || []).length,
-    homework: (d.homework || []).length, notices: (d.notices || []).length };
+    receipts: sbCountUnique((d.receipts || []).filter(function (rc) { return !!rc.receiptNo; }), function (rc) { return rc.receiptNo; }),
+    auditLog: sbCountUnique(d.auditLog, function (a) { return sbNormTs(a.ts) + '|' + (a.actor || '') + '|' + (a.action || '') + '|' + (a.details || ''); }),
+    activities: sbCountUnique(d.activities, function (a) { return (a.title || '') + '|' + (a.sub || ''); }),
+    teachers: sbCountUnique(d.teachers, function (t) { return t.id; }),
+    exams: sbCountUnique(d.exams, function (e) { return e.id; }),
+    marks: sbCountUnique(d.marks, function (m) { return m.examId + '|' + m.studentId; }),
+    homework: sbCountUnique(d.homework, function (h) { return h.id; }),
+    notices: sbCountUnique(d.notices, function (n) { return n.id; }) };
 }
 function sbLocalCountsReal(d) {
   // v45: the migration guard + verification count only REAL rows.
@@ -843,16 +857,17 @@ function sbLocalCountsReal(d) {
   // pull never ran, the seed never dropped locally, and the cycle never
   // completed (live v44: the flooded device stayed unsynced). Fee
   // structure / audit / activities have no seed rows and count as-is.
-  function real(table, arr) { return (arr || []).filter(function (r) { return !sbIsSeedRow(table, r, d); }).length; }
+  function real(table, arr) { return sbCountUnique((arr || []).filter(function (r) { return !sbIsSeedRow(table, r, d); }), function (r) { return r.id; }); }
   return { students: real('ss_students', d.students), feeRecords: real('ss_fee_records', d.feeRecords),
-    feeStructure: (d.feeStructure || []).length,
+    feeStructure: sbCountUnique(d.feeStructure, function (f) { return (f.cls || '') + '|' + (f.type || 'Tuition'); }),
     attendance: sbFlattenAttendance(d).filter(function (a) { return !sbIsSeedStudentId(a.studentId, d); }).length,
     // v39: only NUMBERED receipts count — a receipt saved offline has
     // no number yet and can never be on the server.
-    receipts: (d.receipts || []).filter(function (rc) { return !!rc.receiptNo && !sbIsSeedStudentId(rc.studentId, d); }).length,
-    auditLog: (d.auditLog || []).length, activities: (d.activities || []).length,
+    receipts: sbCountUnique((d.receipts || []).filter(function (rc) { return !!rc.receiptNo && !sbIsSeedStudentId(rc.studentId, d); }), function (rc) { return rc.receiptNo; }),
+    auditLog: sbCountUnique(d.auditLog, function (a) { return sbNormTs(a.ts) + '|' + (a.actor || '') + '|' + (a.action || '') + '|' + (a.details || ''); }),
+    activities: sbCountUnique(d.activities, function (a) { return (a.title || '') + '|' + (a.sub || ''); }),
     teachers: real('ss_teachers', d.teachers), exams: real('ss_exams', d.exams),
-    marks: (d.marks || []).filter(function (m) { return !sbIsSeedExamId(m.examId, d) && !sbIsSeedStudentId(m.studentId, d); }).length,
+    marks: sbCountUnique((d.marks || []).filter(function (m) { return !sbIsSeedExamId(m.examId, d) && !sbIsSeedStudentId(m.studentId, d); }), function (m) { return m.examId + '|' + m.studentId; }),
     homework: real('ss_homework', d.homework), notices: real('ss_notices', d.notices) };
 }
 function sbNormTs(v) { return String(v || '').slice(0, 19); }
@@ -945,21 +960,24 @@ function sbVerifyCounts(token, schoolId, counts) {
     ['ss_exams', 'local_id', counts.exams], ['ss_marks', 'exam_id', counts.marks],
     ['ss_homework', 'local_id', counts.homework], ['ss_notices', 'local_id', counts.notices]
   ];
-  var chain = Promise.resolve({ ok: true, detail: '' });
-  checks.forEach(function (c) {
-    chain = chain.then(function (acc) {
-      if (!acc.ok) return acc;
-      return sbRest('GET', c[0] + '?select=' + c[1] + '&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token).then(function (r) {
-        if (!r.ok) return { ok: false, detail: 'verify-' + c[0] };
-        var got = Array.isArray(r.data) ? r.data.length : 0;
-        // Server may hold MORE rows than this device (another device already
-        // migrated) — that is fine. Fewer means this upload did not land.
-        if (got < c[2]) return { ok: false, detail: c[0] + ' ' + got + '/' + c[2] };
-        return acc;
-      });
+  // v52: the 12 count checks ran as 12 SEQUENTIAL round-trips — the
+  // manual "Back Up Now" path spent most of its 90s+ stall here (and
+  // in the upload pass). The checks are independent reads, so they fire
+  // in one batch; the first failure is still reported in table order,
+  // exactly as before.
+  return Promise.all(checks.map(function (c) {
+    return sbRest('GET', c[0] + '?select=' + c[1] + '&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token).then(function (r) {
+      if (!r.ok) return { ok: false, detail: 'verify-' + c[0] };
+      var got = Array.isArray(r.data) ? r.data.length : 0;
+      // Server may hold MORE rows than this device (another device already
+      // migrated) — that is fine. Fewer means this upload did not land.
+      if (got < c[2]) return { ok: false, detail: c[0] + ' ' + got + '/' + c[2] };
+      return { ok: true, detail: '' };
     });
+  })).then(function (results) {
+    for (var i = 0; i < results.length; i++) if (!results[i].ok) return results[i];
+    return { ok: true, detail: '' };
   });
-  return chain;
 }
 /* v32: upload-missing pass — the core of the automatic sync. Every local
    row the server lacks goes up into the EXISTING server school row
@@ -1115,6 +1133,42 @@ function sbIsSeedProfile(d) {
   return anySeed('ss_students', d.students) || anySeed('ss_teachers', d.teachers) || anySeed('ss_exams', d.exams)
     || anySeed('ss_fee_records', d.feeRecords) || anySeed('ss_homework', d.homework) || anySeed('ss_notices', d.notices);
 }
+// v52: the parent ids a pending outbox entry still references. The
+// entry's own row carries the ids when present; otherwise the key is
+// parsed (attendance 'date|cls|studentId', marks 'examId|studentId';
+// a receipt resolves through the local receipt of that number). The
+// students/exams upload steps use this to decide whether a
+// snapshot-filtered parent must still upload — a parent the server
+// lacks but a pending child references is an unconfirmed upload, not
+// a delete elsewhere.
+function sbOutboxReferencedParents(sbUid, d) {
+  var students = {}, exams = {};
+  try {
+    (sbOutboxLoad(sbUid) || []).forEach(function (e) {
+      if (!e || e.op !== 'upsert') return;
+      var row = e.row || {};
+      if (e.table === 'ss_students' && e.key) students[e.key] = true;
+      if (e.table === 'ss_attendance') {
+        if (row.studentId) students[row.studentId] = true;
+        else if (e.key) { var p = String(e.key).split('|'); if (p[2]) students[p[2]] = true; }
+      }
+      if (e.table === 'ss_marks') {
+        if (row.studentId) students[row.studentId] = true;
+        if (row.examId) exams[row.examId] = true;
+        if (e.key) { var q = String(e.key).split('|'); if (q[0]) exams[q[0]] = true; if (q[1]) students[q[1]] = true; }
+      }
+      if (e.table === 'ss_fee_records' && row.studentId) students[row.studentId] = true;
+      if (e.table === 'ss_receipts') {
+        if (row.studentId) students[row.studentId] = true;
+        else if (e.key && d && d.receipts) {
+          var rc = (d.receipts || []).filter(function (x) { return x.receiptNo === e.key; })[0];
+          if (rc && rc.studentId) students[rc.studentId] = true;
+        }
+      }
+    });
+  } catch (err52) {}
+  return { students: students, exams: exams };
+}
 function sbSyncUploadMissing(account, sbUid, token) {
   if (sbMigPromise) return sbMigPromise;
   if (!account || account.role !== 'school') return Promise.resolve({ done: false, reason: 'not-school' });
@@ -1124,6 +1178,9 @@ function sbSyncUploadMissing(account, sbUid, token) {
   var byId = {};
   (d.students || []).forEach(function (s) { byId[s.id] = s; });
   var snap = sbSnapLoad(account.uid);
+  // v52: read once per pass — the outbox does not change while the
+  // upload runs (only the flush touches it, and it runs after).
+  var outboxParents52 = sbOutboxReferencedParents(sbUid, d);
   function notSynced(table, key) { return !(snap[table] && snap[table][key] !== undefined); }
   function freshRows(table, rows, keyFn) {
     return rows.filter(function (row) { return notSynced(table, keyFn(row)); });
@@ -1176,21 +1233,11 @@ function sbSyncUploadMissing(account, sbUid, token) {
   // survive a fresh device's empty profile), but the counters must
   // never go backwards either (offline admissions on this device).
   var serverHasStudents = false, serverAdmCounter = 1, serverReceiptCounter = 1;
-  sbMigPromise = sbEnsureServerSchool(account, sbUid, token, d).then(function (id) {
-    schoolId = id;
-    schoolRecreated = !!prevServerSchoolId && prevServerSchoolId !== schoolId;
-    if (!schoolId) throw new Error('no-school-id');
-    return Promise.all([
-      sbRest('GET', 'ss_students?select=id&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=1', token),
-      sbRest('GET', 'ss_schools?select=adm_counter,receipt_counter&id=eq.' + encodeURIComponent(schoolId), token)
-    ]);
-  }).then(function (res) {
-    serverHasStudents = !!(res[0].ok && Array.isArray(res[0].data) && res[0].data.length);
-    var row = (res[1].ok && Array.isArray(res[1].data) && res[1].data[0]) || null;
-    if (row) {
-      serverAdmCounter = row.adm_counter || 1;
-      serverReceiptCounter = row.receipt_counter || 1;
-    }
+  // v52: the 12 table steps, as named functions so the orchestration
+  // below can run them in two parallel phases instead of one long
+  // sequential chain. Bodies are unchanged from v51 except the
+  // students/exams steps, which carry the narrowed bypass (see there).
+  function stepFeeStructure() {
     return step('ss_fee_structure', function () {
       var fsRows = (d.feeStructure || []).map(function (f) { return sbMapFeeStructure(f, schoolId); });
       // v47: the bypass (see the note above step()).
@@ -1201,7 +1248,8 @@ function sbSyncUploadMissing(account, sbUid, token) {
         fsUpload,
         function (row) { return row.cls + '|' + row.fee_type; });
     });
-  }).then(function () {
+  }
+  function stepStudents() {
     return step('ss_students', function () {
       // v47: students deliberately KEEP the snapshot filter — they are
       // the anchor rows, and the filter is what implements the designed
@@ -1212,9 +1260,22 @@ function sbSyncUploadMissing(account, sbUid, token) {
       // row IS on the server; the v44 failure was the stored id map,
       // already fixed), and the onInserted GET below still fills stuMap
       // when nothing is fresh, so dependent rows keep resolving.
+      // v52: NARROWED bypass — a student the snapshot claims is synced
+      // but the server lacks still uploads when a pending outbox entry
+      // references it (itself, or a child attendance/mark/fee/receipt
+      // row). Without this the child entry keeps forever: the parent
+      // never uploads, the map never resolves, the flush never drains
+      // and the status stays pending (live v51 — the v51 fix only
+      // dropped entries whose local row is GONE; here the row exists).
+      // A student deleted on the server with NO pending reference
+      // still drops (v31): the bypass fires only on outbox evidence.
+      var stuBase = freshRows('ss_students', (d.students || []).filter(function (s) { return !s.numPending && !sbIsSeedRow('ss_students', s, d); }).map(function (s) { return sbMapStudent(s, schoolId); }),
+          function (row) { return row.local_id; });
+      (d.students || []).filter(function (s) { return !s.numPending && !sbIsSeedRow('ss_students', s, d) && outboxParents52.students[s.id]; }).map(function (s) { return sbMapStudent(s, schoolId); }).forEach(function (row) {
+        if (!stuBase.some(function (x) { return x.local_id === row.local_id; })) stuBase.push(row);
+      });
       return sbUploadMissing(token, schoolId, 'ss_students', 'local_id,id',
-        freshRows('ss_students', (d.students || []).filter(function (s) { return !s.numPending && !sbIsSeedRow('ss_students', s, d); }).map(function (s) { return sbMapStudent(s, schoolId); }),
-          function (row) { return row.local_id; }),
+        stuBase,
         function (row) { return row.local_id; },
         // v44: persist the id map too — the old code only kept it in
         // memory, so a row uploaded (or re-created) by this pass left
@@ -1222,7 +1283,8 @@ function sbSyncUploadMissing(account, sbUid, token) {
         // push trusted that stale id and 409'd on admission_no.
         function (rows) { rows.forEach(function (r) { if (r.local_id) { stuMap[r.local_id] = r.id; sbSrvIdSet(sbUid, 'ss_students', r.local_id, r.id); } }); });
     });
-  }).then(function () {
+  }
+  function stepTeachers() {
     return step('ss_teachers', function () {
       var teRows = (d.teachers || []).filter(function (te) { return !sbIsSeedRow('ss_teachers', te, d); }).map(function (te) { return sbMapTeacher(te, schoolId); });
       // v47: the bypass (see the note above step()).
@@ -1233,13 +1295,21 @@ function sbSyncUploadMissing(account, sbUid, token) {
         teUpload,
         function (row) { return row.local_id; });
     });
-  }).then(function () {
+  }
+  function stepExams() {
     return step('ss_exams', function () {
       var exRows = (d.exams || []).filter(function (e) { return !sbIsSeedRow('ss_exams', e, d); }).map(function (e) { return sbMapExam(e, schoolId); });
       // v47: the bypass (see the note above step()).
+      // v52: the same narrowed bypass as students — an exam the
+      // snapshot claims is synced but the server lacks still uploads
+      // when a pending marks entry references it, or the marks keep
+      // forever with it.
       var exUpload = schoolRecreated
         ? freshRows('ss_exams', exRows, function (row) { return row.local_id; })
         : exRows;
+      (d.exams || []).filter(function (e) { return !sbIsSeedRow('ss_exams', e, d) && outboxParents52.exams[e.id]; }).map(function (e) { return sbMapExam(e, schoolId); }).forEach(function (row) {
+        if (!exUpload.some(function (x) { return x.local_id === row.local_id; })) exUpload.push(row);
+      });
       return sbUploadMissing(token, schoolId, 'ss_exams', 'local_id,id',
         exUpload,
         function (row) { return row.local_id; },
@@ -1247,7 +1317,8 @@ function sbSyncUploadMissing(account, sbUid, token) {
         // pass must not leave a stale stored id behind.
         function (rows) { rows.forEach(function (r) { if (r.local_id) { examMap[r.local_id] = r.id; sbSrvIdSet(sbUid, 'ss_exams', r.local_id, r.id); } }); });
     });
-  }).then(function () {
+  }
+  function stepFeeRecords() {
     return step('ss_fee_records', function () {
       var feeRows = (d.feeRecords || []).filter(function (r) { return !sbIsSeedRow('ss_fee_records', r, d); }).map(function (r) { return sbMapFeeRecord(r, schoolId, stuMap); }).filter(function (p) { return !!p.student_id; });
       // v46: a fee record the server lacks uploads even when a stale
@@ -1267,7 +1338,8 @@ function sbSyncUploadMissing(account, sbUid, token) {
         feeUpload,
         function (row) { return row.local_id; });
     });
-  }).then(function () {
+  }
+  function stepAttendance() {
     return step('ss_attendance', function () {
       var attRows = sbFlattenAttendance(d).filter(function (a) { return !!stuMap[a.studentId] && !sbIsSeedStudentId(a.studentId, d); });
       // v47: THE fix — the v39/v46 bypass, applied here at last. The
@@ -1286,7 +1358,8 @@ function sbSyncUploadMissing(account, sbUid, token) {
       }),
         function (row) { return row.att_date + '|' + row.cls + '|' + row.student_id; });
     });
-  }).then(function () {
+  }
+  function stepReceipts() {
     return step('ss_receipts', function () {
       var rcRows = (d.receipts || []).filter(function (rc) { return !rc.numPending && !sbIsSeedStudentId(rc.studentId, d); }).map(function (rc) { return sbMapReceipt(rc, schoolId, stuMap, byId); }).filter(function (p) { return !!p.student_id; });
       // v39: a receipt the server lacks uploads even when a stale
@@ -1308,7 +1381,8 @@ function sbSyncUploadMissing(account, sbUid, token) {
       return sbUploadMissing(token, schoolId, 'ss_receipts', 'receipt_no', rcUpload,
         function (row) { return row.receipt_no; });
     });
-  }).then(function () {
+  }
+  function stepMarks() {
     return step('ss_marks', function () {
       var markRows = (d.marks || []).filter(function (m) { return examMap[m.examId] && stuMap[m.studentId] && !sbIsSeedExamId(m.examId, d) && !sbIsSeedStudentId(m.studentId, d); });
       // v47: the bypass (see the note above step()) — the marks step
@@ -1321,7 +1395,8 @@ function sbSyncUploadMissing(account, sbUid, token) {
       }),
         function (row) { return row.exam_id + '|' + row.student_id; });
     });
-  }).then(function () {
+  }
+  function stepHomework() {
     return step('ss_homework', function () {
       var hwRows = (d.homework || []).filter(function (h) { return !sbIsSeedRow('ss_homework', h, d); }).map(function (h) { return sbMapHomework(h, schoolId, stuMap); });
       // v47: the bypass (see the note above step()).
@@ -1332,7 +1407,8 @@ function sbSyncUploadMissing(account, sbUid, token) {
         hwUpload,
         function (row) { return row.local_id; });
     });
-  }).then(function () {
+  }
+  function stepNotices() {
     return step('ss_notices', function () {
       var nRows = (d.notices || []).filter(function (n) { return !sbIsSeedRow('ss_notices', n, d); }).map(function (n) { return sbMapNotice(n, schoolId); });
       // v47: the bypass (see the note above step()).
@@ -1343,7 +1419,8 @@ function sbSyncUploadMissing(account, sbUid, token) {
         nUpload,
         function (row) { return row.local_id; });
     });
-  }).then(function () {
+  }
+  function stepAuditLog() {
     return step('ss_audit_log', function () {
       var auRows = (d.auditLog || []).map(function (a) { return sbMapAudit(a, schoolId); });
       // v47: the bypass (see the note above step()).
@@ -1354,7 +1431,8 @@ function sbSyncUploadMissing(account, sbUid, token) {
         auUpload,
         function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; });
     });
-  }).then(function () {
+  }
+  function stepActivities() {
     return step('ss_activities', function () {
       var acRows = (d.activities || []).map(function (a) { return sbMapActivity(a, schoolId); });
       // v47: the bypass (see the note above step()).
@@ -1365,6 +1443,39 @@ function sbSyncUploadMissing(account, sbUid, token) {
         acUpload,
         function (row) { return row.title + '|' + row.sub; });
     });
+  }
+  sbMigPromise = sbEnsureServerSchool(account, sbUid, token, d).then(function (id) {
+    schoolId = id;
+    schoolRecreated = !!prevServerSchoolId && prevServerSchoolId !== schoolId;
+    if (!schoolId) throw new Error('no-school-id');
+    return Promise.all([
+      sbRest('GET', 'ss_students?select=id&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=1', token),
+      sbRest('GET', 'ss_schools?select=adm_counter,receipt_counter&id=eq.' + encodeURIComponent(schoolId), token)
+    ]);
+  }).then(function (res) {
+    serverHasStudents = !!(res[0].ok && Array.isArray(res[0].data) && res[0].data.length);
+    var row = (res[1].ok && Array.isArray(res[1].data) && res[1].data[0]) || null;
+    if (row) {
+      serverAdmCounter = row.adm_counter || 1;
+      serverReceiptCounter = row.receipt_counter || 1;
+    }
+    // v52: the 12 table steps ran SEQUENTIALLY — each step waited for
+    // the previous table's GET + POST before starting, so one upload
+    // pass was ~12 sequential round-trips (plus ensure + precheck) and
+    // one cycle was ~17 + 2E round-trips (E = outbox entries). At real
+    // browser→Supabase latency that is 60–120s: the 90s+ "Syncing…"
+    // stall (live v51). The steps split into two dependency phases —
+    // Phase A needs no id map (fee structure, students, teachers,
+    // exams, notices, audit log, activities) and Phase B needs the
+    // maps Phase A fills (fee records, attendance, receipts, marks,
+    // homework) — and each phase fires in one parallel batch, so the
+    // pass is ~2 round-trips of tables instead of ~12. The school-row
+    // PATCH stays last, after the tables. Per-table error handling is
+    // unchanged: step() still records a failure per table and the
+    // chain continues with the rest.
+    return Promise.all([stepFeeStructure(), stepStudents(), stepTeachers(), stepExams(), stepNotices(), stepAuditLog(), stepActivities()]);
+  }).then(function () {
+    return Promise.all([stepFeeRecords(), stepAttendance(), stepReceipts(), stepMarks(), stepHomework()]);
   }).then(function () {
     // School profile + counters, last in the chain so a failure here
     // can never block the table uploads. Two cases:
@@ -3772,9 +3883,24 @@ function nextReceiptNo(peek) {
   if (!peek) db.receiptCounter++;
   return n;
 }
+function feeRecordsDeduped() {
+  // v52: the local DB can hold two rows for one fee id (live: the v46
+  // verification double-POSTed each of the 3 collections, and a legacy
+  // pull merged 6 server rows into the local list). Every total, chart,
+  // list and export must sum the deduped view — first row per id wins,
+  // the same rule the pull's mergeById uses — so the first pre-pull
+  // render is already right (live v51: ₹4,800 on first login, ₹2,400
+  // after the pull deduped to 3).
+  var seen = {}, out = [];
+  (db.feeRecords || []).forEach(function (r) {
+    if (!r || !r.id || seen[r.id]) return;
+    seen[r.id] = true; out.push(r);
+  });
+  return out;
+}
 function feeTotals() {
   var c = 0, p = 0;
-  db.feeRecords.forEach(function (r) { if (r.status === 'Collected') c += r.amount; else p += r.amount; });
+  feeRecordsDeduped().forEach(function (r) { if (r.status === 'Collected') c += r.amount; else p += r.amount; });
   return { collected: c, pending: p };
 }
 function feeMonthsUsed() {
@@ -3798,7 +3924,7 @@ function feeChartData() {
   // Month-wise totals computed LIVE from feeRecords, not the static seed ledger.
   return feeMonthsUsed().map(function (m) {
     var c = 0, p = 0;
-    db.feeRecords.forEach(function (r) { if (r.month === m) { if (r.status === 'Collected') c += r.amount; else p += r.amount; } });
+    feeRecordsDeduped().forEach(function (r) { if (r.month === m) { if (r.status === 'Collected') c += r.amount; else p += r.amount; } });
     return { label: m, collected: c, pending: p };
   });
 }
@@ -3811,7 +3937,7 @@ function feeAllTypes() {
 }
 function feeTypeTotals() {
   var m = {};
-  db.feeRecords.forEach(function (r) {
+  feeRecordsDeduped().forEach(function (r) {
     var ty = feeTypeOf(r);
     if (!m[ty]) m[ty] = { collected: 0, pending: 0 };
     if (r.status === 'Collected') m[ty].collected += r.amount; else m[ty].pending += r.amount;
@@ -3833,7 +3959,7 @@ function refreshStudentFee(sid) {
 }
 function feeFiltered() {
   var q = state.feeSearch.toLowerCase(), f = state.feeFilter, ty = state.feeType;
-  return db.feeRecords.filter(function (r) {
+  return feeRecordsDeduped().filter(function (r) {
     if (f !== 'All' && r.status !== f) return false;
     if (ty !== 'All' && feeTypeOf(r) !== ty) return false;
     if (q) {
@@ -4036,7 +4162,7 @@ function onStuSearch(el) {
 function feeSummaryFor(sid) {
   var s = db.students.find(function (x) { return x.id === sid; });
   if (!s) return null;
-  var recs = db.feeRecords.filter(function (r) { return r.studentId === sid; })
+  var recs = feeRecordsDeduped().filter(function (r) { return r.studentId === sid; })
     .sort(function (a, b) { return (MONTH_NUM[a.month] || 99) - (MONTH_NUM[b.month] || 99) || (a.date < b.date ? -1 : a.date > b.date ? 1 : 0); });
   var billed = 0, paid = 0, pend = 0, byType = {};
   recs.forEach(function (r) {
@@ -7658,7 +7784,7 @@ function downloadReportCSV(kind) {
 }
 function feeCSVRows() {
   return [['Student', 'Enr', 'Class', 'Month', 'Type', 'Amount (INR)', 'Date', 'Status']]
-    .concat(db.feeRecords.map(function (r) { return [r.student, enrOf(r.studentId), r.cls, r.month, feeTypeOf(r), r.amount, r.date, r.status]; }));
+    .concat(feeRecordsDeduped().map(function (r) { return [r.student, enrOf(r.studentId), r.cls, r.month, feeTypeOf(r), r.amount, r.date, r.status]; }));
 }
 /* ================= Full backup & restore (v37, audit item 13) =================
    Export: the whole school DB as one JSON file. Restore: replaces the
