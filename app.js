@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 54;
+var APP_VERSION = 55;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -1647,8 +1647,8 @@ function sbRowToStudent(row) {
     previousSchool: row.previous_school || '', previousClass: row.previous_class || '',
     admissionNo: row.admission_no || '', admissionDate: row.admission_date || '',
     session: row.session || '', status: row.status || 'Active', result: (row.result === undefined || row.result === null) ? null : row.result,
-    parentPin: (row.parent_pin && String(row.parent_pin).indexOf('s256$') !== 0) ? row.parent_pin : null, // v54 (A1): a legacy plaintext PIN from the server is kept only until the loadDB migration hashes it
-    parentPinHash: (row.parent_pin && String(row.parent_pin).indexOf('s256$') === 0) ? row.parent_pin : null, // v54 (A1): the server column now carries the salted hash
+    parentPin: (row.parent_pin && String(row.parent_pin).indexOf('s256$') !== 0) ? row.parent_pin : undefined, // v55: no server PIN leaves the field UNDEFINED (never null) — a null used to land here and migrateV12 only refills `undefined`, so a null permanently killed the phone-derived PIN (live V21/2108 loss, v54)
+    parentPinHash: (row.parent_pin && String(row.parent_pin).indexOf('s256$') === 0) ? row.parent_pin : undefined, // v55: same — a hash arrives here, a missing PIN leaves the field unset
     photo: row.photo_data_url || null,
     documents: row.documents || { birthCert: false, tc: false, tcNumber: '', other: '' },
     aadhaar: aadhaarLast4(row.aadhaar) }; // v36: a full number from an old server row is reduced on pull too
@@ -1813,6 +1813,28 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   var stuMap = {}, examMap = {};
   var oldStudents = d.students || [];
   d.students = mergeById('ss_students', oldStudents, byTable.ss_students || [], function (row) { var s = sbRowToStudent(row); stuMap[row.id] = s.id; return s; });
+  // v55: merge-keep for the student PIN — a server row carrying no PIN
+  // must never wipe the local PIN/hash. The pull replaces the row
+  // wholesale (server wins), so when the server has no parent_pin,
+  // restore the local PIN fields from the pre-merge row (same class as
+  // the v47 merge-keeps). A cleared PIN (parentPin === '') stays
+  // cleared; a stripped record (null/undefined, no hash) is left for
+  // the v55 repair — the live V21/2108 loss was exactly this: the pull
+  // overwrote the local PIN with the server's null on every cycle.
+  (function () {
+    var srvPinById = {};
+    (byTable.ss_students || []).forEach(function (row) { if (row.parent_pin) srvPinById[row.local_id || ('srv-' + row.id)] = true; });
+    var oldById = {};
+    oldStudents.forEach(function (s) { oldById[s.id] = s; });
+    d.students.forEach(function (s) {
+      if (srvPinById[s.id]) return; // the server carries a PIN — server wins
+      var old = oldById[s.id];
+      if (!old) return;
+      if (old.parentPinHash) s.parentPinHash = old.parentPinHash;
+      else if (old.parentPin === '') s.parentPin = '';
+      else if (typeof old.parentPin === 'string' && old.parentPin) s.parentPin = old.parentPin;
+    });
+  })();
   d.teachers = mergeById('ss_teachers', d.teachers || [], byTable.ss_teachers || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [] }; });
   d.exams = mergeById('ss_exams', d.exams || [], byTable.ss_exams || [], function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; examMap[row.id] = e.id; return e; });
   d.feeRecords = mergeById('ss_fee_records', d.feeRecords || [], byTable.ss_fee_records || [], function (row) { return sbRowToFeeRecord(row, stuMap); });
@@ -3904,7 +3926,7 @@ function migrateV12(d) {
   // Phase 4 migration for existing v2 DBs: parent PINs + admission requests.
   // Idempotent; never changes existing values, amounts or statuses.
   (d.students || []).forEach(function (s) {
-    if (s.parentPin === undefined && !s.parentPinHash) s.parentPin = parentPinFromPhone(s.phone); // v54 (A1): never re-fill a plaintext PIN once the student already carries a hash — otherwise every load would re-hash with a fresh salt and the sync payload would churn on every login
+    if ((s.parentPin === undefined || s.parentPin === null) && !s.parentPinHash) s.parentPin = parentPinFromPhone(s.phone); // v54 (A1): never re-fill a plaintext PIN once the student already carries a hash — otherwise every load would re-hash with a fresh salt and the sync payload would churn on every login. v55: a null (left by an older pull that materialized the server's null — the live V21/2108 loss) is the same as "no PIN set yet" and refills from the phone, exactly like undefined. '' stays cleared: the admin deliberately removed the PIN.
   });
   if (!Array.isArray(d.admissionRequests)) d.admissionRequests = [];
   return d;
@@ -3920,6 +3942,24 @@ function migrateV54(d) {
   (d.students || []).forEach(function (s) {
     if (typeof s.parentPin === 'string' && s.parentPin && !s.parentPinHash) s.parentPinHash = hashPin(s.parentPin);
     if (s.parentPin) delete s.parentPin;
+  });
+  return d;
+}
+function migrateV55(d) {
+  // v55: one-time repair for the records v54 (and earlier pulls) stripped —
+  // no hash, parentPin null/undefined, phone present. Re-derive the legacy
+  // phone-derived PIN so the student can log in again; migrateV54 (the
+  // outer step) hashes it on the same pass. Idempotent: once a hash
+  // exists the record is untouched. '' is NOT repaired — it is the
+  // cleared-PIN sentinel and must stay cleared. (migrateV12 above now
+  // refills nulls too, so the repair also holds as a permanent guard;
+  // the two steps overlap deliberately — the repair names the incident,
+  // the guard keeps it from recurring.)
+  (d.students || []).forEach(function (s) {
+    if (!s.parentPinHash && (s.parentPin === undefined || s.parentPin === null)) {
+      var pin = parentPinFromPhone(s.phone);
+      if (pin) s.parentPin = pin;
+    }
   });
   return d;
 }
@@ -3976,7 +4016,7 @@ function loadDB(override) {
     var raw = localStorage.getItem(DB_KEY);
     if (raw) {
       var d = JSON.parse(raw);
-      if (d && d.v === 2) { var m = migrateV54(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))))))); saveDB(m); return m; }
+      if (d && d.v === 2) { var m = migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))))); saveDB(m); return m; }
       // Unknown version: keep a backup, never wipe silently.
       try { localStorage.setItem(DB_KEY + '.bak', raw); } catch (e2) { /* ignore */ }
     }
@@ -5064,7 +5104,7 @@ function restoreSession() {
       var stuKey = 'schoolSaathiDB_' + (parts[1] || '');
       var stuDb = readDbByKey(stuKey);
       if (!stuDb) return false;
-      migrateV54(migrateV12(stuDb));
+      migrateV54(migrateV55(migrateV12(stuDb)));
       var stu = (stuDb.students || []).find(function (x) { return x.id === parts[2]; });
       if (stu && (stu.parentPinHash || stu.parentPin)) {
         DB_KEY = stuKey;
@@ -5135,7 +5175,7 @@ function findStudentByAdmNoInSchool(admNo, accountUid) {
   var key = dbKeyFor(a);
   var d = readDbByKey(key);
   if (!d) return null;
-  migrateV54(migrateV12(d));
+  migrateV54(migrateV55(migrateV12(d)));
   var found = null;
   (d.students || []).some(function (s) {
     if (String(s.admissionNo || '').trim().toLowerCase() === want) { found = { student: s, dbKey: key, db: d }; return true; }
@@ -8168,7 +8208,7 @@ function restoreFullBackup(obj) {
   var d = JSON.parse(JSON.stringify(obj.db));
   // Run the same migrations loadDB runs, so a backup from an older
   // build still lands in the current shape (a v37 backup is a no-op).
-  d = migrateV54(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))));
+  d = migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))))))));
   var counts = { students: d.students.length, teachers: d.teachers.length, feeRecords: d.feeRecords.length, exams: d.exams.length, marks: d.marks.length, homework: d.homework.length, notices: d.notices.length, receipts: d.receipts.length };
   db = d;
   // Server-linked schools: drop the stale outbox + snapshot so the next
