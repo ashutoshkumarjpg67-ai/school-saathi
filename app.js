@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 52;
+var APP_VERSION = 53;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
@@ -254,6 +254,7 @@ function sbAuthFetch(path, opts) {
 }
 function sbRest(method, path, token, body, prefer) {
   if (typeof fetch !== 'function') return Promise.reject(new Error('no-fetch'));
+  sbSyncRestCalls++; // v53 diag: one REST round-trip per sbRest call
   var headers = { 'apikey': SB_ANON_KEY, 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
   if (prefer) headers['Prefer'] = prefer;
   var init = { method: method, headers: headers };
@@ -355,6 +356,7 @@ function sbSetStatus(st, detail) {
       var txt43 = sbStatusText();
       var sl43 = document.getElementById('sbStatusLine'); if (sl43) sl43.textContent = txt43;
       var lg43 = document.getElementById('sbStatus'); if (lg43) lg43.textContent = txt43;
+      sbSyncDetailsRefresh(); // v53: keep the Settings sync-details section in step
     }
   } catch (e2) {}
 }
@@ -420,6 +422,49 @@ function sbStatusText() {
   if (st.state === 'failed') return t('sbStatusFailed') + (st.detail ? ' (' + String(st.detail).slice(0, 80) + ')' : '');
   if (st.state === 'offline') return sbIsOnline() ? t('sbStatusPending') : t('sbStatusOffline');
   return t('sbStatusPending');
+}
+function sbSyncDetailsHtml() {
+  // v53: the Settings "Sync details" section — display only, no
+  // behaviour change. The browser agent cannot run JS or read
+  // localStorage, so the next live verifier reads the outbox count,
+  // last cycle duration/result and the queued entries from this HTML.
+  // Everything is escaped; the queued list shows the first 10 entries
+  // as "table — key" plus "and N more".
+  var d = sbSyncDiagLoad();
+  var uid = (typeof state !== 'undefined' && state && state.sb && state.sb.uid) || null;
+  var out = uid ? sbOutboxLoad(uid) : [];
+  var lc = d.lastCycle || null, lf = d.lastFlush || null;
+  var h = '<div class="muted" style="margin-top:8px">' + esc(t('sbSyncDetailsTitle')) + '</div>';
+  h += '<div style="font-size:13px;line-height:1.7;margin-top:4px">';
+  h += '<div>' + esc(t('sbSyncPendingUploads')) + ': <b>' + out.length + '</b></div>';
+  if (lc) {
+    h += '<div>' + esc(t('sbSyncLastCycle')) + ': ' + esc(lc.result || '') + ' · ' + esc(lc.ms == null ? '' : (lc.ms / 1000).toFixed(1) + 's') + (lc.at ? ' · ' + esc(sbAtLabel(lc.at)) : '') + (lc.calls != null ? ' · ' + esc(String(lc.calls)) + ' ' + esc(t('sbSyncCalls')) : '') + '</div>';
+    if (lc.detail) h += '<div>' + esc(t('sbSyncLastError')) + ': ' + esc(String(lc.detail).slice(0, 120)) + '</div>';
+  } else {
+    h += '<div>' + esc(t('sbSyncLastCycle')) + ': —</div>';
+  }
+  if (lf) {
+    h += '<div>' + esc(t('sbSyncLastFlush')) + ': ' + esc(t('sbSyncPushed')) + ' ' + esc(String(lf.pushed || 0)) + ' · ' + esc(t('sbSyncConflicts')) + ' ' + esc(String(lf.conflicts || 0)) + ' · ' + esc(t('sbSyncLeftover')) + ' ' + esc(String(lf.leftover || 0)) + ' · ' + esc(lf.ms == null ? '' : (lf.ms / 1000).toFixed(1) + 's') + (lf.calls != null ? ' · ' + esc(String(lf.calls)) + ' ' + esc(t('sbSyncCalls')) : '') + '</div>';
+  }
+  if (out.length) {
+    h += '<div style="margin-top:4px">' + esc(t('sbSyncQueued')) + ':</div>';
+    out.slice(0, 10).forEach(function (e) { h += '<div>• ' + esc(e.table) + ' — ' + esc(String(e.key)) + (e.failReason ? ' (' + esc(String(e.failReason).slice(0, 60)) + ')' : '') + '</div>'; });
+    if (out.length > 10) h += '<div>… ' + esc(t('sbSyncAndMore').replace('{n}', String(out.length - 10))) + '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+function sbSyncDetailsRefresh() {
+  // v53: re-render the Settings details node after a diag write, so
+  // the section never lags one cycle behind. No-op when Settings is
+  // not the visible view (the node does not exist). Called from
+  // sbSetStatus and from both diag write sites.
+  try {
+    if (typeof document !== 'undefined' && document.getElementById) {
+      var el = document.getElementById('sbSyncDetails');
+      if (el) el.innerHTML = sbSyncDetailsHtml();
+    }
+  } catch (e) {}
 }
 function sbLoadMig(uid) {
   try { var r = localStorage.getItem(SB_MIGRATED_KEY + ':' + uid); return r ? JSON.parse(r) : null; } catch (e) { return null; }
@@ -1990,7 +2035,26 @@ function sbRetryDownload() {
    local row that has not reached the server is never wiped; the outbox
    keeps failed entries with their failure reason. Local-only accounts
    keep minting locally and make zero server calls. */
-var SB_OUTBOX_KEY = 'schoolSaathiOutbox'; // per Supabase uid: [{table,key,op,row,at}]
+var SB_OUTBOX_KEY = 'schoolSaathiOutbox';
+// v53: sync diagnostics, so the next live check can read the cycle's
+// real cost from the Settings page instead of guessing from the status
+// line. Written after every cycle and every flush; the browser agent
+// cannot run JS or read localStorage, so the Settings "Sync details"
+// section renders this record. sbSyncRestCalls counts REST round-trips
+// this page session (incremented in sbRest, below).
+var SB_SYNC_DIAG_KEY = 'schoolSaathiSyncDiag';
+var sbSyncRestCalls = 0;
+function sbSyncDiagLoad() {
+  try { var d = JSON.parse(localStorage.getItem(SB_SYNC_DIAG_KEY) || 'null'); return d && typeof d === 'object' ? d : {}; } catch (e) { return {}; }
+}
+function sbSyncDiagSave(d) {
+  try { localStorage.setItem(SB_SYNC_DIAG_KEY, JSON.stringify(d)); } catch (e) {}
+}
+function sbSyncDiagSet(patch) {
+  var d = sbSyncDiagLoad();
+  Object.keys(patch).forEach(function (k) { d[k] = patch[k]; });
+  sbSyncDiagSave(d);
+} // per Supabase uid: [{table,key,op,row,at}]
 var SB_SRVID_KEY = 'schoolSaathiSrvIds'; // per Supabase uid: {table: {localKey: serverUuid}}
 var SB_SNAP_KEY = 'schoolSaathiSyncSnap'; // per local account uid: {table: {key: hash}}
 var sbSyncPromise = null; // one sync run at a time (the lock)
@@ -2058,8 +2122,20 @@ function sbSyncResetMemory() {
    only from the Supabase login/boot paths). */
 var sbSyncIntervalMs = 30000;
 var sbSyncIntervalId = null;
-function sbSyncAutoTick() {
+function sbSyncBackgroundTick() {
+  // v53: background triggers (the 30s timer, online, tab visible,
+  // window focus) SKIP entirely when a cycle is already in flight or a
+  // follow-up is already queued — they never queue a second cycle
+  // behind the first. A cycle takes 60–75s live on a legacy outbox, so
+  // the 30s timer used to queue a follow-up behind every in-flight
+  // cycle and the status line showed "Syncing…" almost continuously.
+  // Manual Back Up Now and the post-save debounce keep the existing
+  // join/queue behaviour (explicit user work).
+  if (sbSyncPromise || sbSyncCyclePending) return;
   if (sbSyncActive() && sbIsOnline()) sbSyncCycle().catch(function () {});
+}
+function sbSyncAutoTick() {
+  sbSyncBackgroundTick();
 }
 function sbSyncAutoStart() {
   if (sbSyncIntervalId) return; // idempotent: one interval per session
@@ -2107,6 +2183,101 @@ function sbSyncSchoolPayloadFromParts(profile, feeExtras, admCounter, receiptCou
 }
 function sbSyncSchoolPayload(d) {
   return sbSyncSchoolPayloadFromParts(d.profile, d.feeExtras, d.admCounter, d.receiptCounter);
+}
+// v53: is the payload already on the server, field for field? A legacy
+// outbox holds entries whose rows landed on the server in an earlier
+// session (the flush never drained them), so every cycle re-PATCHed
+// them — one GET + one PATCH per entry, per cycle, forever. When the
+// server row already carries this exact content the entry resolves
+// WITHOUT a write. Only used with a full server row (the batched
+// select=* fetch); the partial find rows (id/updated_at only) can
+// never prove identity, so they skip this check and PATCH as before.
+// Normalisation: null/undefined/'' are equal; numbers equal numeric
+// strings; arrays/objects compare by JSON; id/updated_at/created_at
+// are skipped. Any doubt returns false (PATCH) — never skip a write
+// on an uncertain comparison.
+function sbSyncSameValue(a, b) {
+  var na = (a === undefined || a === null || a === '') ? null : a;
+  var nb = (b === undefined || b === null || b === '') ? null : b;
+  if (na === null || nb === null) return na === nb;
+  if (typeof na === 'number' || typeof nb === 'number') {
+    var fa = Number(na), fb = Number(nb);
+    if (isFinite(fa) && isFinite(fb)) return fa === fb;
+    return String(na) === String(nb);
+  }
+  if (typeof na === 'object' || typeof nb === 'object') return JSON.stringify(na) === JSON.stringify(nb);
+  return String(na) === String(nb);
+}
+function sbSyncRowSameAsServer(payload, serverRow) {
+  if (!payload || !serverRow || typeof serverRow !== 'object') return false;
+  var keys = Object.keys(payload);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    if (k === 'id' || k === 'updated_at' || k === 'created_at' || k === 'school_id') continue;
+    if (!sbSyncSameValue(payload[k], serverRow[k])) return false;
+  }
+  return true;
+}
+// v53: the batched twin of sbSyncFindServerRow — look the entry up in
+// the per-table rows fetched once per flush pass (select=*) instead of
+// a GET per entry. Same lookup rules: stored server id first (with
+// fall-through when the row is gone), then the natural key, then the
+// v44 student admission_no/enr fallback (never for deletes, never for
+// seed rows). Returns the FULL server row, or null. A null here does
+// NOT mean "absent": the batch may be stale for rows created mid-pass,
+// so callers fall back to the live sbSyncFindServerRow.
+function sbSyncFindFromBatch(batch, table, entry, schoolId, maps, uid) {
+  if (!batch) return null;
+  var rows = batch[table] || [];
+  var known = sbSrvIdGet(uid, table, entry.key);
+  var found = null, i;
+  if (known) {
+    for (i = 0; i < rows.length; i++) { if (rows[i] && rows[i].id === known) { found = rows[i]; break; } }
+    if (found) return found;
+  }
+  if (table === 'ss_schools') {
+    for (i = 0; i < rows.length; i++) { if (rows[i] && rows[i].id === schoolId) return rows[i]; }
+    return null;
+  }
+  if (table === 'ss_audit_log' || table === 'ss_activities') return null; // dedupe handled by the log branch
+  if (table === 'ss_fee_structure') {
+    var p = entry.key.split('|');
+    for (i = 0; i < rows.length; i++) { if (rows[i] && rows[i].cls === p[0] && rows[i].fee_type === (p[1] || 'Tuition')) return rows[i]; }
+    return null;
+  }
+  if (table === 'ss_attendance') {
+    var a = entry.row;
+    var sid = a && maps.stu[a.studentId];
+    if (!sid) return null;
+    for (i = 0; i < rows.length; i++) { if (rows[i] && rows[i].att_date === a.date && rows[i].cls === a.cls && rows[i].student_id === sid) return rows[i]; }
+    return null;
+  }
+  if (table === 'ss_marks') {
+    var m = entry.row;
+    var eid = m && maps.exam[m.examId], sid2 = m && maps.stu[m.studentId];
+    if (!eid || !sid2) return null;
+    for (i = 0; i < rows.length; i++) { if (rows[i] && rows[i].exam_id === eid && rows[i].student_id === sid2) return rows[i]; }
+    return null;
+  }
+  if (table === 'ss_receipts') {
+    for (i = 0; i < rows.length; i++) { if (rows[i] && rows[i].receipt_no === entry.key) return rows[i]; }
+    return null;
+  }
+  for (i = 0; i < rows.length; i++) { if (rows[i] && rows[i].local_id === entry.key) { found = rows[i]; break; } }
+  if (found) return found;
+  if (table === 'ss_students' && entry.op !== 'delete') {
+    var row = entry.row || {};
+    if (sbIsSeedRow('ss_students', row)) return null;
+    var adm = row.admissionNo || row.admission_no || '';
+    var enr = row.enr || '';
+    if (adm) {
+      for (i = 0; i < rows.length; i++) { if (rows[i] && rows[i].admission_no === adm) { var ad = Object.assign({}, rows[i]); ad._adoptedByNaturalKey = true; return ad; } }
+    }
+    if (enr) {
+      for (i = 0; i < rows.length; i++) { if (rows[i] && rows[i].enr === enr) { var en = Object.assign({}, rows[i]); en._adoptedByNaturalKey = true; return en; } }
+    }
+  }
+  return null;
 }
 function sbSyncMapRow(table, row, schoolId, maps, d) {
   // Local row -> server payload. Foreign keys resolve through the id
@@ -2452,11 +2623,18 @@ function sbSyncFindStudentByNumber(entry, token, schoolId) {
     });
   });
 }
-function sbSyncPushEntry(entry, token, schoolId, maps, uid) {
+function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
   // Pushes ONE outbox entry. Returns {pushed, conflict, skipped, keep, hash}.
   // conflict: the server copy is newer — the entry is dropped and the
   // next pull restores the server version. keep: the row cannot be
   // pushed yet (a parent has no server id) — it stays queued.
+  // v53: batch is the per-table server rows fetched once per flush pass
+  // (select=*). When provided, the find runs in memory instead of a GET
+  // per entry, and a row whose content is already on the server
+  // resolves WITHOUT a write. When the batch has no row the live
+  // sbSyncFindServerRow still runs (a row created mid-pass is not in
+  // the batch). The 5-arg call shape is unchanged — the v51 harness
+  // tests call this directly without batch.
   // v45: a queued demo-seed entry is dropped as skipped, never pushed —
   // the live flood's outbox held one entry per seed row and the flush
   // POSTed them one by one for minutes. Skipped (not kept) so the
@@ -2464,7 +2642,9 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid) {
   var table = entry.table;
   if (sbIsSeedEntry(table, entry)) return Promise.resolve({ pushed: false, skipped: true });
   if (entry.op === 'delete') {
-    return sbSyncFindServerRow(table, entry, token, schoolId, maps, uid).then(function (row) {
+    var delRow = batch ? sbSyncFindFromBatch(batch, table, entry, schoolId, maps, uid) : null;
+    var delP = delRow ? Promise.resolve(delRow) : sbSyncFindServerRow(table, entry, token, schoolId, maps, uid);
+    return delP.then(function (row) {
       if (!row) return { pushed: false, skipped: true };
       return sbRest('DELETE', table + '?id=eq.' + encodeURIComponent(row.id), token, undefined, 'return=minimal').then(function (r) {
         if (!r.ok) throw new Error('delete-' + table + '-' + (r.status || 'fail'));
@@ -2479,6 +2659,17 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid) {
     var keyFn = table === 'ss_audit_log'
       ? function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; }
       : function (row) { return row.title + '|' + row.sub; };
+    // v53: with a batch, dedupe against the already-fetched rows — no
+    // GET per log entry — and POST only when the row is missing.
+    if (batch) {
+      var bRows53 = batch[table] || [];
+      var logKey53 = keyFn(logRow);
+      for (var li53 = 0; li53 < bRows53.length; li53++) { if (keyFn(bRows53[li53]) === logKey53) return Promise.resolve({ pushed: true, hash: JSON.stringify(logRow) }); }
+      return sbRest('POST', table, token, logRow, 'return=representation').then(function (r) {
+        if (!r.ok) throw new Error('post-' + table + '-' + (r.status || 'fail'));
+        return { pushed: true, hash: JSON.stringify(logRow) };
+      });
+    }
     return sbUploadMissing(token, schoolId, table, cols, [logRow], keyFn).then(function () {
       return { pushed: true, hash: JSON.stringify(logRow) };
     });
@@ -2486,8 +2677,14 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid) {
   // School row: PATCH by id (it always exists by the time we sync).
   if (table === 'ss_schools') {
     var payload = sbSyncSchoolPayloadFromParts(entry.row.profile, entry.row.feeExtras, entry.row.admCounter, entry.row.receiptCounter);
-    return sbSyncFindServerRow(table, entry, token, schoolId, maps, uid).then(function (row) {
+    var schRow = batch ? sbSyncFindFromBatch(batch, table, entry, schoolId, maps, uid) : null;
+    var schP = schRow ? Promise.resolve(schRow) : sbSyncFindServerRow(table, entry, token, schoolId, maps, uid);
+    return schP.then(function (row) {
       if (row && row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true };
+      // v53: the school row is re-queued on every profile/counter
+      // change, but its content is usually already on the server —
+      // skip the PATCH when the full batch row matches.
+      if (schRow && sbSyncRowSameAsServer(payload, schRow)) return { pushed: true, hash: JSON.stringify(payload) };
       return sbRest('PATCH', 'ss_schools?id=eq.' + encodeURIComponent(schoolId), token, payload, 'return=minimal').then(function (r) {
         if (!r.ok) throw new Error('patch-ss_schools-' + (r.status || 'fail'));
         return { pushed: true, hash: JSON.stringify(payload) };
@@ -2515,7 +2712,13 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid) {
     if (!sbSyncLocalRow(entry)) return Promise.resolve({ pushed: false, skipped: true });
     return Promise.resolve({ pushed: false, skipped: true, keep: true });
   }
-  return sbSyncFindServerRow(table, entry, token, schoolId, maps, uid).then(function (row) {
+  // v53: the batched find runs in memory when the row is in the pass
+  // batch; a batch miss falls back to the live find (a row created
+  // mid-pass is not in the batch). Only a batch row is a FULL row, so
+  // only it can prove the content is already on the server.
+  var batchRow53 = batch ? sbSyncFindFromBatch(batch, table, entry, schoolId, maps, uid) : null;
+  var findP53 = batchRow53 ? Promise.resolve(batchRow53) : sbSyncFindServerRow(table, entry, token, schoolId, maps, uid);
+  return findP53.then(function (row) {
     if (row) {
       // v33: a receipt found by number is only patched when its content
       // matches this receipt — same number, different receipt is a
@@ -2540,6 +2743,16 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid) {
       }
       // Last-write-wins: a newer server copy beats this local change.
       if (row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true };
+      // v53: identical content already on the server — resolve WITHOUT
+      // a PATCH. The receipt collision check above still runs first,
+      // so a same-number different receipt never resolves as
+      // identical. The id map is set exactly as the PATCH branch sets
+      // it, so the next pull/find sees the same server id.
+      if (batchRow53 && sbSyncRowSameAsServer(payload2, batchRow53)) {
+        sbSrvIdSet(uid, table, entry.key, batchRow53.id);
+        if (batchRow53._adoptedByNaturalKey && batchRow53.local_id) sbSrvIdSet(uid, table, batchRow53.local_id, batchRow53.id);
+        return { pushed: true, hash: JSON.stringify(payload2) };
+      }
       // v44: a student found by admission_no/enr (not by local_id) is
       // THIS student under a stale local id — PATCH it, but never send
       // local_id: overwriting the server row's local_id with the stale
@@ -2574,8 +2787,17 @@ function sbSyncFlushWithToken(act, tok) {
   // A failed entry stops the pass; the rest stays queued for the next
   // login / reconnect. Nothing is ever dropped except pushed, skipped
   // (already gone / superseded) and conflict (server wins) entries.
+  // v53: the pass is BATCHED — one select=* GET per table that has
+  // entries, all in parallel, then the entries' writes run in parallel
+  // chunks of 6. The old sequential shape cost 2 round-trips per entry
+  // (find GET + POST/PATCH): a legacy outbox of ~30 entries was ~60
+  // round-trips per pass, up to 3 passes — 45–75s at 250–400ms per
+  // round-trip, which is exactly the live v52 "Syncing…" minute. The
+  // batched pass costs ~1 round-trip for the finds + ~1 for the writes.
   var passes = 0;
   var pushedTotal = 0, conflicts = 0;
+  var flushT0 = Date.now();
+  var flushCalls0 = sbSyncRestCalls;
   function pass() {
     passes++;
     var outbox = sbOutboxLoad(act.uid);
@@ -2584,62 +2806,92 @@ function sbSyncFlushWithToken(act, tok) {
     var schoolId = (sbServerSchoolMap()[act.account.uid]) || null;
     if (!schoolId) return Promise.resolve({ done: false, reason: 'no-server-school' });
     var maps = sbSyncBuildMaps(db, act.uid);
-    var chain = Promise.resolve();
-    var pushedThisPass = 0;
-    var currentEntry = null; // the entry being pushed when a throw happens
-    outbox.forEach(function (entry) {
-      chain = chain.then(function () {
-        // The row vanished locally since it was queued and its table
-        // never propagates deletes: drop the stale entry (the next pull
-        // restores the row from the server). v34 (P1-1): the entry's own
-        // queued copy is good enough — a pull that wiped the local row
-        // (e.g. an upload failure) must NOT also drop the queued entry
-        // that would have re-uploaded it.
-        if (entry.op === 'upsert' && !sbSyncLocalRow(entry) && !entry.row) { sbOutboxRemove(act.uid, entry); return; }
-        currentEntry = entry;
-        return sbSyncPushEntry(entry, tok, schoolId, maps, act.uid).then(function (r) {
-          if (r.pushed) {
-            pushedThisPass++; pushedTotal++;
-            if (r.hash) sbSyncSnapSet(act.account.uid, entry.table, entry.key, r.hash);
-            if (entry.op === 'delete') sbSyncSnapDelete(act.account.uid, entry.table, entry.key);
-            sbOutboxRemove(act.uid, entry);
-            maps = sbSyncBuildMaps(db, act.uid); // fresh ids for the next entry
-          } else if (r.conflict) {
-            conflicts++;
-            sbSyncSnapSetFromLocalRow(act.account.uid, entry, schoolId, maps);
-            sbOutboxRemove(act.uid, entry);
-          } else if (r.skipped && !r.keep) {
-            sbOutboxRemove(act.uid, entry);
-          }
+    // One find GET per table, in parallel — the batch for this pass.
+    var tables53 = [];
+    outbox.forEach(function (e) { if (tables53.indexOf(e.table) === -1) tables53.push(e.table); });
+    return Promise.all(tables53.map(function (tb) {
+      return sbRest('GET', tb + '?select=*&school_id=eq.' + encodeURIComponent(schoolId), tok).then(function (r) {
+        return { table: tb, rows: (r.ok && Array.isArray(r.data)) ? r.data : [] };
+      });
+    })).then(function (fetched) {
+      var batch = {};
+      fetched.forEach(function (f) { batch[f.table] = f.rows; });
+      var pushedThisPass = 0;
+      var failed53 = null; // first failed entry: stops later chunks
+      var chunks53 = [];
+      for (var ci53 = 0; ci53 < outbox.length; ci53 += 6) chunks53.push(outbox.slice(ci53, ci53 + 6));
+      var chain = Promise.resolve();
+      chunks53.forEach(function (chunk) {
+        chain = chain.then(function () {
+          if (failed53) return; // a failure in an earlier chunk stops the pass
+          return Promise.all(chunk.map(function (entry) {
+            // The row vanished locally since it was queued and its table
+            // never propagates deletes: drop the stale entry (the next pull
+            // restores the row from the server). v34 (P1-1): the entry's own
+            // queued copy is good enough — a pull that wiped the local row
+            // (e.g. an upload failure) must NOT also drop the queued entry
+            // that would have re-uploaded it.
+            if (entry.op === 'upsert' && !sbSyncLocalRow(entry) && !entry.row) { sbOutboxRemove(act.uid, entry); return null; }
+            return sbSyncPushEntry(entry, tok, schoolId, maps, act.uid, batch).then(function (r) {
+              return { entry: entry, r: r };
+            }).catch(function (err) {
+              return { entry: entry, err: err };
+            });
+          })).then(function (chunkResults) {
+            chunkResults.forEach(function (cr) {
+              if (!cr) return;
+              if (cr.err) { if (!failed53) failed53 = cr; return; }
+              var r = cr.r, entry = cr.entry;
+              if (r.pushed) {
+                pushedThisPass++; pushedTotal++;
+                if (r.hash) sbSyncSnapSet(act.account.uid, entry.table, entry.key, r.hash);
+                if (entry.op === 'delete') sbSyncSnapDelete(act.account.uid, entry.table, entry.key);
+                sbOutboxRemove(act.uid, entry);
+                maps = sbSyncBuildMaps(db, act.uid); // fresh ids for the next chunk
+              } else if (r.conflict) {
+                conflicts++;
+                sbSyncSnapSetFromLocalRow(act.account.uid, entry, schoolId, maps);
+                sbOutboxRemove(act.uid, entry);
+              } else if (r.skipped && !r.keep) {
+                sbOutboxRemove(act.uid, entry);
+              }
+            });
+          });
         });
       });
-    });
-    return chain.then(function () {
-      currentEntry = null; // anything thrown after this point is not a push failure
-      if (!pushedThisPass && !conflicts) return { done: true, pushed: pushedTotal, conflicts: conflicts };
-      // New rows may have become mappable: re-diff and loop.
-      var n = sbSyncQueueDiff();
-      if (n) return pass();
-      return { done: true, pushed: pushedTotal, conflicts: conflicts };
-    }).catch(function (err) {
-      // v33: the failed entry stays queued WITH the reason, so a local
-      // row is never silently lost and the next cycle can repair it
-      // (e.g. a 409 unique-constraint failure on a colliding number).
-      if (currentEntry) {
-        var list = sbOutboxLoad(act.uid);
-        list.forEach(function (e2) { if (e2.table === currentEntry.table && e2.key === currentEntry.key) e2.failReason = (err && err.message) || 'error'; });
-        sbOutboxSave(act.uid, list);
-      }
-      return { done: false, reason: 'error', detail: (err && err.message) || 'error', pushed: pushedTotal };
+      return chain.then(function () {
+        if (failed53) {
+          // v33: the failed entry stays queued WITH the reason, so a local
+          // row is never silently lost and the next cycle can repair it
+          // (e.g. a 409 unique-constraint failure on a colliding number).
+          var list = sbOutboxLoad(act.uid);
+          list.forEach(function (e2) { if (e2.table === failed53.entry.table && e2.key === failed53.entry.key) e2.failReason = (failed53.err && failed53.err.message) || 'error'; });
+          sbOutboxSave(act.uid, list);
+          return { done: false, reason: 'error', detail: (failed53.err && failed53.err.message) || 'error', pushed: pushedTotal };
+        }
+        if (!pushedThisPass && !conflicts) return { done: true, pushed: pushedTotal, conflicts: conflicts };
+        // New rows may have become mappable: re-diff and loop.
+        var n = sbSyncQueueDiff();
+        if (n) return pass();
+        return { done: true, pushed: pushedTotal, conflicts: conflicts };
+      });
+    }).catch(function (err53) {
+      // A batch GET (or the re-diff) failed: the outbox stays queued and
+      // the cycle reports the failure, exactly like the old sequential
+      // pass's catch. Nothing is dropped.
+      return { done: false, reason: 'error', detail: (err53 && err53.message) || 'error', pushed: pushedTotal };
     });
   }
   return pass().then(function (r) {
+    var left = sbOutboxLoad(act.uid).length;
     if (r.done) {
-      var left = sbOutboxLoad(act.uid).length;
       sbSetStatus(left ? 'pending' : 'synced');
     } else {
       sbSetStatus('failed', r.detail || '');
     }
+    // v53 diag: the flush's real cost, read by Settings "Sync details".
+    sbSyncDiagSet({ lastFlush: { at: new Date().toISOString(), ms: Date.now() - flushT0, pushed: r.pushed || 0, conflicts: r.conflicts || 0, leftover: left, calls: sbSyncRestCalls - flushCalls0 } });
+    sbSyncDetailsRefresh();
     return r;
   });
 }
@@ -3143,6 +3395,8 @@ function sbSyncCycleRun(account, sbUid, token) {
   // guarantees local rows land on the server before the server-wins
   // pull can see them; the pull then brings them back into the mirror
   // and picks up other devices' changes; the flush pushes the outbox.
+  var cycleT0 = Date.now(); // v53 diag: the cycle's wall-time + REST calls
+  var cycleCalls0 = sbSyncRestCalls;
   var act = sbSyncActive();
   if (!act) return Promise.resolve({ done: false, reason: 'no-session' });
   account = account || act.account;
@@ -3237,6 +3491,11 @@ function sbSyncCycleRun(account, sbUid, token) {
       try { sbFlushSupportQueue().catch(function () {}); } catch (e) {}
       try { sbFlushAdmReqQueue().catch(function () {}); } catch (e) {}
     }
+    // v53 diag: the cycle's real cost, read by Settings "Sync details".
+    // sbLoadStatus() is read here (not sbSetStatus's node update) so
+    // the record survives a logout and the next verifier can read it.
+    sbSyncDiagSet({ lastCycle: { at: new Date().toISOString(), ms: Date.now() - cycleT0, result: r.done ? 'synced' : ('failed: ' + (r.reason || r.detail || 'error')), detail: r.detail || '', outbox: sbOutboxLoad(sbUid).length, calls: sbSyncRestCalls - cycleCalls0 } });
+    sbSyncDetailsRefresh();
     return r;
   });
 }
@@ -4650,7 +4909,7 @@ var I18N = {
     idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.',
     authStudent: 'Student', authTeacher: 'Teacher', stuAdmNo: 'Admission Number', stuPinLabel: 'Student PIN', stuLoginBtn: 'Login as Student', stuNote: 'Student login uses the PIN set by the school. Ask your school if you do not know it.', stuSub: 'Student', stuDashboard: 'My Profile', tInvalidStudent: 'Invalid admission number or PIN.', stuPinField: 'Student login PIN (optional)', stuPinPh: 'Leave blank — a random PIN is generated', stuPinTitle: 'Student PIN', stuPinNow: 'Current Student PIN', stuPinNone: 'No PIN set — student login unavailable for this student.', stuPinNew: 'New PIN (4–6 digits)', stuPinSetBtn: 'Set PIN', stuPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Student PIN set.', tPinShown: 'Student PIN: ', tPinCleared: 'Student PIN cleared.', tPinAuto: 'The PIN is set by the school at admission. If the student forgets it, set a new one here.', tNotAllowed: 'Your login cannot open this section.', tOwnProfileOnly: 'You can only view your own profile.', todayW: 'Today', tchrLoginBtn: 'Login as Teacher', tchrNote: 'Teacher accounts are created by the school admin.', tchrSub: 'Teacher', tchrDashboard: 'Teacher Dashboard', tchrNoDb: 'School data is not on this device — log in on the school device first.', teachers: 'Teachers', teachersSub: 'Teacher accounts and the classes they teach.', tchrAdd: 'Add Teacher', tchrEdit: 'Edit Teacher', tchrName: 'Teacher Name', tchrSubject: 'Subject', tchrClasses: 'Classes Taught', tchrEmail: 'Email', tchrPw: 'Password', tchrPwHint: 'At least 6 characters. Leave blank to keep the current password.', tchrNoLogin: 'No login', tchrSaved: 'Teacher saved.', tchrNoClasses: 'Choose at least one class.', tchrEmailTaken: 'This email is already used by another account.', tchrMyClasses: 'My Classes', tchrStudents: 'Students in my classes', tchrNoClassesYet: 'No classes assigned yet — ask the school admin to assign classes.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
     collectFeeBtn: 'Collect Fee', rcptTitle: 'FEE RECEIPT', rcptReceiptNo: 'Receipt No', rcptDate: 'Date', rcptAdmNo: 'Adm No', rcptSession: 'Session', rcptName: 'Name', rcptClass: 'Class', rcptInstallment: 'Installment', rcptCounter: 'Counter No', rcptSlNo: 'Sl.No', rcptDesc: 'Description', rcptDue: 'Due', rcptCon: 'Con', rcptPaid: 'Paid', rcptAdmissionFee: 'Admission Fee', rcptTuitionFee: 'Tuition Fee', rcptCaution: 'Caution Money', rcptAnnual: 'Annual Charges', rcptBusFee: 'Bus Fee', rcptDues: 'Dues', rcptPayModeTitle: 'PAY MODE INFORMATION', rcptPayMode: 'Pay Mode', rcptBank: 'Bank', rcptNumber: 'Number', rcptTotal: 'Total', rcptTotalWords: 'Total in Words', rcptComputerGen: 'This is a computer generated Receipt. Does not required signature.', rcptParentCopy: 'PARENT COPY', rcptCollectorSign: 'Collector\'s Signature', rcptIncludeBus: 'Include Bus/Transport', rcptOtherFees: 'Other Fees', rcptAnnualHint: 'One-time and annual amounts used on the Collect Fee receipt. Set 0 to hide a row.', payModeCash: 'Cash', payModeCheque: 'Cheque', payModeUpi: 'UPI', payModeCard: 'Card', payModeBank: 'Bank Transfer', tFeeCollected: 'Fee collected.', tCollectZero: 'Nothing to collect — enter a Paid amount.', tCollectSaved: 'Fee collected — Receipt ', tCollectNotActive: 'This student is not active — fee cannot be collected.', rcptReceipts: 'Receipts', rcptView: 'View', rcptPrint: 'Print / Save PDF', rcptCollectAgain: 'Collect Again', rcptNoReceipts: 'No receipts yet for this student.', rcptDraft: 'Draft — not saved yet', rcptCollectSave: 'Collect & Save', rcptNoLines: 'Nothing to collect for this period — set the fee amounts in Fee Structure first.',
-    sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbLastAttempt: 'Last attempt', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.', sbStatusSyncing: 'Syncing with the server…', sbStatusPendingSync: 'Offline — changes will sync when you are back online.', sbSyncDone: 'Synced with the server.', sbSyncFailed: 'Sync did not finish — it will retry on your next login.', sbSyncOffline: 'Offline — your changes are saved here and will sync later.', sbSyncConflict: 'Server had a newer copy — kept the server version.', sbNumPending: 'Admission saved. The admission number will be assigned when you are back online.', sbNumPendingReceipt: 'Fee saved. The receipt number will be assigned when you are back online.', sbStatusSessionExpired: 'Session expired — please log in again.', sbStatusNotLinked: 'Not linked to the server yet — it will link when you log in.', sbLinkServer: 'Link to Server', sbLinkDone: 'Server account linked.', sbLinkFailed: 'Could not link the server account — check your connection and try again.', sbLinkPwTitle: 'Link the server account', sbNumAssigning: 'Assigning number…', tWrongPasswordServer: 'Wrong password for the server account.', tCollectCapped: 'The paid amount was more than the due — only the due amount was taken.', resetPwHintServer: 'This deletes the data on THIS device only. The server copy will come back on the next sync unless you also wipe the server.', resetConfirmMsgServer: 'Delete this device’s data only? The server copy will return on the next sync — choose “Delete on server too” to remove it everywhere.', resetDeviceOnly: 'This device only', resetWipeServerBtn: 'Delete on server too', resetWipeServerDone: 'Server data deleted.', resetWipeServerFailed: 'Could not delete the server data — nothing was reset. Check your connection and try again.', supportQueued: 'Support request saved — it will be sent when you are back online.', admReqQueued: 'Application saved — it will be sent when you are back online.', admReqLoadingSchools: 'Loading schools…', attNotMarked: 'Not marked',
+    sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbLastAttempt: 'Last attempt', sbSyncDetailsTitle: 'Sync details', sbSyncPendingUploads: 'Pending uploads', sbSyncLastCycle: 'Last cycle', sbSyncLastFlush: 'Last flush', sbSyncLastError: 'Last error', sbSyncPushed: 'pushed', sbSyncConflicts: 'conflicts', sbSyncLeftover: 'left over', sbSyncCalls: 'calls', sbSyncQueued: 'Queued entries', sbSyncAndMore: 'and {n} more', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.', sbStatusSyncing: 'Syncing with the server…', sbStatusPendingSync: 'Offline — changes will sync when you are back online.', sbSyncDone: 'Synced with the server.', sbSyncFailed: 'Sync did not finish — it will retry on your next login.', sbSyncOffline: 'Offline — your changes are saved here and will sync later.', sbSyncConflict: 'Server had a newer copy — kept the server version.', sbNumPending: 'Admission saved. The admission number will be assigned when you are back online.', sbNumPendingReceipt: 'Fee saved. The receipt number will be assigned when you are back online.', sbStatusSessionExpired: 'Session expired — please log in again.', sbStatusNotLinked: 'Not linked to the server yet — it will link when you log in.', sbLinkServer: 'Link to Server', sbLinkDone: 'Server account linked.', sbLinkFailed: 'Could not link the server account — check your connection and try again.', sbLinkPwTitle: 'Link the server account', sbNumAssigning: 'Assigning number…', tWrongPasswordServer: 'Wrong password for the server account.', tCollectCapped: 'The paid amount was more than the due — only the due amount was taken.', resetPwHintServer: 'This deletes the data on THIS device only. The server copy will come back on the next sync unless you also wipe the server.', resetConfirmMsgServer: 'Delete this device’s data only? The server copy will return on the next sync — choose “Delete on server too” to remove it everywhere.', resetDeviceOnly: 'This device only', resetWipeServerBtn: 'Delete on server too', resetWipeServerDone: 'Server data deleted.', resetWipeServerFailed: 'Could not delete the server data — nothing was reset. Check your connection and try again.', supportQueued: 'Support request saved — it will be sent when you are back online.', admReqQueued: 'Application saved — it will be sent when you are back online.', admReqLoadingSchools: 'Loading schools…', attNotMarked: 'Not marked',
     createExam: 'Create Exam', examName: 'Exam Name', examTotal: 'Total Marks', tExamCreated: 'Exam created.', tExamInvalid: 'Please fill the exam name, class and total marks.', tNoTeachers: 'No teachers yet.',
     fullBackup: 'Full Backup & Restore', fullBackupSub: 'Download all school data as one file, or restore from a backup file. Restoring replaces the data on this device.', backupExport: 'Download Full Backup', backupImport: 'Restore from Backup File', tBackupExported: 'Full backup downloaded.', tBackupRestored: 'Backup restored.', tBackupBadFile: 'This file is not a valid School Saathi backup — nothing was changed.', backupRestoreConfirm: 'Restore will REPLACE all current data on this device with the backup file. A safety backup of your current data will be downloaded first.',
     sbStatusLocalOnly: 'Not linked to the server — your data stays on this device. Link to back up.',
@@ -4690,7 +4949,7 @@ var I18N = {
     sbNumPending: 'प्रवेश सहेजा गया। प्रवेश संख्या ऑनलाइन आने पर दी जाएगी।', sbNumPendingReceipt: 'शुल्क सहेजा गया। रसीद संख्या ऑनलाइन आने पर दी जाएगी।', sbStatusSessionExpired: 'सत्र समाप्त हो गया — कृपया दोबारा लॉग इन करें।', sbStatusNotLinked: 'अभी सर्वर से जुड़ा नहीं है — लॉग इन पर जुड़ जाएगा।', sbBackupDone: 'बैकअप पूरा हुआ।', sbBackupFailed: 'बैकअप पूरा नहीं हुआ — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkServer: 'सर्वर से जोड़ें', sbLinkDone: 'सर्वर अकाउंट जुड़ गया।', sbLinkFailed: 'सर्वर अकाउंट जुड़ा नहीं जा सका — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkPwTitle: 'सर्वर अकाउंट जोड़ें', sbNumAssigning: 'नंबर मिल रहा है…', tWrongPasswordServer: 'सर्वर अकाउंट के लिए पासवर्ड गलत है।', tCollectCapped: 'दी गई राशि बकाया से ज़्यादा थी — सिर्फ बकाया राशि ली गई।', resetPwHintServer: 'इससे सिर्फ इस डिवाइस का डेटा मिटेगा। सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी, जब तक आप सर्वर भी न मिटाएँ।', resetConfirmMsgServer: 'सिर्फ इस डिवाइस का डेटा मिटाएँ? सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी — हर जगह से मिटाने के लिए “सर्वर से भी मिटाएँ” चुनें।', resetDeviceOnly: 'सिर्फ यह डिवाइस', resetWipeServerBtn: 'सर्वर से भी मिटाएँ', resetWipeServerDone: 'सर्वर का डेटा मिट गया।', resetWipeServerFailed: 'सर्वर का डेटा मिटा नहीं जा सका — कुछ भी रीसेट नहीं हुआ। कनेक्शन जाँचकर फिर कोशिश करें।', supportQueued: 'सहायता अनुरोध सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqQueued: 'आवेदन सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqLoadingSchools: 'स्कूल लोड हो रहे हैं…', attNotMarked: 'दर्ज नहीं',
     createExam: 'परीक्षा बनाएँ', examName: 'परीक्षा का नाम', examTotal: 'कुल अंक', tExamCreated: 'परीक्षा बन गई।', tExamInvalid: 'कृपया परीक्षा का नाम, कक्षा और कुल अंक भरें।', tNoTeachers: 'अभी कोई शिक्षक नहीं है।',
     fullBackup: 'पूरा बैकअप और रिस्टोर', fullBackupSub: 'स्कूल का सारा डेटा एक फ़ाइल में डाउनलोड करें, या बैकअप फ़ाइल से वापस लाएँ। रिस्टोर करने से इस डिवाइस का डेटा बदल जाएगा।', backupExport: 'पूरा बैकअप डाउनलोड करें', backupImport: 'बैकअप फ़ाइल से रिस्टोर करें', tBackupExported: 'पूरा बैकअप डाउनलोड हो गया।', tBackupRestored: 'बैकअप रिस्टोर हो गया।', tBackupBadFile: 'यह फ़ाइल सही School Saathi बैकअप नहीं है — कुछ भी नहीं बदला।', backupRestoreConfirm: 'रिस्टोर करने से इस डिवाइस का मौजूदा सारा डेटा बैकअप फ़ाइल से बदल जाएगा। पहले आपके मौजूदा डेटा का सुरक्षा बैकअप डाउनलोड होगा।',
-    sbStatusLocalOnly: 'सर्वर से जुड़ा नहीं है — डेटा इसी डिवाइस पर है। बैकअप के लिए लिंक करें।', sbLastAttempt: 'अंतिम प्रयास',
+    sbStatusLocalOnly: 'सर्वर से जुड़ा नहीं है — डेटा इसी डिवाइस पर है। बैकअप के लिए लिंक करें।', sbLastAttempt: 'अंतिम प्रयास', sbSyncDetailsTitle: 'सिंक विवरण', sbSyncPendingUploads: 'बाकी अपलोड', sbSyncLastCycle: 'आखिरी साइकिल', sbSyncLastFlush: 'आखिरी फ्लश', sbSyncLastError: 'आखिरी गलती', sbSyncPushed: 'भेजे गए', sbSyncConflicts: 'टकराव', sbSyncLeftover: 'बचे हुए', sbSyncCalls: 'कॉल', sbSyncQueued: 'कतार में', sbSyncAndMore: 'और {n} और',
     waReminderBtn: 'WhatsApp रिमाइंडर', waNotifyBtn: 'अभिभावक को बताएं', waShareReceiptBtn: 'WhatsApp पर भेजें', waChatBtn: 'WhatsApp', waNotifyCol: 'सूचित करें',
     waNoNumber: 'इस छात्र का सही अभिभावक मोबाइल नंबर नहीं है — WhatsApp उपलब्ध नहीं है।',
     waOpened: 'WhatsApp खुल गया — संदेश भेजने के लिए WhatsApp में Send दबाएँ।',
@@ -7910,7 +8169,7 @@ function settingsPage() {
   '<p class="muted">' + t('logoHint') + '</p></div>' +
   '</div><div class="actions" style="justify-content:flex-start"><button class="btn" type="submit">' + t('saveSettingsBtn') + '</button>' +
   '<button type="button" class="btn danger" onclick="resetAllData()">' + t('resetAllData') + '</button></div></form></div>' +
-  '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub" id="sbStatusLine">' + sbStatusText() + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration()">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload()">' + t('sbDownloadNow') + '</button>' + (state.user && state.user.role === 'school' && !state.user.sbUid ? '<button type="button" class="btn ghost" onclick="openLinkServerModal()">' + t('sbLinkServer') + '</button>' : '') + (sbSessionExpired ? '<button type="button" class="btn ghost" onclick="logout()">' + t('authLogin') + '</button>' : '') + '</div></div>' +
+  '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub" id="sbStatusLine">' + sbStatusText() + '</p><div id="sbSyncDetails">' + sbSyncDetailsHtml() + '</div><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration()">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload()">' + t('sbDownloadNow') + '</button>' + (state.user && state.user.role === 'school' && !state.user.sbUid ? '<button type="button" class="btn ghost" onclick="openLinkServerModal()">' + t('sbLinkServer') + '</button>' : '') + (sbSessionExpired ? '<button type="button" class="btn ghost" onclick="logout()">' + t('authLogin') + '</button>' : '') + '</div></div>' +
   '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('fullBackup') + '</h3><p class="card-sub">' + t('fullBackupSub') + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="exportFullBackup()">' + t('backupExport') + '</button><label class="btn ghost" style="cursor:pointer">' + t('backupImport') + '<input type="file" accept="application/json,.json" style="display:none" onchange="onBackupFileChosen(this)"></label></div></div>' +
   '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('raiseSupport') + '</h3><p class="card-sub">' + t('contactSub') + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="openSupportForm()">' + t('raiseSupport') + '</button></div></div>';
 }
@@ -8122,7 +8381,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // moment the app comes back (online, tab visible, window focused).
     // Fire-and-forget; a failed cycle retries on the next trigger.
     window.addEventListener('online', function () {
-      if (state.user && state.user.role === 'school' && state.sb) sbSyncCycle(state.user, state.sb.uid, null).catch(function () {});
+      if (state.user && state.user.role === 'school' && state.sb) sbSyncBackgroundTick(); // v53: skip when a cycle is in flight
       // v34 (P1-7/P1-8): queued support requests and admission
       // applications retry the moment the device is back online.
       try { sbFlushSupportQueue().catch(function () {}); } catch (e) {}
@@ -8131,10 +8390,10 @@ document.addEventListener('DOMContentLoaded', function () {
       try { checkAppUpdate().catch(function () {}); } catch (e2) {}
     });
     document.addEventListener('visibilitychange', function () {
-      if (document.visibilityState === 'visible' && state.user && state.user.role === 'school' && state.sb) sbSyncCycle(state.user, state.sb.uid, null).catch(function () {});
+      if (document.visibilityState === 'visible' && state.user && state.user.role === 'school' && state.sb) sbSyncBackgroundTick(); // v53: skip when a cycle is in flight
     });
     window.addEventListener('focus', function () {
-      if (state.user && state.user.role === 'school' && state.sb) sbSyncCycle(state.user, state.sb.uid, null).catch(function () {});
+      if (state.user && state.user.role === 'school' && state.sb) sbSyncBackgroundTick(); // v53: skip when a cycle is in flight
     });
   }
   if ('serviceWorker' in navigator && window.location.protocol.indexOf('http') === 0) {
