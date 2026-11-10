@@ -13,9 +13,9 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=61">
-<script src="qrgen.js?v=61" defer></script>
-<script src="app.js?v=61" defer></script>
+<link rel="stylesheet" href="styles.css?v=62">
+<script src="qrgen.js?v=62" defer></script>
+<script src="app.js?v=62" defer></script>
 </head>
 <body>
 
@@ -81,6 +81,8 @@
       </form>
       <div id="teacherErr" class="err hidden"></div>
       <form id="teacherForm" class="hidden" onsubmit="return doTeacherLogin(event)">
+        <div class="field"><label data-i18n="admReqSchool">School</label><select id="teacherSchool" onchange="onTeacherSchoolChange()"></select></div>
+        <p id="teacherCloudHint" class="hidden" style="text-align:center;font-size:12.5px;color:var(--muted)" data-i18n="tchrCloudHint">Cloud login — this school is not on this device. Your email and password are checked on the server.</p>
         <div class="field"><label data-i18n="loginEmail">Email</label><input id="teacherEmail" type="email" placeholder="you@school.edu.in" autocomplete="username"></div>
         <div class="field"><label data-i18n="loginPassword">Password</label><input id="teacherPw" type="password" placeholder="••••••••" autocomplete="current-password"></div>
         <button class="btn" type="submit" style="width:100%" data-i18n="tchrLoginBtn">Login as Teacher</button>
@@ -104,7 +106,7 @@
         <div id="sideSchoolInfo"></div>
         <label style="color:#94A3B8;margin-top:10px">Academic Session</label>
         <select id="sessionSel" onchange="changeSession(this.value)"></select>
-        <div style="margin-top:12px">v61<br>© 2026 School Saathi</div>
+        <div style="margin-top:12px">v62<br>© 2026 School Saathi</div>
       </div>
     </aside>
     <div class="main">

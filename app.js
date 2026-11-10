@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 61;
+var APP_VERSION = 62;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -859,7 +859,20 @@ function sbMapFeeRecord(r, schoolId, stuMap) {
 function sbMapTeacher(te, schoolId) {
   // v35: classes[] rides with the teacher row (supabase/08_teacher_classes.sql
   // adds the column — apply it before v35 ships, or the upload 400s).
-  return { school_id: schoolId, local_id: te.id, name: te.name || '', subject: te.subject || '', cls: te.cls || '', classes: Array.isArray(te.classes) ? te.classes.slice() : [] };
+  // v62: the teacher's login email + salted password hash ride with the
+  // row too, so the teacher can log in from any device (SQL 18). The
+  // hash-diff sync sees the new fields and PATCHes every teacher row up
+  // once. Only s256$ hashes are sent — a legacy djb2 hash is skipped
+  // (the teacher logs in once on the school device, which upgrades it,
+  // and syncs). The hash is never pulled back down: the accounts store
+  // stays the source of truth.
+  var row = { school_id: schoolId, local_id: te.id, name: te.name || '', subject: te.subject || '', cls: te.cls || '', classes: Array.isArray(te.classes) ? te.classes.slice() : [] };
+  try {
+    var acc = loadAccounts().filter(function (a) { return a.role === 'teacher' && a.teacherId === te.id; })[0];
+    if (acc && acc.email) row.email = String(acc.email).toLowerCase();
+    if (acc && acc.pwHash && String(acc.pwHash).indexOf('s256$') === 0) row.pw_hash = acc.pwHash;
+  } catch (e) {}
+  return row;
 }
 function sbMapExam(e, schoolId) {
   return { school_id: schoolId, local_id: e.id, name: e.name || '', cls: e.cls || '', subject: e.subject || '',
@@ -5142,7 +5155,7 @@ var I18N = {
     impTitle: 'Bulk Import Students', impImportBtn: 'Import Students', impTemplate: 'Download Sample Template', impTemplateSub: 'CSV format only — Excel (.xlsx) files cannot be read here. Use the template columns.', impChooseFile: 'Choose CSV File', impPreview: 'Import Preview', impSummary: 'Import Summary', impValid: 'Valid', impError: 'Error', impDuplicate: 'Duplicate', impReason: 'Reason', impConfirm: 'Import Valid Rows', impDone: 'Done', impNoRows: 'No rows found in this file. Please check the template.', impBadHeader: 'This file does not look like the student template — the Name column is missing.', impNoFile: 'Please choose a CSV file first.', impNoValid: 'No valid rows to import.', impImported: 'imported', impSkipped: 'skipped', impErrName: 'Name is required', impErrMobile: 'Mobile must be 10 digits', impErrMobile2: 'Secondary mobile must be 10 digits', impErrClass: 'Class is not valid', impErrSection: 'Section must be A, B or C', impErrPin: 'PIN must be 6 digits', impErrAadhaar: 'Aadhaar must be 12 digits', impErrDob: 'Date of birth is not a valid date', impErrAdmDate: 'Admission date is not a valid date', impErrSession: 'Session is not valid (e.g. 2025–26)', impErrGender: 'Gender must be Boy, Girl or Other', impErrBlood: 'Blood group is not valid', impErrCategory: 'Category must be General, OBC, SC, ST or Other', impErrEmail: 'Parent email is not valid', impErrRoll: 'Roll must be a positive number', impErrBool: 'Must be Yes or No', impErrDup: 'Duplicate of', impErrDupFile: 'Duplicate in this file', tImpDone: 'Bulk import complete.', tImpTemplate: 'Sample template downloaded.',
     promoTitle: 'Promote Students', promoBtn: 'Promote Students', promoSingle: 'Promote Student', promoFromSession: 'Current Session', promoFromClass: 'Current Class', promoToSession: 'Target Session', promoToClass: 'Target Class', promoToSection: 'Target Section', promoSelectAll: 'Select All', promoSelectNone: 'Select None', promoSelected: 'selected', promoPromote: 'Promote Selected', promoRetain: 'Retain Selected', promoNoStudents: 'No students in this class and session.', promoNoSelect: 'Please select at least one student.', promoNoop: 'Target class and session are the same as current — nothing to change.', promoNoopRetain: 'Target session is the same as the current session — nothing to change.', promoDone: 'Promotion complete.', promoPromoted: 'promoted', promoRetained: 'retained', promoNote: 'Attendance, fees, exam marks and homework history are preserved.', promoSingleNote: 'Single student promotion', promoSkipped: 'skipped (already moved)', promoNotEligible: 'Only Active or Inactive students can be promoted.',
     idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.',
-    authStudent: 'Student', authTeacher: 'Teacher', stuAdmNo: 'Admission Number', stuPinLabel: 'Student PIN', stuLoginBtn: 'Login as Student', stuNote: 'Student login uses the PIN set by the school. Ask your school if you do not know it.', stuCloudHint: 'Cloud login — this school is not on this device. Your admission number and PIN are checked on the server.', cloudSuffix: ' (Cloud)', tCloudHwReadOnly: 'Homework status is saved by your school — it cannot be changed from cloud login.', stuSub: 'Student', stuDashboard: 'My Profile', tInvalidStudent: 'Invalid admission number or PIN.', stuPinField: 'Student login PIN (optional)', stuPinPh: 'Leave blank — a random PIN is generated', stuPinTitle: 'Student PIN', stuPinNow: 'Current Student PIN', stuPinSet: 'PIN set', stuPinNone: 'No PIN set — student login unavailable for this student.', stuPinNew: 'New PIN (4–6 digits)', stuPinSetBtn: 'Set PIN', stuPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Student PIN set.', tPinLocked: 'Too many wrong attempts \u2014 try again in 15 minutes.', tPinCleared: 'Student PIN cleared.', tPinAuto: 'The PIN is set by the school at admission. If the student forgets it, set a new one here.', tNotAllowed: 'Your login cannot open this section.', tOwnProfileOnly: 'You can only view your own profile.', todayW: 'Today', tchrLoginBtn: 'Login as Teacher', tchrNote: 'Teacher accounts are created by the school admin.', tchrSub: 'Teacher', tchrDashboard: 'Teacher Dashboard', tchrNoDb: 'School data is not on this device — log in on the school device first.', teachers: 'Teachers', teachersSub: 'Teacher accounts and the classes they teach.', tchrAdd: 'Add Teacher', tchrEdit: 'Edit Teacher', tchrName: 'Teacher Name', tchrSubject: 'Subject', tchrClasses: 'Classes Taught', tchrEmail: 'Email', tchrPw: 'Password', tchrPwHint: 'At least 6 characters. Leave blank to keep the current password.', tchrNoLogin: 'No login', tchrSaved: 'Teacher saved.', tchrNoClasses: 'Choose at least one class.', tchrEmailTaken: 'This email is already used by another account.', tchrMyClasses: 'My Classes', tchrStudents: 'Students in my classes', tchrNoClassesYet: 'No classes assigned yet — ask the school admin to assign classes.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
+    authStudent: 'Student', authTeacher: 'Teacher', stuAdmNo: 'Admission Number', stuPinLabel: 'Student PIN', stuLoginBtn: 'Login as Student', stuNote: 'Student login uses the PIN set by the school. Ask your school if you do not know it.', stuCloudHint: 'Cloud login — this school is not on this device. Your admission number and PIN are checked on the server.', cloudSuffix: ' (Cloud)', tCloudHwReadOnly: 'Homework status is saved by your school — it cannot be changed from cloud login.', stuSub: 'Student', stuDashboard: 'My Profile', tInvalidStudent: 'Invalid admission number or PIN.', stuPinField: 'Student login PIN (optional)', stuPinPh: 'Leave blank — a random PIN is generated', stuPinTitle: 'Student PIN', stuPinNow: 'Current Student PIN', stuPinSet: 'PIN set', stuPinNone: 'No PIN set — student login unavailable for this student.', stuPinNew: 'New PIN (4–6 digits)', stuPinSetBtn: 'Set PIN', stuPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Student PIN set.', tPinLocked: 'Too many wrong attempts \u2014 try again in 15 minutes.', tPinCleared: 'Student PIN cleared.', tPinAuto: 'The PIN is set by the school at admission. If the student forgets it, set a new one here.', tNotAllowed: 'Your login cannot open this section.', tOwnProfileOnly: 'You can only view your own profile.', todayW: 'Today', tchrLoginBtn: 'Login as Teacher', tchrNote: 'Teacher accounts are created by the school admin.', tchrSub: 'Teacher', tchrDashboard: 'Teacher Dashboard', tchrNoDb: 'School data is not on this device — log in on the school device first.', teachers: 'Teachers', teachersSub: 'Teacher accounts and the classes they teach.', tchrAdd: 'Add Teacher', tchrEdit: 'Edit Teacher', tchrName: 'Teacher Name', tchrSubject: 'Subject', tchrClasses: 'Classes Taught', tchrEmail: 'Email', tchrPw: 'Password', tchrPwHint: 'At least 6 characters. Leave blank to keep the current password.', tchrNoLogin: 'No login', tchrSaved: 'Teacher saved.', tchrNoClasses: 'Choose at least one class.', tchrCloudHint: 'Cloud login — this school is not on this device. Your email and password are checked on the server.', tchrNoSchoolPick: 'Select school (optional)', tCloudSessionExpired: 'Your cloud session expired — please log in again.', tchrEmailTaken: 'This email is already used by another account.', tchrMyClasses: 'My Classes', tchrStudents: 'Students in my classes', tchrNoClassesYet: 'No classes assigned yet — ask the school admin to assign classes.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
     collectFeeBtn: 'Collect Fee', rcptTitle: 'FEE RECEIPT', rcptReceiptNo: 'Receipt No', rcptDate: 'Date', rcptAdmNo: 'Adm No', rcptSession: 'Session', rcptName: 'Name', rcptClass: 'Class', rcptInstallment: 'Installment', rcptCounter: 'Counter No', rcptSlNo: 'Sl.No', rcptDesc: 'Description', rcptDue: 'Due', rcptCon: 'Con', rcptPaid: 'Paid', rcptAdmissionFee: 'Admission Fee', rcptTuitionFee: 'Tuition Fee', rcptCaution: 'Caution Money', rcptAnnual: 'Annual Charges', rcptBusFee: 'Bus Fee', rcptDues: 'Dues', rcptPayModeTitle: 'PAY MODE INFORMATION', rcptPayMode: 'Pay Mode', rcptBank: 'Bank', rcptNumber: 'Number', rcptTotal: 'Total', rcptTotalWords: 'Total in Words', rcptComputerGen: 'This is a computer generated Receipt. Does not required signature.', rcptParentCopy: 'PARENT COPY', rcptCollectorSign: 'Collector\'s Signature', rcptIncludeBus: 'Include Bus/Transport', rcptOtherFees: 'Other Fees', rcptAnnualHint: 'One-time and annual amounts used on the Collect Fee receipt. Set 0 to hide a row.', payModeCash: 'Cash', payModeCheque: 'Cheque', payModeUpi: 'UPI', payModeCard: 'Card', payModeBank: 'Bank Transfer', tFeeCollected: 'Fee collected.', tCollectZero: 'Nothing to collect — enter a Paid amount.', tCollectSaved: 'Fee collected — Receipt ', tCollectNotActive: 'This student is not active — fee cannot be collected.', rcptReceipts: 'Receipts', rcptView: 'View', rcptPrint: 'Print / Save PDF', rcptCollectAgain: 'Collect Again', rcptNoReceipts: 'No receipts yet for this student.', rcptDraft: 'Draft — not saved yet', rcptCollectSave: 'Collect & Save', rcptNoLines: 'Nothing to collect for this period — set the fee amounts in Fee Structure first.',
     sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbLocalOnlyLogin: 'This school isn’t linked to the server yet — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbLastAttempt: 'Last attempt', sbSyncDetailsTitle: 'Sync details', sbSyncPendingUploads: 'Pending uploads', sbSyncLastCycle: 'Last cycle', sbSyncLastFlush: 'Last flush', sbSyncLastError: 'Last error', sbSyncPushed: 'pushed', sbSyncConflicts: 'conflicts', sbSyncLeftover: 'left over', sbSyncCalls: 'calls', sbSyncQueued: 'Queued entries', sbSyncAndMore: 'and {n} more', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.', sbStatusSyncing: 'Syncing with the server…', sbStatusPendingSync: 'Offline — changes will sync when you are back online.', sbSyncDone: 'Synced with the server.', sbSyncFailed: 'Sync did not finish — it will retry on your next login.', sbSyncOffline: 'Offline — your changes are saved here and will sync later.', sbSyncConflict: 'Server had a newer copy — kept the server version.', sbNumPending: 'Admission saved. The admission number will be assigned when you are back online.', sbNumPendingReceipt: 'Fee saved. The receipt number will be assigned when you are back online.', sbStatusSessionExpired: 'Session expired — please log in again.', sbStatusNotLinked: 'Not linked to the server yet — it will link when you log in.', sbLinkServer: 'Link to Server', sbLinkDone: 'Server account linked.', sbLinkFailed: 'Could not link the server account — check your connection and try again.', sbLinkPwTitle: 'Link the server account', sbNumAssigning: 'Assigning number…', tWrongPasswordServer: 'Wrong password for the server account.', tCollectCapped: 'The paid amount was more than the due — only the due amount was taken.', resetPwHintServer: 'This deletes the data on THIS device only. The server copy will come back on the next sync unless you also wipe the server.', resetConfirmMsgServer: 'Delete this device’s data only? The server copy will return on the next sync — choose “Delete on server too” to remove it everywhere.', resetDeviceOnly: 'This device only', resetWipeServerBtn: 'Delete on server too', resetWipeServerDone: 'Server data deleted.', resetWipeServerFailed: 'Could not delete the server data — nothing was reset. Check your connection and try again.', supportQueued: 'Support request saved — it will be sent when you are back online.', admReqQueued: 'Application saved — it will be sent when you are back online.', admReqLoadingSchools: 'Loading schools…', attNotMarked: 'Not marked',
     createExam: 'Create Exam', examName: 'Exam Name', examTotal: 'Total Marks', tExamCreated: 'Exam created.', tExamInvalid: 'Please fill the exam name, class and total marks.', editExam: 'Edit Exam', deleteExam: 'Delete Exam', restoreExam: 'Restore', examDeletedH: 'Deleted Exams', examDelNote: 'A deleted exam keeps its marks — the marks stay saved but are hidden everywhere until the exam is restored.', delExamMsg: 'Delete this exam? Its marks will be kept but hidden — restore the exam to see them again.', tExamDeleted: 'Exam deleted. Its marks are kept — restore the exam to see them again.', tExamUpdated: 'Exam updated.', tExamRestored: 'Exam restored.', examClsLocked: 'Class cannot be changed — the marks belong to this class.', examMarksKept: 'Marks already entered stay as they are — percentages are recalculated with the new total.', tNoTeachers: 'No teachers yet.',
@@ -5179,7 +5192,7 @@ var I18N = {
     impTitle: 'छात्रों का बल्क आयात', impImportBtn: 'छात्र आयात करें', impTemplate: 'नमूना टेम्पलेट डाउनलोड करें', impTemplateSub: 'सिर्फ CSV प्रारूप — Excel (.xlsx) फ़ाइल यहाँ पढ़ी नहीं जा सकती। टेम्पलेट के कॉलम इस्तेमाल करें।', impChooseFile: 'CSV फ़ाइल चुनें', impPreview: 'आयात पूर्वावलोकन', impSummary: 'आयात सारांश', impValid: 'सही', impError: 'त्रुटि', impDuplicate: 'दोहरा', impReason: 'कारण', impConfirm: 'सही पंक्तियाँ आयात करें', impDone: 'पूर्ण', impNoRows: 'इस फ़ाइल में कोई पंक्ति नहीं मिली। कृपया टेम्पलेट जाँचें।', impBadHeader: 'यह फ़ाइल छात्र टेम्पलेट जैसी नहीं लगती — नाम वाला कॉलम नहीं मिला।', impNoFile: 'कृपया पहले CSV फ़ाइल चुनें।', impNoValid: 'आयात के लिए कोई सही पंक्ति नहीं है।', impImported: 'आयात हुए', impSkipped: 'छोड़े गए', impErrName: 'नाम आवश्यक है', impErrMobile: 'मोबाइल 10 अंकों का होना चाहिए', impErrMobile2: 'दूसरा मोबाइल 10 अंकों का होना चाहिए', impErrClass: 'कक्षा सही नहीं है', impErrSection: 'अनुभाग A, B या C होना चाहिए', impErrPin: 'पिन 6 अंकों का होना चाहिए', impErrAadhaar: 'आधार 12 अंकों का होना चाहिए', impErrDob: 'जन्म तिथि सही तारीख नहीं है', impErrAdmDate: 'प्रवेश तिथि सही तारीख नहीं है', impErrSession: 'सत्र सही नहीं है (जैसे 2025–26)', impErrGender: 'लिंग Boy, Girl या Other होना चाहिए', impErrBlood: 'रक्त समूह सही नहीं है', impErrCategory: 'श्रेणी General, OBC, SC, ST या Other होनी चाहिए', impErrEmail: 'अभिभावक ईमेल सही नहीं है', impErrRoll: 'रोल धनात्मक संख्या होनी चाहिए', impErrBool: 'Yes या No होना चाहिए', impErrDup: 'इसकी प्रतिलिपि', impErrDupFile: 'इस फ़ाइल में दोहरा', tImpDone: 'बल्क आयात पूर्ण हुआ।', tImpTemplate: 'नमूना टेम्पलेट डाउनलोड हुआ।',
     promoTitle: 'छात्रों को प्रोन्नत करें', promoBtn: 'छात्र प्रोन्नत करें', promoSingle: 'छात्र प्रोन्नत करें', promoFromSession: 'वर्तमान सत्र', promoFromClass: 'वर्तमान कक्षा', promoToSession: 'लक्ष्य सत्र', promoToClass: 'लक्ष्य कक्षा', promoToSection: 'लक्ष्य अनुभाग', promoSelectAll: 'सभी चुनें', promoSelectNone: 'कोई नहीं', promoSelected: 'चयनित', promoPromote: 'चयनित को प्रोन्नत करें', promoRetain: 'चयनित को रोकें', promoNoStudents: 'इस कक्षा और सत्र में कोई छात्र नहीं है।', promoNoSelect: 'कृपया कम से कम एक छात्र चुनें।', promoNoop: 'लक्ष्य कक्षा और सत्र वर्तमान जैसे ही हैं — बदलने को कुछ नहीं।', promoNoopRetain: 'लक्ष्य सत्र वर्तमान सत्र जैसा ही है — बदलने को कुछ नहीं।', promoDone: 'प्रोन्नति पूर्ण हुई।', promoPromoted: 'प्रोन्नत हुए', promoRetained: 'रोके गए', promoNote: 'उपस्थिति, शुल्क, परीक्षा अंक और होमवर्क इतिहास सुरक्षित रहता है।', promoSingleNote: 'एक छात्र की प्रोन्नति', promoSkipped: 'छोड़े गए (पहले ही स्थानांतरित)', promoNotEligible: 'केवल सक्रिय या निष्क्रिय छात्र ही प्रोन्नत हो सकते हैं।',
     idcPreview: 'ID कार्ड पूर्वावलोकन', idcPrint: 'छापें', idcPrintCards: 'ID कार्ड छापें', idcSelectAll: 'सभी चुनें', idcClearSel: 'चयन हटाएँ', idcReady: 'ID कार्ड छपाई के लिए तैयार', idcEmergency: 'आपातकालीन संपर्क', idcReturn: 'मिले तो कृपया लौटाएँ', idcNoQr: 'QR कोड नहीं बन सका।',
-    authStudent: 'छात्र', authTeacher: 'शिक्षक', stuAdmNo: 'प्रवेश संख्या', stuPinLabel: 'छात्र PIN', stuLoginBtn: 'छात्र के रूप में लॉगिन करें', stuNote: 'छात्र लॉगिन स्कूल द्वारा दिए गए PIN से होता है। PIN न पता हो तो अपने स्कूल से पूछें।', stuCloudHint: 'क्लाउड लॉगिन — यह स्कूल इस डिवाइस पर नहीं है। आपका प्रवेश नंबर और PIN सर्वर पर जाँचा जाएगा।', cloudSuffix: ' (क्लाउड)', tCloudHwReadOnly: 'होमवर्क की स्थिति स्कूल से सहेजी जाती है — क्लाउड लॉगिन से इसे बदला नहीं जा सकता।', stuSub: 'छात्र', stuDashboard: 'मेरी प्रोफ़ाइल', tInvalidStudent: 'प्रवेश संख्या या PIN गलत है।', stuPinField: 'छात्र लॉगिन PIN (वैकल्पिक)', stuPinPh: 'खाली छोड़ें — रैंडम PIN बनेगा', stuPinTitle: 'छात्र PIN', stuPinNow: 'वर्तमान छात्र PIN', stuPinSet: 'PIN सेट है', stuPinNone: 'कोई PIN नहीं है — इस छात्र के लिए छात्र लॉगिन उपलब्ध नहीं है।', stuPinNew: 'नया PIN (4–6 अंक)', stuPinSetBtn: 'PIN सेट करें', stuPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'छात्र PIN सेट हो गया।', tPinLocked: 'बहुत ज़्यादा गलत कोशिशें \u2014 15 मिनट बाद फिर कोशिश करें।', tPinCleared: 'छात्र PIN हटा दिया गया।', tPinAuto: 'PIN स्कूल द्वारा प्रवेश के समय दिया जाता है। छात्र भूल जाए तो यहाँ से नया PIN सेट करें।', tNotAllowed: 'आपकी लॉगिन इस सेक्शन को नहीं खोल सकती।', tOwnProfileOnly: 'आप केवल अपनी प्रोफ़ाइल देख सकते हैं।', todayW: 'आज', tchrLoginBtn: 'शिक्षक के रूप में लॉगिन करें', tchrNote: 'शिक्षक अकाउंट स्कूल एडमिन बनाता है।', tchrSub: 'शिक्षक', tchrDashboard: 'शिक्षक डैशबोर्ड', tchrNoDb: 'इस डिवाइस पर स्कूल का डेटा नहीं है — पहले स्कूल के डिवाइस पर लॉगिन करें।', teachers: 'शिक्षक', teachersSub: 'शिक्षक अकाउंट और वे जो कक्षाएँ पढ़ाते हैं।', tchrAdd: 'शिक्षक जोड़ें', tchrEdit: 'शिक्षक बदलें', tchrName: 'शिक्षक का नाम', tchrSubject: 'विषय', tchrClasses: 'पढ़ाई जाने वाली कक्षाएँ', tchrEmail: 'ईमेल', tchrPw: 'पासवर्ड', tchrPwHint: 'कम से कम 6 अक्षर। मौजूदा पासवर्ड रखने के लिए खाली छोड़ें।', tchrNoLogin: 'कोई लॉगिन नहीं', tchrSaved: 'शिक्षक सहेजा गया।', tchrNoClasses: 'कम से कम एक कक्षा चुनें।', tchrEmailTaken: 'यह ईमेल किसी और अकाउंट में इस्तेमाल हो रहा है।', tchrMyClasses: 'मेरी कक्षाएँ', tchrStudents: 'मेरी कक्षाओं के छात्र', tchrNoClassesYet: 'अभी कोई कक्षा नहीं दी गई है — स्कूल एडमिन से कक्षा देने को कहें।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।',
+    authStudent: 'छात्र', authTeacher: 'शिक्षक', stuAdmNo: 'प्रवेश संख्या', stuPinLabel: 'छात्र PIN', stuLoginBtn: 'छात्र के रूप में लॉगिन करें', stuNote: 'छात्र लॉगिन स्कूल द्वारा दिए गए PIN से होता है। PIN न पता हो तो अपने स्कूल से पूछें।', stuCloudHint: 'क्लाउड लॉगिन — यह स्कूल इस डिवाइस पर नहीं है। आपका प्रवेश नंबर और PIN सर्वर पर जाँचा जाएगा।', cloudSuffix: ' (क्लाउड)', tCloudHwReadOnly: 'होमवर्क की स्थिति स्कूल से सहेजी जाती है — क्लाउड लॉगिन से इसे बदला नहीं जा सकता।', stuSub: 'छात्र', stuDashboard: 'मेरी प्रोफ़ाइल', tInvalidStudent: 'प्रवेश संख्या या PIN गलत है।', stuPinField: 'छात्र लॉगिन PIN (वैकल्पिक)', stuPinPh: 'खाली छोड़ें — रैंडम PIN बनेगा', stuPinTitle: 'छात्र PIN', stuPinNow: 'वर्तमान छात्र PIN', stuPinSet: 'PIN सेट है', stuPinNone: 'कोई PIN नहीं है — इस छात्र के लिए छात्र लॉगिन उपलब्ध नहीं है।', stuPinNew: 'नया PIN (4–6 अंक)', stuPinSetBtn: 'PIN सेट करें', stuPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'छात्र PIN सेट हो गया।', tPinLocked: 'बहुत ज़्यादा गलत कोशिशें \u2014 15 मिनट बाद फिर कोशिश करें।', tPinCleared: 'छात्र PIN हटा दिया गया।', tPinAuto: 'PIN स्कूल द्वारा प्रवेश के समय दिया जाता है। छात्र भूल जाए तो यहाँ से नया PIN सेट करें।', tNotAllowed: 'आपकी लॉगिन इस सेक्शन को नहीं खोल सकती।', tOwnProfileOnly: 'आप केवल अपनी प्रोफ़ाइल देख सकते हैं।', todayW: 'आज', tchrLoginBtn: 'शिक्षक के रूप में लॉगिन करें', tchrNote: 'शिक्षक अकाउंट स्कूल एडमिन बनाता है।', tchrSub: 'शिक्षक', tchrDashboard: 'शिक्षक डैशबोर्ड', tchrNoDb: 'इस डिवाइस पर स्कूल का डेटा नहीं है — पहले स्कूल के डिवाइस पर लॉगिन करें।', teachers: 'शिक्षक', teachersSub: 'शिक्षक अकाउंट और वे जो कक्षाएँ पढ़ाते हैं।', tchrAdd: 'शिक्षक जोड़ें', tchrEdit: 'शिक्षक बदलें', tchrName: 'शिक्षक का नाम', tchrSubject: 'विषय', tchrClasses: 'पढ़ाई जाने वाली कक्षाएँ', tchrEmail: 'ईमेल', tchrPw: 'पासवर्ड', tchrPwHint: 'कम से कम 6 अक्षर। मौजूदा पासवर्ड रखने के लिए खाली छोड़ें।', tchrNoLogin: 'कोई लॉगिन नहीं', tchrSaved: 'शिक्षक सहेजा गया।', tchrNoClasses: 'कम से कम एक कक्षा चुनें।', tchrCloudHint: 'क्लाउड लॉगिन — यह स्कूल इस डिवाइस पर नहीं है। आपका ईमेल और पासवर्ड सर्वर पर जाँचा जाएगा।', tchrNoSchoolPick: 'स्कूल चुनें (वैकल्पिक)', tCloudSessionExpired: 'आपका क्लाउड सेशन खत्म हो गया — फिर से लॉगिन करें।', tchrEmailTaken: 'यह ईमेल किसी और अकाउंट में इस्तेमाल हो रहा है।', tchrMyClasses: 'मेरी कक्षाएँ', tchrStudents: 'मेरी कक्षाओं के छात्र', tchrNoClassesYet: 'अभी कोई कक्षा नहीं दी गई है — स्कूल एडमिन से कक्षा देने को कहें।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।',
     collectFeeBtn: 'शुल्क वसूलें', rcptTitle: 'शुल्क रसीद', rcptReceiptNo: 'रसीद संख्या', rcptDate: 'तारीख', rcptAdmNo: 'प्रवेश संख्या', rcptSession: 'सत्र', rcptName: 'नाम', rcptClass: 'कक्षा', rcptInstallment: 'किस्त', rcptCounter: 'काउंटर संख्या', rcptSlNo: 'क्र.सं.', rcptDesc: 'विवरण', rcptDue: 'देय', rcptCon: 'छूट', rcptPaid: 'जमा', rcptAdmissionFee: 'प्रवेश शुल्क', rcptTuitionFee: 'शिक्षण शुल्क', rcptCaution: 'जमानत राशि', rcptAnnual: 'वार्षिक शुल्क', rcptBusFee: 'बस शुल्क', rcptDues: 'बकाया', rcptPayModeTitle: 'भुगतान जानकारी', rcptPayMode: 'भुगतान माध्यम', rcptBank: 'बैंक', rcptNumber: 'संख्या', rcptTotal: 'कुल', rcptTotalWords: 'कुल (शब्दों में)', rcptComputerGen: 'यह कंप्यूटर द्वारा बनाई गई रसीद है। हस्ताक्षर की आवश्यकता नहीं है।', rcptParentCopy: 'अभिभावक प्रति', rcptCollectorSign: 'वसूलकर्ता के हस्ताक्षर', rcptIncludeBus: 'बस/परिवहन शामिल करें', rcptOtherFees: 'अन्य शुल्क', rcptAnnualHint: 'शुल्क वसूली रसीद पर दिखने वाली एकमुश्त और वार्षिक राशि। छिपाने के लिए 0 रखें।', payModeCash: 'नकद', payModeCheque: 'चेक', payModeUpi: 'UPI', payModeCard: 'कार्ड', payModeBank: 'बैंक ट्रांसफर', tFeeCollected: 'शुल्क वसूल लिया गया।', tCollectZero: 'वसूलने के लिए कुछ नहीं है — जमा राशि डालें।', tCollectSaved: 'शुल्क वसूल लिया गया — रसीद ', tCollectNotActive: 'यह छात्र सक्रिय नहीं है — शुल्क नहीं वसूला जा सकता।', rcptReceipts: 'रसीदें', rcptView: 'देखें', rcptPrint: 'प्रिंट / PDF सहेजें', rcptCollectAgain: 'फिर से वसूलें', rcptNoReceipts: 'इस छात्र की अभी कोई रसीद नहीं है।', rcptDraft: 'मसौदा — अभी सहेजा नहीं गया', rcptCollectSave: 'वसूलें और सहेजें', rcptNoLines: 'इस अवधि के लिए वसूलने को कुछ नहीं है — पहले शुल्क संरचना में राशि डालें।',
     sbNumPending: 'प्रवेश सहेजा गया। प्रवेश संख्या ऑनलाइन आने पर दी जाएगी।', sbNumPendingReceipt: 'शुल्क सहेजा गया। रसीद संख्या ऑनलाइन आने पर दी जाएगी।', sbStatusSessionExpired: 'सत्र समाप्त हो गया — कृपया दोबारा लॉग इन करें।', sbStatusNotLinked: 'अभी सर्वर से जुड़ा नहीं है — लॉग इन पर जुड़ जाएगा।', sbLocalOnlyLogin: 'यह स्कूल अभी सर्वर से जुड़ा नहीं है — इस डिवाइस का अकाउंट इस्तेमाल हो रहा है।', sbBackupDone: 'बैकअप पूरा हुआ।', sbBackupFailed: 'बैकअप पूरा नहीं हुआ — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkServer: 'सर्वर से जोड़ें', sbLinkDone: 'सर्वर अकाउंट जुड़ गया।', sbLinkFailed: 'सर्वर अकाउंट जुड़ा नहीं जा सका — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkPwTitle: 'सर्वर अकाउंट जोड़ें', sbNumAssigning: 'नंबर मिल रहा है…', tWrongPasswordServer: 'सर्वर अकाउंट के लिए पासवर्ड गलत है।', tCollectCapped: 'दी गई राशि बकाया से ज़्यादा थी — सिर्फ बकाया राशि ली गई।', resetPwHintServer: 'इससे सिर्फ इस डिवाइस का डेटा मिटेगा। सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी, जब तक आप सर्वर भी न मिटाएँ।', resetConfirmMsgServer: 'सिर्फ इस डिवाइस का डेटा मिटाएँ? सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी — हर जगह से मिटाने के लिए “सर्वर से भी मिटाएँ” चुनें।', resetDeviceOnly: 'सिर्फ यह डिवाइस', resetWipeServerBtn: 'सर्वर से भी मिटाएँ', resetWipeServerDone: 'सर्वर का डेटा मिट गया।', resetWipeServerFailed: 'सर्वर का डेटा मिटा नहीं जा सका — कुछ भी रीसेट नहीं हुआ। कनेक्शन जाँचकर फिर कोशिश करें।', supportQueued: 'सहायता अनुरोध सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqQueued: 'आवेदन सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqLoadingSchools: 'स्कूल लोड हो रहे हैं…', attNotMarked: 'दर्ज नहीं',
     createExam: 'परीक्षा बनाएँ', examName: 'परीक्षा का नाम', examTotal: 'कुल अंक', tExamCreated: 'परीक्षा बन गई।', tExamInvalid: 'कृपया परीक्षा का नाम, कक्षा और कुल अंक भरें।', editExam: 'परीक्षा बदलें', deleteExam: 'परीक्षा हटाएँ', restoreExam: 'वापस लाएँ', examDeletedH: 'हटाई गई परीक्षाएँ', examDelNote: 'हटाई गई परीक्षा के अंक रखे रहते हैं — वे हर जगह छिप जाते हैं और परीक्षा वापस लाने पर फिर दिखते हैं।', delExamMsg: 'यह परीक्षा हटाएँ? इसके अंक रखे रहेंगे पर दिखेंगे नहीं — परीक्षा वापस लाने पर अंक फिर दिखेंगे।', tExamDeleted: 'परीक्षा हटा दी गई। इसके अंक रखे हुए हैं — परीक्षा वापस लाने पर अंक फिर दिखेंगे।', tExamUpdated: 'परीक्षा अपडेट हो गई।', tExamRestored: 'परीक्षा वापस आ गई।', examClsLocked: 'कक्षा नहीं बदली जा सकती — अंक इसी कक्षा के हैं।', examMarksKept: 'पहले से डाले गए अंक वैसे ही रहेंगे — प्रतिशत नए कुल अंक से फिर निकलेगा।', tNoTeachers: 'अभी कोई शिक्षक नहीं है।',
@@ -5254,6 +5267,7 @@ function clearStoredSession() {
   try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
   try { localStorage.removeItem(CLOUD_STUDENT_KEY); } catch (e2) {} // v61: an expired cloud session drops its snapshot too
+  try { localStorage.removeItem(CLOUD_TEACHER_KEY); } catch (e3) {} // v62: same for a cloud teacher session
   sbClearSession();
 }
 function loginAs(a, opts) {
@@ -5297,6 +5311,24 @@ function restoreSession() {
     // online school accounts.
     if (typeof sv.at !== 'number' || isNaN(sv.at) || Date.now() - sv.at > SESSION_MAX_AGE_MS) {
       clearStoredSession();
+      return Promise.resolve(false);
+    }
+    if (sv.role === 'teacher' && typeof sv.email === 'string' && sv.email.indexOf('cloud-teacher:') === 0) {
+      // v62: a cloud teacher session restores from its stored snapshot
+      // (the school's data was never on this device). No password is
+      // stored; the token rides with the snapshot and is re-checked by
+      // the server on every write, so a missing snapshot means a fresh login.
+      try {
+        var rawCloudT = localStorage.getItem(CLOUD_TEACHER_KEY);
+        var cloudT = rawCloudT ? JSON.parse(rawCloudT) : null;
+        if (cloudT && cloudT.acct && cloudT.slice && cloudT.token && cloudT.slice.teachers && cloudT.slice.teachers[0] && cloudT.slice.teachers[0].id === cloudT.acct.teacherId) {
+          state.role = 'teacher'; state.user = cloudT.acct; state.cloudDb = cloudT.slice; state.cloudTeacherToken = cloudT.token; state.view = 'dashboard'; state.profileStudent = null;
+          db = cloudT.slice; DB_KEY = 'schoolSaathiCloudDB';
+          showView('app'); renderApp();
+          persistSession();
+          return Promise.resolve(true);
+        }
+      } catch (e3) {}
       return Promise.resolve(false);
     }
     if (sv.role === 'student' && typeof sv.email === 'string' && sv.email.indexOf('cloud-student:') === 0) {
@@ -5390,6 +5422,7 @@ function switchAuth(tab) {
   // student is ADM-2025-001, so a bare admission number matches the
   // wrong school (the same trap the v34 parent picker fixed).
   if (tab === 'student') fillSchoolPicker('studentSchool');
+  if (tab === 'teacher') fillSchoolPicker('teacherSchool', { neutral: true }); // v62: optional for teachers (the old flow had no school field)
   setTimeout(function () { $(tabs[tab][3]).focus(); }, 50);
 }
 function togglePw(id, btn) {
@@ -5400,12 +5433,15 @@ function togglePw(id, btn) {
   if (btn) { btn.textContent = show ? '🙈' : '👁'; btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password'); }
   el.focus();
 }
-function fillSchoolPicker(selId) {
+function fillSchoolPicker(selId, opts) {
   var sel = $(selId);
   if (!sel) return;
   var schools = loadAccounts().filter(function (a) { return a.role === 'school'; }).filter(function (a) { return !!readDbByKey(dbKeyFor(a)); });
   var cur = sel.value;
-  sel.innerHTML = schools.map(function (a) { return '<option value="' + esc(a.uid) + '">' + esc(a.school) + '</option>'; }).join('');
+  // v62: the teacher picker is optional (the old flow had no school
+  // field at all), so it starts with a neutral option.
+  var neutral = opts && opts.neutral ? '<option value="">' + esc(t('tchrNoSchoolPick')) + '</option>' : '';
+  sel.innerHTML = neutral + schools.map(function (a) { return '<option value="' + esc(a.uid) + '">' + esc(a.school) + '</option>'; }).join('');
   if (cur && schools.some(function (a) { return a.uid === cur; })) sel.value = cur;
   // v61: cloud schools — on the server but not on this device. A school
   // already local is listed once (local wins: it works offline too).
@@ -5425,7 +5461,7 @@ function fillSchoolPicker(selId) {
     if (!opts) return;
     sel.innerHTML = sel.innerHTML + opts;
     if (cur2) sel.value = cur2;
-    onStudentSchoolChange();
+    if (selId === 'teacherSchool') onTeacherSchoolChange(); else onStudentSchoolChange();
   };
   if (cloudSchoolsCache) { appendCloud(cloudSchoolsCache); return; }
   sbPublicSchools().then(appendCloud);
@@ -5433,6 +5469,12 @@ function fillSchoolPicker(selId) {
 function onStudentSchoolChange() {
   var sel = $('studentSchool');
   var hint = $('studentCloudHint');
+  if (!sel || !hint) return;
+  hint.classList.toggle('hidden', !(sel.value && sel.value.indexOf('cloud:') === 0));
+}
+function onTeacherSchoolChange() {
+  var sel = $('teacherSchool');
+  var hint = $('teacherCloudHint');
   if (!sel || !hint) return;
   hint.classList.toggle('hidden', !(sel.value && sel.value.indexOf('cloud:') === 0));
 }
@@ -5629,10 +5671,118 @@ function doStudentCloudLogin(serverId, adm, pin, err) {
     loginCloudStudent(acct, slice);
   });
 }
+// v62: teacher cloud login (SQL 18). Unlike students, teachers WRITE —
+// attendance, homework and marks go through token-authenticated RPCs,
+// so their work lands on the server directly. The login returns a
+// 30-day session token; every write RPC re-checks the token and that
+// the class is one of the teacher's assigned classes.
+var CLOUD_TEACHER_KEY = 'schoolSaathiCloudTeacher'; // v62: cloud teacher session snapshot {acct, slice, token}
+function sbTeacherCloudLogin(serverId, email, pw) {
+  return sbRest('POST', 'rpc/ss_teacher_cloud_login', SB_ANON_KEY, { p_school_id: serverId, p_email: email, p_password: pw }).then(function (r) {
+    if (!r || !r.ok || !r.data || typeof r.data !== 'object') return null;
+    return r.data;
+  }).catch(function () { return null; });
+}
+function sbTeacherMarkAttendance(token, date, cls, studentServerId, status) {
+  return sbRest('POST', 'rpc/ss_teacher_mark_attendance', SB_ANON_KEY, { p_token: token, p_date: date, p_cls: cls, p_student_id: studentServerId, p_status: status }).then(function (r) {
+    return (r && r.ok && r.data && typeof r.data === 'object') ? r.data : null;
+  }).catch(function () { return null; });
+}
+function sbTeacherPostHomework(token, cls, subject, title, due, localId) {
+  return sbRest('POST', 'rpc/ss_teacher_post_homework', SB_ANON_KEY, { p_token: token, p_cls: cls, p_subject: subject, p_title: title, p_due: due, p_local_id: localId }).then(function (r) {
+    return (r && r.ok && r.data && typeof r.data === 'object') ? r.data : null;
+  }).catch(function () { return null; });
+}
+function sbTeacherSetMarks(token, examServerId, marks) {
+  return sbRest('POST', 'rpc/ss_teacher_set_marks', SB_ANON_KEY, { p_token: token, p_exam_id: examServerId, p_marks: marks }).then(function (r) {
+    return (r && r.ok && r.data && typeof r.data === 'object') ? r.data : null;
+  }).catch(function () { return null; });
+}
+function sbTeacherRevokeSession(token) {
+  return sbRest('POST', 'rpc/ss_teacher_revoke_session', SB_ANON_KEY, { p_token: token }).then(function (r) {
+    return (r && r.ok) ? true : false;
+  }).catch(function () { return false; });
+}
+function mapCloudTeacherPayload(p) {
+  // Build a db-shaped slice from the server payload. The teacher views
+  // (dashboard, attendance, homework, exams) read `db`, so the slice
+  // mirrors the local db shape exactly — only the teacher's own classes.
+  // Mapped students and exams carry srvId (the server uuid) so the
+  // write RPCs can address them; local-only rows have no srvId.
+  var d = emptyDb({ name: (p.school && p.school.name) || '', city: (p.school && p.school.city) || '', principal: '', phone: '', email: '', session: '2025–26', address: '' }, []);
+  // The server already filters by the teacher's classes; the mapper
+  // re-checks it, so a stray row in the payload can never leak a student
+  // from another class into the teacher's slice.
+  var tClasses = (p.teacher && Array.isArray(p.teacher.classes)) ? p.teacher.classes : [];
+  var stuMap = {};
+  d.students = (p.students || []).filter(function (row) { return tClasses.indexOf(row.cls) !== -1; }).map(function (row) { var s = sbRowToStudent(row); if (row.id) { stuMap[row.id] = s.id; s.srvId = row.id; } return s; });
+  d.teachers = [{ id: (p.teacher && p.teacher.local_id) || ('srv-' + (p.teacher && p.teacher.id)), name: (p.teacher && p.teacher.name) || '', subject: (p.teacher && p.teacher.subject) || '', cls: (p.teacher && p.teacher.cls) || '', classes: Array.isArray(p.teacher && p.teacher.classes) ? p.teacher.classes.slice() : [] }];
+  var examMap = {};
+  d.exams = (p.exams || []).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; if (row.id) { examMap[row.id] = e.id; e.srvId = row.id; } return e; });
+  d.attendance = {};
+  (p.attendance || []).forEach(function (row) {
+    if (tClasses.indexOf(row.cls) === -1) return;
+    var localId = stuMap[row.student_id];
+    if (!localId) return;
+    var key = (row.att_date || '') + '|' + (row.cls || '');
+    if (!d.attendance[key]) d.attendance[key] = {};
+    d.attendance[key][localId] = row.status || 'Present';
+  });
+  d.marks = (p.marks || []).map(function (row) {
+    if (!examMap[row.exam_id] || !stuMap[row.student_id]) return null;
+    return { examId: examMap[row.exam_id], studentId: stuMap[row.student_id], marks: row.marks };
+  }).filter(function (x) { return !!x; });
+  d.homework = (p.homework || []).filter(function (row) { return tClasses.indexOf(row.cls) !== -1; }).map(function (row) {
+    return { id: row.local_id || ('srv-' + row.id), cls: row.cls || '', subject: row.subject || '', title: row.title || '', due: row.due || '', doneBy: (row.done_by || []).map(function (id) { return stuMap[id]; }).filter(function (x) { return !!x; }) };
+  });
+  d.notices = (p.notices || []).map(function (row) { return { id: row.local_id || ('srv-' + row.id), title: row.title || '', date: row.notice_date || '', body: row.body || '' }; });
+  return d;
+}
+function loginCloudTeacher(acct, slice, token, opts) {
+  // Like loginCloudStudent, plus the session token the write RPCs need.
+  state.role = 'teacher'; state.user = acct; state.cloudDb = slice; state.cloudTeacherToken = token; state.view = 'dashboard'; state.profileStudent = null;
+  db = slice; DB_KEY = 'schoolSaathiCloudDB';
+  try { localStorage.setItem(CLOUD_TEACHER_KEY, JSON.stringify({ acct: acct, slice: slice, token: token })); } catch (e) {}
+  showView('app'); renderApp();
+  persistSession();
+  lastBackAt = 0; histExiting = false;
+  histArmGuard();
+  if (!opts || !opts.silent) toast(t('tLoggedIn') + ' ' + acct.name);
+}
+function doTeacherCloudLogin(serverId, email, pw, err) {
+  if (!email || pw.length < 6) {
+    err.textContent = t('tInvalidCreds');
+    err.classList.remove('hidden');
+    return;
+  }
+  err.classList.add('hidden');
+  sbTeacherCloudLogin(serverId, email, pw).then(function (res) {
+    if (!res || !res.ok) {
+      // One generic error, same as the local login: never reveal whether
+      // the email or the password was wrong. A locked reply gets the lock text.
+      err.textContent = t(res && res.locked ? 'tPinLocked' : 'tInvalidCreds');
+      err.classList.remove('hidden');
+      return;
+    }
+    var slice = mapCloudTeacherPayload(res);
+    var me = slice.teachers[0];
+    var acct = { role: 'teacher', name: me.name, sub: t('tchrSub') + ' • ' + me.name, email: 'cloud-teacher:' + serverId + ':' + me.id, uid: 'cloud-teacher-' + me.id, teacherId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
+    err.classList.add('hidden');
+    loginCloudTeacher(acct, slice, res.token);
+  });
+}
 function doTeacherLogin(e) {
   e.preventDefault();
   var id = $('teacherEmail').value.trim().toLowerCase(), pw = $('teacherPw').value;
   var err = $('teacherErr');
+  var schoolSel = $('teacherSchool') ? $('teacherSchool').value : '';
+  // v62: a "cloud:<server-uuid>" school is not on this device — the
+  // password is verified on the server, and the teacher works through
+  // token-authenticated RPCs.
+  if (schoolSel && schoolSel.indexOf('cloud:') === 0) {
+    doTeacherCloudLogin(schoolSel.slice(6), id, pw, err);
+    return false;
+  }
   // Local-only login (v35): teacher accounts live in schoolSaathiAccounts
   // on this device, with no server account — no Supabase attempt.
   var a = findAccount(id);
@@ -5654,6 +5804,13 @@ function doTeacherLogin(e) {
     return false;
   }
   if (a) loginFailClear(id);
+  // v62: if a local school was picked, the account must belong to it —
+  // otherwise the picker would silently open another school's data.
+  if (schoolSel && a && a.schoolUid !== schoolSel) {
+    err.textContent = t('tInvalidCreds');
+    err.classList.remove('hidden');
+    return false;
+  }
   // The teacher opens the SCHOOL's DB — if it is not on this device
   // there is nothing to open (loginAs would seed a demo DB instead).
   if (!readDbByKey(dbKeyFor(a))) {
@@ -5819,6 +5976,10 @@ function logout() {
   var wasLocalOnlySchool = sbIsLocalOnlySchool(); // v37: captured before state is cleared — a local-only school logs out to the local-only line, never "Backed up"
   state.role = null; state.user = null; state.view = 'dashboard';
   state.cloudDb = null; // v61: drop the cloud student slice with the session
+  // v62: revoke a cloud teacher session on the server (best-effort) and
+  // drop its token with the session — a logged-out token stops working.
+  if (state.cloudTeacherToken) { try { sbTeacherRevokeSession(state.cloudTeacherToken); } catch (e9) {} }
+  state.cloudTeacherToken = null;
   state.feeStudent = null; state.feeSearch = ''; state.feeType = 'All'; state.feeFilter = 'All'; state.feeFormOpen = false; state.feePreselect = null;
   state.profileStudent = null; state.profileTab = 'overview'; state.stuPage = 1;
   state.admReqFilter = 'All';
@@ -5826,6 +5987,7 @@ function logout() {
   try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
   try { localStorage.removeItem(CLOUD_STUDENT_KEY); } catch (e2) {} // v61
+  try { localStorage.removeItem(CLOUD_TEACHER_KEY); } catch (e3) {} // v62
   // Sign out of the server too (best-effort) and drop the server session.
   try {
     var sbSess = sbLoadSession();
@@ -7391,6 +7553,24 @@ function markAtt(id, m) {
   var stu = db.students.find(function (x) { return x.id === id; });
   if (stu && stu.cls !== state.attCls) { toast(t('tNotAllowed')); return; }
   var key = state.attDate + '|' + state.attCls;
+  // v62: a cloud teacher writes through the server RPC, not the local
+  // DB. Optimistic: the slice updates at once, and a failed call reverts
+  // it. A dead token logs the teacher out (re-login mints a new one).
+  if (state.cloudTeacherToken) {
+    if (!stu || !stu.srvId) { toast(t('tNotSaved')); return; }
+    var prev = (db.attendance[key] || {})[id];
+    if (!db.attendance[key]) db.attendance[key] = {};
+    db.attendance[key][id] = m;
+    renderPage();
+    sbTeacherMarkAttendance(state.cloudTeacherToken, state.attDate, state.attCls, stu.srvId, m).then(function (res) {
+      if (res && res.ok) return;
+      if (prev === undefined) delete db.attendance[key][id]; else db.attendance[key][id] = prev;
+      if (res && res.error === 'bad_token') { toast(t('tCloudSessionExpired')); logout(); return; }
+      toast(t('tNotSaved'));
+      renderPage();
+    });
+    return;
+  }
   if (!db.attendance[key]) db.attendance[key] = {};
   db.attendance[key][id] = m;
   saveDB(db); // autosave — marks are never lost on page change
@@ -7399,6 +7579,13 @@ function markAtt(id, m) {
 function saveAttendance() {
   // v35: a teacher saves only their own assigned class.
   if (state.role === 'teacher' && teacherClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
+  // v62: a cloud teacher's taps already went to the server one by one —
+  // there is nothing local to save, and no audit/activity row to write
+  // (the server keeps the attendance itself).
+  if (state.cloudTeacherToken) {
+    toast('✓ ' + t('tAttSaved') + ' — Class ' + state.attCls + ' (' + state.attDate + ').');
+    return;
+  }
   var key = state.attDate + '|' + state.attCls;
   var recs = db.attendance[key] || {};
   // v25: attendance saves go to the audit log too, so the full Activity
@@ -8505,6 +8692,7 @@ function saveMarks(examId) {
   // v35: a teacher enters marks only for their own assigned class.
   if (state.role === 'teacher' && teacherClasses().indexOf(ex.cls) === -1) { toast(t('tNotAllowed')); return; }
   var saved = 0, bad = [];
+  var changes = []; // v62: {studentId, marks} — marks null clears an existing mark. Computed first, applied after the write lands.
   // v34 (P1-10): new/updated marks are only saved for enrolled students
   // (Active/Inactive). An empty input still clears an EXISTING mark for
   // any student in the class — that is cleanup of a stale record, not a
@@ -8512,23 +8700,58 @@ function saveMarks(examId) {
   db.students.filter(function (s) { return s.cls === ex.cls; }).forEach(function (s) {
     var inp = $('mk-' + s.id);
     if (!inp) return;
-    var mkIdx = -1;
-    db.marks.forEach(function (m, i) { if (m.examId === examId && m.studentId === s.id) mkIdx = i; });
+    var hasMark = db.marks.some(function (m) { return m.examId === examId && m.studentId === s.id; });
     if (inp.value === '') {
-      if (mkIdx !== -1) { db.marks.splice(mkIdx, 1); saved++; } // empty = remove marks
+      if (hasMark) { changes.push({ studentId: s.id, marks: null }); saved++; } // empty = remove marks
       return;
     }
     if (!isEnrolledStudent(s)) return; // Cancelled/Draft: no new marks
     var v = parseFloat(inp.value);
     if (isNaN(v) || v < 0) { bad.push(s.name + ' (invalid)'); return; }
     if (v > ex.total) { bad.push(s.name + ' (over ' + ex.total + ')'); return; } // never silently clamp
-    if (mkIdx !== -1) db.marks[mkIdx].marks = v; else db.marks.push({ examId: examId, studentId: s.id, marks: v });
+    changes.push({ studentId: s.id, marks: v });
     saved++;
   });
+  var applyChanges = function (list) {
+    list.forEach(function (c) {
+      var mkIdx = -1;
+      db.marks.forEach(function (m, i) { if (m.examId === examId && m.studentId === c.studentId) mkIdx = i; });
+      if (c.marks === null) { if (mkIdx !== -1) db.marks.splice(mkIdx, 1); }
+      else if (mkIdx !== -1) db.marks[mkIdx].marks = c.marks;
+      else db.marks.push({ examId: examId, studentId: c.studentId, marks: c.marks });
+    });
+  };
+  var doneToast = function () {
+    if (bad.length) toast(t('tNotSaved') + ': ' + bad.join(', ') + ' — ' + t('tCheckMarks') + ' (max ' + ex.total + ').');
+    else if (saved) toast('✓ ' + t('tMarksSaved') + ' ' + saved + ' ' + t('tStudentsWord') + '.');
+    else toast(t('tNoChanges'));
+  };
+  // v62: a cloud teacher writes through the server RPC (one call for the
+  // whole save). The slice changes only after the server confirms, and
+  // every student must resolve to a server id or the whole save aborts.
+  if (state.cloudTeacherToken) {
+    if (!ex.srvId) { toast(t('tNotSaved')); return; }
+    var serverMarks = [];
+    for (var ci = 0; ci < changes.length; ci++) {
+      var cst = db.students.find(function (x) { return x.id === changes[ci].studentId; });
+      if (!cst || !cst.srvId) { toast(t('tNotSaved')); return; }
+      serverMarks.push({ student_id: cst.srvId, marks: changes[ci].marks });
+    }
+    sbTeacherSetMarks(state.cloudTeacherToken, ex.srvId, serverMarks).then(function (res) {
+      if (!res || !res.ok) {
+        if (res && res.error === 'bad_token') { toast(t('tCloudSessionExpired')); logout(); return; }
+        toast(t('tNotSaved'));
+        return;
+      }
+      applyChanges(changes);
+      renderApp();
+      doneToast();
+    });
+    return;
+  }
+  applyChanges(changes);
   saveDB(db); renderApp();
-  if (bad.length) toast(t('tNotSaved') + ': ' + bad.join(', ') + ' — ' + t('tCheckMarks') + ' (max ' + ex.total + ').');
-  else if (saved) toast('✓ ' + t('tMarksSaved') + ' ' + saved + ' ' + t('tStudentsWord') + '.');
-  else toast(t('tNoChanges'));
+  doneToast();
 }
 function examForm(editId) {
   // v37: exam creation (audit item 6). A teacher only ever sees their
@@ -8717,6 +8940,22 @@ function saveHomework(e) {
   if ($('fHwDue').value < todayIST()) { toast(t('tDueFuture')); return false; }
   // v35: a teacher posts homework only to their own assigned class.
   if (state.role === 'teacher' && teacherClasses().indexOf($('fHwCls').value) === -1) { toast(t('tNotAllowed')); return false; }
+  // v62: a cloud teacher posts through the server RPC. The row joins the
+  // slice only after the server confirms it.
+  if (state.cloudTeacherToken) {
+    var hw = { id: uniqueId('hw'), cls: $('fHwCls').value, subject: $('fHwSub').value, title: $('fHwTitle').value.trim(), due: $('fHwDue').value, doneBy: [] };
+    sbTeacherPostHomework(state.cloudTeacherToken, hw.cls, hw.subject, hw.title, hw.due, hw.id).then(function (res) {
+      if (!res || !res.ok) {
+        if (res && res.error === 'bad_token') { toast(t('tCloudSessionExpired')); logout(); return; }
+        toast(t('tNotSaved'));
+        return;
+      }
+      db.homework.unshift(hw);
+      closeModal(); renderApp();
+      toast(t('tHwAssigned'));
+    });
+    return false;
+  }
   db.homework.unshift({ id: uniqueId('hw'), cls: $('fHwCls').value, subject: $('fHwSub').value, title: $('fHwTitle').value.trim(), due: $('fHwDue').value, doneBy: [] });
   addActivity('📚', 'orange', 'Homework assigned', $('fHwSub').value + ' • Class ' + $('fHwCls').value);
   saveDB(db); closeModal(); renderApp();
