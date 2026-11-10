@@ -16,11 +16,17 @@
 --     parent_pin rows. How many such rows exist on the live DB is UNVERIFIED.
 --
 -- What this file does:
---   * REVOKE EXECUTE on ss_parent_lookup from ANON only, for BOTH signatures:
+--   * REVOKE EXECUTE on ss_parent_lookup from ANON *AND* PUBLIC, for BOTH
+--     signatures:
 --       - ss_parent_lookup(text, text, uuid) — the live 3-arg version,
 --         granted to anon in 07_parent_lookup_scope.sql:37.
 --       - ss_parent_lookup(text, text) — the old 2-arg version, whose grant
 --         in 02_rls.sql:154 is stale (07 dropped the 2-arg function first).
+--   * Why PUBLIC as well (BAT live check, 2026-11-10): PostgreSQL grants
+--     EXECUTE on a new function to the PUBLIC role by default, and `anon`
+--     is a member of PUBLIC — so revoking from anon alone leaves the hole
+--     open. The repo files contain no explicit PUBLIC grant; it is the
+--     default. Only revoking from PUBLIC (plus anon) actually closes it.
 --   * `authenticated` is deliberately NOT revoked — the owner path is
 --     unchanged for now, exactly as the audit recommended.
 --   * The function itself is NOT dropped — it stays for a future hash-based
@@ -39,13 +45,14 @@
 -- Verify after applying:
 --   * Anon key se RPC call karo (POST /rest/v1/rpc/ss_parent_lookup) ->
 --     401/403 aana chahiye (pehle 200 + student row milta tha).
---   * Authenticated owner call unaffected rehta hai (grant sirf anon se
---     hata hai).
+--   * Authenticated owner call unaffected rehta hai (grant sirf anon aur
+--     PUBLIC se hata hai; authenticated ka explicit grant rehta hai).
 --   * Check grants with:
 --       select routine_name, grantee, privilege_type
 --       from information_schema.routine_privileges
 --       where routine_name = 'ss_parent_lookup';
---     -> `anon` row gayab honi chahiye; `authenticated` row rehni chahiye.
+--     -> `anon` aur `PUBLIC` rows gayab honi chahiye; `authenticated`
+--     row rehni chahiye.
 --
 -- Idempotent: safe to re-run. Each revoke is guarded by an existence check
 -- (the 2-arg function was already dropped by 07, so an unguarded revoke
@@ -60,8 +67,9 @@ begin
       and p.proname = 'ss_parent_lookup'
       and pg_get_function_identity_arguments(p.oid) = 'text, text, uuid'
   ) then
+    execute 'revoke execute on function public.ss_parent_lookup(text, text, uuid) from public';
     execute 'revoke execute on function public.ss_parent_lookup(text, text, uuid) from anon';
-    raise notice 'revoked anon execute on ss_parent_lookup(text, text, uuid)';
+    raise notice 'revoked public + anon execute on ss_parent_lookup(text, text, uuid)';
   else
     raise notice 'ss_parent_lookup(text, text, uuid) not found — nothing to revoke';
   end if;
@@ -73,8 +81,9 @@ begin
       and p.proname = 'ss_parent_lookup'
       and pg_get_function_identity_arguments(p.oid) = 'text, text'
   ) then
+    execute 'revoke execute on function public.ss_parent_lookup(text, text) from public';
     execute 'revoke execute on function public.ss_parent_lookup(text, text) from anon';
-    raise notice 'revoked anon execute on ss_parent_lookup(text, text)';
+    raise notice 'revoked public + anon execute on ss_parent_lookup(text, text)';
   else
     raise notice 'ss_parent_lookup(text, text) not found — nothing to revoke';
   end if;
