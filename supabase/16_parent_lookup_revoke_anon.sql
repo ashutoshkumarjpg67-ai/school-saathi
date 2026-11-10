@@ -1,0 +1,110 @@
+-- ============================================================
+-- School Saathi — 16_parent_lookup_revoke_anon.sql
+-- v54 (B1): revoke the ANON grant on ss_parent_lookup.
+--
+-- THE PROBLEM (problems list v2.3, item B1):
+--   public.ss_parent_lookup(text, text, uuid) is SECURITY DEFINER
+--   and granted EXECUTE to anon + authenticated (07_parent_lookup_scope.sql).
+--   It compares the PIN in plaintext (s.parent_pin = p_pin) with no
+--   rate limit or lockout, p_school_id defaults to NULL so unscoped
+--   calls still work, legacy PINs are the phone's last 4 digits, and
+--   admission numbers are sequential — so anyone on the internet can
+--   brute-force a 4-digit PIN against a known admission number.
+--
+-- WHY REVOKE-ANON IS SAFE (verified in staging, 10 Nov 2026):
+--   * The app makes ZERO calls to this RPC. Student login is local
+--     (doStudentLogin compares against the local DB); the parent
+--     login was removed in v35 and never used the RPC.
+--     Verified by searching the v54 staging code for
+--     'ss_parent_lookup' — the only hits are in these SQL files.
+--   * After v54 (A1) the server column ss_students.parent_pin holds
+--     salted SHA-256 hashes (s256$...), never plaintext — so the
+--     RPC's plaintext comparison (s.parent_pin = p_pin) can never
+--     match again anyway. The RPC is dead twice over.
+--   * The revoke changes NO data and NO app behaviour. It is instant
+--     and reversible (a GRANT re-adds it).
+--
+-- STALE LINE (do NOT edit earlier files — his rule):
+--   02_rls.sql still grants EXECUTE on the DROPPED 2-arg overload
+--   ss_parent_lookup(text, text) to anon, authenticated. That
+--   overload was dropped by 07 before the 3-arg one was created, so
+--   the line is dead text. It is NOT touched here.
+--
+-- NEVER run this without the user's go-ahead. It is a live
+-- permission change on the production database, and the choice
+-- between (a) revoke-anon-now and (b) keep the RPC + require
+-- p_school_id + server-side rate limiting is his call if a parent
+-- portal is meant to go live soon. (a) is preferred: the parent
+-- portal, when it ships, should get a NEW hash-aware RPC with
+-- server-side rate limiting, not this plaintext one.
+--
+-- PUBLIC TRAP (found by live probe, 10 Nov 2026 — BAT review of
+-- Spider's PR #14; fixed here the same day, following Spider's
+-- fix commit 05a0b34): revoking from anon ALONE does not close
+-- the hole. The function is ALSO granted to PUBLIC, and anon is
+-- a member of PUBLIC — anon keeps EXECUTE through the PUBLIC
+-- grant. The revoke MUST hit PUBLIC too (Step 1 below does
+-- both, for both signatures). My first draft of this file had
+-- the same gap; the live probe caught it in both versions.
+--
+-- Apply statement-by-statement (the SQL endpoint returns only the
+-- LAST statement's result — one statement per file, as with SQL 14/15).
+-- ============================================================
+
+-- Step 0 (PROBE, read-only — run first, confirm the grants below):
+--   SELECT specific_name, grantee, privilege_type
+--   FROM information_schema.routine_privileges
+--   WHERE routine_schema = 'public'
+--     AND routine_name = 'ss_parent_lookup'
+--   ORDER BY specific_name, grantee;
+--   Expect (verified live 10 Nov 2026): exactly 4 rows — the 3-arg
+--   overload granted to PUBLIC, anon, authenticated and postgres
+--   (owner). The PUBLIC row is the trap: it is why Step 1 must
+--   revoke from PUBLIC as well as anon. (If a 2-arg overload still
+--   shows up, say so before proceeding — 07 dropped it, so it
+--   should not exist.)
+
+-- Step 1 (REVOKE — the change; one DO block, run as a single
+--   statement; idempotent and safe to re-run; mirrors Spider's
+--   fix commit 05a0b34 on PR #14 / supabase/15):
+--   do $$
+--   begin
+--     if exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+--       where n.nspname = 'public' and p.proname = 'ss_parent_lookup'
+--       and pg_get_function_identity_arguments(p.oid) = 'text, text, uuid') then
+--       execute 'revoke execute on function public.ss_parent_lookup(text, text, uuid) from public';
+--       execute 'revoke execute on function public.ss_parent_lookup(text, text, uuid) from anon';
+--       raise notice 'revoked public + anon execute on ss_parent_lookup(text, text, uuid)';
+--     else
+--       raise notice 'ss_parent_lookup(text, text, uuid) not found — nothing to revoke';
+--     end if;
+--     if exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+--       where n.nspname = 'public' and p.proname = 'ss_parent_lookup'
+--       and pg_get_function_identity_arguments(p.oid) = 'text, text') then
+--       execute 'revoke execute on function public.ss_parent_lookup(text, text) from public';
+--       execute 'revoke execute on function public.ss_parent_lookup(text, text) from anon';
+--       raise notice 'revoked public + anon execute on ss_parent_lookup(text, text)';
+--     else
+--       raise notice 'ss_parent_lookup(text, text) not found — nothing to revoke';
+--     end if;
+--   end $$;
+--   Expect: the two 'revoked public + anon' notices (or the
+--   'not found' notice for the 2-arg overload, which 07 dropped).
+--   The authenticated grant is deliberately KEPT here — revoking
+--   it too is the stronger option, left as the commented Step 3
+--   below for his decision.
+
+-- Step 2 (VERIFY — re-run the Step 0 probe):
+--   Expect: exactly 2 rows — authenticated and postgres only.
+--   No anon row AND no PUBLIC row remain. If either is still
+--   there, the hole is still open — do not call this done.
+--   Also confirm the app is unaffected: student login is local and
+--   the sync cycle does not call this RPC, so nothing in-app changes.
+
+-- Step 3 (OPTIONAL, stronger — only on his word):
+--   REVOKE EXECUTE ON FUNCTION public.ss_parent_lookup(text, text, uuid) FROM authenticated;
+--   Why it is safe: after v54 the RPC's plaintext PIN comparison can
+--   never match a hashed parent_pin, so even the authenticated grant
+--   buys nothing until the parent path is rebuilt server-side with
+--   hash verification. Re-verify with the Step 0 probe (expect 0 rows).
+--   If a parent portal ships later, it gets a new hash-aware RPC.
