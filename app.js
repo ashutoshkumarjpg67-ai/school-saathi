@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 63;
+var APP_VERSION = 64;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -571,6 +571,13 @@ function sbFinishSupabaseLogin(data, email, pw) {
     var list = loadAccounts();
     for (var i = 0; i < list.length; i++) if (list[i].email === email) list[i] = a;
     saveAccounts(list);
+    // B2 (M-11): GoTrue just authenticated this user, so a legacy djb2
+    // hash on the local account is upgraded here — the same upgrade
+    // sbLocalLogin does. verifyPw must still agree with the typed
+    // password: a server-side password change leaves the local hash
+    // stale, and then there is nothing safe to upgrade from.
+    var chkB2 = verifyPw(pw, a);
+    if (chkB2.ok && chkB2.legacy) upgradePwHash(a, pw);
     state.sb = { uid: uid, email: email };
     $('loginErr').classList.add('hidden');
     loginAs(a);
@@ -763,7 +770,10 @@ function doResetPassword(e) {
   if (!sbRecoveryToken) return fail(t('sbResetFailed'));
   var tok = sbRecoveryToken;
   sbSetNewPassword(tok, pw).then(function (r) {
-    if (!r.ok) { err.textContent = t('sbResetFailed'); err.classList.remove('hidden'); return; }
+    // B9 (M-3): the server rejected the token — that is an expired /
+    // invalid link, so say so explicitly instead of the generic error.
+    // A network failure lands in the .catch below and keeps sbResetFailed.
+    if (!r.ok) { err.textContent = t('sbResetExpired'); err.classList.remove('hidden'); return; }
     // Keep the device account in sync so offline login keeps working.
     sbGetUser(tok).then(function (u) {
       var em = u && u.data && u.data.email;
@@ -800,6 +810,10 @@ function sbBoot() {
       h.slice(1).split('&').forEach(function (p) { var kv = p.split('='); params[kv[0]] = decodeURIComponent(kv[1] || ''); });
       if (params.type === 'recovery' && params.access_token) {
         sbRecoveryToken = params.access_token;
+        // B9 (M-3): strip the token from the URL hash the moment it is
+        // received — never leave it in the address bar / history until
+        // a successful reset. (doResetPassword still strips on success.)
+        try { history.replaceState(null, '', location.pathname); } catch (e2) {}
         showView('login'); switchAuth('login');
         $('loginForm').classList.add('hidden');
         $('resetForm').classList.remove('hidden');
@@ -982,6 +996,38 @@ function sbLocalCountsReal(d) {
     marks: sbCountUnique((d.marks || []).filter(function (m) { return !sbIsSeedExamId(m.examId, d) && !sbIsSeedStudentId(m.studentId, d); }), function (m) { return m.examId + '|' + m.studentId; }),
     homework: real('ss_homework', d.homework), notices: real('ss_notices', d.notices) };
 }
+// v64: paged fetch — the sync pull/download/verify/upload-dedupe used to
+// fetch each table with a single `limit=5000`, so a table with more than
+// 5000 rows was silently truncated: a new device downloaded a partial
+// school, the pull never saw the missing rows, and the verify failed
+// forever (5000/5001). Pages of 5000 follow the server's id order with
+// a keyset cursor (id=gt.<last id>), so a row inserted by another device
+// mid-pull can neither be skipped nor duplicated, and the loop stops
+// the moment a page comes back short. If a page returns rows but the
+// cursor does not advance, the server is misbehaving — throw instead of
+// looping forever. Returns the sbRest shape ({ok, data}) so every
+// existing caller keeps working unchanged.
+var SB_PAGE_SIZE = 5000;
+function sbFetchAllPages(table, selectCols, schoolId, token) {
+  var parts = String(selectCols || '*').split(',').map(function (s) { return s.trim(); });
+  var cols = (parts.length === 1 && parts[0] === '*') ? '*' : (parts.indexOf('id') === -1 ? parts.concat(['id']).join(',') : selectCols);
+  var all = [];
+  var after = null;
+  function nextPage() {
+    var q = table + '?select=' + cols + '&school_id=eq.' + encodeURIComponent(schoolId) + '&order=id.asc&limit=' + SB_PAGE_SIZE + (after ? '&id=gt.' + encodeURIComponent(after) : '');
+    return sbRest('GET', q, token).then(function (r) {
+      if (!r.ok) throw new Error('read-' + table);
+      var rows = Array.isArray(r.data) ? r.data : [];
+      all = all.concat(rows);
+      if (rows.length < SB_PAGE_SIZE) return { ok: true, status: 200, data: all };
+      var last = rows[rows.length - 1] && rows[rows.length - 1].id;
+      if (!last || last === after) throw new Error('page-stuck-' + table);
+      after = last;
+      return nextPage();
+    });
+  }
+  return nextPage();
+}
 function sbNormTs(v) { return String(v || '').slice(0, 19); }
 // Upload rows that are not on the server yet. keyFn builds the dedupe key
 // from a row (local or server). onInserted receives ALL rows for the table
@@ -998,14 +1044,12 @@ function sbUploadMissing(token, schoolId, table, selectCols, rows, keyFn, onInse
     // fallback (or never, when that failed too). Callers without an
     // onInserted callback keep the fast path.
     if (!onInserted) return Promise.resolve(0);
-    return sbRest('GET', table + '?select=' + selectCols + '&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token).then(function (r) {
-      if (!r.ok) throw new Error('read-' + table);
+    return sbFetchAllPages(table, selectCols, schoolId, token).then(function (r) {
       onInserted(Array.isArray(r.data) ? r.data : []);
       return 0;
     });
   }
-  return sbRest('GET', table + '?select=' + selectCols + '&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token).then(function (r) {
-    if (!r.ok) throw new Error('read-' + table);
+  return sbFetchAllPages(table, selectCols, schoolId, token).then(function (r) {
     var existing = Array.isArray(r.data) ? r.data : [];
     var seen = {};
     existing.forEach(function (row) { seen[keyFn(row)] = true; });
@@ -1078,14 +1122,13 @@ function sbVerifyCounts(token, schoolId, counts) {
   // in one batch; the first failure is still reported in table order,
   // exactly as before.
   return Promise.all(checks.map(function (c) {
-    return sbRest('GET', c[0] + '?select=' + c[1] + '&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token).then(function (r) {
-      if (!r.ok) return { ok: false, detail: 'verify-' + c[0] };
+    return sbFetchAllPages(c[0], c[1], schoolId, token).then(function (r) {
       var got = Array.isArray(r.data) ? r.data.length : 0;
       // Server may hold MORE rows than this device (another device already
       // migrated) — that is fine. Fewer means this upload did not land.
       if (got < c[2]) return { ok: false, detail: c[0] + ' ' + got + '/' + c[2] };
       return { ok: true, detail: '' };
-    });
+    }).catch(function () { return { ok: false, detail: 'verify-' + c[0] }; });
   })).then(function (results) {
     for (var i = 0; i < results.length; i++) if (!results[i].ok) return results[i];
     return { ok: true, detail: '' };
@@ -2115,7 +2158,7 @@ function sbDownloadSchoolData(account, sbUid, token, serverSchoolId) {
     var tables = ['ss_fee_structure', 'ss_students', 'ss_teachers', 'ss_exams', 'ss_fee_records', 'ss_attendance', 'ss_receipts', 'ss_marks', 'ss_homework', 'ss_notices'];
     var gets = [sbRest('GET', 'ss_schools?select=*&id=eq.' + encodeURIComponent(sid), token)];
     tables.forEach(function (t) {
-      gets.push(sbRest('GET', t + '?select=*&school_id=eq.' + encodeURIComponent(sid) + '&limit=5000', token));
+      gets.push(sbFetchAllPages(t, '*', sid, token));
     });
     return Promise.all(gets).then(function (res) {
       var i;
@@ -3128,7 +3171,7 @@ function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
     if (!sid) return { done: false, reason: 'no-server-school' };
     var tables = ['ss_fee_structure', 'ss_students', 'ss_teachers', 'ss_exams', 'ss_fee_records', 'ss_attendance', 'ss_receipts', 'ss_marks', 'ss_homework', 'ss_notices', 'ss_admission_requests'];
     var gets = [sbRest('GET', 'ss_schools?select=*&id=eq.' + encodeURIComponent(sid), token)];
-    tables.forEach(function (t) { gets.push(sbRest('GET', t + '?select=*&school_id=eq.' + encodeURIComponent(sid) + '&limit=5000', token)); });
+    tables.forEach(function (t) { gets.push(sbFetchAllPages(t, '*', sid, token)); });
     return Promise.all(gets).then(function (res) {
       var i;
       for (i = 0; i < res.length; i++) if (!res[i].ok || !Array.isArray(res[i].data)) throw new Error('read-failed');
@@ -3321,8 +3364,8 @@ function sbFetchTakenNumbers(token, schoolId) {
   // and the repair pass. Also the server counters and the highest used
   // sequences, for the counter heal.
   return Promise.all([
-    sbRest('GET', 'ss_students?select=local_id,admission_no,enr&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token),
-    sbRest('GET', 'ss_receipts?select=receipt_no,student_id,total,receipt_date,student_name,month,lines&school_id=eq.' + encodeURIComponent(schoolId) + '&limit=5000', token),
+    sbFetchAllPages('ss_students', 'local_id,admission_no,enr', schoolId, token),
+    sbFetchAllPages('ss_receipts', 'receipt_no,student_id,total,receipt_date,student_name,month,lines', schoolId, token),
     sbRest('GET', 'ss_schools?select=adm_counter,receipt_counter&id=eq.' + encodeURIComponent(schoolId), token)
   ]).then(function (res) {
     var students = (res[0].ok && Array.isArray(res[0].data)) ? res[0].data : [];
@@ -5170,7 +5213,8 @@ var I18N = {
     waLateMsg: 'Namaste, this is {school}. {student} (Class {cls}) arrived late to school today ({date}). Please ensure timely arrival. Thank you.',
     waReceiptMsg: 'Namaste, this is {school}. Fee receipt {receipt} — {student} (Class {cls}), {amount} paid for {month} on {date}. Thank you.',
     waGreetMsg: 'Namaste, this is {school}. This is regarding {student} (Class {cls}).',
-    waSchoolContact: 'School'
+    waSchoolContact: 'School',
+    sbSignupPending: 'Account created on this device — server backup pending.', sbSignupFailed: 'Could not create the server account — check your connection and try again.', sbSignupRegistered: 'This email is already registered — log in instead, or check your inbox to confirm your email.', sbResetExpired: 'This reset link has expired — request a new one.'
   },
   hi: {
     dashboard: 'डैशबोर्ड', settings: 'सेटिंग्स', reports: 'रिपोर्ट', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -5207,7 +5251,8 @@ var I18N = {
     waLateMsg: 'नमस्ते, यह {school} है। {student} (कक्षा {cls}) आज ({date}) स्कूल देर से आया/आई। कृपया समय पर भेजें। धन्यवाद।',
     waReceiptMsg: 'नमस्ते, यह {school} है। फीस रसीद {receipt} — {student} (कक्षा {cls}), {month} के लिए {amount} का भुगतान {date} को हुआ। धन्यवाद।',
     waGreetMsg: 'नमस्ते, यह {school} है। {student} (कक्षा {cls}) के बारे में बात करनी है।',
-    waSchoolContact: 'स्कूल'
+    waSchoolContact: 'स्कूल',
+    sbSignupPending: 'खाता इसी डिवाइस पर बना है — सर्वर बैकअप बाकी है।', sbSignupFailed: 'सर्वर खाता नहीं बन सका — कनेक्शन जाँचें और फिर कोशिश करें।', sbSignupRegistered: 'यह ईमेल पहले से दर्ज है — लॉग इन करें, या ईमेल पक्का करने के लिए इनबॉक्स देखें।', sbResetExpired: 'यह रीसेट लिंक समाप्त हो गया है — नया लिंक माँगें।'
   }
 };
 function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || I18N.en[k] || k; }
@@ -5357,7 +5402,7 @@ function restoreSession() {
       var stuKey = 'schoolSaathiDB_' + (parts[1] || '');
       var stuDb = readDbByKey(stuKey);
       if (!stuDb) return Promise.resolve(false);
-      migrateV54(migrateV55(migrateV12(stuDb)));
+      migrateV54(migrateV55(migrateV16(migrateV12(stuDb)))); // B1 (M-10): the short restore chain strips full Aadhaar too — same as loadDB
       var stu = (stuDb.students || []).find(function (x) { return x.id === parts[2]; });
       if (stu && (stu.parentPinHash || stu.parentPin)) {
         DB_KEY = stuKey;
@@ -5489,7 +5534,7 @@ function findStudentByAdmNoInSchool(admNo, accountUid) {
   var key = dbKeyFor(a);
   var d = readDbByKey(key);
   if (!d) return null;
-  migrateV54(migrateV55(migrateV12(d)));
+  migrateV54(migrateV55(migrateV16(migrateV12(d)))); // B1 (M-10): strip full Aadhaar here too — same as loadDB
   var found = null;
   (d.students || []).some(function (s) {
     if (String(s.admissionNo || '').trim().toLowerCase() === want) { found = { student: s, dbKey: key, db: d }; return true; }
@@ -5989,26 +6034,58 @@ function doSignup(e) {
   if (pw.length < 6) return fail(t('tPwShort'));
   if (pw !== pw2) return fail(t('tPwMismatch'));
   if (findAccount(email)) return fail(t('tEmailTaken'));
-  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: hashPwNew(pw), hashScheme: 'sha256', role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: null };
-  var list = loadAccounts(); list.push(a); saveAccounts(list);
-  err.classList.add('hidden');
-  toast(t('tAccountCreated') + name);
-  // Create the server account too, best-effort and in the background.
-  // The local account above already works offline, so a server failure
-  // (offline, rate-limited) never blocks signup.
-  if (sbIsOnline()) {
-    sbSignUp(email, pw, school, name).then(function (res) {
-      if (res.status === 429) { toast(t('sbTooMany')); sbSetStatus('not-linked', 'rate-limited'); return; }
-      if (!res.ok || !res.data || !res.data.user || !res.data.user.id) { sbSetStatus('not-linked', 'signup-failed'); return; }
-      a.sbUid = res.data.user.id;
-      var l2 = loadAccounts();
-      for (var i = 0; i < l2.length; i++) if (l2[i].email === email) l2[i] = a;
-      saveAccounts(l2);
-      if (res.data.access_token) { sbStoreSession(res.data); state.sb = { uid: res.data.user.id, email: email }; }
-      else toast(t('sbEmailConfirm'));
-    }).catch(function () { sbSetStatus('not-linked', 'offline'); /* offline mid-flight — local account stands */ });
+  // B10 (M-2): online signup is gated on the GoTrue account — loginAs
+  // only runs after the server account exists. Offline signup keeps
+  // working as a local-only account, with the honest pending-backup
+  // toast (B4/M-23) instead of a bare "Account created".
+  // NOTE: whether GoTrue requires email confirmation is a server
+  // setting (UNVERIFIED from the client). A signup answer with no
+  // access_token means confirmation is required: no local account is
+  // created and nobody is logged in — the user confirms first, then
+  // logs in, and sbLoginNewSchool creates the local account.
+  function createLocal(sbUid) {
+    var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: hashPwNew(pw), hashScheme: 'sha256', role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: sbUid || null };
+    var list = loadAccounts(); list.push(a); saveAccounts(list);
+    return a;
   }
-  loginAs(a, { silent: true });
+  if (!sbIsOnline()) {
+    var aOff = createLocal(null);
+    err.classList.add('hidden');
+    toast(t('sbSignupPending'));
+    loginAs(aOff, { silent: true });
+    return false;
+  }
+  sbSignUp(email, pw, school, name).then(function (res) {
+    if (res.status === 429) { err.textContent = t('sbTooMany'); err.classList.remove('hidden'); return; }
+    if (!res.ok || !res.data || !res.data.user || !res.data.user.id) {
+      var msg = (res.data && (res.data.msg || res.data.error_description || res.data.error)) || '';
+      var already = res.status === 400 && ((res.data && res.data.error_code === 'email_exists') || /already registered/i.test(String(msg)));
+      err.textContent = t(already ? 'sbSignupRegistered' : 'sbSignupFailed');
+      err.classList.remove('hidden');
+      return;
+    }
+    if (!res.data.access_token) {
+      // Server account created, email confirmation pending — do NOT
+      // create a local account or log in (see the NOTE above).
+      err.textContent = t('sbEmailConfirm');
+      err.classList.remove('hidden');
+      return;
+    }
+    var a = createLocal(res.data.user.id);
+    sbStoreSession(res.data); state.sb = { uid: res.data.user.id, email: email };
+    err.classList.add('hidden');
+    toast(t('tAccountCreated') + name);
+    loginAs(a, { silent: true });
+  }).catch(function () {
+    // Network dropped mid-flight: the server may or may not have
+    // created the account. Fall back to the local-only signup (the
+    // v34 link retry on the next login links the server account, and
+    // signs in instead if the email is already registered there).
+    var aNet = createLocal(null);
+    err.classList.add('hidden');
+    toast(t('sbSignupPending'));
+    loginAs(aNet, { silent: true });
+  });
   return false;
 }
 function logout() {
@@ -8501,7 +8578,7 @@ function validateAdmissionRequest(r) {
 function saveAdmissionRequestToSchool(dbKey, req) {
   var d = readDbByKey(dbKey);
   if (!d) return false;
-  migrateV12(d);
+  migrateV16(migrateV12(d)); // B1 (M-10): a full Aadhaar on any student in this DB is stripped to last-4 on this write path too
   d.admissionRequests.push(req);
   writeDbByKey(dbKey, d);
   if (DB_KEY === dbKey) db = d; // keep the in-memory DB in sync
