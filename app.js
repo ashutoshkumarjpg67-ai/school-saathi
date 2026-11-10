@@ -3097,6 +3097,20 @@ function sbReceiptContentMatches(srvRow, rc, stuMap, byId) {
   // minting a duplicate. The fee-type check matters: two genuinely
   // different same-day collections (e.g. Tuition 800 and Transport
   // 800) share every other field and must never be merged.
+  // B2: the fee-type check alone cannot tell two same-day same-amount
+  // collections of the SAME fee type apart (Tuition 800 paid twice).
+  // When both sides carry Collected fee-record ids on their lines
+  // (receipts made after the fix stamp them in finishCollectFee),
+  // the id sets must agree — two different collections never share
+  // a fee record. When either side has no ids (a receipt made
+  // before the fix), the field comparison below decides, exactly
+  // as before, so old receipts still adopt and merge as they did.
+  var srvIds = [];
+  (srvRow.lines || []).forEach(function (ln) { if (ln.recordId) srvIds.push(String(ln.recordId)); });
+  var rcIds = [];
+  (rc.lines || []).forEach(function (ln) { if (ln.recordId) rcIds.push(String(ln.recordId)); });
+  srvIds.sort(); rcIds.sort();
+  if (srvIds.length && rcIds.length && srvIds.join(',') !== rcIds.join(',')) return false;
   var s = byId[rc.studentId] || {};
   var stuId = (stuMap && stuMap[rc.studentId]) || null;
   var idOk = !stuId || String(srvRow.student_id || '') === String(stuId);
@@ -3134,10 +3148,27 @@ function sbReceiptContentKey(rc) {
   // earliest number wins. A genuinely different collection
   // (different total, date or fee type) has a different key and
   // keeps its own row.
+  // B2: the fields above cannot tell two genuinely different
+  // same-day same-amount collections of the same fee type apart
+  // (Tuition 800 paid twice in one day for the same student and
+  // month) — they shared one key and collapsed into one receipt.
+  // The key now also carries the Collected fee-record ids stamped
+  // on the receipt's lines (finishCollectFee): two different
+  // collections always paid different fee records, so they never
+  // share a key. Receipts made before the fix carry no record ids
+  // and fall back to the legacy key, so old receipts (including
+  // the v41 duplicates) still collapse exactly as before. The
+  // receipt NUMBER sequence is untouched: the key only decides
+  // which rows are the same collection, never which number a
+  // receipt gets.
   var types = [];
   (rc.lines || []).forEach(function (ln) { if (ln.type) types.push(ln.type); });
   types.sort();
-  return [rc.studentId || '', rc.month || '', Number(rc.total || 0), rc.date || '', rc.name || '', types.join(',')].join('|');
+  var ids = [];
+  (rc.lines || []).forEach(function (ln) { if (ln.recordId) ids.push(String(ln.recordId)); });
+  ids.sort();
+  var key = [rc.studentId || '', rc.month || '', Number(rc.total || 0), rc.date || '', rc.name || '', types.join(',')].join('|');
+  return ids.length ? key + '|fee:' + ids.join(',') : key;
 }
 function sbGetSchoolIdForSync(account, sbUid, token) {
   var cached = sbServerSchoolMap()[account.uid];
@@ -7689,17 +7720,30 @@ function finishCollectFee(d, s, total, receiptNo, numPending) {
   d.lines.forEach(function (ln, i) {
     var paid = +ln.paid || 0, due = +ln.due || 0, con = +ln.con || 0;
     var net = Math.max(0, due - con);
-    savedLines.push({ desc: ln.desc, type: ln.type, month: ln.month, due: due, con: con, paid: paid });
+    // B2: the saved line carries the id of the Collected fee record
+    // this line paid. The receipt content key uses those ids to tell
+    // two genuinely different same-day same-amount collections apart
+    // (same student, month, total, date, name and fee type). A line
+    // that paid nothing has no collection behind it, so it carries
+    // no id. The id is the fee record's local id, which the server
+    // already stores (ss_fee_records.local_id), so it survives the
+    // upload/download round trip inside the receipt's lines.
+    var sl = { desc: ln.desc, type: ln.type, month: ln.month, due: due, con: con, paid: paid, recordId: '' };
+    savedLines.push(sl);
     if (paid <= 0) return;
     var rec = ln.recordId ? db.feeRecords.find(function (r) { return r.id === ln.recordId; }) : null;
     if (rec) {
-      if (paid >= net) { rec.status = 'Collected'; rec.amount = net; rec.date = today; }
+      if (paid >= net) { rec.status = 'Collected'; rec.amount = net; rec.date = today; sl.recordId = rec.id; }
       else {
         rec.amount = net - paid; // remainder stays Pending
-        db.feeRecords.push({ id: uniqueId('fee'), studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: paid, status: 'Collected', date: today });
+        var nr = { id: uniqueId('fee'), studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: paid, status: 'Collected', date: today };
+        db.feeRecords.push(nr);
+        sl.recordId = nr.id;
       }
     } else {
-      db.feeRecords.push({ id: uniqueId('fee'), studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: paid, status: 'Collected', date: today });
+      var nr2 = { id: uniqueId('fee'), studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: paid, status: 'Collected', date: today };
+      db.feeRecords.push(nr2);
+      sl.recordId = nr2.id;
       if (paid < net) db.feeRecords.push({ id: uniqueId('fee'), studentId: s.id, student: s.name, cls: s.cls, month: ln.month, type: ln.type, amount: net - paid, status: 'Pending', date: today });
     }
   });
