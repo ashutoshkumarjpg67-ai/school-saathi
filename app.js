@@ -1138,8 +1138,9 @@ function sbVerifyCounts(token, schoolId, counts) {
    Live 9 Nov 2026 (v44 verification): the test school went from 1
    student to 40 in ~5 minutes, its school row renamed to "St. Xavier
    School" with counters 41/1, and ~149 receipt numbers were minted —
-   all demo-seed rows (seedDB(), the harness fixture set) uploaded from
-   a client whose local DB still held the pre-v36 seed. seedDB() has no
+   all demo-seed rows (the harness fixture set, now in
+   scripts/seed-fixtures.js) uploaded from
+   a client whose local DB still held the pre-v36 seed. The fixtures have no
    caller in app.js (v36 stopped seeding fresh devices), but a local DB
    written before v36 keeps its seed rows forever, and every sync egress
    treated them as the account's own data.
@@ -1149,8 +1150,8 @@ function sbVerifyCounts(token, schoolId, counts) {
    base-36 timestamp + counter + random — the real V21 Test Kumar row
    is stu1794162292000, 13 digits, never 1–40). The id alone is NOT
    enough: ordinary rows can reuse a short id (the harness fixtures use
-   stu1/stu2/ex1/fee1 for real rows), so the fingerprint below is built
-   from seedDB() itself — id plus the seed's exact content for that id
+   stu1/stu2/ex1/fee1 for real rows), so the fingerprint table below is
+   precomputed from the seed fixtures themselves — id plus the seed's exact content for that id
    (name + numbers for a student, name + subject + class for a teacher,
    and so on). A row is seed only when both match; an edited seed row
    escapes the quarantine, which is safe — it was user-edited, and the
@@ -1174,24 +1175,33 @@ function sbVerifyCounts(token, schoolId, counts) {
    The seed PROFILE is fingerprinted separately (name + city +
    principal + phone + email, all five, plus at least one seed row
    present) and is never pushed to the server school row. */
+// Phase D (L-8): the demo-seed content fingerprints, PRECOMPUTED from
+// scripts/seed-fixtures.js seedDB() at v67 (40 students, 12 teachers,
+// 5 exams, 70 fee records, 4 homework, 3 notices). The quarantine
+// (sbSeedFingerprints below) reads this table instead of calling
+// seedDB() at runtime, because seedDB() no longer ships in app.js.
+// If the fixtures ever change, regenerate this table from the new
+// seedDB() output and update the counts in this comment — a stale
+// table silently stops quarantining the changed rows.
+var SB_SEED_FINGERPRINTS = {
+  "students": {"stu1":"Aarav Verma|ADM-2025-001|ENR-001","stu2":"Vivaan Choudhary|ADM-2025-002|ENR-002","stu3":"Aditya Roy|ADM-2025-003|ENR-003","stu4":"Arjun Gupta|ADM-2025-004|ENR-004","stu5":"Sai Ranjan|ADM-2025-005|ENR-005","stu6":"Reyansh Kumari|ADM-2025-006|ENR-006","stu7":"Krishna Mishra|ADM-2025-007|ENR-007","stu8":"Ishaan Srivastava|ADM-2025-008|ENR-008","stu9":"Rohan Devi|ADM-2025-009|ENR-009","stu10":"Kabir Tiwari|ADM-2025-010|ENR-010","stu11":"Ananya Dubey|ADM-2025-011|ENR-011","stu12":"Diya Kumar|ADM-2025-012|ENR-012","stu13":"Aadhya Yadav|ADM-2025-013|ENR-013","stu14":"Myra Sinha|ADM-2025-014|ENR-014","stu15":"Sara Singh|ADM-2025-015|ENR-015","stu16":"Ira Jha|ADM-2025-016|ENR-016","stu17":"Priya Patel|ADM-2025-017|ENR-017","stu18":"Riya Sharma|ADM-2025-018|ENR-018","stu19":"Anika Pandey|ADM-2025-019|ENR-019","stu20":"Navya Das|ADM-2025-020|ENR-020","stu21":"Aarush Verma|ADM-2025-021|ENR-021","stu22":"Vihaan Choudhary|ADM-2025-022|ENR-022","stu23":"Aryan Roy|ADM-2025-023|ENR-023","stu24":"Dhruv Gupta|ADM-2025-024|ENR-024","stu25":"Meera Ranjan|ADM-2025-025|ENR-025","stu26":"Kavya Kumari|ADM-2025-026|ENR-026","stu27":"Sneha Mishra|ADM-2025-027|ENR-027","stu28":"Pooja Srivastava|ADM-2025-028|ENR-028","stu29":"Nikhil Devi|ADM-2025-029|ENR-029","stu30":"Varun Tiwari|ADM-2025-030|ENR-030","stu31":"Rahul Dubey|ADM-2025-031|ENR-031","stu32":"Sana Kumar|ADM-2025-032|ENR-032","stu33":"Riya Kumari|ADM-2025-033|ENR-033","stu34":"Priya Kumari|ADM-2025-034|ENR-034","stu35":"Ishita Yadav|ADM-2025-035|ENR-035","stu36":"Tanvi Sinha|ADM-2025-036|ENR-036","stu37":"Yash Singh|ADM-2025-037|ENR-037","stu38":"Om Jha|ADM-2025-038|ENR-038","stu39":"Dev Patel|ADM-2025-039|ENR-039","stu40":"Rudra Sharma|ADM-2025-040|ENR-040"},
+  "teachers": {"t1":"Sunita Sharma|Mathematics|10th-A","t2":"Rajesh Kumar|Science|10th-B","t3":"Anita Verma|English|9th-A","t4":"Vikram Singh|Hindi|8th-A","t5":"Pooja Mishra|Social Science|9th-B","t6":"Amit Jha|Mathematics|8th-B","t7":"Neha Gupta|Science|7th-A","t8":"Suresh Yadav|English|6th-A","t9":"Kavita Tiwari|Hindi|7th-B","t10":"Manoj Pandey|Mathematics|9th-B","t11":"Rekha Sinha|Science|6th-B","t12":"Deepak Choudhary|English|10th-A"},
+  "exams": {"ex1":"Unit Test 1|10th-A|Mathematics","ex2":"Unit Test 2|10th-A|Science","ex3":"Half Yearly Exam|10th-A|All Subjects","ex4":"Unit Test 1|9th-A|Mathematics","ex5":"Monthly Test|8th-B|English"},
+  "feeRecords": {"fee1":"stu1|Apr|Tuition|16500|Collected","fee2":"stu4|Apr|Tuition|16500|Collected","fee3":"stu7|Apr|Tuition|16500|Collected","fee4":"stu10|Apr|Tuition|16500|Collected","fee5":"stu13|Apr|Tuition|16500|Collected","fee6":"stu16|Apr|Tuition|16500|Collected","fee7":"stu19|Apr|Tuition|16500|Collected","fee8":"stu22|Apr|Tuition|16500|Collected","fee9":"stu25|Apr|Tuition|16500|Collected","fee10":"stu33|Apr|Tuition|16500|Collected","fee11":"stu1|Apr|Tuition|6250|Pending","fee12":"stu2|Apr|Tuition|6250|Pending","fee13":"stu3|Apr|Tuition|6250|Pending","fee14":"stu4|Apr|Tuition|6250|Pending","fee15":"stu10|May|Tuition|17800|Collected","fee16":"stu13|May|Tuition|17800|Collected","fee17":"stu16|May|Tuition|17800|Collected","fee18":"stu19|May|Tuition|17800|Collected","fee19":"stu22|May|Tuition|17800|Collected","fee20":"stu25|May|Tuition|17800|Collected","fee21":"stu28|May|Tuition|17800|Collected","fee22":"stu31|May|Tuition|17800|Collected","fee23":"stu34|May|Tuition|17800|Collected","fee24":"stu37|May|Tuition|17800|Collected","fee25":"stu5|May|Tuition|5500|Pending","fee26":"stu6|May|Tuition|5500|Pending","fee27":"stu7|May|Tuition|5500|Pending","fee28":"stu8|May|Tuition|5500|Pending","fee29":"stu19|Jun|Tuition|16200|Collected","fee30":"stu22|Jun|Tuition|16200|Collected","fee31":"stu25|Jun|Tuition|16200|Collected","fee32":"stu28|Jun|Tuition|16200|Collected","fee33":"stu31|Jun|Tuition|16200|Collected","fee34":"stu34|Jun|Tuition|16200|Collected","fee35":"stu37|Jun|Tuition|16200|Collected","fee36":"stu40|Jun|Tuition|16200|Collected","fee37":"stu3|Jun|Tuition|16200|Collected","fee38":"stu6|Jun|Tuition|16200|Collected","fee39":"stu9|Jun|Tuition|7000|Pending","fee40":"stu10|Jun|Tuition|7000|Pending","fee41":"stu11|Jun|Tuition|7000|Pending","fee42":"stu12|Jun|Tuition|7000|Pending","fee43":"stu28|Jul|Tuition|17500|Collected","fee44":"stu31|Jul|Tuition|17500|Collected","fee45":"stu34|Jul|Tuition|17500|Collected","fee46":"stu37|Jul|Tuition|17500|Collected","fee47":"stu40|Jul|Tuition|17500|Collected","fee48":"stu3|Jul|Tuition|17500|Collected","fee49":"stu6|Jul|Tuition|17500|Collected","fee50":"stu9|Jul|Tuition|17500|Collected","fee51":"stu12|Jul|Tuition|17500|Collected","fee52":"stu15|Jul|Tuition|17500|Collected","fee53":"stu13|Jul|Tuition|5000|Pending","fee54":"stu14|Jul|Tuition|5000|Pending","fee55":"stu15|Jul|Tuition|5000|Pending","fee56":"stu16|Jul|Tuition|5000|Pending","fee57":"stu37|Aug|Tuition|16500|Collected","fee58":"stu40|Aug|Tuition|16500|Collected","fee59":"stu3|Aug|Tuition|16500|Collected","fee60":"stu6|Aug|Tuition|16500|Collected","fee61":"stu9|Aug|Tuition|16500|Collected","fee62":"stu12|Aug|Tuition|16500|Collected","fee63":"stu15|Aug|Tuition|16500|Collected","fee64":"stu18|Aug|Tuition|16500|Collected","fee65":"stu21|Aug|Tuition|16500|Collected","fee66":"stu24|Aug|Tuition|16500|Collected","fee67":"stu17|Aug|Tuition|6250|Pending","fee68":"stu18|Aug|Tuition|6250|Pending","fee69":"stu19|Aug|Tuition|6250|Pending","fee70":"stu20|Aug|Tuition|6250|Pending"},
+  "homework": {"hw1":"Ex 5.2 \u2014 Q1 to Q10|10th-A|Mathematics","hw2":"Light chapter notes + diagram|10th-A|Science","hw3":"Essay \u2014 My Favourite Festival|9th-A|English","hw4":"Nibandh \u2014 Swachh Bharat|8th-B|Hindi"},
+  "notices": {"n1":"Annual Sports Day|2026-11-07","n2":"Parent-Teacher Meeting|2026-11-05","n3":"Diwali Holidays|2026-10-28"}
+};
+
 var __sbSeedFp = null;
 function sbSeedFingerprints() {
-  // The seed's content fingerprint, built from seedDB() itself so it
-  // can never drift from the fixture set: per local_id, the fields
-  // that identify the row as the demo seed.
+  // Phase D (L-8): returns the precomputed SB_SEED_FINGERPRINTS table
+  // (generated from the seed fixtures at v67) — per local_id, the
+  // fields that identify a row as the demo seed. seedDB() itself no
+  // longer ships in app.js, so the table is the only copy the
+  // quarantine has; it must be regenerated if the fixtures change.
   if (__sbSeedFp) return __sbSeedFp;
-  var fp = { students: {}, teachers: {}, exams: {}, feeRecords: {}, homework: {}, notices: {} };
-  try {
-    var s = seedDB();
-    (s.students || []).forEach(function (r) { fp.students[r.id] = (r.name || '') + '|' + (r.admissionNo || '') + '|' + (r.enr || ''); });
-    (s.teachers || []).forEach(function (r) { fp.teachers[r.id] = (r.name || '') + '|' + (r.subject || '') + '|' + (r.cls || ''); });
-    (s.exams || []).forEach(function (r) { fp.exams[r.id] = (r.name || '') + '|' + (r.cls || '') + '|' + (r.subject || ''); });
-    (s.feeRecords || []).forEach(function (r) { fp.feeRecords[r.id] = (r.studentId || '') + '|' + (r.month || '') + '|' + (r.type || '') + '|' + (r.amount || 0) + '|' + (r.status || ''); });
-    (s.homework || []).forEach(function (r) { fp.homework[r.id] = (r.title || '') + '|' + (r.cls || '') + '|' + (r.subject || ''); });
-    (s.notices || []).forEach(function (r) { fp.notices[r.id] = (r.title || '') + '|' + (r.date || ''); });
-  } catch (e) {}
-  __sbSeedFp = fp;
-  return fp;
+  __sbSeedFp = SB_SEED_FINGERPRINTS;
+  return __sbSeedFp;
 }
 function sbIsSeedLocalId(table, localId) {
   var id = String(localId || '');
@@ -2122,49 +2132,13 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   }
   return { stuMap: stuMap, examMap: examMap, kept: kept };
 }
-function sbDownloadSchoolData(account, sbUid, token, serverSchoolId) {
-  if (!account || account.role !== 'school') return Promise.resolve({ done: false, reason: 'not-school' });
-  if (!token) return Promise.resolve({ done: false, reason: 'no-token' });
-  if (!sbIsOnline()) return Promise.resolve({ done: false, reason: 'offline' });
-  var d = db; // the account's DB is loaded by loginAs before this runs
-  if ((d.students || []).length || (d.feeRecords || []).length || (d.teachers || []).length) {
-    return Promise.resolve({ done: false, reason: 'not-empty' });
-  }
-  var idP = serverSchoolId ? Promise.resolve(serverSchoolId)
-    : sbGetServerSchoolId(sbUid, token).then(function (row) { return row ? row.id : null; });
-  return idP.then(function (sid) {
-    if (!sid) return { done: false, reason: 'no-server-school' };
-    var tables = ['ss_fee_structure', 'ss_students', 'ss_teachers', 'ss_exams', 'ss_fee_records', 'ss_attendance', 'ss_receipts', 'ss_marks', 'ss_homework', 'ss_notices'];
-    var gets = [sbRest('GET', 'ss_schools?select=*&id=eq.' + encodeURIComponent(sid), token)];
-    tables.forEach(function (t) {
-      gets.push(sbFetchAllPages(t, '*', sid, token));
-    });
-    return Promise.all(gets).then(function (res) {
-      var i;
-      for (i = 0; i < res.length; i++) if (!res[i].ok || !Array.isArray(res[i].data)) throw new Error('read-failed');
-      var schoolRow = (res[0].data && res[0].data[0]) || null;
-      var byTable = {};
-      tables.forEach(function (t, j) { byTable[t] = res[j + 1].data; });
-      var applied = sbApplyServerRows(d, schoolRow, byTable, account, sid);
-      // v31: the downloaded state is now the synced state — snapshot it
-      // (and the server ids) so the next local save does not re-queue
-      // every downloaded row as a change.
-      sbSyncSnapshotRefresh(d, account, applied);
-      saveDB(db);
-      renderApp();
-      return { done: true, reason: 'ok', schoolId: sid, counts: sbLocalCounts(d) };
-    });
-  }).catch(function (err) {
-    return { done: false, reason: 'error', detail: (err && err.message) || 'error' };
-  });
-}
 function sbRetryDownload() {
   if (!state.user || state.user.role !== 'school') { toast(t('sbStatusNotSchool')); return; }
   if (!state.sb || !state.sb.uid) { toast(t('sbStatusPending')); return; }
   // v31: the Download button is now the manual refresh — a server-wins
-  // pull (same guards as login) followed by an outbox flush. The old
-  // empty-store-only download still lives in sbDownloadSchoolData and is
-  // used for a fresh second-device login.
+  // pull (same guards as login) followed by an outbox flush.
+  // Phase D (L-6): the old empty-store-only download was removed —
+  // it had zero callers.
   toast(t('sbDownloadStart'));
   sbSyncStart(state.user, state.sb.uid, null).then(function (r) {
     if (r.done) { toast(t('sbDownloadDone')); renderApp(); }
@@ -3853,38 +3827,17 @@ function sbPostSupportRequest(req) {
 
 
 
-/* ================= seed data ================= */
-// Seed platform schools. INVARIANT (v30 — the v26 count mismatch): the
-// account status and the plan must tell the same story, or every count
-// derived from them disagrees. Allowed pairs only:
-//   status 'active'  <-> plan 'Active' or 'Trial'   (account is live)
-//   status 'pending' <-> plan 'Pending'             (awaiting approval)
-//   status 'expired' <-> plan 'Expired'             (subscription lapsed)
-// So: active-status == Active-plan + Trial-plan; expired == Expired;
-// pending == Pending. The harness asserts this agreement.
-var SCHOOL_NAMES = [
-  ['St. Xavier School','Patna',1250,'active','Active'], ['DAV Public School','Gaya',1100,'active','Active'],
-  ['Bright Future School','Muzaffarpur',980,'active','Active'], ['Holy Child School','Bhagalpur',860,'active','Active'],
-  ['Sunrise Academy','Darbhanga',750,'active','Active'], ['Saraswati Vidya Mandir','Gopalganj',620,'active','Active'],
-  ['Gyanlok Public School','Baliwan Sagar',500,'active','Trial'], ['St. Joseph\'s School','Siwan',940,'active','Active'],
-  ['Delhi Public School','Patna',1480,'active','Active'], ['Notre Dame Academy','Patna',1120,'active','Active'],
-  ['Kendriya Vidyalaya','Chhapra',890,'expired','Expired'], ['Bal Vidyapeeth','Hajipur',430,'active','Trial'],
-  ['St. Mary\'s School','Motihari',760,'active','Active'], ['Rose Public School','Bettiah',540,'active','Active'],
-  ['Modern Public School','Samastipur',690,'active','Active'], ['Vidya Niketan','Ara',610,'active','Active'],
-  ['Little Scholars Public School','Siwan',380,'pending','Pending'], ['Gyan Jyoti Vidyalaya','Chhapra',290,'pending','Pending'],
-  ['Carmel High School','Patna',1050,'active','Active'], ['Don Bosco Academy','Patna',980,'active','Active'],
-  ['St. Karen\'s School','Patna',870,'expired','Expired'], ['Radiant Public School','Gopalganj',450,'active','Active'],
-  ['Oxford Public School','Muzaffarpur',720,'expired','Expired'], ['Mount Carmel School','Gaya',660,'expired','Expired']
-];
-var FIRST = ['Aarav','Vivaan','Aditya','Arjun','Sai','Reyansh','Krishna','Ishaan','Rohan','Kabir','Ananya','Diya','Aadhya','Myra','Sara','Ira','Priya','Riya','Anika','Navya','Aarush','Vihaan','Aryan','Dhruv','Meera','Kavya','Sneha','Pooja','Nikhil','Varun','Rahul','Sana','Ishita','Tanvi','Yash','Om','Dev','Rudra','Aisha','Zara','Farhan','Imran','Nisha','Kiran','Manav','Shreya'];
-var LAST = ['Kumar','Singh','Sharma','Verma','Gupta','Mishra','Tiwari','Yadav','Jha','Pandey','Choudhary','Ranjan','Srivastava','Dubey','Sinha','Patel','Das','Roy','Kumari','Devi'];
-var GIRL_NAMES = ['Ananya', 'Diya', 'Aadhya', 'Myra', 'Sara', 'Ira', 'Priya', 'Riya', 'Anika', 'Navya', 'Meera', 'Kavya', 'Sneha', 'Pooja', 'Sana', 'Ishita', 'Tanvi', 'Aisha', 'Zara', 'Nisha', 'Shreya'];
+/* ================= shared lookup data ================= */
+// CLASSES / FEE_TYPES / MONTHS_ACAD / SUBJECTS and the helpers below are
+// production data used by the fee/exam forms and charts — they stay.
+// Phase D (L-8): the test-only seed fixtures (SCHOOL_NAMES, FIRST,
+// LAST, GIRL_NAMES, SEED_CLASSES and seedDB()) moved to
+// scripts/seed-fixtures.js. They never run on boot and must never
+// populate a real school. The v45 demo-seed quarantine still works:
+// its fingerprints are the precomputed SB_SEED_FINGERPRINTS table
+// (next to sbSeedFingerprints, near the sync code), generated from
+// seedDB() — regenerate it if the fixtures ever change.
 var CLASSES = ['Nursery-A','Nursery-B','LKG-A','LKG-B','UKG-A','UKG-B','1st-A','1st-B','2nd-A','2nd-B','3rd-A','3rd-B','4th-A','4th-B','5th-A','5th-B','6th-A','6th-B','7th-A','7th-B','8th-A','8th-B','9th-A','9th-B','10th-A','10th-B','11th-A','11th-B','12th-A','12th-B'];
-// v37: the demo seed still covers only the original 6th–10th classes
-// (40 students) — the fixture's counts, fee splits and harness
-// assumptions stay exact. New classes get real students through
-// admission, never through the seed.
-var SEED_CLASSES = ['6th-A','6th-B','7th-A','7th-B','8th-A','8th-B','9th-A','9th-B','10th-A','10th-B'];
 var FEE_TYPES = ['Tuition', 'Admission', 'Transport', 'Exam', 'Library', 'Activity', 'Computer Lab', 'Other'];
 var MONTHS_ACAD = ['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'];
 var MONTH_NUM = { Apr: 4, May: 5, Jun: 6, Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12, Jan: 1, Feb: 2, Mar: 3 };
@@ -3906,126 +3859,13 @@ function monthStartDate(m) { // B7: 1st of the month, in the profile session's a
 }
 var SUBJECTS = ['Mathematics','Science','English','Hindi','Social Science'];
 
-function seedDB() {
-  var schools = SCHOOL_NAMES.map(function (s, i) {
-    return { id: 'sch' + (i + 1), name: s[0], city: s[1], students: s[2], status: s[3], plan: s[4],
-      users: 180 + ((i * 137) % 900), since: '202' + (i % 5) + '-0' + ((i % 9) + 1) + '-15' };
-  });
-  // 40 students, 4 per class-section; first two are Riya & Priya (10th-A).
-  // v37: the seed covers SEED_CLASSES only (6th–10th) — see CLASSES.
-  var students = [];
-  var fi = 0;
-  SEED_CLASSES.forEach(function (cls, ci) {
-    for (var r = 1; r <= 4; r++) {
-      var idx = ci * 4 + (r - 1);
-      var name;
-      if (cls === '10th-A' && r === 1) name = 'Riya Kumari';
-      else if (cls === '10th-A' && r === 2) name = 'Priya Kumari';
-      else { name = FIRST[fi % FIRST.length] + ' ' + LAST[(fi * 7 + 3) % LAST.length]; fi++; }
-      var feePending = (idx % 6 === 4); // ~7 of 40 pending
-      var rec = { id: 'stu' + (idx + 1), name: name, cls: cls, roll: r, enr: 'ENR-' + String(idx + 1).padStart(3, '0'),
-        guardian: 'Mr. ' + LAST[(idx * 5 + 1) % LAST.length],
-        phone: '98' + String(10000000 + ((idx * 7919) % 89999999)),
-        att: 85 + ((idx * 7) % 14), result: 62 + ((idx * 11) % 36),
-        fee: feePending ? 'Pending' : 'Paid',
-        status: 'Active', session: '2025–26', admissionNo: 'ADM-2025-' + String(idx + 1).padStart(3, '0'), admissionDate: '',
-        dob: '', gender: GIRL_NAMES.indexOf(name.split(' ')[0]) !== -1 ? 'Girl' : 'Boy', bloodGroup: '', category: '',
-        address: '', state: '', district: '', pin: '',
-        fatherName: 'Mr. ' + LAST[(idx * 5 + 1) % LAST.length], motherName: 'Mrs. ' + LAST[(idx * 5 + 1) % LAST.length],
-        mobile2: '', parentEmail: '', occupation: '', previousSchool: '', previousClass: '',
-        documents: { birthCert: idx % 4 !== 3, tc: idx % 2 === 0, tcNumber: idx % 2 === 0 ? 'TC-' + (1000 + idx) : '', other: '' }, aadhaar: '' };
-      if (cls === '10th-A' && r === 1) { rec.att = 92; rec.result = 95; rec.fee = 'Paid'; }
-      if (cls === '10th-A' && r === 2) { rec.att = 94; rec.result = 91; rec.fee = 'Paid'; }
-      students.push(rec);
-    }
-  });
-  var teachers = [
-    ['Sunita Sharma','Mathematics','10th-A'], ['Rajesh Kumar','Science','10th-B'], ['Anita Verma','English','9th-A'],
-    ['Vikram Singh','Hindi','8th-A'], ['Pooja Mishra','Social Science','9th-B'], ['Amit Jha','Mathematics','8th-B'],
-    ['Neha Gupta','Science','7th-A'], ['Suresh Yadav','English','6th-A'], ['Kavita Tiwari','Hindi','7th-B'],
-    ['Manoj Pandey','Mathematics','9th-B'], ['Rekha Sinha','Science','6th-B'], ['Deepak Choudhary','English','10th-A']
-  ].map(function (t, i) { return { id: 't' + (i + 1), name: t[0], subject: t[1], cls: t[2] }; });
-  // Fee records: split each month's totals into exact records (deterministic, sums exact)
-  var feeRecords = [], fid = 1;
-  FEE_MONTHS.forEach(function (mo, mi) {
-    function split(total, n, status) {
-      var base = Math.floor(total / n), rem = total - base * (n - 1);
-      for (var k = 0; k < n; k++) {
-        var amt = (k === n - 1) ? rem : base;
-        var idx = status === 'Pending' ? (mi * 4 + k) : (mi * 9 + k * 3); // pending: 20 distinct students
-        var st = students[idx % students.length];
-        feeRecords.push({ id: 'fee' + (fid++), studentId: st.id, student: st.name, cls: st.cls,
-          month: mo.m, type: 'Tuition', amount: amt, status: status, date: '2026-0' + (mi + 4) + '-' + String(3 + ((k * 5) % 24)).padStart(2, '0') });
-      }
-    }
-    split(mo.collected, 10, 'Collected');
-    split(mo.pending, 4, 'Pending');
-  });
-  // Riya Kumari (demo student) gets one Collected record so her "Paid" status is evidence-based (totals unchanged).
-  var riyaStu = students.find(function (s) { return s.name === 'Riya Kumari'; });
-  if (riyaStu) {
-    var donorRec = feeRecords.find(function (r) { return r.month === 'Apr' && r.status === 'Collected' && r.studentId === students[27].id; });
-    if (donorRec) { donorRec.studentId = riyaStu.id; donorRec.student = riyaStu.name; donorRec.cls = riyaStu.cls; }
-  }
-  var today = todayIST();
-  var attRecords = {};
-  students.filter(function (s) { return s.cls === '10th-A'; }).forEach(function (s, i) {
-    attRecords[s.id] = (i === 2) ? 'Absent' : (i === 3) ? 'Late' : 'Present';
-  });
-  return {
-    v: 2,
-    schools: schools,
-    students: students,
-    teachers: teachers,
-    feeMonths: FEE_MONTHS,
-    feeRecords: feeRecords,
-    feeStructure: defaultFeeStructure(),
-    feeExtras: { admissionFee: 0, cautionMoney: 0, annualCharges: 0, transportFee: 0 },
-    admCounter: 41,
-    receipts: [],
-    receiptCounter: 1,
-    auditLog: [],
-    attendanceAgg: { present: 0, absent: 0, late: 0 },
-    attendance: (function () { var a = {}; a[today + '|10th-A'] = attRecords; return a; })(),
-    exams: [
-      { id: 'ex1', name: 'Unit Test 1', cls: '10th-A', subject: 'Mathematics', date: '2026-08-12', total: 100 },
-      { id: 'ex2', name: 'Unit Test 2', cls: '10th-A', subject: 'Science', date: '2026-09-18', total: 100 },
-      { id: 'ex3', name: 'Half Yearly Exam', cls: '10th-A', subject: 'All Subjects', date: '2026-10-06', total: 100 },
-      { id: 'ex4', name: 'Unit Test 1', cls: '9th-A', subject: 'Mathematics', date: '2026-08-14', total: 100 },
-      { id: 'ex5', name: 'Monthly Test', cls: '8th-B', subject: 'English', date: '2026-10-20', total: 50 }
-    ],
-    marks: [
-      { examId: 'ex1', studentId: 'stu33', marks: 95 }, { examId: 'ex1', studentId: 'stu34', marks: 91 },
-      { examId: 'ex1', studentId: 'stu35', marks: 78 }, { examId: 'ex1', studentId: 'stu36', marks: 84 },
-      { examId: 'ex2', studentId: 'stu33', marks: 93 }, { examId: 'ex2', studentId: 'stu34', marks: 88 },
-      { examId: 'ex3', studentId: 'stu33', marks: 95 }, { examId: 'ex3', studentId: 'stu34', marks: 90 }
-    ],
-    homework: [
-      { id: 'hw1', cls: '10th-A', subject: 'Mathematics', title: 'Ex 5.2 — Q1 to Q10', due: '2026-11-10', doneBy: ['stu34'] },
-      { id: 'hw2', cls: '10th-A', subject: 'Science', title: 'Light chapter notes + diagram', due: '2026-11-11', doneBy: [] },
-      { id: 'hw3', cls: '9th-A', subject: 'English', title: 'Essay — My Favourite Festival', due: '2026-11-12', doneBy: ['stu33'] },
-      { id: 'hw4', cls: '8th-B', subject: 'Hindi', title: 'Nibandh — Swachh Bharat', due: '2026-11-13', doneBy: [] }
-    ],
-    notices: [
-      { id: 'n1', title: 'Annual Sports Day', date: '2026-11-07', body: 'Annual Sports Day will be held on 20 November 2026 at the school ground. All students must report in sports uniform by 8:00 AM.' },
-      { id: 'n2', title: 'Parent-Teacher Meeting', date: '2026-11-05', body: 'PTM for Classes 6–10 will be held on Saturday, 15 November 2026, 10:00 AM – 1:00 PM. Parents are requested to attend.' },
-      { id: 'n3', title: 'Diwali Holidays', date: '2026-10-28', body: 'School will remain closed from 30 October to 2 November 2026 for Diwali. Classes resume on 3 November 2026.' }
-    ],
-    activities: [
-      { icon: '💰', bg: 'green', title: 'New fee payment received', sub: 'by Priya Kumari' },
-      { icon: '✅', bg: 'blue', title: 'Attendance updated', sub: 'Class 10th-A' },
-      { icon: '📢', bg: 'orange', title: 'New notice published', sub: 'Annual Sports Day' }
-    ],
-    profile: { name: 'St. Xavier School', city: 'Patna', principal: 'Rahul Kumar', phone: '+91 98350 12345', email: 'info@stxavierpatna.edu.in', session: '2025–26', address: 'Boring Road, Patna, Bihar — 800001' }
-  };
-}
 
 /* ================= empty school DB (v20) =================
    What a brand-new school gets, and what Reset All Data leaves
    behind: NOTHING but the school's identity and its fee-structure
    settings. No demo students, teachers, fees, attendance, exams,
    marks, homework, notices, receipts or audit entries. The seed
-   function above stays in the code for TESTS ONLY (harness fixtures).
+   function lives in scripts/seed-fixtures.js (TESTS ONLY — harness fixtures).
    In v36 no real account path may call it to populate a school, and
    the boot path no longer seeds it either — a fresh device starts
    empty (audit item 17). */
