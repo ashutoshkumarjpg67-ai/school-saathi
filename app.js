@@ -9082,7 +9082,7 @@ function saveMarks(examId) {
   // the old forEach scan. The Map is only read while collecting changes;
   // applyChanges rebuilds it after removals, so indexes never go stale.
   var marksByKey = new Map();
-  db.marks.forEach(function (m, i) { marksByKey.set(m.examId + '|' + m.studentId, i) });
+  db.marks.forEach(function (m, i) { marksByKey.set(m.examId + '|' + m.studentId, i); });
   // v34 (P1-10): new/updated marks are only saved for enrolled students
   // (Active/Inactive). An empty input still clears an EXISTING mark for
   // any student in the class — that is cleanup of a stale record, not a
@@ -9112,9 +9112,9 @@ function saveMarks(examId) {
       var key = examId + '|' + c.studentId;
       if (marksByKey.has(key)) removals.push(marksByKey.get(key));
     });
-    removals.sort(function (a, b) { return b - a; }.forEach(function (i) { db.marks.splice(i, 1); });
+    removals.sort(function (a, b) { return b - a; }).forEach(function (i) { db.marks.splice(i, 1); });
     marksByKey.clear();
-    db.marks.forEach(function (m, i) { marksByKey.set(m.examId + '|' + m.studentId, i) });
+    db.marks.forEach(function (m, i) { marksByKey.set(m.examId + '|' + m.studentId, i); });
     list.forEach(function (c) {
       if (c.marks === null) return;
       var key = examId + '|' + c.studentId;
