@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 84;
+var APP_VERSION = 85;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -6208,6 +6208,22 @@ function visibleStudents() {
   }
   return db.students;
 }
+function roleDashboard() {
+  // v85 (Phase 4): the dashboard for the five new roles (principal,
+  // accountant, staff, parent, superadmin). Each role's own modules
+  // land in its step; until then this shows who they are, which school
+  // they belong to, and the views they may open. It never shows another
+  // role's data and never offers an action the role may not take.
+  var u = state.user || {};
+  var roleLabel = { principal: 'Principal', accountant: 'Accountant', staff: 'Staff', parent: 'Parent', superadmin: 'Super Admin' }[state.role] || state.role;
+  var allowed = PERMS[state.role] || [];
+  var links = allowed.map(function (v) {
+    return '<button class="btn ghost" onclick="go(\'' + v + '\')">' + esc(t(v)) + '</button>';
+  }).join('');
+  return '<div class="card"><h3>' + esc(u.name || '') + '</h3><p>' + esc(roleLabel) + ' • ' + esc(db.profile.name || '') + '</p>' +
+    '<p class="card-sub">Your modules arrive in the next steps of Phase 4. For now you can open:</p>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap">' + links + '</div></div>';
+}
 function teacherDashboard() {
   var te = teacherRecord();
   if (!te) return '<div class="card"><div class="empty">' + t('tNoStudentData') + '</div></div>';
@@ -6465,8 +6481,46 @@ var NAV = {
   ],
   teacher: [
     ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['attendance', '✅', 'attendance'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
+  ],
+  // v85 (Phase 4): the five new roles. Each starts with dashboard +
+  // notices only; their own views land in their step (parent v86,
+  // principal v87, accountant v88, staff v89, superadmin v90). The
+  // NAV is the visible menu; PERMS below is the enforcement.
+  principal: [
+    ['dashboard', '🏠', 'dashboard'], ['notices', '📢', 'notices']
+  ],
+  accountant: [
+    ['dashboard', '🏠', 'dashboard'], ['notices', '📢', 'notices']
+  ],
+  staff: [
+    ['dashboard', '🏠', 'dashboard'], ['notices', '📢', 'notices']
+  ],
+  parent: [
+    ['dashboard', '🏠', 'dashboard'], ['notices', '📢', 'notices']
+  ],
+  superadmin: [
+    ['dashboard', '🏠', 'dashboard'], ['notices', '📢', 'notices']
   ]
 };
+// v85 (Phase 4): the permission matrix — the single source of truth
+// for which views a role may open. go() enforces it; renderPage() has
+// the PAGE-map check as a second layer. The three existing roles keep
+// exactly their current views; the five new roles start with dashboard
+// + notices and grow in their own step.
+var PERMS = {
+  school: ['dashboard', 'students', 'teachers', 'admissions', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog', 'settings'],
+  teacher: ['dashboard', 'students', 'attendance', 'exams', 'homework', 'notices'],
+  student: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'],
+  principal: ['dashboard', 'notices'],
+  accountant: ['dashboard', 'notices'],
+  staff: ['dashboard', 'notices'],
+  parent: ['dashboard', 'notices'],
+  superadmin: ['dashboard', 'notices']
+};
+function canAccessView(role, view) {
+  var allowed = PERMS[role];
+  return !!allowed && allowed.indexOf(view) !== -1;
+}
 var VIEW_TITLES = {
   dashboard: ['Dashboard', ''],
   settings: ['Settings', 'School settings'], reports: ['Reports', 'Download CSV reports'],
@@ -6638,8 +6692,9 @@ function backFromProfile() { if (histBack()) return; state.profileStudent = null
 function backFromFeeProfile() { if (histBack()) return; state.feeStudent = null; renderPage(); }
 function backFromReceipt() { if (histBack()) return; state.savedReceiptId = null; state.collectStudent = null; renderPage(); }
 function go(view) {
-  var nav = NAV[state.role] || [];
-  var ok = nav.some(function (n) { return n[0] === view; });
+  // v85 (Phase 4): PERMS is the enforcement — a view a role may not
+  // open refuses here, before any render. NAV is only the visible menu.
+  var ok = canAccessView(state.role, view);
   if (!ok) { toast(t('tNotAllowed')); state.view = 'dashboard'; }
   else state.view = view;
   if (state.view !== 'fees') { state.feeStudent = null; state.collectStudent = null; state.collectRecordId = null; state.savedReceiptId = null; collectDraft = null; }
@@ -6704,7 +6759,7 @@ function changeSession(v) {
 function renderPage() {
   var p = $('page');
   hideTip();
-  var pages = state.role === 'school' ? PAGE_SCHOOL : state.role === 'teacher' ? PAGE_TEACHER : PAGE_STUDENT;
+  var pages = state.role === 'school' ? PAGE_SCHOOL : state.role === 'teacher' ? PAGE_TEACHER : state.role === 'student' ? PAGE_STUDENT : state.role === 'principal' ? PAGE_PRINCIPAL : state.role === 'accountant' ? PAGE_ACCOUNTANT : state.role === 'staff' ? PAGE_STAFF : state.role === 'parent' ? PAGE_PARENT : state.role === 'superadmin' ? PAGE_SUPERADMIN : PAGE_STUDENT;
   var fn = pages[state.view];
   if (!fn) {
     // A view this role may not open refuses with a clear message instead
@@ -9884,6 +9939,14 @@ function studentResultsPage() {
 }
 var PAGE_STUDENT = { dashboard: studentDashboard, attendance: studentAttendancePage, fees: studentFeesPage, results: studentResultsPage, homework: homeworkPage, notices: noticesPage };
 var PAGE_TEACHER = { dashboard: teacherDashboard, students: studentsPage, attendance: attendancePage, exams: examsPage, homework: homeworkPage, notices: noticesPage };
+// v85 (Phase 4): the five new roles start with dashboard + notices.
+// Their own pages land in their step (parent v86, principal v87,
+// accountant v88, staff v89, superadmin v90).
+var PAGE_PRINCIPAL = { dashboard: roleDashboard, notices: noticesPage };
+var PAGE_ACCOUNTANT = { dashboard: roleDashboard, notices: noticesPage };
+var PAGE_STAFF = { dashboard: roleDashboard, notices: noticesPage };
+var PAGE_PARENT = { dashboard: roleDashboard, notices: noticesPage };
+var PAGE_SUPERADMIN = { dashboard: roleDashboard, notices: noticesPage };
 
 /* ================= init ================= */
 /* ================= App-update check (v61) =================
