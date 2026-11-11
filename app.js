@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 93;
+var APP_VERSION = 94;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -654,6 +654,60 @@ function sbLoginNewSchool(meta, email, pw, uid, token, serverSchool) {
   sbSyncCycle(a, uid, token).catch(function () {});
   sbSyncAutoStart();
 }
+function sbCheckSuperAdmin(token, email, uid) {
+  // v94: a super admin has no school — no local account, no server school
+  // row, no signup metadata. So the school login ends at "no school" for
+  // them. Check the server FIRST (ss_is_super_admin, SQL 31) and open the
+  // super admin portal when it says yes. Returns a promise of true/false.
+  // The check is server-side (is_ss_admin reads ss_platform_admins), so
+  // a forged local account can never open this portal.
+  return sbRest('POST', 'rpc/ss_is_super_admin', token, {}).then(function (res) {
+    if (!(res && res.ok && res.data === true)) return false;
+    // Keep a local super admin account so a page reload restores the
+    // session (restoreSession looks accounts up by email). It carries no
+    // password hash, so the LOCAL login can never use it — only the
+    // Supabase login + this RPC can open the portal. It never appears in
+    // the school picker (that filters role === 'school').
+    var list = loadAccounts();
+    var a = list.find(function (x) { return x.email === email; });
+    if (!a) {
+      a = { role: 'superadmin', name: 'Super Admin', email: email, uid: 'superadmin-' + uid, sbUid: uid };
+      list.push(a); saveAccounts(list);
+    } else {
+      a.role = 'superadmin'; a.sbUid = uid;
+      for (var i = 0; i < list.length; i++) if (list[i].email === email) list[i] = a;
+      saveAccounts(list);
+    }
+    state.sb = { uid: uid, email: email };
+    $('loginErr').classList.add('hidden');
+    loginAs(a);
+    sbLoadSuperSchools(token);
+    return true;
+  }).catch(function () { return false; });
+}
+function sbLoadSuperSchools(token) {
+  // v94: the super admin's schools list — every school on the server.
+  // The ss_schools read policy already lets a super admin read all rows
+  // (is_ss_admin), so this is one plain PostgREST select. The result is
+  // cached on state; the page re-renders when it lands.
+  var tk = token || (state.sb && state.sbToken) || SB_ANON_KEY;
+  return sbRest('GET', 'ss_schools?select=id,name,city,session,owner_id,created_at&order=name.asc', tk).then(function (res) {
+    if (res && res.ok && Array.isArray(res.data)) {
+      state.superSchools = res.data;
+      if (state.role === 'superadmin' && state.view === 'schools') renderPage();
+    }
+    return res;
+  }).catch(function () { return null; });
+}
+function schoolsPage() {
+  // v94: the super admin's schools list (read-only in this step).
+  var rows = (state.superSchools || []).map(function (s) {
+    return '<tr><td><b>' + esc(s.name || '—') + '</b></td><td>' + esc(s.city || '—') + '</td><td>' + esc(s.session || '—') + '</td><td>' + esc(s.owner_id || '—') + '</td><td>' + esc(s.created_at ? String(s.created_at).slice(0, 10) : '—') + '</td></tr>';
+  }).join('');
+  return '<div class="page-head"><div><h2>' + t('schools') + '</h2><p>' + t('schoolsSub') + '</p></div></div>' +
+    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thSchool') + '</th><th>' + t('thCity') + '</th><th>' + t('thSession') + '</th><th>' + t('thOwner') + '</th><th>' + t('thCreated') + '</th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="5"><div class="empty">' + (state.superSchools ? t('tNoSchools') : t('loading')) + '</div></td></tr>') + '</tbody></table></div></div>';
+}
 function sbShowNoSchool() {
   // v28: a Supabase account with no school tied to it (no local school
   // account, no server school row, no signup metadata naming a school)
@@ -702,7 +756,15 @@ function sbFinishSupabaseLogin(data, email, pw) {
   // whose migration has not run yet). Anything else has no school.
   sbGetServerSchoolId(uid, data.access_token).then(function (row) {
     var metaSchool = meta.school && String(meta.school).trim();
-    if (!row && !metaSchool) { sbShowNoSchool(); return; }
+    if (!row && !metaSchool) {
+      // v94: a super admin has no school row and no signup metadata —
+      // check the server before giving up. If they are a super admin the
+      // portal opens; otherwise the no-school message stands.
+      sbCheckSuperAdmin(data.access_token, email, uid).then(function (isSuper) {
+        if (!isSuper) sbShowNoSchool();
+      });
+      return;
+    }
     sbLoginNewSchool(meta, email, pw, uid, data.access_token, row);
   }).catch(function () {
     // Server check failed mid-flight (network dropped): fall back to the
@@ -6532,7 +6594,10 @@ function roleDashboard() {
   var links = allowed.map(function (v) {
     return '<button class="btn ghost" onclick="go(\'' + v + '\')">' + esc(t(v)) + '</button>';
   }).join('');
-  return '<div class="card"><h3>' + esc(u.name || '') + '</h3><p>' + esc(roleLabel) + ' • ' + esc(db.profile.name || '') + '</p>' +
+  // v94: a super admin has no school of their own — the local DB profile
+  // name would be the demo school, so show the platform name instead.
+  var schoolName = state.role === 'superadmin' ? 'School Saathi Platform' : (db.profile.name || '');
+  return '<div class="card"><h3>' + esc(u.name || '') + '</h3><p>' + esc(roleLabel) + ' • ' + esc(schoolName) + '</p>' +
     '<p class="card-sub">Your modules arrive in the next steps of Phase 4. For now you can open:</p>' +
     '<div style="display:flex;gap:8px;flex-wrap:wrap">' + links + '</div></div>';
 }
@@ -6812,7 +6877,7 @@ var NAV = {
     ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['fees', '💰', 'fees'], ['results', '📊', 'results'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
   ],
   superadmin: [
-    ['dashboard', '🏠', 'dashboard'], ['notices', '📢', 'notices']
+    ['dashboard', '🏠', 'dashboard'], ['schools', '🏫', 'schools'], ['notices', '📢', 'notices'] // v94: the schools list is the super admin's first real module
   ]
 };
 // v85 (Phase 4): the permission matrix — the single source of truth
@@ -6828,7 +6893,7 @@ var PERMS = {
   accountant: ['dashboard', 'fees', 'reports', 'notices'], // v92: the accountant works fees + reports (receipts ride the fees page)
   staff: ['dashboard', 'attendance', 'homework', 'notices'], // v93: a staff member works attendance + homework for their own classes
   parent: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'], // v86: the parent portal reuses the student views, view-only
-  superadmin: ['dashboard', 'notices']
+  superadmin: ['dashboard', 'schools', 'notices'], // v94: the super admin's first UI — the schools list
 };
 function canAccessView(role, view) {
   var allowed = PERMS[role];
@@ -7061,7 +7126,7 @@ function renderApp() {
   var vt = VIEW_TITLES[state.view] || ['Dashboard', ''];
   $('topTitle').textContent = t(state.view) === state.view ? vt[0] : t(state.view);
   if (state.view === 'dashboard') $('topTitle').textContent = t('dashboard');
-  $('topCrumb').textContent = state.role === 'school' ? prof.name + ', ' + prof.city : (state.role === 'student' ? t('stuDashboard') : state.role === 'parent' ? t('parentDash') : state.role === 'principal' ? t('principalDash') : state.role === 'staff' ? t('staffDash') : state.role === 'accountant' ? t('accountantDash') : t('tchrDashboard')); // v86: a parent's top crumb says Parent Dashboard, never Teacher Dashboard; v88b: a principal's says Principal Dashboard; v91: a staff member's says Staff Dashboard, an accountant's says Accountant Dashboard
+  $('topCrumb').textContent = state.role === 'school' ? prof.name + ', ' + prof.city : (state.role === 'student' ? t('stuDashboard') : state.role === 'parent' ? t('parentDash') : state.role === 'principal' ? t('principalDash') : state.role === 'staff' ? t('staffDash') : state.role === 'accountant' ? t('accountantDash') : state.role === 'superadmin' ? t('superAdminDash') : t('tchrDashboard')); // v86: a parent's top crumb says Parent Dashboard, never Teacher Dashboard; v88b: a principal's says Principal Dashboard; v91: a staff member's says Staff Dashboard, an accountant's says Accountant Dashboard; v94: a super admin's says Super Admin Dashboard
   sbOfflineChipRefresh(); // B7 (M-26): the topbar chip is re-driven on every render
   sbStorageWarnRender(); // B17/B18: re-show the sticky storage warning (if any) on every render
   renderPage();
@@ -10406,7 +10471,7 @@ var PAGE_STAFF = { dashboard: roleDashboard, attendance: attendancePage, homewor
 // has no Add button for a parent; toggleHwDone already refuses
 // non-students.
 var PAGE_PARENT = { dashboard: studentDashboard, attendance: studentAttendancePage, fees: studentFeesPage, results: studentResultsPage, homework: homeworkPage, notices: noticesPage };
-var PAGE_SUPERADMIN = { dashboard: roleDashboard, notices: noticesPage };
+var PAGE_SUPERADMIN = { dashboard: roleDashboard, schools: schoolsPage, notices: noticesPage }; // v94: the super admin opens the schools list (read-only in this step)
 
 /* ================= init ================= */
 /* ================= App-update check (v61) =================
