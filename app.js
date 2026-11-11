@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 64;
+var APP_VERSION = 67;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -238,19 +238,78 @@ var cloudSchoolsCache = null; // v61: public school directory [{id, name, city}]
 function sbIsOnline() {
   if (typeof fetch !== 'function') return false;
   try { if (typeof navigator !== 'undefined' && navigator.onLine === false) return false; } catch (e) {}
+  // B8 (M-17): navigator.onLine lies behind captive portals and dead
+  // endpoints. After 3 consecutive fetch-level failures the device
+  // counts as offline for 30s — long enough to stop futile calls and
+  // fall back to local login, short enough that a recovered network
+  // is usable again on the next attempt (a successful probe or any
+  // HTTP response clears it sooner).
+  if (sbNetDownAt && Date.now() - sbNetDownAt < SB_NET_DOWN_MS) return false;
   return true;
 }
+// B8 (M-17/M-18): connectivity bookkeeping + bounded retry. sbRestNetFails
+// counts consecutive fetch-level failures (a request that got NO HTTP
+// response at all — a 429/5xx response still proves the network is up
+// and resets the count). sbNetDownAt is stamped on the 3rd failure.
+var sbRestNetFails = 0;
+var sbNetDownAt = 0;
+var SB_NET_DOWN_MS = 30000;
+var SB_NET_FAIL_THRESHOLD = 3;
+var SB_REST_MAX_ATTEMPTS = 3; // B8 (M-18): initial try + at most 2 retries, 429/5xx only
+var SB_REST_RETRY_CAP_MS = 10000; // B8: never wait longer than this for one retry (Retry-After is capped too)
 // v34 (P1-2): fetch with an AbortController timeout. A request that hangs
 // (slow network, dead connection) rejects after sbFetchTimeoutMs so the
 // sync lock is released instead of holding "Syncing…" forever.
 function sbFetchWithTimeout(url, init) {
   if (typeof fetch !== 'function') return Promise.reject(new Error('no-fetch'));
-  if (typeof AbortController !== 'function') return fetch(url, init);
+  if (typeof AbortController !== 'function') return fetch(url, init).then(function (res) { sbRestNetOk(); return res; }, function (err) { sbRestNetFailed(); throw err; });
   var ctrl = new AbortController();
   var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, sbFetchTimeoutMs);
   init = init || {};
   init.signal = ctrl.signal;
-  return fetch(url, init).then(function (res) { clearTimeout(timer); return res; }, function (err) { clearTimeout(timer); throw err; });
+  // B8 (M-17): every request feeds the connectivity bookkeeping — a
+  // response of ANY status proves the path is alive; only a rejection
+  // (network down, DNS, timeout) counts toward "offline". On the 3rd
+  // consecutive failure a background probe is kicked off (see below).
+  return fetch(url, init).then(function (res) { clearTimeout(timer); sbRestNetOk(); return res; }, function (err) { clearTimeout(timer); sbRestNetFailed(); throw err; });
+}
+function sbRestNetOk() { sbRestNetFails = 0; sbNetDownAt = 0; }
+function sbRestNetFailed() {
+  sbRestNetFails++;
+  if (sbRestNetFails >= SB_NET_FAIL_THRESHOLD) {
+    sbNetDownAt = Date.now();
+    sbProbeKick(); // background re-check; its result gates the next cycle via sbIsOnline()
+  }
+}
+var sbProbeInFlight = false;
+function sbProbeKick() {
+  // B8 (M-17): one probe at a time, fire-and-forget. A success clears
+  // the offline window at once; a failure extends it by another 30s
+  // (the next cycle's own calls re-prove the failure and re-kick).
+  if (sbProbeInFlight) return;
+  sbProbeInFlight = true;
+  sbProbeOnline().then(function () { sbProbeInFlight = false; }, function () { sbProbeInFlight = false; });
+}
+function sbProbeOnline() {
+  // B8 (M-17): tiny connectivity probe — the GoTrue health endpoint, 5s
+  // cap, no auth needed. ANY HTTP response proves the path to Supabase
+  // is alive (even a 4xx); only a fetch failure means offline.
+  if (typeof fetch !== 'function') return Promise.resolve(false);
+  var ctrl = null, timer = null;
+  try {
+    if (typeof AbortController === 'function') { ctrl = new AbortController(); timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 5000); }
+  } catch (e) {}
+  var init = {};
+  if (ctrl) init.signal = ctrl.signal;
+  return fetch(SB_URL + '/auth/v1/health', init).then(function () {
+    if (timer) clearTimeout(timer);
+    sbRestNetOk();
+    return true;
+  }, function () {
+    if (timer) clearTimeout(timer);
+    sbNetDownAt = Date.now();
+    return false;
+  });
 }
 function sbAuthFetch(path, opts) {
   opts = opts || {};
@@ -267,17 +326,59 @@ function sbAuthFetch(path, opts) {
 }
 function sbRest(method, path, token, body, prefer) {
   if (typeof fetch !== 'function') return Promise.reject(new Error('no-fetch'));
-  sbSyncRestCalls++; // v53 diag: one REST round-trip per sbRest call
-  var headers = { 'apikey': SB_ANON_KEY, 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
-  if (prefer) headers['Prefer'] = prefer;
-  var init = { method: method, headers: headers };
-  if (body !== undefined) init.body = JSON.stringify(body);
-  return sbFetchWithTimeout(SB_URL + '/rest/v1/' + path, init).then(function (res) {
-    if (res.status === 204) return { ok: res.ok, status: res.status, data: null };
-    return res.json().catch(function () { return null; }).then(function (data) {
-      return { ok: res.ok, status: res.status, data: data };
+  // B8 (M-18): bounded retry for 429/5xx ONLY — at most SB_REST_MAX_ATTEMPTS
+  // tries in total, exponential backoff (500ms, then 1000ms), honouring
+  // Retry-After (seconds, capped). Any other 4xx is never retried, and
+  // a network failure (no response) is never retried here either — it
+  // feeds the offline bookkeeping instead, and the outbox + next cycle
+  // replay the call. (A retried POST replays exactly like the next
+  // cycle's outbox replay already would; tables with business unique
+  // keys turn a commit-then-500 duplicate into a 409, never a silent dup.)
+  var attempts = 0;
+  function attempt() {
+    attempts++;
+    sbSyncRestCalls++; // v53 diag: one REST round-trip per sbRest call
+    var headers = { 'apikey': SB_ANON_KEY, 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
+    if (prefer) headers['Prefer'] = prefer;
+    var init = { method: method, headers: headers };
+    if (body !== undefined) init.body = JSON.stringify(body);
+    return sbFetchWithTimeout(SB_URL + '/rest/v1/' + path, init).then(function (res) {
+      if (res.status === 204) return { ok: res.ok, status: res.status, data: null };
+      return res.json().catch(function () { return null; }).then(function (data) {
+        var out = { ok: res.ok, status: res.status, data: data };
+        if (!res.ok && (res.status === 429 || res.status >= 500) && attempts < SB_REST_MAX_ATTEMPTS) return retryAfter(out, res);
+        return out;
+      });
     });
-  });
+  }
+  function retryAfter(out, res) {
+    var wait = 500 * Math.pow(2, attempts - 1); // 500ms, then 1000ms
+    try {
+      var ra = res.headers && res.headers.get ? res.headers.get('Retry-After') : null;
+      if (ra !== null && ra !== undefined && ra !== '') {
+        var secs = parseInt(ra, 10);
+        if (!isNaN(secs) && secs >= 0) wait = Math.min(secs * 1000, SB_REST_RETRY_CAP_MS);
+      }
+    } catch (e) {}
+    sbRestNoteRetry();
+    return new Promise(function (resolve) { setTimeout(function () { resolve(attempt()); }, wait); });
+  }
+  return attempt();
+}
+function sbRestNoteRetry() {
+  // B8 (M-18): surface the retry in the status line — transiently, on
+  // the two visible nodes only, without persisting a status state (a
+  // persisted "retrying" would lie on the login screen if the app died
+  // mid-retry; the cycle's own end state overwrites this right after).
+  // Only while a school sync is live: a login-time call must not write
+  // sync status.
+  try {
+    if (!sbSyncActive()) return;
+    if (typeof document === 'undefined' || !document.getElementById) return;
+    var txt = t('sbSyncRetrying');
+    var sl = document.getElementById('sbStatusLine'); if (sl) sl.textContent = txt;
+    var lg = document.getElementById('sbStatus'); if (lg) lg.textContent = txt;
+  } catch (e) {}
 }
 function sbSignUp(email, pw, school, name) {
   return sbAuthFetch('/auth/v1/signup', { method: 'POST', body: { email: email, password: pw, data: { school: school, name: name } } });
@@ -389,7 +490,42 @@ function sbSetStatus(st, detail) {
       var sl43 = document.getElementById('sbStatusLine'); if (sl43) sl43.textContent = txt43;
       var lg43 = document.getElementById('sbStatus'); if (lg43) lg43.textContent = txt43;
       sbSyncDetailsRefresh(); // v53: keep the Settings sync-details section in step
+      sbOfflineChipRefresh(); // B7: the topbar chip follows every status change
     }
+  } catch (e2) {}
+}
+function sbOfflineChipRefresh() {
+  // B7 (M-26): the offline/pending chip in the topbar — the app's only
+  // always-visible connectivity indicator (the status line lives on the
+  // login screen / Settings only). Driven by sbIsOnline() + the outbox
+  // count, for a server-linked school only: a local-only school has no
+  // server to sync to, and cloud student/teacher slices have no outbox.
+  // The node is created once from app.js (no index.html change) and
+  // only its text/visibility changes afterwards. Inline styles only —
+  // styles.css is untouched.
+  try {
+    if (typeof document === 'undefined' || !document.querySelector) return;
+    var bar = document.querySelector('.topbar');
+    if (!bar) return;
+    var chip = document.getElementById('offlineChip');
+    var show = false, txt = '';
+    if (state && state.user && state.user.role === 'school' && state.sb && state.sb.uid) {
+      var left = 0;
+      try { left = sbOutboxLoad(state.sb.uid).length; } catch (e) {}
+      if (!sbIsOnline()) { show = true; txt = t('sbStatusPendingSync'); }
+      else if (left > 0) { show = true; txt = t('sbSyncPendingUploads') + ': ' + left; }
+    }
+    if (!show) { if (chip) chip.classList.add('hidden'); return; }
+    if (!chip) {
+      chip = document.createElement('span');
+      chip.id = 'offlineChip';
+      chip.style.cssText = 'font-size:12px;padding:4px 10px;border-radius:999px;background:#FEF3C7;color:#92400E;border:1px solid #FCD34D;white-space:nowrap';
+      var sp = bar.querySelector('.spacer');
+      if (sp && sp.parentNode && sp.parentNode.insertBefore) sp.parentNode.insertBefore(chip, sp.nextSibling);
+      else if (bar.appendChild) bar.appendChild(chip);
+    }
+    chip.textContent = txt;
+    chip.classList.remove('hidden');
   } catch (e2) {}
 }
 function sbLoadStatus() {
@@ -753,14 +889,22 @@ function doRecover(e) {
   });
   return false;
 }
+// Shared form-error helper (was 4 nested `fail` copies in doResetPassword,
+// doSignup, saveStudent and saveTeacher): shows msg in el (if present),
+// optionally also as a toast, and returns false so submit handlers can
+// `return failInto(...)`.
+function failInto(el, msg, withToast) {
+  if (el) { el.textContent = msg; el.classList.remove('hidden'); }
+  if (withToast) toast(msg);
+  return false;
+}
 function doResetPassword(e) {
   e.preventDefault();
   var pw = $('resetPw').value, pw2 = $('resetPw2').value;
   var err = $('resetErr');
-  function fail(msg) { err.textContent = msg; err.classList.remove('hidden'); return false; }
-  if (pw.length < 6) return fail(t('tPwShort'));
-  if (pw !== pw2) return fail(t('tPwMismatch'));
-  if (!sbRecoveryToken) return fail(t('sbResetFailed'));
+  if (pw.length < 6) return failInto(err, t('tPwShort'));
+  if (pw !== pw2) return failInto(err, t('tPwMismatch'));
+  if (!sbRecoveryToken) return failInto(err, t('sbResetFailed'));
   var tok = sbRecoveryToken;
   sbSetNewPassword(tok, pw).then(function (r) {
     if (!r.ok) { err.textContent = t('sbResetFailed'); err.classList.remove('hidden'); return; }
@@ -876,7 +1020,7 @@ function sbMapTeacher(te, schoolId) {
 }
 function sbMapExam(e, schoolId) {
   return { school_id: schoolId, local_id: e.id, name: e.name || '', cls: e.cls || '', subject: e.subject || '',
-    exam_date: sbNullIfEmpty(e.date), total: e.total || 100 };
+    exam_date: sbNullIfEmpty(e.date), total: e.total || 100, deleted: !!e.deleted }; // v67 (SQL 20): the deleted flag rides the upload, so a soft delete travels
 }
 function sbMapHomework(h, schoolId, stuMap) {
   return { school_id: schoolId, local_id: h.id, cls: h.cls || '', subject: h.subject || '', title: h.title || '',
@@ -1733,8 +1877,8 @@ function sbRowToStudent(row) {
     previousSchool: row.previous_school || '', previousClass: row.previous_class || '',
     admissionNo: row.admission_no || '', admissionDate: row.admission_date || '',
     session: row.session || '', status: row.status || 'Active', result: (row.result === undefined || row.result === null) ? null : row.result,
-    parentPin: (row.parent_pin && String(row.parent_pin).indexOf('s256$') !== 0) ? row.parent_pin : undefined, // v55: no server PIN leaves the field UNDEFINED (never null) — a null used to land here and migrateV12 only refills `undefined`, so a null permanently killed the phone-derived PIN (live V21/2108 loss, v54)
-    parentPinHash: (row.parent_pin && String(row.parent_pin).indexOf('s256$') === 0) ? row.parent_pin : undefined, // v55: same — a hash arrives here, a missing PIN leaves the field unset
+    parentPin: undefined, // Phase 1 (H-3): a server PIN is NEVER stored as plaintext locally. A missing PIN leaves the field unset (v55: never null — a null used to land here and migrateV12 only refilled `undefined`, the live V21/2108 loss, v54).
+    parentPinHash: (!row.parent_pin ? undefined : (String(row.parent_pin).indexOf('s256$') === 0 ? String(row.parent_pin) : hashPin(row.parent_pin))), // Phase 1 (H-3): a hash arrives as-is; a legacy PLAINTEXT server PIN is hashed immediately on pull (hashPin is sync — hand-rolled SHA-256 — so this is safe in the pull path). The hash uploads on the next sync and heals the server row; until then one pull may re-hash with a fresh salt, exactly like the old migrateV54 flow. Dropping the value instead would have locked those students out until an admin reset each PIN.
     photo: row.photo_data_url || null,
     documents: row.documents || { birthCert: false, tc: false, tcNumber: '', other: '' },
     aadhaar: aadhaarLast4(row.aadhaar) }; // v36: a full number from an old server row is reduced on pull too
@@ -1943,27 +2087,20 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
       if (!old) return;
       if (old.parentPinHash) s.parentPinHash = old.parentPinHash;
       else if (old.parentPin === '') s.parentPin = '';
-      else if (typeof old.parentPin === 'string' && old.parentPin) s.parentPin = old.parentPin;
+      else if (typeof old.parentPin === 'string' && old.parentPin) s.parentPinHash = hashPin(old.parentPin); // Phase 1 (H-3): a legacy plaintext PIN is hashed, never kept as plaintext (loadDB normally hashes it before the sync runs, so this is a backstop, not the main path)
     });
   })();
   d.teachers = mergeById('ss_teachers', d.teachers || [], byTable.ss_teachers || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [] }; });
   var oldExams = d.exams || [];
-  d.exams = mergeById('ss_exams', d.exams || [], byTable.ss_exams || [], function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; examMap[row.id] = e.id; return e; });
-  // B6 (exam soft-delete): the server row carries no deleted flag
-  // (ss_exams has no such column — adding one needs SQL, not this
-  // change), so the pull above would wipe the local flag on every
-  // cycle and the exam would come back. Restore it from the
-  // pre-merge row, same class of keep as the v55 student-PIN keep
-  // above. Consequence to know: a delete made on THIS device stays
-  // deleted here, but it does NOT travel to other devices — the
-  // server row stays, so a second device re-downloads the exam as
-  // active. A server column (follow-up SQL) is needed before a
-  // delete can sync across devices.
-  (function () {
-    var oldById = {};
-    oldExams.forEach(function (e) { oldById[e.id] = e; });
-    d.exams.forEach(function (e) { var old = oldById[e.id]; if (old && old.deleted) e.deleted = true; });
-  })();
+  d.exams = mergeById('ss_exams', d.exams || [], byTable.ss_exams || [], function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100, deleted: !!row.deleted }; examMap[row.id] = e.id; return e; });
+  // v67 (SQL 20): the server row now carries the deleted flag, so the
+  // pull above reads it — a delete from another device applies, and a
+  // restore from another device applies too. The old B6 unconditional
+  // keep (which forced the local flag back on every cycle) is GONE:
+  // it would have blocked exactly that restore. The only local
+  // override left is the v58 pending-upsert keep below — a delete or
+  // restore queued on THIS device but not yet flushed still holds its
+  // local flag through a pull, keyed on the outbox entry.
   // v58: a pending exam upsert keeps its LOCAL row through the pull —
   // the same class as the v56 students keep. Live v57 (10 Nov 2026):
   // the admin edited an exam name, the pull replaced the local edit
@@ -3115,6 +3252,7 @@ function sbSyncFlushWithToken(act, tok) {
       sbSetStatus(left ? 'pending' : 'synced');
     } else {
       sbSetStatus('failed', r.detail || '');
+      sbSyncFailToastOnce(); // B6 (M-22): a background flush failure toasts once per episode (not while logging out)
     }
     // v53 diag: the flush's real cost, read by Settings "Sync details".
     sbSyncDiagSet({ lastFlush: { at: new Date().toISOString(), ms: Date.now() - flushT0, pushed: r.pushed || 0, conflicts: r.conflicts || 0, leftover: left, calls: sbSyncRestCalls - flushCalls0 } });
@@ -3390,39 +3528,51 @@ function sbFetchTakenNumbers(token, schoolId) {
     return taken;
   });
 }
-function sbMintAdmNo(token, schoolId, taken) {
+// Generic mint-with-retry (was 2 nested `tryOnce` copies in sbMintAdmNo /
+// sbMintReceiptNo): rpcFn mints one fresh value; while taken(value) is true
+// it retries, up to maxAttempts times, then throws exhaustedMsg.
+function mintWithRetry(rpcFn, taken, maxAttempts, exhaustedMsg) {
+  maxAttempts = maxAttempts || 8;
   var attempts = 0;
-  function tryOnce() {
+  function attempt() {
     attempts++;
+    return rpcFn().then(function (val) {
+      if (taken(val)) {
+        if (attempts >= maxAttempts) throw new Error(exhaustedMsg || 'mint-exhausted');
+        return attempt();
+      }
+      return val;
+    });
+  }
+  return attempt();
+}
+function sbMintAdmNo(token, schoolId, taken) {
+  return mintWithRetry(function () {
     return sbRest('POST', 'rpc/ss_next_adm_no', token, { p_school_id: schoolId }).then(function (r) {
       if (!r.ok || typeof r.data !== 'string' || !r.data) throw new Error('rpc-adm-' + (r.status || 'fail'));
-      var adm = r.data, enr = sbEnrFromAdm(adm);
-      if ((taken.adm && taken.adm[adm]) || (taken.enr && taken.enr[enr])) {
-        if (attempts >= 8) throw new Error('rpc-adm-exhausted');
-        return tryOnce();
-      }
-      if (taken.adm) taken.adm[adm] = 'minted';
-      if (taken.enr) taken.enr[enr] = 'minted';
-      return { admissionNo: adm, enr: enr };
-    });
-  }
-  return tryOnce();
-}
-function sbMintReceiptNo(token, schoolId, takenRcp) {
-  var attempts = 0;
-  function tryOnce() {
-    attempts++;
-    return sbRest('POST', 'rpc/ss_next_receipt_no', token, { p_school_id: schoolId }).then(function (r) {
-      if (!r.ok || typeof r.data !== 'string' || !r.data) throw new Error('rpc-rcp-' + (r.status || 'fail'));
-      if (takenRcp && takenRcp[r.data]) {
-        if (attempts >= 8) throw new Error('rpc-rcp-exhausted');
-        return tryOnce();
-      }
-      if (takenRcp) takenRcp[r.data] = true;
       return r.data;
     });
-  }
-  return tryOnce();
+  }, function (adm) {
+    return (taken.adm && taken.adm[adm]) || (taken.enr && taken.enr[sbEnrFromAdm(adm)]);
+  }, 8, 'rpc-adm-exhausted').then(function (adm) {
+    var enr = sbEnrFromAdm(adm);
+    if (taken.adm) taken.adm[adm] = 'minted';
+    if (taken.enr) taken.enr[enr] = 'minted';
+    return { admissionNo: adm, enr: enr };
+  });
+}
+function sbMintReceiptNo(token, schoolId, takenRcp) {
+  return mintWithRetry(function () {
+    return sbRest('POST', 'rpc/ss_next_receipt_no', token, { p_school_id: schoolId }).then(function (r) {
+      if (!r.ok || typeof r.data !== 'string' || !r.data) throw new Error('rpc-rcp-' + (r.status || 'fail'));
+      return r.data;
+    });
+  }, function (no) {
+    return !!(takenRcp && takenRcp[no]);
+  }, 8, 'rpc-rcp-exhausted').then(function (no) {
+    if (takenRcp) takenRcp[no] = true;
+    return no;
+  });
 }
 function sbMintNewStudentNumbers(act) {
   // One fresh (admissionNo, enr) pair from the server for a new student.
@@ -3729,6 +3879,7 @@ function sbSyncCycleRun(account, sbUid, token) {
     });
   }).catch(function (err) {
     sbSetStatus('failed', (err && err.message) || 'error');
+    sbSyncFailToastOnce(); // B6 (M-22): one toast per failure episode
     return { done: false, reason: 'error', detail: (err && err.message) || 'error' };
   }).then(function (r) {
     if (!r) return r;
@@ -3736,13 +3887,17 @@ function sbSyncCycleRun(account, sbUid, token) {
       // The flush already set pending/synced; only confirm synced when
       // the outbox really is empty (a pull that succeeded while entries
       // are still queued must not claim to be synced).
-      if (!sbOutboxLoad(sbUid).length) sbSetStatus('synced');
+      if (!sbOutboxLoad(sbUid).length) {
+        sbSetStatus('synced');
+        sbSyncFailToasted = false; // B6: only a TRULY synced cycle ends the failure episode — a done pull with entries still queued does not
+      }
     } else if (r.reason === 'no-server-school' || r.reason === 'upload-failed') {
       // The only failure paths where the flush never ran (or the upload
       // itself failed): do not leave the status stuck on 'syncing'.
       // Other failures already had their status set by the flush
       // (failed / pending / offline).
       sbSetStatus('failed', r.detail || '');
+      sbSyncFailToastOnce(); // B6 (M-22): one toast per failure episode
     }
     // v34 (P1-7/P1-8): retry queued support requests and admission
     // applications once a cycle has run (they are fire-and-forget).
@@ -3753,10 +3908,28 @@ function sbSyncCycleRun(account, sbUid, token) {
     // v53 diag: the cycle's real cost, read by Settings "Sync details".
     // sbLoadStatus() is read here (not sbSetStatus's node update) so
     // the record survives a logout and the next verifier can read it.
-    sbSyncDiagSet({ lastCycle: { at: new Date().toISOString(), ms: Date.now() - cycleT0, result: r.done ? 'synced' : ('failed: ' + (r.reason || r.detail || 'error')), detail: r.detail || '', outbox: sbOutboxLoad(sbUid).length, calls: sbSyncRestCalls - cycleCalls0 } });
+    // B5 (M-19): "synced" ONLY when the pull is done AND the flush is
+    // done AND the outbox is empty — a done pull with entries still
+    // queued reports pending with the leftover count (the status line
+    // above already guards the same way; the diagnostic used to lie).
+    var leftCycle = sbOutboxLoad(sbUid).length;
+    var resCycle = r.done ? (leftCycle ? 'pending: ' + leftCycle + ' left' : 'synced') : ('failed: ' + (r.reason || r.detail || 'error'));
+    sbSyncDiagSet({ lastCycle: { at: new Date().toISOString(), ms: Date.now() - cycleT0, result: resCycle, detail: r.detail || '', outbox: leftCycle, calls: sbSyncRestCalls - cycleCalls0 } });
     sbSyncDetailsRefresh();
     return r;
   });
+}
+// B6 (M-22): background sync failures toast ONCE per failure episode —
+// the first failure shows "Backup failed — will retry on next login"
+// (t('sbStatusFailed')); repeats stay silent until a cycle succeeds.
+// Never toasts while logging out (sbLoggingOut): a logout-time flush
+// failure is not the user's problem anymore.
+var sbSyncFailToasted = false;
+function sbSyncFailToastOnce() {
+  if (sbSyncFailToasted) return;
+  try { if (typeof sbLoggingOut !== 'undefined' && sbLoggingOut) return; } catch (e) {}
+  sbSyncFailToasted = true;
+  try { toast(t('sbStatusFailed')); } catch (e2) {}
 }
 var sbSyncCyclePending = null; // the single queued follow-up cycle, if any
 function sbSyncCycle(account, sbUid, token) {
@@ -4146,16 +4319,22 @@ function migrateStudentsV9(d) {
 
 /* ================= Phase 4: parent portal + admission requests =================
    Static scope: no server. A parent logs in with Admission No. + PIN on the
-   device where the school's data lives; the PIN is the last 4 digits of the
-   primary mobile unless the school set a custom one. Real password accounts
-   arrive with the server phase. (v35: the parent portal is gone — student
-   login replaced it. The PIN now belongs to the STUDENT login.) */
-function parentPinFromPhone(phone) { var d = digitsOnly(phone); return d.length >= 4 ? d.slice(-4) : ''; } // v36: LEGACY only — migrateV12 below fills it for records that predate the PIN feature, so existing students keep logging in. No NEW student ever gets a phone-derived PIN (saveStudent / import generate a random one).
+   device where the school's data lives. (v35: the parent portal is gone —
+   student login replaced it. The PIN now belongs to the STUDENT login.)
+   Phase 1 (H-3): a PIN is NEVER derived from the phone number anymore.
+   The phone number sits in the same record (and in CSV exports), so a
+   phone-last-4 PIN was guessable. Records with no PIN at all get a fresh
+   RANDOM PIN, stored only as a salted hash (same as new students in
+   saveStudent / import) — the value is never shown anywhere; the admin
+   sets a known PIN via the profile when the student needs to log in. */
 function migrateV12(d) {
   // Phase 4 migration for existing v2 DBs: parent PINs + admission requests.
   // Idempotent; never changes existing values, amounts or statuses.
+  // Phase 1 (H-3): a PIN-less record (no hash, parentPin undefined/null)
+  // gets a fresh RANDOM PIN hash — never the phone's last 4 digits, never
+  // plaintext. '' stays cleared: the admin deliberately removed the PIN.
   (d.students || []).forEach(function (s) {
-    if ((s.parentPin === undefined || s.parentPin === null) && !s.parentPinHash) s.parentPin = parentPinFromPhone(s.phone); // v54 (A1): never re-fill a plaintext PIN once the student already carries a hash — otherwise every load would re-hash with a fresh salt and the sync payload would churn on every login. v55: a null (left by an older pull that materialized the server's null — the live V21/2108 loss) is the same as "no PIN set yet" and refills from the phone, exactly like undefined. '' stays cleared: the admin deliberately removed the PIN.
+    if ((s.parentPin === undefined || s.parentPin === null) && !s.parentPinHash) s.parentPinHash = hashPin(randomPin());
   });
   if (!Array.isArray(d.admissionRequests)) d.admissionRequests = [];
   return d;
@@ -4164,10 +4343,11 @@ function migrateV54(d) {
   // v54 (A1): hash every plaintext student PIN once, then drop the
   // plaintext field. Idempotent — a second run finds no plaintext left
   // (a stored hash is never re-hashed). A student with no PIN at all
-  // keeps none: login stays unavailable until the admin sets one.
-  // Only a NON-EMPTY plaintext PIN is deleted: an empty '' is the v36
-  // cleared-PIN sentinel, and deleting it would let migrateV12 re-derive
-  // the PIN from the phone on the next load (a cleared PIN would come back).
+  // already got a random one from migrateV12/migrateV55 earlier in the
+  // chain; only the '' cleared-PIN sentinel keeps none. Only a NON-EMPTY
+  // plaintext PIN is deleted: an empty '' is the v36 cleared-PIN
+  // sentinel, and deleting it would let a later migration re-assign a
+  // PIN on the next load (a cleared PIN would come back).
   (d.students || []).forEach(function (s) {
     if (typeof s.parentPin === 'string' && s.parentPin && !s.parentPinHash) s.parentPinHash = hashPin(s.parentPin);
     if (s.parentPin) delete s.parentPin;
@@ -4176,19 +4356,16 @@ function migrateV54(d) {
 }
 function migrateV55(d) {
   // v55: one-time repair for the records v54 (and earlier pulls) stripped —
-  // no hash, parentPin null/undefined, phone present. Re-derive the legacy
-  // phone-derived PIN so the student can log in again; migrateV54 (the
-  // outer step) hashes it on the same pass. Idempotent: once a hash
-  // exists the record is untouched. '' is NOT repaired — it is the
-  // cleared-PIN sentinel and must stay cleared. (migrateV12 above now
-  // refills nulls too, so the repair also holds as a permanent guard;
-  // the two steps overlap deliberately — the repair names the incident,
-  // the guard keeps it from recurring.)
+  // no hash, parentPin null/undefined. Phase 1 (H-3): the repair gives a
+  // fresh RANDOM PIN hash, never the phone-derived PIN (the old repair
+  // re-derived the PIN from the phone, which made it guessable). Idempotent:
+  // once a hash exists the record is untouched. '' is NOT repaired — it is
+  // the cleared-PIN sentinel and must stay cleared. (migrateV12 above now
+  // refills nulls too, so the repair also holds as a permanent guard; the
+  // two steps overlap deliberately — the repair names the incident, the
+  // guard keeps it from recurring.)
   (d.students || []).forEach(function (s) {
-    if (!s.parentPinHash && (s.parentPin === undefined || s.parentPin === null)) {
-      var pin = parentPinFromPhone(s.phone);
-      if (pin) s.parentPin = pin;
-    }
+    if (!s.parentPinHash && (s.parentPin === undefined || s.parentPin === null)) s.parentPinHash = hashPin(randomPin());
   });
   return d;
 }
@@ -4702,7 +4879,28 @@ function studentFeeStatus(id) {
 var GENDERS = ['Boy', 'Girl', 'Other'];
 var BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
 var CATEGORIES = ['General', 'OBC', 'SC', 'ST', 'Other'];
-var SESSIONS = ['2025–26', '2024–25', '2026–27'];
+// Session options derive from the current academic year (Apr–Mar via
+// sessionOfDate/todayIST), so the list never goes stale: the two past
+// sessions, the current one, and next year. (Was a hardcoded 3-item list.)
+function dynamicSessions() {
+  var cur = sessionOfDate(todayIST());
+  var m = /^(\d{4})/.exec(cur || '');
+  var y = m ? parseInt(m[1], 10) : 2025;
+  var out = [];
+  [y - 2, y - 1, y, y + 1].forEach(function (yy) {
+    out.push(yy + '–' + String((yy + 1) % 100).padStart(2, '0'));
+  });
+  return out;
+}
+var SESSIONS = dynamicSessions();
+// Session <option> markup for a <select>: the dynamic SESSIONS list, plus
+// the current value if it falls outside the range (e.g. an old profile
+// session), so the saved value is never silently dropped from the list.
+function sessionSelectOpts(cur) {
+  var opts = SESSIONS.slice();
+  if (cur && opts.indexOf(cur) === -1) opts.push(cur);
+  return opts.map(function (s) { return '<option ' + (s === cur ? 'selected' : '') + '>' + s + '</option>'; }).join('');
+}
 var SECTIONS = ['A', 'B', 'C'];
 var STU_PAGE_SIZE = 10;
 var STU_STATUSES = ['Active', 'Inactive', 'Draft', 'Cancelled'];
@@ -5332,17 +5530,17 @@ function animateBars(root) {
 /* ================= i18n ================= */
 var I18N = {
   en: {
-    dashboard: 'Dashboard', settings: 'Settings', reports: 'Reports', students: 'Student Management', attendance: 'Attendance', fees: 'Fees', exams: 'Examinations', homework: 'Homework', notices: 'Notices', totalStudents: 'Total Students', totalTeachers: 'Total Teachers', feeCollected: 'Fee Collected', pendingFee: 'Pending Fee', logout: 'Logout',
+    dashboard: 'Dashboard', settings: 'Settings', reports: 'Reports', students: 'Student Management', attendance: 'Attendance', fees: 'Fees', results: 'Results', exams: 'Examinations', homework: 'Homework', notices: 'Notices', totalStudents: 'Total Students', totalTeachers: 'Total Teachers', feeCollected: 'Fee Collected', pendingFee: 'Pending Fee', logout: 'Logout',
     landFooter: '<b>School Saathi</b> — Smart Education. Better Tomorrow.<br>Built for Bihar • Free for Schools • Made with ❤️ in Gopalganj, Bihar',
     loginWelcome: 'Log in or sign up<br>to continue', loginWelcomeBack: 'Welcome back', loginNewSchool: 'New school?', loginCreateAccount: 'Create a school account →', featTitle: 'WHAT YOU GET', featAttendance: 'Attendance', featFees: 'Fees & Receipts', featExams: 'Exams & Marks', featHomework: 'Homework', featWhatsApp: 'WhatsApp Alerts', loginEmail: 'Email', loginPassword: 'Password', loginEmailPh: 'you@school.edu.in', loginPwPh: '••••••••', loginBtn: 'Log In', authLogin: 'Log In', authSignup: 'Sign Up', authNote: 'One account per school.', suSchool: 'School Name', suYourName: 'Your Name', suEmail: 'Email', suPw: 'Password', suPw2: 'Confirm Password', suBtn: 'Create Account', loginOr: 'Or continue with', demoTitle: '— One-tap demo login —', loginBack: '← Back to website',
     schoolDashboard: 'School Admin Dashboard', studentDashboard: 'Student Dashboard',
     confirmTitle: 'Confirm', cancel: 'Cancel', confirmYes: 'Yes, continue', saveBtn: 'Save',
-    addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', delAccount: 'Delete Account', delPwTitle: 'Delete this account?', delPwHint: 'This deletes the school account from THIS device only. Enter your password to continue.', delNameTitle: 'Type the school name to confirm', delNameHint: 'This is the last step before the account is deleted. Type the exact school name.', delConfirmMsg: 'Delete this school account from this device? Login, students, fees, attendance — everything for this school on this device goes. The server copy (if any) is NOT deleted; logging in again with the same email would bring a server-linked school back. A school that was never linked is gone for good.', delDone: 'Account deleted.', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmTitle: 'Reset — choose what to delete', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', resetNameTitle: 'Type the school name to confirm', resetNameHint: 'This is the last step before everything is deleted. Type the exact school name.', resetNameLabel: 'School name', resetNameWrong: 'That name does not match — nothing was reset.', resetNameGo: 'Confirm Reset', publishBtn: 'Publish', assignHw: 'Assign Homework', saveStudentBtn: 'Save Student',
+    addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', delAccount: 'Delete Account', delPwTitle: 'Delete this account?', delPwHint: 'This deletes the school account from THIS device only. Enter your password to continue.', delNameTitle: 'Type the school name to confirm', delNameHint: 'This is the last step before the account is deleted. Type the exact school name.', delConfirmMsg: 'Delete this school account from this device? Login, students, fees, attendance — everything for this school on this device goes. The server copy (if any) is NOT deleted; logging in again with the same email would bring a server-linked school back. A school that was never linked is gone for good.', delDone: 'Account deleted.', delServerTitle: 'Delete this account everywhere?', delServerMsg: 'This permanently deletes the school account from the SERVER too — students, fees, attendance, everything — on all devices. You will not be able to log in with this email again. This cannot be undone.', delServerBtn: 'Delete from server too', delServerDone: 'Account deleted from the server and this device.', delServerFailed: 'Could not delete the server account — nothing was deleted. Check your connection and try again.', delServerNotSetup: 'Server deletion is not set up yet — your data on this device was deleted. The server copy remains.', delServerNoSchool: 'No school was found on the server — your data on this device was deleted.', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmTitle: 'Reset — choose what to delete', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', resetNameTitle: 'Type the school name to confirm', resetNameHint: 'This is the last step before everything is deleted. Type the exact school name.', resetNameLabel: 'School name', resetNameWrong: 'That name does not match — nothing was reset.', resetNameGo: 'Confirm Reset', publishBtn: 'Publish', assignHw: 'Assign Homework', saveStudentBtn: 'Save Student',
     attOverview: 'Attendance Overview', todayAtt: 'Today\'s Attendance', feeTrend: 'Fee Collection Trend', feeTrendSub: 'Apr – Mar (Collected vs Pending)', feeTrendSub2: 'Apr to Mar (Collected vs Pending)', recentAct: 'Recent Activities', activityLog: 'Activity Log', actLogSub: 'Full audit history — newest first.', thDetails: 'Details', actBy: 'By', supYourName: 'Your name', quickLinks: 'Quick Links', jumpTask: 'Jump to a task', enterMarks: 'Enter Marks', myHomework: 'My Homework', noticesH: 'Notices', latestNotices: 'Latest from school', contactSub: 'We reply within one working day', studentsReport: 'Students Report', feesReport: 'Fees Report', attReport: 'Attendance Report', thName: 'Name', thClass: 'Class', thRoll: 'Roll', thGuardian: 'Guardian', thPhone: 'Phone', thAtt: 'Att.', thFee: 'Fee', thAction: 'Action', thReceipt: 'Receipt', thStudent: 'Student', thMonth: 'Month', thAmount: 'Amount', thDate: 'Date', thStatus: 'Status', thMarks: 'Marks', thResult: 'Result', thRole: 'Role',
     subReports: 'Download CSV reports', subStudents: 'St. Xavier School, Patna', subAttendance: 'Mark & view attendance', subFees: 'Fee collection & pending dues', subExams: 'Exams & marks entry', subHomework: 'Assign & track homework', subNotices: 'Notice board',
     fSchoolName: 'School Name', fCity: 'City', fStudentName: 'Student Name', fClass: 'Class', fRoll: 'Roll No', fGuardian: 'Guardian', fPhone: 'Phone', fTitle: 'Title', fSubject: 'Subject', fDue: 'Due Date', fMessage: 'Message', fPrincipal: 'Principal / Admin', fEmail: 'Email', fAddress: 'Address', fSession: 'Academic Session',
     tLoggedIn: 'Logged in as', tAccountCreated: 'Account created. Welcome, ', tInvalidCreds: 'Invalid email or password.', tFillAll: 'Please fill in all fields.', tInvalidEmail: 'Please enter a valid email address.', tPwShort: 'Password must be at least 6 characters.', tPwMismatch: 'Passwords do not match.', tEmailTaken: 'An account with this email already exists. Please log in.', tLoggedOut: 'Logged out. See you soon!', tBackExit: 'Press back again to exit', tStudentAdded: 'Student added.', tStudentUpdated: 'Student updated.', tStudentDeleted: 'Student deleted.', tAttSaved: 'Attendance saved', tMarksSaved: 'Marks saved for', tHwDone: 'Homework marked done.', tHwNotDone: 'Homework marked not done.', tHwAssigned: 'Homework assigned.', tNoticePub: 'Notice published.', tReportDl: 'Report downloaded.', tSettingsSaved: 'Settings saved.', tAllReset: 'All data deleted — the school is now empty.', tSessionChanged: 'Academic session changed to', tNoChanges: 'No changes.', tFutureDate: 'Future date not allowed — showing today.', tDueFuture: 'Due date must be today or later.', tDemoLogin: 'Demo account — use one-tap login below.', tGoogleDemo: 'Demo build — please use a one-tap demo login.', tNoStudentData: 'No student data — ask your school admin to add students.', tNoExams: 'No exams yet.', tNoHw: 'No homework yet.', tNoMarks: 'No marks entered yet for this exam.', tNoMatch: 'No students match.', tNotEntered: 'Not entered', tCollectedFrom: 'collected from', tDupStudent: 'already exists in', tNotSaved: 'Not saved', tCheckMarks: 'check marks', tStudentsWord: 'students', tNoFeeData: 'No fee data yet.',
-    searchStudent: 'Search student…', viewAll: 'View All →', classAvg: 'Class average', studentsMarked: 'students marked', ofWord: 'of', showingRec: 'Showing', ofRec: 'of', recordsWord: 'records.', tapDone: 'tap the box when done', myHwSub: 'Tap the box when you finish', tileAtt: 'Attendance', tileFees: 'Fees', tileResults: 'Results', tileHw: 'Homework', doneSuffix: 'done', presBtn: 'Present', absBtn: 'Absent', lateBtn: 'Late',
+    searchStudent: 'Search student…', viewAll: 'View All →', classAvg: 'Class average', studentsMarked: 'students marked', ofWord: 'of', showingRec: 'Showing', ofRec: 'of', recordsWord: 'records.', tapDone: 'tap the box when done', myHwSub: 'Tap the box when you finish', myAttSub: 'Your day-by-day attendance record', myFeesSub: 'Every fee record — what is paid and what is pending', myResultsSub: 'Marks in every exam', tileAtt: 'Attendance', tileFees: 'Fees', tileResults: 'Results', tileHw: 'Homework', doneSuffix: 'done', presBtn: 'Present', absBtn: 'Absent', lateBtn: 'Late',
     qaAddStudent: 'Add Student', qaAddStudentD: 'New admission', qaMarkAtt: 'Mark Attendance', qaMarkAttD: 'Today\'s register', qaEnterMarks: 'Enter Marks', qaEnterMarksD: 'Exam results', qaGenReport: 'Generate Report', qaGenReportD: 'CSV download',
     dlStudents: 'Download Students CSV', dlFees: 'Download Fees CSV', dlAtt: 'Download Attendance CSV', repStudentsSub: 'Name, class, roll, guardian, phone, attendance, fee status', repFeesSub: 'Student, class, month, amount, status — Apr to Mar',
     subSettingsS: 'School profile', settingsSub: 'Edit and save — changes sync to the server when you are online.',
@@ -5351,7 +5549,7 @@ var I18N = {
     impTitle: 'Bulk Import Students', impImportBtn: 'Import Students', impTemplate: 'Download Sample Template', impTemplateSub: 'CSV format only — Excel (.xlsx) files cannot be read here. Use the template columns.', impChooseFile: 'Choose CSV File', impPreview: 'Import Preview', impSummary: 'Import Summary', impValid: 'Valid', impError: 'Error', impDuplicate: 'Duplicate', impReason: 'Reason', impConfirm: 'Import Valid Rows', impDone: 'Done', impNoRows: 'No rows found in this file. Please check the template.', impBadHeader: 'This file does not look like the student template — the Name column is missing.', impNoFile: 'Please choose a CSV file first.', impNoValid: 'No valid rows to import.', impImported: 'imported', impSkipped: 'skipped', impErrName: 'Name is required', impErrMobile: 'Mobile must be 10 digits', impErrMobile2: 'Secondary mobile must be 10 digits', impErrClass: 'Class is not valid', impErrSection: 'Section must be A, B or C', impErrPin: 'PIN must be 6 digits', impErrAadhaar: 'Aadhaar must be 12 digits', impErrDob: 'Date of birth is not a valid date', impErrAdmDate: 'Admission date is not a valid date', impErrSession: 'Session is not valid (e.g. 2025–26)', impErrGender: 'Gender must be Boy, Girl or Other', impErrBlood: 'Blood group is not valid', impErrCategory: 'Category must be General, OBC, SC, ST or Other', impErrEmail: 'Parent email is not valid', impErrRoll: 'Roll must be a positive number', impErrBool: 'Must be Yes or No', impErrDup: 'Duplicate of', impErrDupFile: 'Duplicate in this file', tImpDone: 'Bulk import complete.', tImpTemplate: 'Sample template downloaded.',
     promoTitle: 'Promote Students', promoBtn: 'Promote Students', promoSingle: 'Promote Student', promoFromSession: 'Current Session', promoFromClass: 'Current Class', promoToSession: 'Target Session', promoToClass: 'Target Class', promoToSection: 'Target Section', promoSelectAll: 'Select All', promoSelectNone: 'Select None', promoSelected: 'selected', promoPromote: 'Promote Selected', promoRetain: 'Retain Selected', promoNoStudents: 'No students in this class and session.', promoNoSelect: 'Please select at least one student.', promoNoop: 'Target class and session are the same as current — nothing to change.', promoNoopRetain: 'Target session is the same as the current session — nothing to change.', promoDone: 'Promotion complete.', promoPromoted: 'promoted', promoRetained: 'retained', promoNote: 'Attendance, fees, exam marks and homework history are preserved.', promoSingleNote: 'Single student promotion', promoSkipped: 'skipped (already moved)', promoNotEligible: 'Only Active or Inactive students can be promoted.',
     idcPreview: 'ID Card Preview', idcPrint: 'Print', idcPrintCards: 'Print ID Cards', idcSelectAll: 'Select all', idcClearSel: 'Clear selection', idcReady: 'ID cards ready to print', idcEmergency: 'Emergency Contact', idcReturn: 'If found, please return to', idcNoQr: 'QR code could not be generated.',
-    authStudent: 'Student', authTeacher: 'Teacher', stuAdmNo: 'Admission Number', stuPinLabel: 'Student PIN', stuLoginBtn: 'Login as Student', stuNote: 'Student login uses the PIN set by the school. Ask your school if you do not know it.', stuCloudHint: 'Cloud login — this school is not on this device. Your admission number and PIN are checked on the server.', cloudSuffix: ' (Cloud)', tCloudHwReadOnly: 'Homework status is saved by your school — it cannot be changed from cloud login.', stuSub: 'Student', stuDashboard: 'My Profile', tInvalidStudent: 'Invalid admission number or PIN.', stuPinField: 'Student login PIN (optional)', stuPinPh: 'Leave blank — a random PIN is generated', stuPinTitle: 'Student PIN', stuPinNow: 'Current Student PIN', stuPinSet: 'PIN set', stuPinNone: 'No PIN set — student login unavailable for this student.', stuPinNew: 'New PIN (4–6 digits)', stuPinSetBtn: 'Set PIN', stuPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Student PIN set.', tPinLocked: 'Too many wrong attempts \u2014 try again in 15 minutes.', tPinCleared: 'Student PIN cleared.', tPinAuto: 'The PIN is set by the school at admission. If the student forgets it, set a new one here.', tNotAllowed: 'Your login cannot open this section.', tOwnProfileOnly: 'You can only view your own profile.', todayW: 'Today', tchrLoginBtn: 'Login as Teacher', tchrNote: 'Teacher accounts are created by the school admin.', tchrSub: 'Teacher', tchrDashboard: 'Teacher Dashboard', tchrNoDb: 'School data is not on this device — log in on the school device first.', teachers: 'Teachers', teachersSub: 'Teacher accounts and the classes they teach.', tchrAdd: 'Add Teacher', tchrEdit: 'Edit Teacher', tchrName: 'Teacher Name', tchrSubject: 'Subject', tchrClasses: 'Classes Taught', tchrEmail: 'Email', tchrPw: 'Password', tchrPwHint: 'At least 6 characters. Leave blank to keep the current password.', tchrNoLogin: 'No login', tchrSaved: 'Teacher saved.', tchrNoClasses: 'Choose at least one class.', tchrCloudHint: 'Cloud login — this school is not on this device. Your email and password are checked on the server.', tchrNoSchoolPick: 'Select school (optional)', tCloudSessionExpired: 'Your cloud session expired — please log in again.', tchrEmailTaken: 'This email is already used by another account.', tchrMyClasses: 'My Classes', tchrStudents: 'Students in my classes', tchrNoClassesYet: 'No classes assigned yet — ask the school admin to assign classes.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
+    authStudent: 'Student', authTeacher: 'Teacher', stuAdmNo: 'Admission Number', stuPinLabel: 'Student PIN', stuLoginBtn: 'Login as Student', stuNote: 'Student login uses the PIN set by the school. Ask your school if you do not know it. Parents: log in with your child’s admission number and PIN — attendance, fees and results are all here.', stuCloudHint: 'Cloud login — this school is not on this device. Your admission number and PIN are checked on the server.', cloudSuffix: ' (Cloud)', tCloudHwReadOnly: 'Homework status is saved by your school — it cannot be changed from cloud login.', stuSub: 'Student', stuDashboard: 'My Profile', tInvalidStudent: 'Invalid admission number or PIN.', stuPinField: 'Student login PIN (optional)', stuPinPh: 'Leave blank — a random PIN is generated', stuPinTitle: 'Student PIN', stuPinNow: 'Current Student PIN', stuPinSet: 'PIN set', stuPinNone: 'No PIN set — student login unavailable for this student.', stuPinNew: 'New PIN (4–6 digits)', stuPinSetBtn: 'Set PIN', stuPinClear: 'Clear PIN', tPinLen: 'PIN must be 4–6 digits.', tPinSet: 'Student PIN set.', tPinLocked: 'Too many wrong attempts \u2014 try again in 15 minutes.', tPinCleared: 'Student PIN cleared.', tPinAuto: 'The PIN is set by the school at admission. If the student forgets it, set a new one here.', tNotAllowed: 'Your login cannot open this section.', tOwnProfileOnly: 'You can only view your own profile.', todayW: 'Today', tchrLoginBtn: 'Login as Teacher', tchrNote: 'Teacher accounts are created by the school admin.', tchrSub: 'Teacher', tchrDashboard: 'Teacher Dashboard', tchrNoDb: 'School data is not on this device — log in on the school device first.', teachers: 'Teachers', teachersSub: 'Teacher accounts and the classes they teach.', tchrAdd: 'Add Teacher', tchrEdit: 'Edit Teacher', tchrName: 'Teacher Name', tchrSubject: 'Subject', tchrClasses: 'Classes Taught', tchrEmail: 'Email', tchrPw: 'Password', tchrPwHint: 'At least 6 characters. Leave blank to keep the current password.', tchrNoLogin: 'No login', tchrSaved: 'Teacher saved.', tchrNoClasses: 'Choose at least one class.', tchrCloudHint: 'Cloud login — this school is not on this device. Your email and password are checked on the server.', tchrNoSchoolPick: 'Select school (optional)', tCloudSessionExpired: 'Your cloud session expired — please log in again.', tchrEmailTaken: 'This email is already used by another account.', tchrMyClasses: 'My Classes', tchrStudents: 'Students in my classes', tchrNoClassesYet: 'No classes assigned yet — ask the school admin to assign classes.', admissions: 'Admission Requests', admReqTitle: 'admission requests', admReqApply: 'Apply for Admission', admReqFormTitle: 'Apply for Admission', admReqSchool: 'School', admReqNoSchool: 'No school account exists on this device yet — admission requests open after a school signs up here.', admReqClassApply: 'Class Applying For', admReqSubmitted: 'Application received. The school will review it and contact you.', admReqApprove: 'Approve', admReqReject: 'Reject', admReqView: 'View', admReqReason: 'Reason (optional)', admReqApproved: 'Admission request approved.', admReqRejected: 'Admission request rejected.', admReqPrefilled: 'Prefilled from an admission request — check the details before saving.', admReqStatus: 'Status', admReqSubmittedOn: 'Submitted', admReqEmpty: 'No admission requests yet.', admReqPending: 'Pending', admReqApprovedSt: 'Approved', admReqRejectedSt: 'Rejected', admReqAll: 'All', tReqName: 'Student name is required.', tReqClass: 'Please choose the class.', tAdmReqFailed: 'Could not save the application for that school.', softDelMsg: 'Remove this student? The record is kept (soft delete) — fees, marks, attendance and homework stay saved.', tStudentRemoved: 'Student removed (record kept).', tAdmReqInvalid: 'Please fill the student name, a 10-digit mobile and the class.',
     collectFeeBtn: 'Collect Fee', rcptTitle: 'FEE RECEIPT', rcptReceiptNo: 'Receipt No', rcptDate: 'Date', rcptAdmNo: 'Adm No', rcptSession: 'Session', rcptName: 'Name', rcptClass: 'Class', rcptInstallment: 'Installment', rcptCounter: 'Counter No', rcptSlNo: 'Sl.No', rcptDesc: 'Description', rcptDue: 'Due', rcptCon: 'Con', rcptPaid: 'Paid', rcptAdmissionFee: 'Admission Fee', rcptTuitionFee: 'Tuition Fee', rcptCaution: 'Caution Money', rcptAnnual: 'Annual Charges', rcptBusFee: 'Bus Fee', rcptDues: 'Dues', rcptPayModeTitle: 'PAY MODE INFORMATION', rcptPayMode: 'Pay Mode', rcptBank: 'Bank', rcptNumber: 'Number', rcptTotal: 'Total', rcptTotalWords: 'Total in Words', rcptComputerGen: 'This is a computer generated Receipt. Does not required signature.', rcptParentCopy: 'PARENT COPY', rcptCollectorSign: 'Collector\'s Signature', rcptIncludeBus: 'Include Bus/Transport', rcptOtherFees: 'Other Fees', rcptAnnualHint: 'One-time and annual amounts used on the Collect Fee receipt. Set 0 to hide a row.', payModeCash: 'Cash', payModeCheque: 'Cheque', payModeUpi: 'UPI', payModeCard: 'Card', payModeBank: 'Bank Transfer', tFeeCollected: 'Fee collected.', tCollectZero: 'Nothing to collect — enter a Paid amount.', tCollectSaved: 'Fee collected — Receipt ', tCollectNotActive: 'This student is not active — fee cannot be collected.', rcptReceipts: 'Receipts', rcptView: 'View', rcptPrint: 'Print / Save PDF', rcptCollectAgain: 'Collect Again', rcptNoReceipts: 'No receipts yet for this student.', rcptDraft: 'Draft — not saved yet', rcptCollectSave: 'Collect & Save', rcptNoLines: 'Nothing to collect for this period — set the fee amounts in Fee Structure first.',
     sbForgotPw: 'Forgot password?', sbRecoverTitle: 'Reset Password', sbSendResetLink: 'Send Reset Link', sbResetPw: 'Set New Password', sbRecoverSent: 'If an account exists for that email, a reset link was sent. Check your inbox.', sbRecoverFailed: 'Could not send the reset link. Check your connection and try again.', sbResetDone: 'Password updated. Log in with your new password.', sbResetFailed: 'Could not update the password. The link may have expired — request a new one.', sbTooMany: 'Too many attempts — please wait a few minutes and try again.', sbEmailConfirm: 'Server account created — confirm your email to use it on other devices.', sbEmailConfirmed: 'Email confirmed — log in to continue.', sbOfflineLogin: 'You are offline — using this device’s account.', sbLocalOnlyLogin: 'This school isn’t linked to the server yet — using this device’s account.', sbTitle: 'Server Backup', sbBackupNow: 'Back Up Now', sbStatusSynced: 'Backed up to the server.', sbLastAttempt: 'Last attempt', sbSyncDetailsTitle: 'Sync details', sbSyncPendingUploads: 'Pending uploads', sbSyncLastCycle: 'Last cycle', sbSyncLastFlush: 'Last flush', sbSyncLastError: 'Last error', sbSyncPushed: 'pushed', sbSyncConflicts: 'conflicts', sbSyncLeftover: 'left over', sbSyncCalls: 'calls', sbSyncQueued: 'Queued entries', sbSyncAndMore: 'and {n} more', sbStatusPending: 'Backup pending — it will run on your next login.', sbStatusUploading: 'Backing up to the server…', sbStatusFailed: 'Backup failed — it will retry on your next login.', sbStatusOffline: 'Offline — backup will run when you are back online.', sbStatusNotSchool: 'Server backup is available for school accounts.', sbBackupDone: 'Backup complete.', sbBackupFailed: 'Backup did not finish — check your connection and try again.', sbNoSchool: 'No school found for this account. Please sign up or log in with your school account.', sbDownloadNow: 'Download from Server', sbDownloadStart: 'Downloading from the server…', sbDownloadDone: 'Download complete.', sbDownloadFailed: 'Download did not finish — check your connection and try again.', sbDownloadSkipped: 'This device already has school data — download skipped to protect it.', sbDownloadOffline: 'Offline — download will run when you are back online.', sbDownloadNoServer: 'No server backup found for this school yet.', sbStatusSyncing: 'Syncing with the server…', sbStatusPendingSync: 'Offline — changes will sync when you are back online.', sbSyncDone: 'Synced with the server.', sbSyncFailed: 'Sync did not finish — it will retry on your next login.', sbSyncOffline: 'Offline — your changes are saved here and will sync later.', sbSyncConflict: 'Server had a newer copy — kept the server version.', sbNumPending: 'Admission saved. The admission number will be assigned when you are back online.', sbNumPendingReceipt: 'Fee saved. The receipt number will be assigned when you are back online.', sbStatusSessionExpired: 'Session expired — please log in again.', sbStatusNotLinked: 'Not linked to the server yet — it will link when you log in.', sbLinkServer: 'Link to Server', sbLinkDone: 'Server account linked.', sbLinkFailed: 'Could not link the server account — check your connection and try again.', sbLinkPwTitle: 'Link the server account', sbNumAssigning: 'Assigning number…', tWrongPasswordServer: 'Wrong password for the server account.', tCollectCapped: 'The paid amount was more than the due — only the due amount was taken.', resetPwHintServer: 'This deletes the data on THIS device only. The server copy will come back on the next sync unless you also wipe the server.', resetConfirmMsgServer: 'Delete this device’s data only? The server copy will return on the next sync — choose “Delete on server too” to remove it everywhere.', resetDeviceOnly: 'This device only', resetWipeServerBtn: 'Delete on server too', resetWipeServerDone: 'Server data deleted.', resetWipeServerFailed: 'Could not delete the server data — nothing was reset. Check your connection and try again.', supportQueued: 'Support request saved — it will be sent when you are back online.', admReqQueued: 'Application saved — it will be sent when you are back online.', admReqLoadingSchools: 'Loading schools…', attNotMarked: 'Not marked',
     createExam: 'Create Exam', examName: 'Exam Name', examTotal: 'Total Marks', tExamCreated: 'Exam created.', tExamInvalid: 'Please fill the exam name, class and total marks.', editExam: 'Edit Exam', deleteExam: 'Delete Exam', restoreExam: 'Restore', examDeletedH: 'Deleted Exams', examDelNote: 'A deleted exam keeps its marks — the marks stay saved but are hidden everywhere until the exam is restored.', delExamMsg: 'Delete this exam? Its marks will be kept but hidden — restore the exam to see them again.', tExamDeleted: 'Exam deleted. Its marks are kept — restore the exam to see them again.', tExamUpdated: 'Exam updated.', tExamRestored: 'Exam restored.', examClsLocked: 'Class cannot be changed — the marks belong to this class.', examMarksKept: 'Marks already entered stay as they are — percentages are recalculated with the new total.', tNoTeachers: 'No teachers yet.',
@@ -5367,6 +5565,7 @@ var I18N = {
     waReceiptMsg: 'Namaste, this is {school}. Fee receipt {receipt} — {student} (Class {cls}), {amount} paid for {month} on {date}. Thank you.',
     waGreetMsg: 'Namaste, this is {school}. This is regarding {student} (Class {cls}).',
     waSchoolContact: 'School',
+    sbSyncRetrying: 'Retrying…',
     sbStorageQuota: 'Storage full — remove photos or export a backup.',
     sbDataCorrupt: 'Data corrupt — restore from backup.',
     sbRecoveredBak: 'Your data was recovered from the last saved copy.',
@@ -5375,17 +5574,17 @@ var I18N = {
     sbStorageRestoreBackup: 'Open backup restore'
   },
   hi: {
-    dashboard: 'डैशबोर्ड', settings: 'सेटिंग्स', reports: 'रिपोर्ट', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
+    dashboard: 'डैशबोर्ड', settings: 'सेटिंग्स', reports: 'रिपोर्ट', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', results: 'परिणाम', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
     landFooter: '<b>School Saathi</b> — Smart Education. Better Tomorrow.<br>बिहार के लिए बना • स्कूलों के लिए मुफ़्त • गोपालगंज, बिहार में बना ❤️',
     loginWelcome: 'लॉग इन करें या साइन अप करें<br>जारी रखने के लिए', loginWelcomeBack: 'फिर से स्वागत है', loginNewSchool: 'नया स्कूल?', loginCreateAccount: 'स्कूल अकाउंट बनाएँ →', featTitle: 'आपको क्या मिलेगा', featAttendance: 'उपस्थिति', featFees: 'फीस व रसीद', featExams: 'परीक्षा व अंक', featHomework: 'गृहकार्य', featWhatsApp: 'WhatsApp अलर्ट', loginEmail: 'ईमेल', loginPassword: 'पासवर्ड', loginEmailPh: 'आप@school.edu.in', loginPwPh: '••••••••', loginBtn: 'लॉग इन करें', authLogin: 'लॉग इन', authSignup: 'साइन अप', authNote: 'एक स्कूल, एक अकाउंट।', suSchool: 'स्कूल का नाम', suYourName: 'आपका नाम', suEmail: 'ईमेल', suPw: 'पासवर्ड', suPw2: 'पासवर्ड दोबारा डालें', suBtn: 'अकाउंट बनाएँ', loginOr: 'या जारी रखें', demoTitle: '— एक टैप में डेमो लॉगिन —', loginBack: '← वेबसाइट पर वापस',
     schoolDashboard: 'स्कूल एडमिन डैशबोर्ड', studentDashboard: 'छात्र डैशबोर्ड',
     confirmTitle: 'पुष्टि करें', cancel: 'रद्द करें', confirmYes: 'हाँ, जारी रखें', saveBtn: 'सहेजें',
-    addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', delAccount: 'अकाउंट हटाएँ', delPwTitle: 'यह अकाउंट हटाएँ?', delPwHint: 'इससे स्कूल का अकाउंट सिर्फ इस डिवाइस से हटेगा। जारी रखने के लिए अपना पासवर्ड डालें।', delNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', delNameHint: 'अकाउंट हटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', delConfirmMsg: 'इस डिवाइस से यह स्कूल अकाउंट हटा दें? लॉगिन, छात्र, फीस, उपस्थिति — इस डिवाइस पर इस स्कूल का सब कुछ चला जाएगा। सर्वर की कॉपी (अगर है तो) नहीं मिटेगी; उसी ईमेल से दोबारा लॉगिन करने पर सर्वर से जुड़ा स्कूल वापस आ जाएगा। जो स्कूल कभी जुड़ा ही नहीं, वह हमेशा के लिए चला जाएगा।', delDone: 'अकाउंट हटा दिया गया।', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmTitle: 'रीसेट — क्या मिटाना है चुनें', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', resetNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', resetNameHint: 'सब कुछ मिटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', resetNameLabel: 'स्कूल का नाम', resetNameWrong: 'यह नाम मेल नहीं खाता — कुछ भी रीसेट नहीं हुआ।', resetNameGo: 'रीसेट की पुष्टि करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveStudentBtn: 'छात्र सहेजें',
+    addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', delAccount: 'अकाउंट हटाएँ', delPwTitle: 'यह अकाउंट हटाएँ?', delPwHint: 'इससे स्कूल का अकाउंट सिर्फ इस डिवाइस से हटेगा। जारी रखने के लिए अपना पासवर्ड डालें।', delNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', delNameHint: 'अकाउंट हटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', delConfirmMsg: 'इस डिवाइस से यह स्कूल अकाउंट हटा दें? लॉगिन, छात्र, फीस, उपस्थिति — इस डिवाइस पर इस स्कूल का सब कुछ चला जाएगा। सर्वर की कॉपी (अगर है तो) नहीं मिटेगी; उसी ईमेल से दोबारा लॉगिन करने पर सर्वर से जुड़ा स्कूल वापस आ जाएगा। जो स्कूल कभी जुड़ा ही नहीं, वह हमेशा के लिए चला जाएगा।', delDone: 'अकाउंट हटा दिया गया।', delServerTitle: 'अकाउंट हर जगह से हटाएँ?', delServerMsg: 'इससे स्कूल का अकाउंट सर्वर से भी हमेशा के लिए मिट जाएगा — छात्र, फीस, उपस्थिति, सब कुछ — सभी डिवाइसों से। आप इस ईमेल से दोबारा लॉग इन नहीं कर पाएँगे। यह वापस नहीं होगा।', delServerBtn: 'सर्वर से भी हटाएँ', delServerDone: 'अकाउंट सर्वर और इस डिवाइस से हट गया।', delServerFailed: 'सर्वर अकाउंट हटा नहीं जा सका — कुछ भी नहीं हटा। कनेक्शन जाँचकर फिर कोशिश करें।', delServerNotSetup: 'सर्वर से हटाना अभी तैयार नहीं है — इस डिवाइस का डेटा हटा दिया गया। सर्वर की कॉपी अभी बाकी है।', delServerNoSchool: 'सर्वर पर कोई स्कूल नहीं मिला — इस डिवाइस का डेटा हटा दिया गया।', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmTitle: 'रीसेट — क्या मिटाना है चुनें', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', resetNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', resetNameHint: 'सब कुछ मिटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', resetNameLabel: 'स्कूल का नाम', resetNameWrong: 'यह नाम मेल नहीं खाता — कुछ भी रीसेट नहीं हुआ।', resetNameGo: 'रीसेट की पुष्टि करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveStudentBtn: 'छात्र सहेजें',
     attOverview: 'उपस्थिति अवलोकन', todayAtt: 'आज की उपस्थिति', feeTrend: 'शुल्क संग्रह प्रवृत्ति', feeTrendSub: 'अप्रैल – मार्च (संग्रह बनाम बकाया)', feeTrendSub2: 'अप्रैल से मार्च (संग्रह बनाम बकाया)', recentAct: 'हाल की गतिविधियाँ', activityLog: 'गतिविधि लॉग', actLogSub: 'पूरी ऑडिट हिस्ट्री — नई पहले।', thDetails: 'विवरण', actBy: 'द्वारा', supYourName: 'आपका नाम', quickLinks: 'त्वरित लिंक', jumpTask: 'किसी कार्य पर जाएँ', enterMarks: 'अंक भरें', myHomework: 'मेरा होमवर्क', noticesH: 'नोटिस', latestNotices: 'स्कूल से नवीनतम', contactSub: 'हम एक कार्य दिवस के भीतर जवाब देते हैं', studentsReport: 'छात्र रिपोर्ट', feesReport: 'शुल्क रिपोर्ट', attReport: 'उपस्थिति रिपोर्ट', thName: 'नाम', thClass: 'कक्षा', thRoll: 'रोल', thGuardian: 'अभिभावक', thPhone: 'फ़ोन', thAtt: 'उप.', thFee: 'शुल्क', thAction: 'कार्रवाई', thReceipt: 'रसीद', thStudent: 'छात्र', thMonth: 'महीना', thAmount: 'राशि', thDate: 'तारीख', thStatus: 'स्थिति', thMarks: 'अंक', thResult: 'परिणाम', thRole: 'भूमिका',
     subReports: 'CSV रिपोर्ट डाउनलोड करें', subStudents: 'सेंट ज़ेवियर स्कूल, पटना', subAttendance: 'उपस्थिति दर्ज करें और देखें', subFees: 'शुल्क संग्रह और बकाया', subExams: 'परीक्षा और अंक प्रविष्टि', subHomework: 'होमवर्क सौंपें और देखें', subNotices: 'नोटिस बोर्ड',
     fSchoolName: 'स्कूल का नाम', fCity: 'शहर', fStudentName: 'छात्र का नाम', fClass: 'कक्षा', fRoll: 'रोल नंबर', fGuardian: 'अभिभावक', fPhone: 'फ़ोन', fTitle: 'शीर्षक', fSubject: 'विषय', fDue: 'देय तारीख', fMessage: 'संदेश', fPrincipal: 'प्रधानाचार्य / एडमिन', fEmail: 'ईमेल', fAddress: 'पता', fSession: 'शैक्षणिक सत्र',
     tLoggedIn: 'के रूप में लॉगिन हुआ', tAccountCreated: 'अकाउंट बन गया। स्वागत है, ', tInvalidCreds: 'ईमेल या पासवर्ड गलत है।', tFillAll: 'कृपया सभी फ़ील्ड भरें।', tInvalidEmail: 'कृपया सही ईमेल पता डालें।', tPwShort: 'पासवर्ड कम से कम 6 अक्षर का हो।', tPwMismatch: 'पासवर्ड मेल नहीं खाते।', tEmailTaken: 'इस ईमेल से अकाउंट पहले से बना है। कृपया लॉग इन करें।', tLoggedOut: 'लॉगआउट हो गया। फिर मिलते हैं!', tBackExit: 'बाहर निकलने के लिए बैक फिर से दबाएँ', tStudentAdded: 'छात्र जोड़ा गया।', tStudentUpdated: 'छात्र अपडेट हुआ।', tStudentDeleted: 'छात्र हटाया गया।', tAttSaved: 'उपस्थिति सहेजी गई', tMarksSaved: 'अंक सहेजे गए', tHwDone: 'होमवर्क पूर्ण के रूप में चिह्नित।', tHwNotDone: 'होमवर्क अपूर्ण के रूप में चिह्नित।', tHwAssigned: 'होमवर्क सौंपा गया।', tNoticePub: 'नोटिस प्रकाशित हुआ।', tReportDl: 'रिपोर्ट डाउनलोड हुई।', tSettingsSaved: 'सेटिंग्स सहेजी गईं।', tAllReset: 'सारा डेटा मिट गया — स्कूल अब खाली है।', tSessionChanged: 'शैक्षणिक सत्र बदला गया', tNoChanges: 'कोई बदलाव नहीं।', tFutureDate: 'भविष्य की तारीख नहीं चुन सकते — आज की तारीख दिखा रहे हैं।', tDueFuture: 'देय तारीख आज या आगे की होनी चाहिए।', tDemoLogin: 'डेमो खाता — नीचे एक-टैप लॉगिन इस्तेमाल करें।', tGoogleDemo: 'डेमो बिल्ड — कृपया एक-टैप डेमो लॉगिन इस्तेमाल करें।', tNoStudentData: 'कोई छात्र डेटा नहीं — अपने स्कूल एडमिन से छात्र जोड़ने को कहें।', tNoExams: 'अभी कोई परीक्षा नहीं है।', tNoHw: 'अभी कोई होमवर्क नहीं है।', tNoMarks: 'इस परीक्षा के लिए अभी कोई अंक नहीं भरे गए।', tNoMatch: 'कोई छात्र नहीं मिला।', tNotEntered: 'नहीं भरा गया', tCollectedFrom: 'से वसूला गया', tDupStudent: 'में पहले से मौजूद है', tNotSaved: 'सहेजा नहीं गया', tCheckMarks: 'अंक जाँचें', tStudentsWord: 'छात्र', tNoFeeData: 'अभी कोई शुल्क डेटा नहीं है।',
-    searchStudent: 'छात्र खोजें…', viewAll: 'सभी देखें →', classAvg: 'कक्षा औसत', studentsMarked: 'छात्रों के अंक भरे गए', ofWord: 'में से', showingRec: 'दिखाए जा रहे हैं', ofRec: 'में से', recordsWord: 'रिकॉर्ड।', tapDone: 'पूरा होने पर बॉक्स पर टैप करें', myHwSub: 'पूरा होने पर बॉक्स पर टैप करें', tileAtt: 'उपस्थिति', tileFees: 'शुल्क', tileResults: 'परिणाम', tileHw: 'होमवर्क', doneSuffix: 'पूर्ण', presBtn: 'उपस्थित', absBtn: 'अनुपस्थित', lateBtn: 'देर से',
+    searchStudent: 'छात्र खोजें…', viewAll: 'सभी देखें →', classAvg: 'कक्षा औसत', studentsMarked: 'छात्रों के अंक भरे गए', ofWord: 'में से', showingRec: 'दिखाए जा रहे हैं', ofRec: 'में से', recordsWord: 'रिकॉर्ड।', tapDone: 'पूरा होने पर बॉक्स पर टैप करें', myHwSub: 'पूरा होने पर बॉक्स पर टैप करें', myAttSub: 'आपकी दिन-प्रतिदिन उपस्थिति', myFeesSub: 'हर शुल्क रिकॉर्ड — क्या जमा हुआ और क्या बाकी है', myResultsSub: 'हर परीक्षा के अंक', tileAtt: 'उपस्थिति', tileFees: 'शुल्क', tileResults: 'परिणाम', tileHw: 'होमवर्क', doneSuffix: 'पूर्ण', presBtn: 'उपस्थित', absBtn: 'अनुपस्थित', lateBtn: 'देर से',
     qaAddStudent: 'छात्र जोड़ें', qaAddStudentD: 'नया प्रवेश', qaMarkAtt: 'उपस्थिति दर्ज करें', qaMarkAttD: 'आज का रजिस्टर', qaEnterMarks: 'अंक भरें', qaEnterMarksD: 'परीक्षा परिणाम', qaGenReport: 'रिपोर्ट बनाएँ', qaGenReportD: 'CSV डाउनलोड',
     dlStudents: 'छात्र CSV डाउनलोड करें', dlFees: 'शुल्क CSV डाउनलोड करें', dlAtt: 'उपस्थिति CSV डाउनलोड करें', repStudentsSub: 'नाम, कक्षा, रोल, अभिभावक, फ़ोन, उपस्थिति, शुल्क स्थिति', repFeesSub: 'छात्र, कक्षा, महीना, राशि, स्थिति — अप्रैल से मार्च',
     subSettingsS: 'स्कूल प्रोफ़ाइल', settingsSub: 'बदलें और सहेजें — ऑनलाइन होने पर बदलाव सर्वर पर सिंक होते हैं।',
@@ -5394,7 +5593,7 @@ var I18N = {
     impTitle: 'छात्रों का बल्क आयात', impImportBtn: 'छात्र आयात करें', impTemplate: 'नमूना टेम्पलेट डाउनलोड करें', impTemplateSub: 'सिर्फ CSV प्रारूप — Excel (.xlsx) फ़ाइल यहाँ पढ़ी नहीं जा सकती। टेम्पलेट के कॉलम इस्तेमाल करें।', impChooseFile: 'CSV फ़ाइल चुनें', impPreview: 'आयात पूर्वावलोकन', impSummary: 'आयात सारांश', impValid: 'सही', impError: 'त्रुटि', impDuplicate: 'दोहरा', impReason: 'कारण', impConfirm: 'सही पंक्तियाँ आयात करें', impDone: 'पूर्ण', impNoRows: 'इस फ़ाइल में कोई पंक्ति नहीं मिली। कृपया टेम्पलेट जाँचें।', impBadHeader: 'यह फ़ाइल छात्र टेम्पलेट जैसी नहीं लगती — नाम वाला कॉलम नहीं मिला।', impNoFile: 'कृपया पहले CSV फ़ाइल चुनें।', impNoValid: 'आयात के लिए कोई सही पंक्ति नहीं है।', impImported: 'आयात हुए', impSkipped: 'छोड़े गए', impErrName: 'नाम आवश्यक है', impErrMobile: 'मोबाइल 10 अंकों का होना चाहिए', impErrMobile2: 'दूसरा मोबाइल 10 अंकों का होना चाहिए', impErrClass: 'कक्षा सही नहीं है', impErrSection: 'अनुभाग A, B या C होना चाहिए', impErrPin: 'पिन 6 अंकों का होना चाहिए', impErrAadhaar: 'आधार 12 अंकों का होना चाहिए', impErrDob: 'जन्म तिथि सही तारीख नहीं है', impErrAdmDate: 'प्रवेश तिथि सही तारीख नहीं है', impErrSession: 'सत्र सही नहीं है (जैसे 2025–26)', impErrGender: 'लिंग Boy, Girl या Other होना चाहिए', impErrBlood: 'रक्त समूह सही नहीं है', impErrCategory: 'श्रेणी General, OBC, SC, ST या Other होनी चाहिए', impErrEmail: 'अभिभावक ईमेल सही नहीं है', impErrRoll: 'रोल धनात्मक संख्या होनी चाहिए', impErrBool: 'Yes या No होना चाहिए', impErrDup: 'इसकी प्रतिलिपि', impErrDupFile: 'इस फ़ाइल में दोहरा', tImpDone: 'बल्क आयात पूर्ण हुआ।', tImpTemplate: 'नमूना टेम्पलेट डाउनलोड हुआ।',
     promoTitle: 'छात्रों को प्रोन्नत करें', promoBtn: 'छात्र प्रोन्नत करें', promoSingle: 'छात्र प्रोन्नत करें', promoFromSession: 'वर्तमान सत्र', promoFromClass: 'वर्तमान कक्षा', promoToSession: 'लक्ष्य सत्र', promoToClass: 'लक्ष्य कक्षा', promoToSection: 'लक्ष्य अनुभाग', promoSelectAll: 'सभी चुनें', promoSelectNone: 'कोई नहीं', promoSelected: 'चयनित', promoPromote: 'चयनित को प्रोन्नत करें', promoRetain: 'चयनित को रोकें', promoNoStudents: 'इस कक्षा और सत्र में कोई छात्र नहीं है।', promoNoSelect: 'कृपया कम से कम एक छात्र चुनें।', promoNoop: 'लक्ष्य कक्षा और सत्र वर्तमान जैसे ही हैं — बदलने को कुछ नहीं।', promoNoopRetain: 'लक्ष्य सत्र वर्तमान सत्र जैसा ही है — बदलने को कुछ नहीं।', promoDone: 'प्रोन्नति पूर्ण हुई।', promoPromoted: 'प्रोन्नत हुए', promoRetained: 'रोके गए', promoNote: 'उपस्थिति, शुल्क, परीक्षा अंक और होमवर्क इतिहास सुरक्षित रहता है।', promoSingleNote: 'एक छात्र की प्रोन्नति', promoSkipped: 'छोड़े गए (पहले ही स्थानांतरित)', promoNotEligible: 'केवल सक्रिय या निष्क्रिय छात्र ही प्रोन्नत हो सकते हैं।',
     idcPreview: 'ID कार्ड पूर्वावलोकन', idcPrint: 'छापें', idcPrintCards: 'ID कार्ड छापें', idcSelectAll: 'सभी चुनें', idcClearSel: 'चयन हटाएँ', idcReady: 'ID कार्ड छपाई के लिए तैयार', idcEmergency: 'आपातकालीन संपर्क', idcReturn: 'मिले तो कृपया लौटाएँ', idcNoQr: 'QR कोड नहीं बन सका।',
-    authStudent: 'छात्र', authTeacher: 'शिक्षक', stuAdmNo: 'प्रवेश संख्या', stuPinLabel: 'छात्र PIN', stuLoginBtn: 'छात्र के रूप में लॉगिन करें', stuNote: 'छात्र लॉगिन स्कूल द्वारा दिए गए PIN से होता है। PIN न पता हो तो अपने स्कूल से पूछें।', stuCloudHint: 'क्लाउड लॉगिन — यह स्कूल इस डिवाइस पर नहीं है। आपका प्रवेश नंबर और PIN सर्वर पर जाँचा जाएगा।', cloudSuffix: ' (क्लाउड)', tCloudHwReadOnly: 'होमवर्क की स्थिति स्कूल से सहेजी जाती है — क्लाउड लॉगिन से इसे बदला नहीं जा सकता।', stuSub: 'छात्र', stuDashboard: 'मेरी प्रोफ़ाइल', tInvalidStudent: 'प्रवेश संख्या या PIN गलत है।', stuPinField: 'छात्र लॉगिन PIN (वैकल्पिक)', stuPinPh: 'खाली छोड़ें — रैंडम PIN बनेगा', stuPinTitle: 'छात्र PIN', stuPinNow: 'वर्तमान छात्र PIN', stuPinSet: 'PIN सेट है', stuPinNone: 'कोई PIN नहीं है — इस छात्र के लिए छात्र लॉगिन उपलब्ध नहीं है।', stuPinNew: 'नया PIN (4–6 अंक)', stuPinSetBtn: 'PIN सेट करें', stuPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'छात्र PIN सेट हो गया।', tPinLocked: 'बहुत ज़्यादा गलत कोशिशें \u2014 15 मिनट बाद फिर कोशिश करें।', tPinCleared: 'छात्र PIN हटा दिया गया।', tPinAuto: 'PIN स्कूल द्वारा प्रवेश के समय दिया जाता है। छात्र भूल जाए तो यहाँ से नया PIN सेट करें।', tNotAllowed: 'आपकी लॉगिन इस सेक्शन को नहीं खोल सकती।', tOwnProfileOnly: 'आप केवल अपनी प्रोफ़ाइल देख सकते हैं।', todayW: 'आज', tchrLoginBtn: 'शिक्षक के रूप में लॉगिन करें', tchrNote: 'शिक्षक अकाउंट स्कूल एडमिन बनाता है।', tchrSub: 'शिक्षक', tchrDashboard: 'शिक्षक डैशबोर्ड', tchrNoDb: 'इस डिवाइस पर स्कूल का डेटा नहीं है — पहले स्कूल के डिवाइस पर लॉगिन करें।', teachers: 'शिक्षक', teachersSub: 'शिक्षक अकाउंट और वे जो कक्षाएँ पढ़ाते हैं।', tchrAdd: 'शिक्षक जोड़ें', tchrEdit: 'शिक्षक बदलें', tchrName: 'शिक्षक का नाम', tchrSubject: 'विषय', tchrClasses: 'पढ़ाई जाने वाली कक्षाएँ', tchrEmail: 'ईमेल', tchrPw: 'पासवर्ड', tchrPwHint: 'कम से कम 6 अक्षर। मौजूदा पासवर्ड रखने के लिए खाली छोड़ें।', tchrNoLogin: 'कोई लॉगिन नहीं', tchrSaved: 'शिक्षक सहेजा गया।', tchrNoClasses: 'कम से कम एक कक्षा चुनें।', tchrCloudHint: 'क्लाउड लॉगिन — यह स्कूल इस डिवाइस पर नहीं है। आपका ईमेल और पासवर्ड सर्वर पर जाँचा जाएगा।', tchrNoSchoolPick: 'स्कूल चुनें (वैकल्पिक)', tCloudSessionExpired: 'आपका क्लाउड सेशन खत्म हो गया — फिर से लॉगिन करें।', tchrEmailTaken: 'यह ईमेल किसी और अकाउंट में इस्तेमाल हो रहा है।', tchrMyClasses: 'मेरी कक्षाएँ', tchrStudents: 'मेरी कक्षाओं के छात्र', tchrNoClassesYet: 'अभी कोई कक्षा नहीं दी गई है — स्कूल एडमिन से कक्षा देने को कहें।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।',
+    authStudent: 'छात्र', authTeacher: 'शिक्षक', stuAdmNo: 'प्रवेश संख्या', stuPinLabel: 'छात्र PIN', stuLoginBtn: 'छात्र के रूप में लॉगिन करें', stuNote: 'छात्र लॉगिन स्कूल द्वारा दिए गए PIN से होता है। PIN न पता हो तो अपने स्कूल से पूछें। माता-पिता: अपने बच्चे के प्रवेश नंबर और PIN से लॉगिन करें — उपस्थिति, शुल्क और परिणाम यहीं मिलेंगे।', stuCloudHint: 'क्लाउड लॉगिन — यह स्कूल इस डिवाइस पर नहीं है। आपका प्रवेश नंबर और PIN सर्वर पर जाँचा जाएगा।', cloudSuffix: ' (क्लाउड)', tCloudHwReadOnly: 'होमवर्क की स्थिति स्कूल से सहेजी जाती है — क्लाउड लॉगिन से इसे बदला नहीं जा सकता।', stuSub: 'छात्र', stuDashboard: 'मेरी प्रोफ़ाइल', tInvalidStudent: 'प्रवेश संख्या या PIN गलत है।', stuPinField: 'छात्र लॉगिन PIN (वैकल्पिक)', stuPinPh: 'खाली छोड़ें — रैंडम PIN बनेगा', stuPinTitle: 'छात्र PIN', stuPinNow: 'वर्तमान छात्र PIN', stuPinSet: 'PIN सेट है', stuPinNone: 'कोई PIN नहीं है — इस छात्र के लिए छात्र लॉगिन उपलब्ध नहीं है।', stuPinNew: 'नया PIN (4–6 अंक)', stuPinSetBtn: 'PIN सेट करें', stuPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'छात्र PIN सेट हो गया।', tPinLocked: 'बहुत ज़्यादा गलत कोशिशें \u2014 15 मिनट बाद फिर कोशिश करें।', tPinCleared: 'छात्र PIN हटा दिया गया।', tPinAuto: 'PIN स्कूल द्वारा प्रवेश के समय दिया जाता है। छात्र भूल जाए तो यहाँ से नया PIN सेट करें।', tNotAllowed: 'आपकी लॉगिन इस सेक्शन को नहीं खोल सकती।', tOwnProfileOnly: 'आप केवल अपनी प्रोफ़ाइल देख सकते हैं।', todayW: 'आज', tchrLoginBtn: 'शिक्षक के रूप में लॉगिन करें', tchrNote: 'शिक्षक अकाउंट स्कूल एडमिन बनाता है।', tchrSub: 'शिक्षक', tchrDashboard: 'शिक्षक डैशबोर्ड', tchrNoDb: 'इस डिवाइस पर स्कूल का डेटा नहीं है — पहले स्कूल के डिवाइस पर लॉगिन करें।', teachers: 'शिक्षक', teachersSub: 'शिक्षक अकाउंट और वे जो कक्षाएँ पढ़ाते हैं।', tchrAdd: 'शिक्षक जोड़ें', tchrEdit: 'शिक्षक बदलें', tchrName: 'शिक्षक का नाम', tchrSubject: 'विषय', tchrClasses: 'पढ़ाई जाने वाली कक्षाएँ', tchrEmail: 'ईमेल', tchrPw: 'पासवर्ड', tchrPwHint: 'कम से कम 6 अक्षर। मौजूदा पासवर्ड रखने के लिए खाली छोड़ें।', tchrNoLogin: 'कोई लॉगिन नहीं', tchrSaved: 'शिक्षक सहेजा गया।', tchrNoClasses: 'कम से कम एक कक्षा चुनें।', tchrCloudHint: 'क्लाउड लॉगिन — यह स्कूल इस डिवाइस पर नहीं है। आपका ईमेल और पासवर्ड सर्वर पर जाँचा जाएगा।', tchrNoSchoolPick: 'स्कूल चुनें (वैकल्पिक)', tCloudSessionExpired: 'आपका क्लाउड सेशन खत्म हो गया — फिर से लॉगिन करें।', tchrEmailTaken: 'यह ईमेल किसी और अकाउंट में इस्तेमाल हो रहा है।', tchrMyClasses: 'मेरी कक्षाएँ', tchrStudents: 'मेरी कक्षाओं के छात्र', tchrNoClassesYet: 'अभी कोई कक्षा नहीं दी गई है — स्कूल एडमिन से कक्षा देने को कहें।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।',
     collectFeeBtn: 'शुल्क वसूलें', rcptTitle: 'शुल्क रसीद', rcptReceiptNo: 'रसीद संख्या', rcptDate: 'तारीख', rcptAdmNo: 'प्रवेश संख्या', rcptSession: 'सत्र', rcptName: 'नाम', rcptClass: 'कक्षा', rcptInstallment: 'किस्त', rcptCounter: 'काउंटर संख्या', rcptSlNo: 'क्र.सं.', rcptDesc: 'विवरण', rcptDue: 'देय', rcptCon: 'छूट', rcptPaid: 'जमा', rcptAdmissionFee: 'प्रवेश शुल्क', rcptTuitionFee: 'शिक्षण शुल्क', rcptCaution: 'जमानत राशि', rcptAnnual: 'वार्षिक शुल्क', rcptBusFee: 'बस शुल्क', rcptDues: 'बकाया', rcptPayModeTitle: 'भुगतान जानकारी', rcptPayMode: 'भुगतान माध्यम', rcptBank: 'बैंक', rcptNumber: 'संख्या', rcptTotal: 'कुल', rcptTotalWords: 'कुल (शब्दों में)', rcptComputerGen: 'यह कंप्यूटर द्वारा बनाई गई रसीद है। हस्ताक्षर की आवश्यकता नहीं है।', rcptParentCopy: 'अभिभावक प्रति', rcptCollectorSign: 'वसूलकर्ता के हस्ताक्षर', rcptIncludeBus: 'बस/परिवहन शामिल करें', rcptOtherFees: 'अन्य शुल्क', rcptAnnualHint: 'शुल्क वसूली रसीद पर दिखने वाली एकमुश्त और वार्षिक राशि। छिपाने के लिए 0 रखें।', payModeCash: 'नकद', payModeCheque: 'चेक', payModeUpi: 'UPI', payModeCard: 'कार्ड', payModeBank: 'बैंक ट्रांसफर', tFeeCollected: 'शुल्क वसूल लिया गया।', tCollectZero: 'वसूलने के लिए कुछ नहीं है — जमा राशि डालें।', tCollectSaved: 'शुल्क वसूल लिया गया — रसीद ', tCollectNotActive: 'यह छात्र सक्रिय नहीं है — शुल्क नहीं वसूला जा सकता।', rcptReceipts: 'रसीदें', rcptView: 'देखें', rcptPrint: 'प्रिंट / PDF सहेजें', rcptCollectAgain: 'फिर से वसूलें', rcptNoReceipts: 'इस छात्र की अभी कोई रसीद नहीं है।', rcptDraft: 'मसौदा — अभी सहेजा नहीं गया', rcptCollectSave: 'वसूलें और सहेजें', rcptNoLines: 'इस अवधि के लिए वसूलने को कुछ नहीं है — पहले शुल्क संरचना में राशि डालें।',
     sbNumPending: 'प्रवेश सहेजा गया। प्रवेश संख्या ऑनलाइन आने पर दी जाएगी।', sbNumPendingReceipt: 'शुल्क सहेजा गया। रसीद संख्या ऑनलाइन आने पर दी जाएगी।', sbStatusSessionExpired: 'सत्र समाप्त हो गया — कृपया दोबारा लॉग इन करें।', sbStatusNotLinked: 'अभी सर्वर से जुड़ा नहीं है — लॉग इन पर जुड़ जाएगा।', sbLocalOnlyLogin: 'यह स्कूल अभी सर्वर से जुड़ा नहीं है — इस डिवाइस का अकाउंट इस्तेमाल हो रहा है।', sbBackupDone: 'बैकअप पूरा हुआ।', sbBackupFailed: 'बैकअप पूरा नहीं हुआ — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkServer: 'सर्वर से जोड़ें', sbLinkDone: 'सर्वर अकाउंट जुड़ गया।', sbLinkFailed: 'सर्वर अकाउंट जुड़ा नहीं जा सका — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkPwTitle: 'सर्वर अकाउंट जोड़ें', sbNumAssigning: 'नंबर मिल रहा है…', tWrongPasswordServer: 'सर्वर अकाउंट के लिए पासवर्ड गलत है।', tCollectCapped: 'दी गई राशि बकाया से ज़्यादा थी — सिर्फ बकाया राशि ली गई।', resetPwHintServer: 'इससे सिर्फ इस डिवाइस का डेटा मिटेगा। सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी, जब तक आप सर्वर भी न मिटाएँ।', resetConfirmMsgServer: 'सिर्फ इस डिवाइस का डेटा मिटाएँ? सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी — हर जगह से मिटाने के लिए “सर्वर से भी मिटाएँ” चुनें।', resetDeviceOnly: 'सिर्फ यह डिवाइस', resetWipeServerBtn: 'सर्वर से भी मिटाएँ', resetWipeServerDone: 'सर्वर का डेटा मिट गया।', resetWipeServerFailed: 'सर्वर का डेटा मिटा नहीं जा सका — कुछ भी रीसेट नहीं हुआ। कनेक्शन जाँचकर फिर कोशिश करें।', supportQueued: 'सहायता अनुरोध सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqQueued: 'आवेदन सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqLoadingSchools: 'स्कूल लोड हो रहे हैं…', attNotMarked: 'दर्ज नहीं',
     createExam: 'परीक्षा बनाएँ', examName: 'परीक्षा का नाम', examTotal: 'कुल अंक', tExamCreated: 'परीक्षा बन गई।', tExamInvalid: 'कृपया परीक्षा का नाम, कक्षा और कुल अंक भरें।', editExam: 'परीक्षा बदलें', deleteExam: 'परीक्षा हटाएँ', restoreExam: 'वापस लाएँ', examDeletedH: 'हटाई गई परीक्षाएँ', examDelNote: 'हटाई गई परीक्षा के अंक रखे रहते हैं — वे हर जगह छिप जाते हैं और परीक्षा वापस लाने पर फिर दिखते हैं।', delExamMsg: 'यह परीक्षा हटाएँ? इसके अंक रखे रहेंगे पर दिखेंगे नहीं — परीक्षा वापस लाने पर अंक फिर दिखेंगे।', tExamDeleted: 'परीक्षा हटा दी गई। इसके अंक रखे हुए हैं — परीक्षा वापस लाने पर अंक फिर दिखेंगे।', tExamUpdated: 'परीक्षा अपडेट हो गई।', tExamRestored: 'परीक्षा वापस आ गई।', examClsLocked: 'कक्षा नहीं बदली जा सकती — अंक इसी कक्षा के हैं।', examMarksKept: 'पहले से डाले गए अंक वैसे ही रहेंगे — प्रतिशत नए कुल अंक से फिर निकलेगा।', tNoTeachers: 'अभी कोई शिक्षक नहीं है।',
@@ -5410,6 +5609,7 @@ var I18N = {
     waReceiptMsg: 'नमस्ते, यह {school} है। फीस रसीद {receipt} — {student} (कक्षा {cls}), {month} के लिए {amount} का भुगतान {date} को हुआ। धन्यवाद।',
     waGreetMsg: 'नमस्ते, यह {school} है। {student} (कक्षा {cls}) के बारे में बात करनी है।',
     waSchoolContact: 'स्कूल',
+    sbSyncRetrying: 'फिर कोशिश हो रही है…',
     sbStorageQuota: 'स्टोरेज भर गया है — फ़ोटो हटाएँ या बैकअप निर्यात करें।',
     sbDataCorrupt: 'डेटा खराब हो गया है — बैकअप से रिस्टोर करें।',
     sbRecoveredBak: 'आपका डेटा आखिरी सहेजी हुई प्रति से वापस लाया गया।',
@@ -5772,9 +5972,12 @@ function doStudentLogin(e) {
   var ok = false;
   if (stu && digitsOnly(pin).length >= 4) {
     if (stu.parentPinHash) ok = verifyPin(pin, stu);
-    // Pre-v54 records still carry a plaintext parentPin: it verifies
+    // Fallback for a record that still carries a plaintext parentPin
+    // (findStudentByAdmNoInSchool normally upgrades it via migrateV54
+    // before this compare, so this branch rarely fires). It verifies
     // once here, and the hash upgrade is persisted by loginAs, which
-    // reloads the DB through loadDB -> migrateV54.
+    // reloads the DB through loadDB -> migrateV54 -> saveDB — so after
+    // a successful legacy login no plaintext PIN is left in localStorage.
     else if (stu.parentPin) ok = digitsOnly(pin) === digitsOnly(stu.parentPin);
   }
   if (!found || !ok) {
@@ -5844,7 +6047,7 @@ function mapCloudStudentPayload(p) {
   if (p.student && p.student.id) stuMap[p.student.id] = stu.id;
   d.students = [stu];
   var examMap = {};
-  d.exams = (p.exams || []).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; examMap[row.id] = e.id; return e; });
+  d.exams = (p.exams || []).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100, deleted: !!row.deleted }; examMap[row.id] = e.id; return e; });
   d.feeRecords = (p.fees || []).map(function (row) { return sbRowToFeeRecord(row, stuMap); });
   d.attendance = {};
   (p.attendance || []).forEach(function (row) {
@@ -5947,7 +6150,7 @@ function mapCloudTeacherPayload(p) {
   d.students = (p.students || []).filter(function (row) { return tClasses.indexOf(row.cls) !== -1; }).map(function (row) { var s = sbRowToStudent(row); if (row.id) { stuMap[row.id] = s.id; s.srvId = row.id; } return s; });
   d.teachers = [{ id: (p.teacher && p.teacher.local_id) || ('srv-' + (p.teacher && p.teacher.id)), name: (p.teacher && p.teacher.name) || '', subject: (p.teacher && p.teacher.subject) || '', cls: (p.teacher && p.teacher.cls) || '', classes: Array.isArray(p.teacher && p.teacher.classes) ? p.teacher.classes.slice() : [] }];
   var examMap = {};
-  d.exams = (p.exams || []).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100 }; if (row.id) { examMap[row.id] = e.id; e.srvId = row.id; } return e; });
+  d.exams = (p.exams || []).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100, deleted: !!row.deleted }; if (row.id) { examMap[row.id] = e.id; e.srvId = row.id; } return e; });
   d.attendance = {};
   (p.attendance || []).forEach(function (row) {
     if (tClasses.indexOf(row.cls) === -1) return;
@@ -6191,12 +6394,11 @@ function doSignup(e) {
   var err = $('signupErr');
   var school = $('suSchool').value.trim(), name = $('suName').value.trim(),
       email = $('suEmail').value.trim().toLowerCase(), pw = $('suPw').value, pw2 = $('suPw2').value;
-  function fail(msg) { err.textContent = msg; err.classList.remove('hidden'); return false; }
-  if (!school || !name || !email || !pw || !pw2) return fail(t('tFillAll'));
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail(t('tInvalidEmail'));
-  if (pw.length < 6) return fail(t('tPwShort'));
-  if (pw !== pw2) return fail(t('tPwMismatch'));
-  if (findAccount(email)) return fail(t('tEmailTaken'));
+  if (!school || !name || !email || !pw || !pw2) return failInto(err, t('tFillAll'));
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return failInto(err, t('tInvalidEmail'));
+  if (pw.length < 6) return failInto(err, t('tPwShort'));
+  if (pw !== pw2) return failInto(err, t('tPwMismatch'));
+  if (findAccount(email)) return failInto(err, t('tEmailTaken'));
   var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: hashPwNew(pw), hashScheme: 'sha256', role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: null };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   err.classList.add('hidden');
@@ -6219,7 +6421,34 @@ function doSignup(e) {
   loginAs(a, { silent: true });
   return false;
 }
-function logout() {
+var SB_LOGOUT_FLUSH_TIMEOUT_MS = 5000; // B3 (M-4): longest a logout ever waits for the outbox flush
+var sbLoggingOut = false; // B3: a second logout tap while one is in flight is ignored
+function logout(opts) {
+  // B3 (M-4): best-effort outbox flush BEFORE any state is cleared — a
+  // logout is a "backed up" point. The flush needs the live session
+  // (sbSyncActive + the stored token), so the clear waits for it — but
+  // NEVER longer than the short timeout above, and never on failure:
+  // the clear always runs. The delete-account flow passes
+  // { skipFlush: true } — its data + outbox are already gone, so
+  // there is nothing to flush.
+  if (sbLoggingOut) return;
+  sbLoggingOut = true;
+  if (opts && opts.skipFlush) { logoutClear(); return; }
+  var finished = false;
+  function finishLogout() {
+    if (finished) return;
+    finished = true;
+    try { clearTimeout(logoutTimer); } catch (e) {}
+    logoutClear();
+  }
+  var logoutTimer = null;
+  try {
+    logoutTimer = setTimeout(finishLogout, SB_LOGOUT_FLUSH_TIMEOUT_MS);
+    sbSyncFlushNow().then(finishLogout, finishLogout);
+  } catch (e) { finishLogout(); }
+}
+function logoutClear() {
+  sbLoggingOut = false; // the clear below is synchronous from here on
   var sbUidBefore = state.sb && state.sb.uid; // v36: needed for the outbox check below, before the session is cleared
   var wasLocalOnlySchool = sbIsLocalOnlySchool(); // v37: captured before state is cleared — a local-only school logs out to the local-only line, never "Backed up"
   state.role = null; state.user = null; state.view = 'dashboard';
@@ -6244,6 +6473,7 @@ function logout() {
   sbClearSession();
   state.sb = null;
   sbSyncResetMemory(); // v31: drop the in-memory snapshot + pending flush timer (the persisted outbox/snapshot stay for the next login)
+  sbSyncFailToasted = false; // B6: a fresh login starts a fresh failure episode — the next failure toasts again
   sbSyncAutoStop(); // v32: stop the auto-pull interval (restarts on the next login)
   // v36 (logout-backup race): a cycle killed mid-flight by this logout
   // must not leave a transient "Syncing…" status on the login screen.
@@ -6282,7 +6512,7 @@ var NAV = {
     ['notices', '📢', 'notices'], ['reports', '📄', 'reports'], ['activityLog', '📜', 'activityLog'], ['settings', '⚙️', 'settings']
   ],
   student: [
-    ['dashboard', '🏠', 'dashboard'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
+    ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['fees', '💰', 'fees'], ['results', '📊', 'results'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
   ],
   teacher: [
     ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
@@ -6498,7 +6728,7 @@ function renderApp() {
   $('sideSchoolInfo').innerHTML = '<b style="color:#fff">' + esc(prof.name) + '</b><br>' + esc(prof.city) + ', Bihar';
   var sess = $('sessionSel');
   if (!sess.options.length) {
-    ['2025–26', '2024–25', '2026–27'].forEach(function (s) {
+    SESSIONS.forEach(function (s) {
       var o = document.createElement('option'); o.value = s; o.textContent = s; sess.appendChild(o);
     });
   }
@@ -6508,6 +6738,7 @@ function renderApp() {
   $('topTitle').textContent = t(state.view) === state.view ? vt[0] : t(state.view);
   if (state.view === 'dashboard') $('topTitle').textContent = t('dashboard');
   $('topCrumb').textContent = state.role === 'school' ? prof.name + ', ' + prof.city : (state.role === 'student' ? t('stuDashboard') : t('tchrDashboard'));
+  sbOfflineChipRefresh(); // B7 (M-26): the topbar chip is re-driven on every render
   sbStorageWarnRender(); // B17/B18: re-show the sticky storage warning (if any) on every render
   renderPage();
 }
@@ -6765,10 +6996,65 @@ function submitDeleteName(e) {
     return false;
   }
   closeModal();
+  // Phase D (CR-6): a server-linked school that is online gets a real
+  // choice — delete from this device only (the v60 behaviour, unchanged)
+  // or delete from the server too. Offline or local-only schools keep
+  // exactly the old device-only confirm.
+  if (state.sb && state.sb.uid && sbIsOnline()) { openDeleteServerChoice(); return false; }
   confirmModal(t('delConfirmMsg'), deleteAccountConfirmed);
   return false;
 }
-function deleteAccountConfirmed() {
+function openDeleteServerChoice() {
+  // The server choice is explained BEFORE confirming: server deletion is
+  // permanent and removes the account from all devices, not just this one.
+  openModal('<h3>' + t('delServerTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('delServerMsg') + '</p>' +
+    '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    '<button type="button" class="btn" onclick="closeModal();confirmModal(t(\'delConfirmMsg\'), deleteAccountConfirmed)">' + t('resetDeviceOnly') + '</button>' +
+    '<button type="button" class="btn danger" onclick="closeModal();deleteAccountOnServer()">' + t('delServerBtn') + '</button></div>');
+}
+function sbCallDeleteAccountFunction(token) {
+  // Calls the delete-account Edge Function (supabase/functions/
+  // delete-account). sbAuthFetch sends the anon apikey + the caller's
+  // JWT, which the function verifies before deleting anything.
+  return sbAuthFetch('/functions/v1/delete-account', { method: 'POST', token: token, body: {} });
+}
+function deleteAccountOnServer() {
+  // Phase D (CR-6): server-side Delete Account. The server delete runs
+  // FIRST: if it fails (other than "not deployed" / "no school"), nothing
+  // is deleted locally either, so the two copies never disagree — the
+  // same fail-closed rule as resetAllServerWipe. The two honest
+  // exceptions: the function is not deployed yet (404 with no function
+  // body) or the server has no school for this account — then the
+  // device-only deletion still runs, but the toast says exactly that and
+  // never claims the server delete happened.
+  if (!state.sb || !state.sb.uid) { deleteAccountConfirmed(); return; }
+  sbSyncAutoStop();
+  sbSyncWithLock(function () {
+    return sbGetValidToken().then(function (tok) {
+      if (!tok) throw new Error('no-token');
+      return sbCallDeleteAccountFunction(tok);
+    });
+  }).then(function (r) {
+    if (r && r.ok && r.data && r.data.deleted) {
+      deleteAccountConfirmed(true);
+    } else if (r && r.data && r.data.error === 'no-school') {
+      deleteAccountConfirmed(false);
+      toast(t('delServerNoSchool'));
+    } else if (r && r.status === 404) {
+      deleteAccountConfirmed(false);
+      toast(t('delServerNotSetup'));
+    } else {
+      toast(t('delServerFailed'));
+      sbSyncAutoStart();
+      renderApp();
+    }
+  }).catch(function () {
+    toast(t('delServerFailed'));
+    sbSyncAutoStart();
+    renderApp();
+  });
+}
+function deleteAccountConfirmed(serverDeleted) {
   var a = state.user;
   if (!a || a.role !== 'school') return;
   var email = (a.email || '').toLowerCase();
@@ -6788,11 +7074,13 @@ function deleteAccountConfirmed() {
   sbOutboxClear(uid); sbSrvIdsClear(uid); sbSnapClear(uid);
   sbClearServerSchool(uid);
   // Log out to the login screen (clears session keys + form fields).
-  logout();
+  // B3: skipFlush — this account's data + outbox are already deleted
+  // above, so there is nothing to flush; the logout clears at once.
+  logout({ skipFlush: true });
   // logout() settles a status line for the deleted account — drop it:
   // there is no account left for it to describe.
   try { localStorage.removeItem(SB_STATUS_KEY); } catch (e6) {}
-  toast(t('delDone'));
+  toast(t(serverDeleted ? 'delServerDone' : 'delDone'));
 }
 function openSupportForm() {
   openModal('<h3>' + t('raiseSupport') + '</h3><p style="color:var(--muted);font-size:14px">' + t('contactSub') + '</p>' +
@@ -7024,7 +7312,7 @@ function studentForm(id) {
     '<div><label>' + t('fPhone') + ' *</label><input id="fStPh" value="' + esc(s ? s.phone : (pf ? pf.phone : '')) + '" placeholder="98XXXXXXXX"></div>' +
     '<div><label>' + t('fPhone2') + '</label><input id="fStPh2" value="' + esc(s ? (s.mobile2 || '') : '') + '" placeholder="98XXXXXXXX"></div>' +
     '<div><label>' + t('fParentEmail') + '</label><input id="fStParentEmail" type="email" value="' + esc(s ? (s.parentEmail || '') : '') + '" placeholder="parent@email.com"></div>' +
-    '<div><label>' + t('stuPinField') + '</label><input id="fStPinLogin" inputmode="numeric" maxlength="6" value="" placeholder="' + t('stuPinPh') + '"></div>' +
+    '<div><label>' + t('stuPinField') + '</label><input id="fStPinLogin" type="password" inputmode="numeric" maxlength="6" autocomplete="off" value="" placeholder="' + t('stuPinPh') + '"></div>' +
     '<div><label>' + t('fOccupation') + '</label><input id="fStOccupation" value="' + esc(s ? (s.occupation || '') : '') + '" placeholder="e.g. Farmer"></div>' +
     '<div class="full sec-title">' + t('secDocs') + '</div>' +
     '<div><label class="check"><input type="checkbox" id="fStBirthCert" ' + (d.birthCert ? 'checked' : '') + '> ' + t('fBirthCert') + '</label></div>' +
@@ -7045,24 +7333,23 @@ function saveStudent(e, id, mode) {
   e.preventDefault();
   mode = mode || 'active';
   var errEl = $('fStErr');
-  function fail(msg) { if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); } toast(msg); return false; }
   var fval = function (fid) { var el = $(fid); return el ? (el.value || '') : ''; };
   var name = fval('fStName').trim();
   var clsRaw = fval('fStCls');
   var secRaw = fval('fStSec');
   var cls = clsRaw.indexOf('-') !== -1 ? clsRaw : (clsRaw + '-' + (secRaw || 'A'));
   var phone = fval('fStPh').trim();
-  if (!name || !phone || !clsRaw) return fail(t('tReqFields'));
-  if (digitsOnly(phone).length !== 10) return fail(t('tInvalidMobile'));
+  if (!name || !phone || !clsRaw) return failInto(errEl, t('tReqFields'), true);
+  if (digitsOnly(phone).length !== 10) return failInto(errEl, t('tInvalidMobile'), true);
   var pin = fval('fStPin').trim();
-  if (pin && !/^\d{6}$/.test(pin)) return fail(t('tInvalidPin'));
+  if (pin && !/^\d{6}$/.test(pin)) return failInto(errEl, t('tInvalidPin'), true);
   var pinLogin = digitsOnly(fval('fStPinLogin'));
-  if (pinLogin && (pinLogin.length < 4 || pinLogin.length > 6)) return fail(t('tPinLen'));
+  if (pinLogin && (pinLogin.length < 4 || pinLogin.length > 6)) return failInto(errEl, t('tPinLen'), true);
   var aadhaar = digitsOnly(fval('fStAadhaar'));
   // v36: a fresh 12-digit number is accepted but only its last 4 are
   // stored; a 4-digit value (the stored last 4, shown on edit) saves
   // as-is. The full number is never persisted anywhere.
-  if (aadhaar && aadhaar.length !== 12 && aadhaar.length !== 4) return fail(t('tInvalidAadhaar'));
+  if (aadhaar && aadhaar.length !== 12 && aadhaar.length !== 4) return failInto(errEl, t('tInvalidAadhaar'), true);
   var admDateVal = fval('fStAdmDate');
   var dob = fval('fStDob');
   var data = { name: name, cls: cls, roll: parseInt(fval('fStRoll'), 10) || 1,
@@ -7087,7 +7374,7 @@ function saveStudent(e, id, mode) {
   // Edit with a blank date field keeps the stored date (never fabricate one on edit).
   if (id && !admDateVal) { var ex0 = db.students.find(function (x) { return x.id === id; }); if (ex0) data.admissionDate = ex0.admissionDate || ''; }
   var dup = findDupStudent(data, id || null);
-  if (dup) return fail(t('tDupFound') + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' • ' + dup.cls + ')');
+  if (dup) return failInto(errEl, t('tDupFound') + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' • ' + dup.cls + ')', true);
   function finishSave() {
     pendingPhoto = null;
     saveDB(db); closeModal();
@@ -7476,7 +7763,7 @@ function profileTabBody(s, tab) {
     var pinBox = '<div class="card" style="margin-top:16px"><h3>' + t('stuPinTitle') + '</h3>' +
       '<div class="kv"><b>' + t('stuPinNow') + '</b><span>' + (pinSet54 ? t('stuPinSet') : '—') + '</span></div>' +
       '<p class="muted" style="margin:8px 0">' + t('tPinAuto') + (pinSet54 ? '' : ' ' + t('stuPinNone')) + '</p>' +
-      '<div class="form-grid"><div><label>' + t('stuPinNew') + '</label><input id="fStuPinNew" inputmode="numeric" maxlength="6" placeholder="4–6 digits"></div></div>' +
+      '<div class="form-grid"><div><label>' + t('stuPinNew') + '</label><input id="fStuPinNew" type="password" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="4–6 digits"></div></div>' +
       '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="setStudentPin(\'' + s.id + '\')">' + t('stuPinSetBtn') + '</button>' +
       '<button class="btn ghost" onclick="clearStudentPin(\'' + s.id + '\')">' + t('stuPinClear') + '</button></div></div>';
     return base + pinBox;
@@ -7580,7 +7867,7 @@ function setStudentPin(id) {
 function clearStudentPin(id) {
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s || state.role !== 'school') return;
-  delete s.parentPinHash; s.parentPin = ''; // v54 (A1): clearing removes the hash and leaves the empty-string sentinel — deleting the field too would let migrateV12 re-derive the PIN from the phone on the next load
+  delete s.parentPinHash; s.parentPin = ''; // v54 (A1): clearing removes the hash and leaves the empty-string sentinel — deleting the field too would let migrateV12 assign a fresh random PIN hash on the next load (a cleared PIN would come back)
   logAudit('Student PIN cleared', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
   saveDB(db); renderPage();
   toast(t('tPinCleared'));
@@ -9078,13 +9365,13 @@ function sbQueueExamChange58(ex) {
   // (ss_exams has no deleted column), so the diff never queues it —
   // and without a pending outbox entry the v58 pull keep above has
   // nothing to key on. Queue it explicitly so the keep holds the
-  // flag until the flush resolves it. The push itself is a no-op
-  // PATCH (the server row already carries the same content) and
-  // resolves the entry, so the outbox still drains and the status
-  // still reaches 'synced'. Local-only accounts skip this entirely
-  // (no pull can clobber the flag there). A server column for the
-  // flag (cross-device delete sync) is a follow-up SQL change, not
-  // this version — the delete stays local to this device until then.
+  // flag until the flush resolves it. v67 (SQL 20): the server row
+  // now HAS the deleted column and sbMapExam carries it, so the
+  // flush PATCH actually writes the flag — the push is no longer a
+  // no-op, and the delete/restore travels to other devices. The
+  // queue itself is still needed: the diff alone never queues a
+  // delete, because only the flag changes. Local-only accounts skip
+  // this entirely (no pull can clobber the flag there).
   try {
     if (!sbSyncActive()) return;
     var uid58 = (state.sb && state.sb.uid) || '';
@@ -9097,12 +9384,11 @@ function deleteExam(id) {
   // SOFT DELETE only: the exam row and ALL of its marks stay saved —
   // nothing is ever hard-deleted here. The marks are hidden
   // everywhere (exam lists, results, latest-exam %) until the exam
-  // is restored from the "Deleted exams" card. The row itself keeps
-  // syncing as a normal exam (sbMapExam carries no deleted flag — no
-  // SQL in this change), so the delete is local to this device; the
-  // merge-keep by the ss_exams pull keeps the flag alive across
-  // sync cycles, but a second device re-downloads the exam as active
-  // until a server column exists (follow-up SQL, not this change).
+  // is restored from the "Deleted exams" card. v67 (SQL 20): the
+  // flag now rides the server row, so the delete syncs to other
+  // devices — the merge-keep by the ss_exams pull holds it only
+  // while the outbox entry is pending; once flushed, the server
+  // value is the truth on every device.
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   var ex = db.exams.find(function (e) { return e.id === id && isActiveExam(e); });
   if (!ex) return;
@@ -9380,7 +9666,7 @@ function settingsPage() {
   '<div><label>' + t('fPrincipal') + '</label><input id="fPfPr" value="' + esc(p.principal) + '"></div>' +
   '<div><label>' + t('fPhone') + '</label><input id="fPfPh" value="' + esc(p.phone) + '"></div>' +
   '<div><label>' + t('fEmail') + '</label><input id="fPfEm" value="' + esc(p.email) + '"></div>' +
-  '<div><label>' + t('fSession') + '</label><select id="fPfSe"><option ' + (p.session === '2025–26' ? 'selected' : '') + '>2025–26</option><option ' + (p.session === '2024–25' ? 'selected' : '') + '>2024–25</option><option ' + (p.session === '2026–27' ? 'selected' : '') + '>2026–27</option></select></div>' +
+  '<div><label>' + t('fSession') + '</label><select id="fPfSe">' + sessionSelectOpts(p.session) + '</select></div>' +
   '<div class="full"><label>' + t('fAddress') + '</label><input id="fPfAd" value="' + esc(p.address) + '"></div>' +
   '<div class="full"><label>' + t('logoLabel') + '</label><div class="photo-row"><span id="fPfLogoPrev">' + (p.logo ? '<img class="photo-prev" src="' + esc(p.logo) + '" alt="">' : '<span class="photo-prev">🎓</span>') + '</span>' +
   '<input type="file" id="fPfLogo" accept="image/*" onchange="onSchoolLogo(this)">' +
@@ -9452,21 +9738,20 @@ function saveTeacher(e, id) {
   if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
   e.preventDefault();
   var errEl = $('fTchrErr');
-  function fail(msg) { if (errEl) { errEl.textContent = msg; errEl.classList.remove('hidden'); } toast(msg); return false; }
   var name = ($('fTchrName') ? $('fTchrName').value : '').trim();
   var email = ($('fTchrEmail') ? $('fTchrEmail').value : '').trim().toLowerCase();
   var pw = $('fTchrPw') ? $('fTchrPw').value : '';
   var subject = $('fTchrSub') ? $('fTchrSub').value : '';
-  if (!name || !email) return fail(t('tFillAll'));
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail(t('tInvalidEmail'));
-  if (!tchrFormClasses.length) return fail(t('tchrNoClasses'));
+  if (!name || !email) return failInto(errEl, t('tFillAll'), true);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return failInto(errEl, t('tInvalidEmail'), true);
+  if (!tchrFormClasses.length) return failInto(errEl, t('tchrNoClasses'), true);
   var list = loadAccounts();
   var te = id ? db.teachers.find(function (x) { return x.id === id; }) : null;
   var ownAcct = te ? list.find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; }) : null;
   var existing = list.find(function (a) { return a.email === email; });
-  if (existing && (!ownAcct || existing.uid !== ownAcct.uid)) return fail(t('tchrEmailTaken'));
-  if (!ownAcct && pw.length < 6) return fail(t('tPwShort'));
-  if (ownAcct && pw && pw.length < 6) return fail(t('tPwShort'));
+  if (existing && (!ownAcct || existing.uid !== ownAcct.uid)) return failInto(errEl, t('tchrEmailTaken'), true);
+  if (!ownAcct && pw.length < 6) return failInto(errEl, t('tPwShort'), true);
+  if (ownAcct && pw && pw.length < 6) return failInto(errEl, t('tPwShort'), true);
   if (!te) {
     te = { id: uniqueId('t'), name: name, subject: subject, cls: tchrFormClasses[0], classes: tchrFormClasses.slice() };
     db.teachers.push(te);
@@ -9496,6 +9781,13 @@ function studentDashboard() {
   if (state.profileStudent === me.id) return studentProfilePage(me.id);
   var myHw = db.homework.filter(function (h) { return h.cls === me.cls; });
   var doneCount = myHw.filter(function (h) { return h.doneBy.indexOf(me.id) !== -1; }).length;
+  // v66: the Results tile showed the STORED result field (0 when the
+  // school never set one) even when live marks existed — Ankit scored
+  // 42/50 but the tile read 0%. The profile overview already prefers
+  // the live marks (latestExamPct); the tile follows it, falling back
+  // to the stored value only when no marks exist at all.
+  var lex66 = latestExamPct(me);
+  var resShow66 = lex66 ? lex66.pct : (me.result || 0);
   var hwItems = myHw.map(function (h) {
     var done = h.doneBy.indexOf(me.id) !== -1;
     return '<div class="hw-item ' + (done ? 'done' : '') + '"><input type="checkbox" ' + (done ? 'checked' : '') + ' onchange="toggleHw(\'' + h.id + '\', this.checked)" aria-label="Mark done"><div><b>' + esc(h.title) + '</b><span>' + esc(h.subject) + ' • Due ' + esc(h.due) + '</span></div></div>';
@@ -9507,19 +9799,44 @@ function studentDashboard() {
     '<h3>' + esc(me.name) + '</h3><p>Class ' + esc(me.cls) + ' • ' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p>' +
     '<div class="toolbar" style="justify-content:center;margin-top:10px"><button class="btn" onclick="openStudentProfile(\'' + me.id + '\')">' + t('actView') + '</button></div></div>' +
     '<div class="tile-grid">' +
-    '<div class="tile green"><div class="n">' + studentAttPct(me) + '%</div><div class="l">' + t('tileAtt') + '</div></div>' +
-    '<div class="tile yellow"><div class="n">' + studentFeeStatus(me.id) + '</div><div class="l">' + t('tileFees') + '</div></div>' +
-    '<div class="tile purple"><div class="n">' + me.result + '%</div><div class="l">' + t('tileResults') + '</div></div>' +
-    '<div class="tile blue"><div class="n">' + myHw.length + '</div><div class="l">' + t('tileHw') + ' (' + doneCount + ' ' + t('doneSuffix') + ')</div></div>' +
+    '<div class="tile green" onclick="go(\'attendance\')" style="cursor:pointer"><div class="n">' + studentAttPct(me) + '%</div><div class="l">' + t('tileAtt') + '</div></div>' +
+    '<div class="tile yellow" onclick="go(\'fees\')" style="cursor:pointer"><div class="n">' + studentFeeStatus(me.id) + '</div><div class="l">' + t('tileFees') + '</div></div>' +
+    '<div class="tile purple" onclick="go(\'results\')" style="cursor:pointer"><div class="n">' + resShow66 + '%</div><div class="l">' + t('tileResults') + '</div></div>' +
+    '<div class="tile blue" onclick="go(\'homework\')" style="cursor:pointer"><div class="n">' + myHw.length + '</div><div class="l">' + t('tileHw') + ' (' + doneCount + ' ' + t('doneSuffix') + ')</div></div>' +
     '</div></div>' +
     '<div class="card" style="margin-top:16px"><h3>' + t('myHomework') + '</h3><p class="card-sub">' + t('myHwSub') + '</p>' + hwItems + '</div>' +
     '<div class="card" style="margin-top:16px"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div></div>';
 }
-var PAGE_STUDENT = { dashboard: studentDashboard, homework: homeworkPage, notices: noticesPage };
+// v65: parent features live in the student portal — no separate parent
+// login. A parent logs in with the child's admission number + PIN (the
+// PIN field IS parent_pin) and gets three first-class pages: attendance,
+// fees and results. Each reuses the full profile's tab body, so the
+// detail is identical to what the school sees — only the student's own
+// rows, read-only. The fees tab's receipt button is rendered as plain
+// text here: openSavedReceipt jumps to the school fees page, which a
+// student login cannot open (renderPage refuses it).
+function studentAttendancePage() {
+  var me = meStudent();
+  if (!me) return '<div class="phone"><div class="card"><div class="empty">' + t('tNoStudentData') + '</div></div></div>';
+  return '<div class="page-head"><div><h2>' + t('attendance') + '</h2><p>' + t('myAttSub') + '</p></div></div>' + profileTabBody(me, 'attendance');
+}
+function studentFeesPage() {
+  var me = meStudent();
+  if (!me) return '<div class="phone"><div class="card"><div class="empty">' + t('tNoStudentData') + '</div></div></div>';
+  var body = profileTabBody(me, 'fees');
+  body = body.replace(/<button class="linklike" onclick="openSavedReceipt\('([^']+)'\)">([^<]*)<\/button>/g, '<span>$2</span>');
+  return '<div class="page-head"><div><h2>' + t('fees') + '</h2><p>' + t('myFeesSub') + '</p></div></div>' + body;
+}
+function studentResultsPage() {
+  var me = meStudent();
+  if (!me) return '<div class="phone"><div class="card"><div class="empty">' + t('tNoStudentData') + '</div></div></div>';
+  return '<div class="page-head"><div><h2>' + t('results') + '</h2><p>' + t('myResultsSub') + '</p></div></div>' + profileTabBody(me, 'results');
+}
+var PAGE_STUDENT = { dashboard: studentDashboard, attendance: studentAttendancePage, fees: studentFeesPage, results: studentResultsPage, homework: homeworkPage, notices: noticesPage };
 var PAGE_TEACHER = { dashboard: teacherDashboard, attendance: attendancePage, exams: examsPage, homework: homeworkPage, notices: noticesPage };
 
 /* ================= init ================= */
-/* ================= App-update check (v37) =================
+/* ================= App-update check (v61) =================
    Why: a stale service worker can keep serving the OLD app shell on
    the plain URL even after a new build is live (v36 was reached only
    via a brand-new query URL after ?v=36, reloads, fresh tabs and
@@ -9527,7 +9844,7 @@ var PAGE_TEACHER = { dashboard: teacherDashboard, attendance: attendancePage, ex
    OLD worker is the one answering until the browser installs the new
    one — so the app checks for a newer build itself.
    Mechanism:
-   - version.json ({"version": 37}) is fetched with a cache-busting
+   - version.json ({"version": 61}) is fetched with a cache-busting
      query and cache:'no-store', so even a cache-first old worker
      misses its cache and the request reaches the network.
    - If the live version is newer: ask the SW registration to update,
@@ -9606,6 +9923,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // moment the app comes back (online, tab visible, window focused).
     // Fire-and-forget; a failed cycle retries on the next trigger.
     window.addEventListener('online', function () {
+      sbOfflineChipRefresh(); // B7: the chip clears the moment we are back
       if (state.user && state.user.role === 'school' && state.sb) sbSyncBackgroundTick(); // v53: skip when a cycle is in flight
       // v34 (P1-7/P1-8): queued support requests and admission
       // applications retry the moment the device is back online.
@@ -9614,6 +9932,10 @@ document.addEventListener('DOMContentLoaded', function () {
       // v37: re-check for a newer build when the device comes online.
       try { checkAppUpdate().catch(function () {}); } catch (e2) {}
     });
+    // B7 (M-26): previously NO offline listener existed at all — only
+    // 'online'. Going offline now refreshes the chip at once instead
+    // of waiting for the next render or status write.
+    window.addEventListener('offline', function () { sbOfflineChipRefresh(); });
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState === 'visible' && state.user && state.user.role === 'school' && state.sb) sbSyncBackgroundTick(); // v53: skip when a cycle is in flight
     });
