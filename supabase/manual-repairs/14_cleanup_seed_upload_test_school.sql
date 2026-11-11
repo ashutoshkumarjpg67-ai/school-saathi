@@ -1,3 +1,4 @@
+-- NOT A TEST — manual, one-off, human approval required.
 -- ============================================================
 -- School Saathi — 14_cleanup_seed_upload_test_school.sql
 -- v45 cleanup: remove the demo-seed rows the v44 flood uploaded
