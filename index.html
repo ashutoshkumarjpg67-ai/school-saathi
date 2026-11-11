@@ -14,12 +14,12 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=87">
-<script src="qrgen.js?v=87" defer></script>
-<script src="js/bcrypt.js?v=87" defer></script>
-<script src="js/modules/crypto.js?v=87" defer></script>
-<script src="js/modules/i18n.js?v=87" defer></script>
-<script src="app.js?v=87" defer></script>
+<link rel="stylesheet" href="styles.css?v=88">
+<script src="qrgen.js?v=88" defer></script>
+<script src="js/bcrypt.js?v=88" defer></script>
+<script src="js/modules/crypto.js?v=88" defer></script>
+<script src="js/modules/i18n.js?v=88" defer></script>
+<script src="app.js?v=88" defer></script>
 </head>
 <body>
 
@@ -38,6 +38,7 @@
         <button type="button" id="tabStudent" class="auth-tab" onclick="switchAuth('student')" data-i18n="authStudent">Student</button>
         <button type="button" id="tabParent" class="auth-tab" onclick="switchAuth('parent')" data-i18n="authParent">Parent</button>
         <button type="button" id="tabTeacher" class="auth-tab" onclick="switchAuth('teacher')" data-i18n="authTeacher">Teacher</button>
+        <button type="button" id="tabStaff" class="auth-tab" onclick="switchAuth('staff')" data-i18n="authStaff">Staff</button>
       </div>
       <div id="loginErr" class="err hidden"></div>
       <form id="loginForm" onsubmit="return doLogin(event)">
@@ -103,6 +104,15 @@
         <button class="btn" type="submit" style="width:100%" data-i18n="tchrLoginBtn">Login as Teacher</button>
         <p style="text-align:center;margin-top:10px;font-size:12.5px;color:var(--muted)" data-i18n="tchrNote">Teacher accounts are created by the school admin.</p>
       </form>
+      <div id="staffErr" class="err hidden"></div>
+      <form id="staffForm" class="hidden" onsubmit="return doStaffLogin(event)">
+        <div class="field"><label data-i18n="admReqSchool">School</label><select id="staffSchool" onchange="onStaffSchoolChange()"></select></div>
+        <p id="staffCloudHint" class="hidden" style="text-align:center;font-size:12.5px;color:var(--muted)" data-i18n="staffCloudHint">Cloud login — this school is not on this device. Your email and password are checked on the server.</p>
+        <div class="field"><label data-i18n="loginEmail">Email</label><input id="staffEmail" type="email" placeholder="you@school.edu.in" autocomplete="username"></div>
+        <div class="field"><label data-i18n="loginPassword">Password</label><input id="staffPw" type="password" placeholder="••••••••" autocomplete="current-password"></div>
+        <button class="btn" type="submit" style="width:100%" data-i18n="staffLoginBtn">Login as Staff</button>
+        <p style="text-align:center;margin-top:10px;font-size:12.5px;color:var(--muted)" data-i18n="staffNote">Staff accounts (Principal, Accountant, Staff) are created by the school admin.</p>
+      </form>
       <p style="text-align:center;margin-top:16px;font-size:12.5px;color:var(--muted)" data-i18n="authNote">One account per school. Your data stays on this device and backs up to the server when you are online.</p>
       <p id="sbStatus" style="text-align:center;margin-top:8px;font-size:12.5px;color:var(--muted)"></p>
       <p style="text-align:center;margin-top:8px;font-size:13px"><a href="#" onclick="openAdmissionApply();return false" data-i18n="admReqApply">Apply for Admission</a></p>
@@ -121,7 +131,7 @@
         <div id="sideSchoolInfo"></div>
         <label style="color:#94A3B8;margin-top:10px">Academic Session</label>
         <select id="sessionSel" onchange="changeSession(this.value)"></select>
-        <div style="margin-top:12px">v87<br>© 2026 School Saathi</div>
+        <div style="margin-top:12px">v88<br>© 2026 School Saathi</div>
       </div>
     </aside>
     <div class="main">

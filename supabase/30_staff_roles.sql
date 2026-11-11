@@ -189,6 +189,7 @@ begin
   if v_role = 'principal' then
     v_payload := jsonb_build_object(
       'students', (select coalesce(jsonb_agg(to_jsonb(s)), '[]'::jsonb) from (select s.id, s.local_id, s.name, s.cls, s.admission_no, s.enr, s.roll, s.gender, s.status, s.father_name, s.mother_name, s.phone, s.admission_date, s.session, s.photo_url from public.ss_students s where s.school_id = p_school_id order by s.cls, s.roll limit 5000) s),
+      'teachers', (select coalesce(jsonb_agg(to_jsonb(t)), '[]'::jsonb) from (select t.id, t.local_id, t.name, t.subject, t.cls, t.classes from public.ss_teachers t where t.school_id = p_school_id order by t.name limit 500) t),
       'attendance', (select coalesce(jsonb_agg(to_jsonb(a)), '[]'::jsonb) from (select * from public.ss_attendance a where a.school_id = p_school_id and a.att_date >= current_date - interval '90 days' order by a.att_date desc limit 5000) a),
       'homework', (select coalesce(jsonb_agg(to_jsonb(h)), '[]'::jsonb) from (select * from public.ss_homework h where h.school_id = p_school_id order by h.created_at desc limit 200) h),
       'notices', (select coalesce(jsonb_agg(to_jsonb(n)), '[]'::jsonb) from (select * from public.ss_notices where school_id = p_school_id order by notice_date desc nulls last, created_at desc limit 50) n),

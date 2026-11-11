@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 87;
+var APP_VERSION = 88;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -68,7 +68,8 @@ function dbKeyFor(a) {
   // SCHOOL's DB — they never have a DB of their own (a fresh key would
   // seed the demo DB under the school's name).
   // v86: a parent opens the same school DB as the student they are tied to.
-  if ((a.role === 'teacher' || a.role === 'student' || a.role === 'parent') && a.schoolUid) return 'schoolSaathiDB_' + a.schoolUid;
+  // v88: a staff member (principal/accountant/staff) opens the school's DB too.
+  if ((a.role === 'teacher' || a.role === 'student' || a.role === 'parent' || a.role === 'principal' || a.role === 'accountant' || a.role === 'staff') && a.schoolUid) return 'schoolSaathiDB_' + a.schoolUid;
   return 'schoolSaathiDB_' + a.uid;
 }
 function applySchoolProfile(d, a) { d.profile.name = a.school; d.profile.principal = a.name; d.profile.email = a.email; return d; }
@@ -5681,7 +5682,7 @@ function restoreSession() {
   } catch (e) { return Promise.resolve(false); }
 }
 function switchAuth(tab) {
-  var tabs = { login: ['tabLogin', 'loginForm', 'loginErr', 'loginId'], signup: ['tabSignup', 'signupForm', 'signupErr', 'suSchool'], student: ['tabStudent', 'studentForm', 'studentErr', 'studentAdmNo'], teacher: ['tabTeacher', 'teacherForm', 'teacherErr', 'teacherEmail'], parent: ['tabParent', 'parentForm', 'parentErr', 'parentAdmNo'] };
+  var tabs = { login: ['tabLogin', 'loginForm', 'loginErr', 'loginId'], signup: ['tabSignup', 'signupForm', 'signupErr', 'suSchool'], student: ['tabStudent', 'studentForm', 'studentErr', 'studentAdmNo'], teacher: ['tabTeacher', 'teacherForm', 'teacherErr', 'teacherEmail'], parent: ['tabParent', 'parentForm', 'parentErr', 'parentAdmNo'], staff: ['tabStaff', 'staffForm', 'staffErr', 'staffEmail'] };
   Object.keys(tabs).forEach(function (k) {
     var ids = tabs[k];
     var tb = $(ids[0]);
@@ -5700,6 +5701,7 @@ function switchAuth(tab) {
   if (tab === 'student') fillSchoolPicker('studentSchool');
   if (tab === 'teacher') fillSchoolPicker('teacherSchool', { neutral: true }); // v62: optional for teachers (the old flow had no school field)
   if (tab === 'parent') fillSchoolPicker('parentSchool'); // v86: same school picker as the student form
+  if (tab === 'staff') fillSchoolPicker('staffSchool', { neutral: true }); // v88: optional for staff (the role comes from the account)
   setTimeout(function () { $(tabs[tab][3]).focus(); }, 50);
 }
 function togglePw(id, btn) {
@@ -5752,6 +5754,12 @@ function onStudentSchoolChange() {
 function onParentSchoolChange() { // v86: the parent form's cloud hint, same as the student one
   var sel = $('parentSchool');
   var hint = $('parentCloudHint');
+  if (!sel || !hint) return;
+  hint.classList.toggle('hidden', !(sel.value && sel.value.indexOf('cloud:') === 0));
+}
+function onStaffSchoolChange() { // v88: the staff form's cloud hint, same as the teacher one
+  var sel = $('staffSchool');
+  var hint = $('staffCloudHint');
   if (!sel || !hint) return;
   hint.classList.toggle('hidden', !(sel.value && sel.value.indexOf('cloud:') === 0));
 }
@@ -6232,6 +6240,144 @@ function doTeacherLogin(e) {
   loginAs(a);
   return false;
 }
+// v88 (Phase 4): staff cloud login (SQL 30). A staff member (Principal,
+// Accountant, Staff) logs in from ANY device with school + email +
+// password, without the school's data being on that device. The role
+// comes from the server row — the login never trusts a role the caller
+// claims. The payload is scoped by role (SQL 30): a principal sees the
+// whole school, an accountant sees fees only, a staff member sees only
+// their own classes.
+var CLOUD_STAFF_KEY = 'schoolSaathiCloudStaff'; // v88: cloud staff session snapshot {acct, slice, token}
+function sbStaffCloudLogin(serverId, email, pw) {
+  return sbRest('POST', 'rpc/ss_staff_cloud_login', SB_ANON_KEY, { p_school_id: serverId, p_email: email, p_password: pw }).then(function (r) {
+    if (!r || !r.ok || !r.data || typeof r.data !== 'object') return null;
+    return r.data;
+  }).catch(function () { return null; });
+}
+function mapCloudStaffPayload(p) {
+  // Build a db-shaped slice from the server payload. The staff views
+  // read `db`, so the slice mirrors the local db shape — scoped by the
+  // staff member's role (the server already filtered it; the mapper
+  // re-checks class scoping for staff, like mapCloudTeacherPayload).
+  var data = (p.data && typeof p.data === 'object') ? p.data : {};
+  var role = (p.staff && p.staff.role) || 'staff';
+  var d = emptyDb({ name: (p.school && p.school.name) || '', city: (p.school && p.school.city) || '', principal: '', phone: '', email: '', session: '2025–26', address: '' }, []);
+  var stuMap = {};
+  d.students = (data.students || []).map(function (row) { var s = sbRowToStudent(row); if (row.id) { stuMap[row.id] = s.id; s.srvId = row.id; } return s; });
+  d.teachers = (data.teachers || []).map(function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [] }; });
+  var staffClasses = role === 'principal' ? null : ((p.staff && Array.isArray(p.staff.classes)) ? p.staff.classes : []);
+  var examMap = {};
+  d.exams = (data.exams || []).filter(function (row) { return !staffClasses || staffClasses.indexOf(row.cls) !== -1; }).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100, deleted: !!row.deleted }; if (row.id) { examMap[row.id] = e.id; e.srvId = row.id; } return e; });
+  d.attendance = {};
+  (data.attendance || []).forEach(function (row) {
+    if (staffClasses && staffClasses.indexOf(row.cls) === -1) return;
+    var localId = stuMap[row.student_id];
+    if (!localId) return;
+    var key = (row.att_date || '') + '|' + (row.cls || '');
+    if (!d.attendance[key]) d.attendance[key] = {};
+    d.attendance[key][localId] = row.status || 'Present';
+  });
+  d.marks = (data.marks || []).map(function (row) {
+    if (!examMap[row.exam_id] || !stuMap[row.student_id]) return null;
+    return { examId: examMap[row.exam_id], studentId: stuMap[row.student_id], marks: row.marks };
+  }).filter(function (x) { return !!x; });
+  d.homework = (data.homework || []).filter(function (row) { return !staffClasses || staffClasses.indexOf(row.cls) !== -1; }).map(function (row) {
+    return { id: row.local_id || ('srv-' + row.id), cls: row.cls || '', subject: row.subject || '', title: row.title || '', due: row.due || '', doneBy: (row.done_by || []).map(function (id) { return stuMap[id]; }).filter(function (x) { return !!x; }) };
+  });
+  d.notices = (data.notices || []).map(function (row) { return { id: row.local_id || ('srv-' + row.id), title: row.title || '', date: row.notice_date || '', body: row.body || '' }; });
+  d.feeRecords = (data.fee_records || []).map(function (row) { return sbRowToFeeRecord(row, stuMap); });
+  d.feeStructure = (data.fee_structure || []).map(function (row) { return { cls: row.cls || '', type: row.fee_type || 'Tuition', amount: row.amount || 0 }; });
+  d.receipts = (data.receipts || []).map(function (row) {
+    return { receiptNo: row.receipt_no || '', studentId: stuMap[row.student_id] || '', admissionNo: row.admission_no || '', name: row.student_name || '', cls: row.cls || '', session: row.session || '', date: row.receipt_date || '', month: row.month || '', counterNo: row.counter_no || 0, lines: row.lines || [], payMode: row.pay_mode || 'Cash', payDate: row.pay_date || '', bank: row.bank || '', number: row.number || '', total: row.total || 0, totalWords: row.total_words || '', collector: row.collector || '' };
+  });
+  return d;
+}
+function loginCloudStaff(acct, slice, token) {
+  // Like loginCloudTeacher, plus the session token. The role comes from
+  // the account (which came from the server row), never from the payload.
+  state.role = acct.role; state.user = acct; state.cloudDb = slice; state.cloudStaffToken = token; state.view = 'dashboard'; state.profileStudent = null;
+  db = slice; DB_KEY = 'schoolSaathiCloudDB';
+  try { sessSet(CLOUD_STAFF_KEY, JSON.stringify({ acct: acct, slice: slice, token: token })); } catch (e) {}
+  showView('app'); renderApp();
+  persistSession();
+  lastBackAt = 0; histExiting = false;
+  histArmGuard();
+  toast(t('tLoggedIn') + ' ' + acct.name);
+}
+function doStaffCloudLogin(serverId, email, pw, err) {
+  if (!email || pw.length < 6) {
+    err.textContent = t('tInvalidCreds');
+    err.classList.remove('hidden');
+    return;
+  }
+  err.classList.add('hidden');
+  sbStaffCloudLogin(serverId, email, pw).then(function (res) {
+    if (!res || !res.ok) {
+      err.textContent = t(res && res.locked ? 'tPinLocked' : 'tInvalidCreds');
+      err.classList.remove('hidden');
+      return;
+    }
+    var slice = mapCloudStaffPayload(res);
+    var me = res.staff;
+    var roleSub = { principal: 'Principal', accountant: 'Accountant', staff: 'Staff' }[me.role] || 'Staff';
+    var acct = { role: me.role, name: me.name, sub: roleSub + ' • ' + me.name, email: 'cloud-staff:' + serverId + ':' + me.id, uid: 'cloud-staff-' + me.id, staffId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
+    err.classList.add('hidden');
+    loginCloudStaff(acct, slice, res.token);
+  });
+}
+function doStaffLogin(e) {
+  e.preventDefault();
+  var id = $('staffEmail').value.trim().toLowerCase(), pw = $('staffPw').value;
+  var err = $('staffErr');
+  var schoolSel = $('staffSchool') ? $('staffSchool').value : '';
+  // v88: a "cloud:<server-uuid>" school is not on this device — the
+  // password is verified on the server (SQL 30), and the staff member
+  // works from the role-scoped payload.
+  if (schoolSel && schoolSel.indexOf('cloud:') === 0) {
+    doStaffCloudLogin(schoolSel.slice(6), id, pw, err);
+    return false;
+  }
+  // Local-only login: staff accounts live in schoolSaathiAccounts on
+  // this device, with no server account — no Supabase attempt.
+  var a = findAccount(id);
+  // v73-style cloud fallback (mirrors the teacher login): a staff member
+  // whose school is on this device but who has no login account here
+  // (created on another device) is verified on the server instead. A
+  // wrong password for an EXISTING local account never falls back.
+  if (!a && schoolSel) {
+    var srvId = null;
+    try { srvId = sbServerSchoolMap()[schoolSel] || null; } catch (e2) { srvId = null; }
+    if (srvId) { doStaffCloudLogin(srvId, id, pw, err); return false; }
+  }
+  if (a && loginLockUntil(id)) {
+    err.textContent = t('tPinLocked');
+    err.classList.remove('hidden');
+    return false;
+  }
+  var chk = verifyPw(pw, a);
+  var ok = a && (a.role === 'principal' || a.role === 'accountant' || a.role === 'staff') && !!a.pwHash && chk.ok;
+  if (ok && chk.legacy) upgradePwHash(a, pw);
+  if (!ok) {
+    if (a) loginFailRecord(id);
+    err.textContent = t('tInvalidCreds');
+    err.classList.remove('hidden');
+    return false;
+  }
+  if (a) loginFailClear(id);
+  if (schoolSel && a && a.schoolUid !== schoolSel) {
+    err.textContent = t('tInvalidCreds');
+    err.classList.remove('hidden');
+    return false;
+  }
+  if (!readDbByKey(dbKeyFor(a))) {
+    err.textContent = t('tchrNoDb');
+    err.classList.remove('hidden');
+    return false;
+  }
+  err.classList.add('hidden');
+  loginAs(a);
+  return false;
+}
 function teacherRecord() {
   if (state.role !== 'teacher' || !state.user) return null;
   return db.teachers.find(function (x) { return x.id === state.user.teacherId; }) || null;
@@ -6256,9 +6402,13 @@ function openTeacherClass(cls) {
 }
 function canViewStudent(id) {
   // School: everything. Student: ONLY their own profile. Teacher: only
-  // students in the classes they teach. Anyone else: nothing.
+  // students in the classes they teach. Parent: only their own child
+  // (v88 — the v86 parent dashboard's View button hit "own profile only"
+  // until this). Principal: everything, read-only. Anyone else: nothing.
   if (state.role === 'school') return true;
+  if (state.role === 'principal') return true;
   if (state.role === 'student') return !!state.user && id === state.user.studentId;
+  if (state.role === 'parent') return !!state.user && id === state.user.studentId;
   if (state.role === 'teacher') {
     var s = db.students.find(function (x) { return x.id === id; });
     if (!s) return false;
@@ -6280,6 +6430,30 @@ function visibleStudents() {
     return db.students.filter(function (s) { return !!state.user && s.id === state.user.studentId; });
   }
   return db.students;
+}
+function principalDashboard() {
+  // v88 (Phase 4): the Principal's dashboard — a read-only school
+  // overview. It shows totals only (students, teachers, fee collected /
+  // pending, today's attendance, latest notices) and never offers an
+  // edit: no Add, no Collect, no marks entry. The tiles link to the
+  // read-only pages the principal may open.
+  var u = state.user || {};
+  var ft = feeTotals(), ta = todayAtt();
+  var st = studentStats();
+  var notices = (db.notices || []).slice(0, 2).map(function (n) {
+    return '<div class="notice"><b>' + esc(n.title) + '</b><span>' + esc(n.date) + '</span><p>' + esc(n.body) + '</p></div>';
+  }).join('');
+  return '<div class="card"><h3>' + esc(u.name || '') + '</h3><p>Principal • ' + esc(db.profile.name || '') + ', ' + esc(db.profile.city || '') + '</p>' +
+    '<p class="card-sub">Read-only overview — you can view the whole school, but nothing can be changed from this login.</p></div>' +
+    '<div class="tile-grid">' +
+    '<div class="tile blue" style="cursor:pointer" onclick="go(\'students\')"><div class="n">' + db.students.length + '</div><div class="l">' + t('totalStudents') + '</div></div>' +
+    '<div class="tile green" style="cursor:pointer" onclick="go(\'teachers\')"><div class="n">' + db.teachers.length + '</div><div class="l">' + t('totalTeachers') + '</div></div>' +
+    '<div class="tile orange"><div class="n">₹' + ft.collected + '</div><div class="l">' + t('feeCollected') + '</div></div>' +
+    '<div class="tile red"><div class="n">₹' + ft.pending + '</div><div class="l">' + t('pendingFee') + '</div></div>' +
+    '</div>' +
+    '<div class="card" style="margin-top:16px"><h3>' + t('todayAtt') + '</h3><p class="card-sub">' + st.att + '% ' + t('tileAtt') + ' • ' + db.students.length + ' ' + t('studentsW') + '</p>' +
+    donutSVG([{ value: ta.present, color: GREEN, label: t('presBtn'), pct: donutPct(ta.present, ta.total) }, { value: ta.absent, color: RED, label: t('absBtn'), pct: donutPct(ta.absent, ta.total) }, { value: ta.late, color: ORANGE, label: t('lateBtn'), pct: donutPct(ta.late, ta.total) }], 190, donutPct(ta.present, ta.total) + '%', t('todayAtt')) + '</div>' +
+    '<div class="card" style="margin-top:16px"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div>';
 }
 function roleDashboard() {
   // v85 (Phase 4): the dashboard for the five new roles (principal,
@@ -6560,7 +6734,8 @@ var NAV = {
   // principal v87, accountant v88, staff v89, superadmin v90). The
   // NAV is the visible menu; PERMS below is the enforcement.
   principal: [
-    ['dashboard', '🏠', 'dashboard'], ['notices', '📢', 'notices']
+    ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['teachers', '👩‍🏫', 'teachers'], ['attendance', '✅', 'attendance'],
+    ['fees', '💰', 'fees'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices'], ['reports', '📄', 'reports']
   ],
   accountant: [
     ['dashboard', '🏠', 'dashboard'], ['notices', '📢', 'notices']
@@ -6584,7 +6759,7 @@ var PERMS = {
   school: ['dashboard', 'students', 'teachers', 'admissions', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog', 'settings'],
   teacher: ['dashboard', 'students', 'attendance', 'exams', 'homework', 'notices'],
   student: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'],
-  principal: ['dashboard', 'notices'],
+  principal: ['dashboard', 'students', 'teachers', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports'], // v88: the principal oversees the whole school, read-only
   accountant: ['dashboard', 'notices'],
   staff: ['dashboard', 'notices'],
   parent: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'], // v86: the parent portal reuses the student views, view-only
@@ -6594,6 +6769,7 @@ function canAccessView(role, view) {
   var allowed = PERMS[role];
   return !!allowed && allowed.indexOf(view) !== -1;
 }
+function isPrincipal() { return state.role === 'principal'; } // v88: the Principal is read-only — they view the whole school but change nothing
 var VIEW_TITLES = {
   dashboard: ['Dashboard', ''],
   settings: ['Settings', 'School settings'], reports: ['Reports', 'Download CSV reports'],
@@ -7291,7 +7467,10 @@ function studentsPage() {
   if (promoState) return promotionPage();
   // v84: a teacher sees this page read-only — only their own classes,
   // no fees, no checkboxes, no actions, no Add/Import/Promote.
+  // v88: a principal sees the whole school read-only — the fee column
+  // stays (oversight), but no checkboxes, no Actions, no Add/Import/Promote.
   var isTeacher = state.role === 'teacher';
+  var isPrincipal = state.role === 'principal';
   var st = studentStats();
   var list = stuSorted(stuFiltered());
   var pages = stuPageCount(list);
@@ -7301,11 +7480,11 @@ function studentsPage() {
     var fs = studentFeeStatus(s.id);
     var stt = s.status || 'Active';
     var badgeCls = stt === 'Active' ? 'green' : stt === 'Inactive' ? 'grey' : stt === 'Draft' ? 'blue' : 'red';
-    return '<tr>' + (isTeacher ? '' : '<td class="sel-col"><input type="checkbox" ' + ((state.stuSel || {})[s.id] ? 'checked' : '') + ' onchange="toggleStuSel(\'' + s.id + '\', this.checked)" aria-label="' + esc(s.name) + '"></td>') + '<td>' + avatarHTML(s.photo, s.name, 'mini-avatar') + '<button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td>' +
+    return '<tr>' + ((isTeacher || isPrincipal) ? '' : '<td class="sel-col"><input type="checkbox" ' + ((state.stuSel || {})[s.id] ? 'checked' : '') + ' onchange="toggleStuSel(\'' + s.id + '\', this.checked)" aria-label="' + esc(s.name) + '"></td>') + '<td>' + avatarHTML(s.photo, s.name, 'mini-avatar') + '<button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td>' +
       '<td>' + esc(s.numPending ? t('sbNumAssigning') : (s.admissionNo || '—')) + '</td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.fatherName || s.guardian) + '</td><td>' + esc(s.phone) + '</td><td>' + studentAttPct(s) + '%</td>' +
       (isTeacher ? '' : '<td><span class="badge ' + (fs === 'Paid' ? 'green' : fs === 'Pending' ? 'orange' : 'grey') + '">' + fs + '</span></td>') +
       '<td><span class="badge ' + badgeCls + '">' + stt + '</span></td>' +
-      (isTeacher ? '' : '<td><button class="btn ghost sm" onclick="stuActions(\'' + s.id + '\')">⋮ ' + t('actionsW') + '</button></td>') + '</tr>';
+      ((isTeacher || isPrincipal) ? '' : '<td><button class="btn ghost sm" onclick="stuActions(\'' + s.id + '\')">⋮ ' + t('actionsW') + '</button></td>') + '</tr>';
   }).join('');
   var opt = function (vals, cur, allLabel) {
     return ['All'].concat(vals).map(function (v) {
@@ -7325,7 +7504,7 @@ function studentsPage() {
     (isTeacher ? '' : '<select onchange="state.stuFee=this.value;state.stuPage=1;renderPage()">' + opt(['Paid', 'Pending', '—'], state.stuFee, t('allFeeSt')) + '</select>') +
     '<select onchange="state.stuStatus=this.value;state.stuPage=1;renderPage()">' + opt(STU_STATUSES, state.stuStatus, t('allStatus')) + '</select>' +
     '<button class="btn ghost" onclick="exportStudentsCSV()">⬇ ' + t('exportCsv') + '</button>' +
-    (isTeacher ? '' : '<button class="btn ghost" onclick="openImportModal()">📥 ' + t('impImportBtn') + '</button>' +
+    ((isTeacher || isPrincipal) ? '' : '<button class="btn ghost" onclick="openImportModal()">📥 ' + t('impImportBtn') + '</button>' +
     '<button class="btn ghost" onclick="openPromotion()">⬆️ ' + t('promoBtn') + '</button>' +
     '<button class="btn" onclick="studentForm()">+ ' + t('addStudent') + '</button>') + '</div></div>' +
     '<div class="stats">' +
@@ -7344,7 +7523,7 @@ function studentsPage() {
     '<div class="type-row"><b>' + t('stNotSpec') + '</b><span>' + st.unspec + '</span></div></div></div></div></div>' +
     ((selCount && !isTeacher) ? '<div class="card id-bulk-bar"><span><b>' + selCount + '</b> ' + t('promoSelected') + '</span><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" onclick="printIdCardsBulk()">🪪 ' + t('idcPrintCards') + ' (' + selCount + ')</button><button class="btn ghost sm" onclick="clearStuSel()">' + t('idcClearSel') + '</button></span></div>' : '') +
     '<div class="card" style="margin-top:16px"><div class="tbl-wrap"><table><thead><tr>' +
-    (isTeacher ? '' : '<th class="sel-col"><input type="checkbox" ' + (allPageSel ? 'checked' : '') + ' onchange="toggleStuSelAll(this.checked)" aria-label="' + t('idcSelectAll') + '"></th>') +
+    (isTeacher || isPrincipal ? '' : '<th class="sel-col"><input type="checkbox" ' + (allPageSel ? 'checked' : '') + ' onchange="toggleStuSelAll(this.checked)" aria-label="' + t('idcSelectAll') + '"></th>') + // v88: the select-all checkbox hides for a principal too
     '<th onclick="sortStu(\'name\')" style="cursor:pointer">' + t('thName') + sortArrow('name') + '</th>' +
     '<th>' + t('thAdmNo') + '</th>' +
     '<th onclick="sortStu(\'class\')" style="cursor:pointer">' + t('thClass') + sortArrow('class') + '</th>' +
@@ -8190,6 +8369,11 @@ function attendancePage() {
     // v38: an Absent/Late student can be notified on WhatsApp (manual
     // wa.me chat, parent presses nothing here — the admin presses Send
     // inside WhatsApp). The button appears only for Absent/Late marks.
+    // v88: a principal sees the status as text — no mark buttons, no
+    // WhatsApp button.
+    if (state.role === 'principal') {
+      return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td><span class="badge ' + (cur === 'Present' ? 'green' : cur === 'Absent' ? 'red' : 'orange') + '">' + cur + '</span></td><td><span class="muted">—</span></td></tr>';
+    }
     var notifyCell = (cur === 'Absent' || cur === 'Late')
       ? '<button class="btn ghost sm" onclick="waAbsentAlert(\'' + s.id + '\')">💬 ' + t('waNotifyBtn') + '</button>'
       : '<span class="muted">—</span>';
@@ -8226,6 +8410,8 @@ function onAttDate(v) {
 function markAtt(id, m) {
   // v35: a teacher marks only their own assigned class, and only a
   // student on this class's roster.
+  // v88: a principal is read-only — they never mark attendance.
+  if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
   if (state.role === 'teacher' && teacherClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
   var stu = db.students.find(function (x) { return x.id === id; });
   if (stu && stu.cls !== state.attCls) { toast(t('tNotAllowed')); return; }
@@ -8303,7 +8489,7 @@ function feesPage() {
     return '<tr><td><button class="linklike" onclick="return openFeeProfile(\'' + r.studentId + '\', event)">' + esc(r.student) + '</button></td><td>' + esc(enrOf(r.studentId)) + '</td><td>' + esc(r.cls) + '</td><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td>' +
       '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
       '<td>' + receiptCellForRecord(r) + '</td>' +
-      '<td>' + (r.status === 'Pending' ? '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, r.studentId) + ' <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>' : '<span class="muted">—</span>') + '</td></tr>';
+      '<td>' + (r.status === 'Pending' ? (state.role === 'principal' ? '<span class="muted">—</span>' : '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, r.studentId) + ' <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>') : '<span class="muted">—</span>') + '</td></tr>'; // v88: a principal sees the fee list read-only — no Collect/Delete/WhatsApp (openCollectFee/deleteFeeRecord already refuse non-school; this hides the dead buttons)
   }).join('');
   return '<div class="page-head"><div><h2>' + t('fees') + '</h2><p>' + t('collectedW') + ' ' + inr(ft.collected) + ' • ' + t('pendingW') + ' ' + inr(ft.pending) + ' (' + feeRangeLabel() + ')</p></div>' +
     '<div class="toolbar"><div class="pill-tabs">' + ['All', 'Pending', 'Collected'].map(function (x) {
@@ -8322,7 +8508,7 @@ function feesPage() {
     (rows || '<tr><td colspan="10"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '<tr id="feeNoMatch" style="display:none"><td colspan="10"><div class="empty">' + t('tNoMatch') + '</div></td></tr></tbody></table></div>' +
     '<p class="muted" id="feeCount" style="margin-top:10px">' + t('showingRec') + ' ' + shown + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('recordsWord') + '</p>' +
     (list.length > shown ? '<div style="margin-top:10px"><button class="btn ghost" onclick="state.feeLimit=(state.feeLimit||120)+120;renderPage()">' + t('loadMore') + '</button></div>' : '') + '</div>' +
-    feeFormCard() + feeStructureCard();
+    (state.role === 'principal' ? '' : feeFormCard() + feeStructureCard()); // v88: the fee-entry + fee-structure cards are school-only — a principal never sees them
 }
 
 /* ================= student fee profile ================= */
@@ -9331,7 +9517,8 @@ function examsPage() {
     ex = myExams35.find(function (e) { return e.id === state.examId; }) || myExams35[0];
   }
   // v37: even with no exams yet, the school/teacher can create the first one.
-  if (!ex) return '<div class="page-head"><div><h2>' + t('exams') + '</h2></div><div class="toolbar"><button class="btn" onclick="examForm()">+ ' + t('createExam') + '</button></div></div><div class="card"><div class="empty">' + t('tNoExams') + '</div></div>' + deletedExamsSection();
+  // v88: a principal sees only the empty card — no Create button.
+  if (!ex) return '<div class="page-head"><div><h2>' + t('exams') + '</h2></div>' + (state.role === 'principal' ? '' : '<div class="toolbar"><button class="btn" onclick="examForm()">+ ' + t('createExam') + '</button></div>') + '</div><div class="card"><div class="empty">' + t('tNoExams') + '</div></div>' + deletedExamsSection();
   // v34 (P1-10): marks roster is enrolled students only — Cancelled/
   // Draft never get a marks row.
   var roster = db.students.filter(function (s) { return s.cls === ex.cls && isEnrolledStudent(s); });
@@ -9347,18 +9534,21 @@ function examsPage() {
   });
   var rows = roster.map(function (s) {
     var mk = examMarks.get(s.id);
+    // v88: a principal sees the mark as text — no editable input.
+    var markCell = state.role === 'principal' ? '<td>' + (mk ? '<b>' + mk.marks + '</b>' : '<span class="muted">—</span>') + ' / ' + ex.total + '</td>'
+      : '<td><input type="number" min="0" step="0.5" max="' + ex.total + '" value="' + (mk ? mk.marks : '') + '" placeholder="—" style="width:90px" id="mk-' + s.id + '"> / ' + ex.total + '</td>';
     return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td>' +
-      '<td><input type="number" min="0" step="0.5" max="' + ex.total + '" value="' + (mk ? mk.marks : '') + '" placeholder="—" style="width:90px" id="mk-' + s.id + '"> / ' + ex.total + '</td>' +
+      markCell +
       '<td>' + (mk ? '<b>' + Math.round(mk.marks / ex.total * 100) + '%</b>' : '<span class="muted">' + t('tNotEntered') + '</span>') + '</td></tr>';
   }).join('');
   var examList35 = state.role === 'teacher' ? activeExams.filter(function (e) { return teacherClasses().indexOf(e.cls) !== -1; }) : activeExams;
   var opts = examList35.map(function (e) { return '<option value="' + e.id + '" ' + (ex.id === e.id ? 'selected' : '') + '>' + esc(e.name) + ' — ' + esc(e.cls) + ' (' + esc(e.subject) + ')</option>'; }).join('');
   return '<div class="page-head"><div><h2>' + t('exams') + '</h2><p>' + esc(ex.name) + ' • ' + esc(ex.cls) + ' • ' + esc(ex.subject) + ' • ' + esc(ex.date) + '</p></div>' +
     '<div class="toolbar"><select onchange="state.examId=this.value;renderPage()">' + opts + '</select>' +
-    '<button class="btn" onclick="examForm()">+ ' + t('createExam') + '</button>' +
+    (state.role === 'principal' ? '' : '<button class="btn" onclick="examForm()">+ ' + t('createExam') + '</button>' +
     '<button class="btn" onclick="editExam(\'' + ex.id + '\')">✎ ' + t('editExam') + '</button>' +
     (state.role === 'school' ? '<button class="btn danger" onclick="deleteExam(\'' + ex.id + '\')">🗑 ' + t('deleteExam') + '</button>' : '') +
-    '<button class="btn green" onclick="saveMarks(\'' + ex.id + '\')">✓ ' + t('saveMarks') + '</button></div></div>' +
+    '<button class="btn green" onclick="saveMarks(\'' + ex.id + '\')">✓ ' + t('saveMarks') + '</button>') + '</div></div>' + // v88: a principal sees the exam picker + marks table only — no Create/Edit/Delete/Save
     '<div class="card"><div class="head-row"><div><h3>' + t('enterMarks') + '</h3><p class="card-sub">' + (n ? t('classAvg') + ': ' + Math.round(avg / n / ex.total * 100) + '% (' + n + ' ' + t('studentsMarked') + ')' : t('tNoMarks')) + '</p></div></div>' +
     '<div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thMarks') + '</th><th>' + t('thResult') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>' + deletedExamsSection();
 }
@@ -9378,6 +9568,8 @@ function deletedExamsSection() {
 function saveMarks(examId) {
   var ex = db.exams.find(function (e) { return e.id === examId; });
   if (!ex || !isActiveExam(ex)) return; // B6: never enter marks on a deleted exam
+  // v88: a principal is read-only — they never enter marks.
+  if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
   // v35: a teacher enters marks only for their own assigned class.
   if (state.role === 'teacher' && teacherClasses().indexOf(ex.cls) === -1) { toast(t('tNotAllowed')); return; }
   var saved = 0, bad = [];
@@ -9617,7 +9809,7 @@ function homeworkPage() {
       '<div><b>' + esc(h.title) + '</b><span>' + esc(h.subject) + ' • Class ' + esc(h.cls) + ' • Due ' + esc(h.due) + (isStudent ? '' : ' • ' + h.doneBy.length + ' ' + t('doneSuffix')) + '</span></div></div>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('homework') + '</h2><p>' + (isStudent ? 'Class ' + esc(myCls) + ' — ' + t('tapDone') : t('subHomework')) + '</p></div>' +
-    ((isStudent || isParent) ? '' : '<div class="toolbar"><button class="btn" onclick="homeworkForm()">+ ' + t('addHomework') + '</button></div>') + '</div>' +
+    ((isStudent || isParent || state.role === 'principal') ? '' : '<div class="toolbar"><button class="btn" onclick="homeworkForm()">+ ' + t('addHomework') + '</button></div>') + '</div>' + // v88: a principal never gets the Add button either
     '<div class="card">' + (items || '<div class="empty">' + t('tNoHw') + '</div>') + '</div>';
 }
 function toggleHw(id, done) {
@@ -9650,6 +9842,8 @@ function homeworkForm() {
 function saveHomework(e) {
   e.preventDefault();
   if ($('fHwDue').value < todayIST()) { toast(t('tDueFuture')); return false; }
+  // v88: a principal is read-only — they never post homework.
+  if (state.role === 'principal') { toast(t('tNotAllowed')); return false; }
   // v35: a teacher posts homework only to their own assigned class.
   if (state.role === 'teacher' && teacherClasses().indexOf($('fHwCls').value) === -1) { toast(t('tNotAllowed')); return false; }
   // v62: a cloud teacher posts through the server RPC. The row joins the
@@ -9888,14 +10082,17 @@ function toggleTchrClass(cls, on) {
   if (!on && i !== -1) tchrFormClasses.splice(i, 1);
 }
 function teachersPage() {
-  if (state.role !== 'school') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
+  // v88: a principal may view the teachers list (read-only) — no Add
+  // button, no Edit button. Other non-school roles still see nothing.
+  if (state.role !== 'school' && state.role !== 'principal') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
+  var isPrincipal = state.role === 'principal';
   var rows = (db.teachers || []).map(function (te) {
     var acct = loadAccounts().find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; });
     var clsList = Array.isArray(te.classes) && te.classes.length ? te.classes : (te.cls ? [te.cls] : []);
-    return '<tr><td><b>' + esc(te.name) + '</b></td><td>' + esc(te.subject || '—') + '</td><td>' + esc(clsList.join(', ') || '—') + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('tchrNoLogin') + '</span>') + '</td><td><button class="btn ghost sm" onclick="teacherForm(\'' + te.id + '\')">' + t('editBtn') + '</button></td></tr>';
+    return '<tr><td><b>' + esc(te.name) + '</b></td><td>' + esc(te.subject || '—') + '</td><td>' + esc(clsList.join(', ') || '—') + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('tchrNoLogin') + '</span>') + '</td><td>' + (isPrincipal ? '' : '<button class="btn ghost sm" onclick="teacherForm(\'' + te.id + '\')">' + t('editBtn') + '</button>') + '</td></tr>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('teachers') + '</h2><p>' + t('teachersSub') + '</p></div>' +
-    '<div class="toolbar"><button class="btn" onclick="teacherForm()">+ ' + t('tchrAdd') + '</button></div></div>' +
+    (isPrincipal ? '' : '<div class="toolbar"><button class="btn" onclick="teacherForm()">+ ' + t('tchrAdd') + '</button></div>') + '</div>' +
     '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thName') + '</th><th>' + t('tchrSubject') + '</th><th>' + t('tchrClasses') + '</th><th>' + t('tchrEmail') + '</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="5"><div class="empty">' + t('tNoTeachers') + '</div></td></tr>') + '</tbody></table></div></div>';
 }
 function teacherForm(id) {
@@ -10025,7 +10222,12 @@ var PAGE_TEACHER = { dashboard: teacherDashboard, students: studentsPage, attend
 // v85 (Phase 4): the five new roles start with dashboard + notices.
 // Their own pages land in their step (parent v86, principal v87,
 // accountant v88, staff v89, superadmin v90).
-var PAGE_PRINCIPAL = { dashboard: roleDashboard, notices: noticesPage };
+// v88 (Phase 4): the Principal's page map. The dashboard is the
+// read-only school overview; the other pages are the school pages with
+// their edit controls hidden for a principal (see the isPrincipal
+// gating in each page). Notices and reports are read-only by
+// construction (canPost is school-only; reports only download).
+var PAGE_PRINCIPAL = { dashboard: principalDashboard, students: studentsPage, teachers: teachersPage, attendance: attendancePage, fees: feesPage, exams: examsPage, homework: homeworkPage, notices: noticesPage, reports: reportsPage };
 var PAGE_ACCOUNTANT = { dashboard: roleDashboard, notices: noticesPage };
 var PAGE_STAFF = { dashboard: roleDashboard, notices: noticesPage };
 // v86 (Phase 4): the Parent role reuses the student portal's read-only
