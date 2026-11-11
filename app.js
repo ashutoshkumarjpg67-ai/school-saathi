@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 95;
+var APP_VERSION = 96;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -5609,6 +5609,10 @@ function setLang(l) {
   $('langEn').classList.toggle('on', l === 'en');
   $('langHi').classList.toggle('on', l === 'hi');
   var lo = $('langOne'); if (lo) lo.textContent = l === 'en' ? 'EN' : 'हिं';
+  // v96: the login screen has its own toggle (the topbar is hidden
+  // until login) — keep it in sync too.
+  var lle = $('loginLangEn'); if (lle) lle.classList.toggle('on', l === 'en');
+  var llh = $('loginLangHi'); if (llh) llh.classList.toggle('on', l === 'hi');
   applyI18n();
   if (state.role) renderApp();
 }
@@ -10036,6 +10040,10 @@ function noticesPage() {
   var items = db.notices.map(function (n) {
     return '<div class="notice"><b>' + esc(n.title) + '</b><span>' + esc(n.date) + '</span><p>' + esc(n.body) + '</p></div>';
   }).join('');
+  // v96 (cons fix): an empty notices list showed a blank card with no
+  // message — now it says so, so a school admin never wonders whether
+  // the page failed to load.
+  if (!items) items = '<div class="empty">' + t('tNoNotices') + '</div>';
   var canPost = state.role === 'school'; // v35: teachers view notices only
   return '<div class="page-head"><div><h2>' + t('notices') + '</h2><p>' + t('subNotices') + ' — ' + esc(db.profile.name) + '</p></div>' +
     (canPost ? '<div class="toolbar"><button class="btn" onclick="noticeForm()">+ ' + t('publishNotice') + '</button></div>' : '') + '</div>' +
