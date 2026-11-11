@@ -662,7 +662,7 @@ function sbLoginNewSchool(meta, email, pw, uid, token, serverSchool) {
   // metadata (fresh signup, not yet migrated), then log in and migrate.
   var school = (serverSchool && serverSchool.name) || meta.school || '';
   var name = (serverSchool && serverSchool.principal) || meta.name || email;
-  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: pw ? hashPwNew(pw) : '', hashScheme: pw ? 'sha256' : '', role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: uid };
+  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: pw ? hashPwNew(pw) : '', hashScheme: pw ? 'sha256' : '', role: 'school', sub: 'School Admin • ' + school, created: todayIST(), sbUid: uid };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   state.sb = { uid: uid, email: email };
   $('loginErr').classList.add('hidden');
@@ -5435,7 +5435,7 @@ var I18N = {
     idcPreview: 'ID कार्ड पूर्वावलोकन', idcPrint: 'छापें', idcPrintCards: 'ID कार्ड छापें', idcSelectAll: 'सभी चुनें', idcClearSel: 'चयन हटाएँ', idcReady: 'ID कार्ड छपाई के लिए तैयार', idcEmergency: 'आपातकालीन संपर्क', idcReturn: 'मिले तो कृपया लौटाएँ', idcNoQr: 'QR कोड नहीं बन सका।',
     authStudent: 'छात्र', authTeacher: 'शिक्षक', stuAdmNo: 'प्रवेश संख्या', stuPinLabel: 'छात्र PIN', stuLoginBtn: 'छात्र के रूप में लॉगिन करें', stuNote: 'छात्र लॉगिन स्कूल द्वारा दिए गए PIN से होता है। PIN न पता हो तो अपने स्कूल से पूछें। माता-पिता: अपने बच्चे के प्रवेश नंबर और PIN से लॉगिन करें — उपस्थिति, शुल्क और परिणाम यहीं मिलेंगे।', stuCloudHint: 'क्लाउड लॉगिन — यह स्कूल इस डिवाइस पर नहीं है। आपका प्रवेश नंबर और PIN सर्वर पर जाँचा जाएगा।', cloudSuffix: ' (क्लाउड)', tCloudHwReadOnly: 'होमवर्क की स्थिति स्कूल से सहेजी जाती है — क्लाउड लॉगिन से इसे बदला नहीं जा सकता।', stuSub: 'छात्र', stuDashboard: 'मेरी प्रोफ़ाइल', tInvalidStudent: 'प्रवेश संख्या या PIN गलत है।', stuPinField: 'छात्र लॉगिन PIN (वैकल्पिक)', stuPinPh: 'खाली छोड़ें — रैंडम PIN बनेगा', stuPinTitle: 'छात्र PIN', stuPinNow: 'वर्तमान छात्र PIN', stuPinSet: 'PIN सेट है', stuPinNone: 'कोई PIN नहीं है — इस छात्र के लिए छात्र लॉगिन उपलब्ध नहीं है।', stuPinNew: 'नया PIN (4–6 अंक)', stuPinSetBtn: 'PIN सेट करें', stuPinClear: 'PIN हटाएँ', tPinLen: 'PIN 4–6 अंकों का होना चाहिए।', tPinSet: 'छात्र PIN सेट हो गया।', tPinLocked: 'बहुत ज़्यादा गलत कोशिशें \u2014 15 मिनट बाद फिर कोशिश करें।', tPinCleared: 'छात्र PIN हटा दिया गया।', tPinAuto: 'PIN स्कूल द्वारा प्रवेश के समय दिया जाता है। छात्र भूल जाए तो यहाँ से नया PIN सेट करें।', tNotAllowed: 'आपकी लॉगिन इस सेक्शन को नहीं खोल सकती।', tOwnProfileOnly: 'आप केवल अपनी प्रोफ़ाइल देख सकते हैं।', todayW: 'आज', tchrLoginBtn: 'शिक्षक के रूप में लॉगिन करें', tchrNote: 'शिक्षक अकाउंट स्कूल एडमिन बनाता है।', tchrSub: 'शिक्षक', tchrDashboard: 'शिक्षक डैशबोर्ड', tchrNoDb: 'इस डिवाइस पर स्कूल का डेटा नहीं है — पहले स्कूल के डिवाइस पर लॉगिन करें।', teachers: 'शिक्षक', teachersSub: 'शिक्षक अकाउंट और वे जो कक्षाएँ पढ़ाते हैं।', tchrAdd: 'शिक्षक जोड़ें', tchrEdit: 'शिक्षक बदलें', tchrName: 'शिक्षक का नाम', tchrSubject: 'विषय', tchrClasses: 'पढ़ाई जाने वाली कक्षाएँ', tchrEmail: 'ईमेल', tchrPw: 'पासवर्ड', tchrPwHint: 'कम से कम 6 अक्षर। मौजूदा पासवर्ड रखने के लिए खाली छोड़ें।', tchrNoLogin: 'कोई लॉगिन नहीं', tchrSaved: 'शिक्षक सहेजा गया।', tchrNoClasses: 'कम से कम एक कक्षा चुनें।', tchrCloudHint: 'क्लाउड लॉगिन — यह स्कूल इस डिवाइस पर नहीं है। आपका ईमेल और पासवर्ड सर्वर पर जाँचा जाएगा।', tchrNoSchoolPick: 'स्कूल चुनें (वैकल्पिक)', tCloudSessionExpired: 'आपका क्लाउड सेशन खत्म हो गया — फिर से लॉगिन करें।', tchrEmailTaken: 'यह ईमेल किसी और अकाउंट में इस्तेमाल हो रहा है।', tchrMyClasses: 'मेरी कक्षाएँ', tchrStudents: 'मेरी कक्षाओं के छात्र', tchrNoClassesYet: 'अभी कोई कक्षा नहीं दी गई है — स्कूल एडमिन से कक्षा देने को कहें।', admissions: 'प्रवेश आवेदन', admReqTitle: 'प्रवेश आवेदन', admReqApply: 'प्रवेश के लिए आवेदन करें', admReqFormTitle: 'प्रवेश हेतु आवेदन', admReqSchool: 'स्कूल', admReqNoSchool: 'इस डिवाइस पर अभी कोई स्कूल अकाउंट नहीं है — स्कूल के साइन अप के बाद ही आवेदन खुलेंगे।', admReqClassApply: 'किस कक्षा के लिए आवेदन', admReqSubmitted: 'आवेदन मिल गया। स्कूल इसकी समीक्षा करके आपसे संपर्क करेगा।', admReqApprove: 'स्वीकृत करें', admReqReject: 'अस्वीकृत करें', admReqView: 'देखें', admReqReason: 'कारण (वैकल्पिक)', admReqApproved: 'प्रवेश आवेदन स्वीकृत हुआ।', admReqRejected: 'प्रवेश आवेदन अस्वीकृत हुआ।', admReqPrefilled: 'प्रवेश आवेदन से भरा गया है — सहेजने से पहले विवरण जाँच लें।', admReqStatus: 'स्थिति', admReqSubmittedOn: 'जमा किया गया', admReqEmpty: 'अभी कोई प्रवेश आवेदन नहीं है।', admReqPending: 'लंबित', admReqApprovedSt: 'स्वीकृत', admReqRejectedSt: 'अस्वीकृत', admReqAll: 'सभी', tReqName: 'छात्र का नाम ज़रूरी है।', tReqClass: 'कृपया कक्षा चुनें।', tAdmReqFailed: 'उस स्कूल के लिए आवेदन सहेजा नहीं जा सका।', softDelMsg: 'इस छात्र को हटाएँ? रिकॉर्ड सहेजा रहेगा (सॉफ्ट डिलीट) — शुल्क, अंक, उपस्थिति और होमवर्क सहेजे रहेंगे।', tStudentRemoved: 'छात्र हटाया गया (रिकॉर्ड सहेजा रहा)।', tAdmReqInvalid: 'कृपया छात्र का नाम, 10 अंकों का मोबाइल और कक्षा भरें।',
     collectFeeBtn: 'शुल्क वसूलें', rcptTitle: 'शुल्क रसीद', rcptReceiptNo: 'रसीद संख्या', rcptDate: 'तारीख', rcptAdmNo: 'प्रवेश संख्या', rcptSession: 'सत्र', rcptName: 'नाम', rcptClass: 'कक्षा', rcptInstallment: 'किस्त', rcptCounter: 'काउंटर संख्या', rcptSlNo: 'क्र.सं.', rcptDesc: 'विवरण', rcptDue: 'देय', rcptCon: 'छूट', rcptPaid: 'जमा', rcptAdmissionFee: 'प्रवेश शुल्क', rcptTuitionFee: 'शिक्षण शुल्क', rcptCaution: 'जमानत राशि', rcptAnnual: 'वार्षिक शुल्क', rcptBusFee: 'बस शुल्क', rcptDues: 'बकाया', rcptPayModeTitle: 'भुगतान जानकारी', rcptPayMode: 'भुगतान माध्यम', rcptBank: 'बैंक', rcptNumber: 'संख्या', rcptTotal: 'कुल', rcptTotalWords: 'कुल (शब्दों में)', rcptComputerGen: 'यह कंप्यूटर द्वारा बनाई गई रसीद है। हस्ताक्षर की आवश्यकता नहीं है।', rcptParentCopy: 'अभिभावक प्रति', rcptCollectorSign: 'वसूलकर्ता के हस्ताक्षर', rcptIncludeBus: 'बस/परिवहन शामिल करें', rcptOtherFees: 'अन्य शुल्क', rcptAnnualHint: 'शुल्क वसूली रसीद पर दिखने वाली एकमुश्त और वार्षिक राशि। छिपाने के लिए 0 रखें।', payModeCash: 'नकद', payModeCheque: 'चेक', payModeUpi: 'UPI', payModeCard: 'कार्ड', payModeBank: 'बैंक ट्रांसफर', tFeeCollected: 'शुल्क वसूल लिया गया।', tCollectZero: 'वसूलने के लिए कुछ नहीं है — जमा राशि डालें।', tCollectSaved: 'शुल्क वसूल लिया गया — रसीद ', tCollectNotActive: 'यह छात्र सक्रिय नहीं है — शुल्क नहीं वसूला जा सकता।', rcptReceipts: 'रसीदें', rcptView: 'देखें', rcptPrint: 'प्रिंट / PDF सहेजें', rcptCollectAgain: 'फिर से वसूलें', rcptNoReceipts: 'इस छात्र की अभी कोई रसीद नहीं है।', rcptDraft: 'मसौदा — अभी सहेजा नहीं गया', rcptCollectSave: 'वसूलें और सहेजें', rcptNoLines: 'इस अवधि के लिए वसूलने को कुछ नहीं है — पहले शुल्क संरचना में राशि डालें।',
-    sbNumPending: 'प्रवेश सहेजा गया। प्रवेश संख्या ऑनलाइन आने पर दी जाएगी।', sbNumPendingReceipt: 'शुल्क सहेजा गया। रसीद संख्या ऑनलाइन आने पर दी जाएगी।', sbStatusSessionExpired: 'सत्र समाप्त हो गया — कृपया दोबारा लॉग इन करें।', sbStatusNotLinked: 'अभी सर्वर से जुड़ा नहीं है — लॉग इन पर जुड़ जाएगा।', sbLocalOnlyLogin: 'यह स्कूल अभी सर्वर से जुड़ा नहीं है — इस डिवाइस का अकाउंट इस्तेमाल हो रहा है।', sbBackupDone: 'बैकअप पूरा हुआ।', sbBackupFailed: 'बैकअप पूरा नहीं हुआ — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkServer: 'सर्वर से जोड़ें', sbLinkDone: 'सर्वर अकाउंट जुड़ गया।', sbLinkFailed: 'सर्वर अकाउंट जुड़ा नहीं जा सका — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkPwTitle: 'सर्वर अकाउंट जोड़ें', sbNumAssigning: 'नंबर मिल रहा है…', tWrongPasswordServer: 'सर्वर अकाउंट के लिए पासवर्ड गलत है।', tCollectCapped: 'दी गई राशि बकाया से ज़्यादा थी — सिर्फ बकाया राशि ली गई।', resetPwHintServer: 'इससे सिर्फ इस डिवाइस का डेटा मिटेगा। सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी, जब तक आप सर्वर भी न मिटाएँ।', resetConfirmMsgServer: 'सिर्फ इस डिवाइस का डेटा मिटाएँ? सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी — हर जगह से मिटाने के लिए “सर्वर से भी मिटाएँ” चुनें।', resetDeviceOnly: 'सिर्फ यह डिवाइस', resetWipeServerBtn: 'सर्वर से भी मिटाएँ', resetWipeServerDone: 'सर्वर का डेटा मिट गया।', resetWipeServerFailed: 'सर्वर का डेटा मिटा नहीं जा सका — कुछ भी रीसेट नहीं हुआ। कनेक्शन जाँचकर फिर कोशिश करें।', supportQueued: 'सहायता अनुरोध सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqQueued: 'आवेदन सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqLoadingSchools: 'स्कूल लोड हो रहे हैं…', attNotMarked: 'दर्ज नहीं',
+    sbNumPending: 'प्रवेश सहेजा गया। प्रवेश संख्या ऑनलाइन आने पर दी जाएगी।', sbNumPendingReceipt: 'शुल्क सहेजा गया। रसीद संख्या ऑनलाइन आने पर दी जाएगी।', sbStatusSessionExpired: 'सत्र समाप्त हो गया — कृपया दोबारा लॉग इन करें।', sbStatusNotLinked: 'अभी सर्वर से जुड़ा नहीं है — लॉग इन पर जुड़ जाएगा।', sbLocalOnlyLogin: 'यह स्कूल अभी सर्वर से जुड़ा नहीं है — इस डिवाइस का अकाउंट इस्तेमाल हो रहा है।', sbBackupDone: 'बैकअप पूरा हुआ।', sbBackupFailed: 'बैकअप पूरा नहीं हुआ — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkServer: 'सर्वर से जोड़ें', sbLinkDone: 'सर्वर अकाउंट जुड़ गया।', sbLinkFailed: 'सर्वर अकाउंट जुड़ा नहीं जा सका — कनेक्शन जाँचकर फिर कोशिश करें।', sbLinkPwTitle: 'सर्वर अकाउंट जोड़ें', sbNumAssigning: 'नंबर मिल रहा है…', tWrongPasswordServer: 'सर्वर अकाउंट के लिए पासवर्ड गलत है।', tCollectCapped: 'दी गई राशि बकाया से ज़्यादा थी — सिर्फ बकाया राशि ली गई।', resetPwHintServer: 'इससे सिर्फ इस डिवाइस का डेटा मिटेगा। सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी, जब तक आप सर्वर भी न मिटाएँ।', resetConfirmMsgServer: 'सिर्फ इस डिवाइस का डेटा मिटाएँ? सर्वर की कॉपी अगले सिंक पर वापस आ जाएगी — हर जगह से मिटाने के लिए “सर्वर से भी मिटाएँ” चुनें।', resetDeviceOnly: 'सिर्फ यह डिवाइस', resetWipeServerBtn: 'सर्वर से भी मिटाएँ', resetWipeServerDone: 'सर्वर का डेटा मिट गया।', resetWipeServerFailed: 'सर्वर का डेटा मिटा नहीं जा सका — कुछ भी रीसेट नहीं हुआ। कनेक्शन जाँचकर फिर कोशिश करें।', supportQueued: 'सहायता अनुरोध सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqQueued: 'आवेदन सहेजा गया — ऑनलाइन आते ही भेजा जाएगा।', admReqLoadingSchools: 'स्कूल लोड हो रहे हैं…', attNotMarked: 'दर्ज नहीं', sbBackupNow: 'अभी बैकअप करें', sbDownloadDone: 'डाउनलोड पूरा हुआ।', sbDownloadFailed: 'डाउनलोड पूरा नहीं हुआ — कनेक्शन जाँचकर फिर कोशिश करें।', sbDownloadNoServer: 'इस स्कूल के लिए अभी तक सर्वर पर कोई बैकअप नहीं मिला।', sbDownloadNow: 'सर्वर से डाउनलोड करें', sbDownloadOffline: 'ऑफ़लाइन — ऑनलाइन आते ही डाउनलोड चलेगा।', sbDownloadSkipped: 'इस डिवाइस में पहले से स्कूल डेटा है — उसे सुरक्षित रखने के लिए डाउनलोड छोड़ा गया।', sbDownloadStart: 'सर्वर से डाउनलोड हो रहा है…', sbEmailConfirm: 'सर्वर अकाउंट बन गया — दूसरे डिवाइस पर इस्तेमाल के लिए अपना ईमेल कन्फ़र्म करें।', sbEmailConfirmed: 'ईमेल कन्फ़र्म हो गया — आगे बढ़ने के लिए लॉग इन करें।', sbForgotPw: 'पासवर्ड भूल गए?', sbNoSchool: 'इस अकाउंट के लिए कोई स्कूल नहीं मिला। कृपया अपने स्कूल अकाउंट से साइन अप करें या लॉग इन करें।', sbOfflineLogin: 'आप ऑफ़लाइन हैं — इस डिवाइस के अकाउंट से लॉग इन हो रहा है।', sbRecoverFailed: 'रीसेट लिंक भेजा नहीं जा सका। कनेक्शन जाँचकर फिर कोशिश करें।', sbRecoverSent: 'अगर उस ईमेल का अकाउंट है तो रीसेट लिंक भेजा गया है। अपना इनबॉक्स देखें।', sbRecoverTitle: 'पासवर्ड रीसेट करें', sbResetDone: 'पासवर्ड बदल गया। अपने नए पासवर्ड से लॉग इन करें।', sbResetFailed: 'पासवर्ड बदला नहीं जा सका। लिंक की मियाद खत्म हो गई होगी — नया लिंक माँगें।', sbResetPw: 'नया पासवर्ड बनाएँ', sbSendResetLink: 'रीसेट लिंक भेजें', sbStatusFailed: 'बैकअप नहीं हो पाया — अगले लॉग इन पर फिर कोशिश होगी।', sbStatusNotSchool: 'सर्वर बैकअप स्कूल अकाउंट के लिए है।', sbStatusOffline: 'ऑफ़लाइन — ऑनलाइन आते ही बैकअप चलेगा।', sbStatusPending: 'बैकअप बाकी है — अगले लॉग इन पर होगा।', sbStatusPendingSync: 'ऑफ़लाइन — ऑनलाइन आते ही बदलाव सिंक हो जाएँगे।', sbStatusSynced: 'सर्वर पर बैकअप हो गया।', sbStatusSyncing: 'सर्वर से सिंक हो रहा है…', sbStatusUploading: 'सर्वर पर बैकअप हो रहा है…', sbSyncConflict: 'सर्वर पर नई कॉपी थी — सर्वर वाली रखी गई।', sbSyncDone: 'सर्वर से सिंक हो गया।', sbSyncFailed: 'सिंक पूरा नहीं हुआ — अगले लॉग इन पर फिर कोशिश होगी।', sbSyncOffline: 'ऑफ़लाइन — आपके बदलाव यहाँ सहेजे गए हैं और बाद में सिंक होंगे।', sbTitle: 'सर्वर बैकअप', sbTooMany: 'बहुत बार कोशिश हो चुकी है — कुछ मिनट रुककर फिर कोशिश करें।',
     createExam: 'परीक्षा बनाएँ', examName: 'परीक्षा का नाम', examTotal: 'कुल अंक', tExamCreated: 'परीक्षा बन गई।', tExamInvalid: 'कृपया परीक्षा का नाम, कक्षा और कुल अंक भरें।', editExam: 'परीक्षा बदलें', deleteExam: 'परीक्षा हटाएँ', restoreExam: 'वापस लाएँ', examDeletedH: 'हटाई गई परीक्षाएँ', examDelNote: 'हटाई गई परीक्षा के अंक रखे रहते हैं — वे हर जगह छिप जाते हैं और परीक्षा वापस लाने पर फिर दिखते हैं।', delExamMsg: 'यह परीक्षा हटाएँ? इसके अंक रखे रहेंगे पर दिखेंगे नहीं — परीक्षा वापस लाने पर अंक फिर दिखेंगे।', tExamDeleted: 'परीक्षा हटा दी गई। इसके अंक रखे हुए हैं — परीक्षा वापस लाने पर अंक फिर दिखेंगे।', tExamUpdated: 'परीक्षा अपडेट हो गई।', tExamRestored: 'परीक्षा वापस आ गई।', examClsLocked: 'कक्षा नहीं बदली जा सकती — अंक इसी कक्षा के हैं।', examMarksKept: 'पहले से डाले गए अंक वैसे ही रहेंगे — प्रतिशत नए कुल अंक से फिर निकलेगा।', tNoTeachers: 'अभी कोई शिक्षक नहीं है।',
     fullBackup: 'पूरा बैकअप और रिस्टोर', fullBackupSub: 'स्कूल का सारा डेटा एक फ़ाइल में डाउनलोड करें, या बैकअप फ़ाइल से वापस लाएँ। रिस्टोर करने से इस डिवाइस का डेटा बदल जाएगा।', backupExport: 'पूरा बैकअप डाउनलोड करें', backupImport: 'बैकअप फ़ाइल से रिस्टोर करें', tBackupExported: 'पूरा बैकअप डाउनलोड हो गया।', tBackupRestored: 'बैकअप रिस्टोर हो गया।', tBackupBadFile: 'यह फ़ाइल सही School Saathi बैकअप नहीं है — कुछ भी नहीं बदला।', backupRestoreConfirm: 'रिस्टोर करने से इस डिवाइस का मौजूदा सारा डेटा बैकअप फ़ाइल से बदल जाएगा। पहले आपके मौजूदा डेटा का सुरक्षा बैकअप डाउनलोड होगा।',
     sbStatusLocalOnly: 'सर्वर से जुड़ा नहीं है — डेटा इसी डिवाइस पर है। बैकअप के लिए लिंक करें।', sbLastAttempt: 'अंतिम प्रयास', sbSyncDetailsTitle: 'सिंक विवरण', sbSyncPendingUploads: 'बाकी अपलोड', sbSyncLastCycle: 'आखिरी साइकिल', sbSyncLastFlush: 'आखिरी फ्लश', sbSyncLastError: 'आखिरी गलती', sbSyncPushed: 'भेजे गए', sbSyncConflicts: 'टकराव', sbSyncLeftover: 'बचे हुए', sbSyncCalls: 'कॉल', sbSyncQueued: 'कतार में', sbSyncAndMore: 'और {n} और',
@@ -6239,7 +6239,7 @@ function doSignup(e) {
   if (pw.length < 6) return failInto(err, t('tPwShort'));
   if (pw !== pw2) return failInto(err, t('tPwMismatch'));
   if (findAccount(email)) return failInto(err, t('tEmailTaken'));
-  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: hashPwNew(pw), hashScheme: 'sha256', role: 'school', sub: 'School Admin • ' + school, created: new Date().toISOString().slice(0, 10), sbUid: null };
+  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: hashPwNew(pw), hashScheme: 'sha256', role: 'school', sub: 'School Admin • ' + school, created: todayIST(), sbUid: null };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   err.classList.add('hidden');
   toast(t('tAccountCreated') + name);
@@ -9030,16 +9030,24 @@ function examsPage() {
   // v34 (P1-10): marks roster is enrolled students only — Cancelled/
   // Draft never get a marks row.
   var roster = db.students.filter(function (s) { return s.cls === ex.cls && isEnrolledStudent(s); });
+  // One pass over db.marks (was a full scan per roster row for the mark
+  // lookup, plus another full scan below for the average): first mark per
+  // student wins, matching Array.find; the average counts every mark of
+  // this exam, duplicates included, exactly as before.
+  var examMarks = new Map(), avg = 0, n = 0;
+  db.marks.forEach(function (m) {
+    if (m.examId !== ex.id) return;
+    avg += m.marks; n++;
+    if (!examMarks.has(m.studentId)) examMarks.set(m.studentId, m);
+  });
   var rows = roster.map(function (s) {
-    var mk = db.marks.find(function (m) { return m.examId === ex.id && m.studentId === s.id; });
+    var mk = examMarks.get(s.id);
     return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td>' +
       '<td><input type="number" min="0" step="0.5" max="' + ex.total + '" value="' + (mk ? mk.marks : '') + '" placeholder="—" style="width:90px" id="mk-' + s.id + '"> / ' + ex.total + '</td>' +
       '<td>' + (mk ? '<b>' + Math.round(mk.marks / ex.total * 100) + '%</b>' : '<span class="muted">' + t('tNotEntered') + '</span>') + '</td></tr>';
   }).join('');
   var examList35 = state.role === 'teacher' ? activeExams.filter(function (e) { return teacherClasses().indexOf(e.cls) !== -1; }) : activeExams;
   var opts = examList35.map(function (e) { return '<option value="' + e.id + '" ' + (ex.id === e.id ? 'selected' : '') + '>' + esc(e.name) + ' — ' + esc(e.cls) + ' (' + esc(e.subject) + ')</option>'; }).join('');
-  var avg = 0, n = 0;
-  db.marks.forEach(function (m) { if (m.examId === ex.id) { avg += m.marks; n++; } });
   return '<div class="page-head"><div><h2>' + t('exams') + '</h2><p>' + esc(ex.name) + ' • ' + esc(ex.cls) + ' • ' + esc(ex.subject) + ' • ' + esc(ex.date) + '</p></div>' +
     '<div class="toolbar"><select onchange="state.examId=this.value;renderPage()">' + opts + '</select>' +
     '<button class="btn" onclick="examForm()">+ ' + t('createExam') + '</button>' +
@@ -9069,6 +9077,12 @@ function saveMarks(examId) {
   if (state.role === 'teacher' && teacherClasses().indexOf(ex.cls) === -1) { toast(t('tNotAllowed')); return; }
   var saved = 0, bad = [];
   var changes = []; // v62: {studentId, marks} — marks null clears an existing mark. Computed first, applied after the write lands.
+  // A9 (M-25): one pass over db.marks into a Map (was a full scan per roster
+  // student): key examId|studentId -> index, last match wins, matching
+  // the old forEach scan. The Map is only read while collecting changes;
+  // applyChanges rebuilds it after removals, so indexes never go stale.
+  var marksByKey = new Map();
+  db.marks.forEach(function (m, i) { marksByKey.set(m.examId + '|' + m.studentId, i) });
   // v34 (P1-10): new/updated marks are only saved for enrolled students
   // (Active/Inactive). An empty input still clears an EXISTING mark for
   // any student in the class — that is cleanup of a stale record, not a
@@ -9076,9 +9090,10 @@ function saveMarks(examId) {
   db.students.filter(function (s) { return s.cls === ex.cls; }).forEach(function (s) {
     var inp = $('mk-' + s.id);
     if (!inp) return;
-    var hasMark = db.marks.some(function (m) { return m.examId === examId && m.studentId === s.id; });
+    var key = examId + '|' + s.id;
+    var mkIdx = marksByKey.has(key) ? marksByKey.get(key) : -1;
     if (inp.value === '') {
-      if (hasMark) { changes.push({ studentId: s.id, marks: null }); saved++; } // empty = remove marks
+      if (mkIdx !== -1) { changes.push({ studentId: s.id, marks: null }); saved++; } // empty = remove marks
       return;
     }
     if (!isEnrolledStudent(s)) return; // Cancelled/Draft: no new marks
@@ -9089,12 +9104,23 @@ function saveMarks(examId) {
     saved++;
   });
   var applyChanges = function (list) {
+    // Removals first, highest index first, so splices never shift an
+    // index a later step still needs; then rebuild the Map once.
+    var removals = [];
     list.forEach(function (c) {
-      var mkIdx = -1;
-      db.marks.forEach(function (m, i) { if (m.examId === examId && m.studentId === c.studentId) mkIdx = i; });
-      if (c.marks === null) { if (mkIdx !== -1) db.marks.splice(mkIdx, 1); }
-      else if (mkIdx !== -1) db.marks[mkIdx].marks = c.marks;
-      else db.marks.push({ examId: examId, studentId: c.studentId, marks: c.marks });
+      if (c.marks !== null) return;
+      var key = examId + '|' + c.studentId;
+      if (marksByKey.has(key)) removals.push(marksByKey.get(key));
+    });
+    removals.sort(function (a, b) { return b - a; }.forEach(function (i) { db.marks.splice(i, 1); });
+    marksByKey.clear();
+    db.marks.forEach(function (m, i) { marksByKey.set(m.examId + '|' + m.studentId, i) });
+    list.forEach(function (c) {
+      if (c.marks === null) return;
+      var key = examId + '|' + c.studentId;
+      var mkIdx = marksByKey.has(key) ? marksByKey.get(key) : -1;
+      if (mkIdx !== -1) db.marks[mkIdx].marks = c.marks;
+      else { db.marks.push({ examId: examId, studentId: c.studentId, marks: c.marks }); marksByKey.set(key, db.marks.length - 1); }
     });
   };
   var doneToast = function () {
@@ -9602,7 +9628,7 @@ function saveTeacher(e, id) {
     ownAcct.name = name; ownAcct.email = email; ownAcct.sub = t('tchrSub') + ' • ' + db.profile.name;
     if (pw) { ownAcct.pwHash = hashPwNew(pw); ownAcct.hashScheme = 'sha256'; }
   } else {
-    list.push({ uid: uniqueId('u'), name: name, school: db.profile.name, email: email, pwHash: hashPwNew(pw), hashScheme: 'sha256', role: 'teacher', sub: t('tchrSub') + ' • ' + db.profile.name, teacherId: te.id, schoolUid: state.user.uid, created: new Date().toISOString().slice(0, 10) });
+    list.push({ uid: uniqueId('u'), name: name, school: db.profile.name, email: email, pwHash: hashPwNew(pw), hashScheme: 'sha256', role: 'teacher', sub: t('tchrSub') + ' • ' + db.profile.name, teacherId: te.id, schoolUid: state.user.uid, created: todayIST() });
   }
   saveAccounts(list);
   logAudit(ownAcct ? 'Teacher updated' : 'Teacher added', name + ' • ' + (te.classes || []).join(', '));
