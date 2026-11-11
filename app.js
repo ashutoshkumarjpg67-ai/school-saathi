@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 69;
+var APP_VERSION = 70;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -6361,8 +6361,16 @@ function logoutClear() {
   // must not leave a transient "Syncing…" status on the login screen.
   // Pending outbox rows mean the backup will run on the next login; an
   // empty outbox means the cycle died after flushing, so "Backed up" is
-  // the truthful state. A settled status (synced / failed / pending) is
-  // left exactly as it was.
+  // the truthful state.
+  // v70: the logout's own flush can also write 'pending' (offline / no
+  // fetch) or 'offline' (no token) before the clear runs — with an
+  // empty outbox those are the same lie as a killed 'syncing', so they
+  // settle to 'synced' too. With rows still queued, 'syncing' /
+  // 'uploading' / 'pending' settle to 'pending' as before; a persisted
+  // 'offline' with rows left is left alone (sbStatusText already shows
+  // the pending wording for it while online). A settled 'synced' /
+  // 'failed' / 'not-linked' / 'session-expired' status is left exactly
+  // as it was.
   try {
     // v37: a local-only school logs out to the local-only line — the
     // "Backed up" / "Pending" settle below is for server-linked schools
@@ -6371,9 +6379,10 @@ function logoutClear() {
     if (wasLocalOnlySchool) { sbSetStatus('local-only'); }
     else {
       var st0 = sbLoadStatus();
-      if (st0 && (st0.state === 'syncing' || st0.state === 'uploading')) {
+      if (st0 && (st0.state === 'syncing' || st0.state === 'uploading' || st0.state === 'pending' || st0.state === 'offline')) {
         var left = sbUidBefore ? sbOutboxLoad(sbUidBefore).length : 0;
-        sbSetStatus(left ? 'pending' : 'synced');
+        if (!left) sbSetStatus('synced');
+        else if (st0.state !== 'offline') sbSetStatus('pending');
       }
     }
   } catch (e3) {}
@@ -6590,6 +6599,11 @@ function toggleSidebar(open) {
   sc.classList.toggle('hidden', !open);
 }
 function renderApp() {
+  // v70 (logout race): a save's async mint can resolve after a logout
+  // clears the session — rendering with no user crashes on u.name
+  // below. A render with no logged-in user is always stale (the login
+  // screen already stands), so there is nothing to draw.
+  if (!state.user) return;
   var nav = NAV[state.role] || [];
   $('sideNav').innerHTML = nav.map(function (n) {
     return '<button class="' + (state.view === n[0] ? 'active' : '') + '" onclick="go(\'' + n[0] + '\')"><span class="ic">' + n[1] + '</span>' + esc(t(n[2])) + '</button>';
