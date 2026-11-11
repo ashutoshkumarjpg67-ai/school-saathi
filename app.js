@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 85;
+var APP_VERSION = 86;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -67,7 +67,8 @@ function dbKeyFor(a) {
   // School accounts own their DB. Student and teacher logins open the
   // SCHOOL's DB — they never have a DB of their own (a fresh key would
   // seed the demo DB under the school's name).
-  if ((a.role === 'teacher' || a.role === 'student') && a.schoolUid) return 'schoolSaathiDB_' + a.schoolUid;
+  // v86: a parent opens the same school DB as the student they are tied to.
+  if ((a.role === 'teacher' || a.role === 'student' || a.role === 'parent') && a.schoolUid) return 'schoolSaathiDB_' + a.schoolUid;
   return 'schoolSaathiDB_' + a.uid;
 }
 function applySchoolProfile(d, a) { d.profile.name = a.school; d.profile.principal = a.name; d.profile.email = a.email; return d; }
@@ -5680,7 +5681,7 @@ function restoreSession() {
   } catch (e) { return Promise.resolve(false); }
 }
 function switchAuth(tab) {
-  var tabs = { login: ['tabLogin', 'loginForm', 'loginErr', 'loginId'], signup: ['tabSignup', 'signupForm', 'signupErr', 'suSchool'], student: ['tabStudent', 'studentForm', 'studentErr', 'studentAdmNo'], teacher: ['tabTeacher', 'teacherForm', 'teacherErr', 'teacherEmail'] };
+  var tabs = { login: ['tabLogin', 'loginForm', 'loginErr', 'loginId'], signup: ['tabSignup', 'signupForm', 'signupErr', 'suSchool'], student: ['tabStudent', 'studentForm', 'studentErr', 'studentAdmNo'], teacher: ['tabTeacher', 'teacherForm', 'teacherErr', 'teacherEmail'], parent: ['tabParent', 'parentForm', 'parentErr', 'parentAdmNo'] };
   Object.keys(tabs).forEach(function (k) {
     var ids = tabs[k];
     var tb = $(ids[0]);
@@ -5698,6 +5699,7 @@ function switchAuth(tab) {
   // wrong school (the same trap the v34 parent picker fixed).
   if (tab === 'student') fillSchoolPicker('studentSchool');
   if (tab === 'teacher') fillSchoolPicker('teacherSchool', { neutral: true }); // v62: optional for teachers (the old flow had no school field)
+  if (tab === 'parent') fillSchoolPicker('parentSchool'); // v86: same school picker as the student form
   setTimeout(function () { $(tabs[tab][3]).focus(); }, 50);
 }
 function togglePw(id, btn) {
@@ -5744,6 +5746,12 @@ function fillSchoolPicker(selId, opts) {
 function onStudentSchoolChange() {
   var sel = $('studentSchool');
   var hint = $('studentCloudHint');
+  if (!sel || !hint) return;
+  hint.classList.toggle('hidden', !(sel.value && sel.value.indexOf('cloud:') === 0));
+}
+function onParentSchoolChange() { // v86: the parent form's cloud hint, same as the student one
+  var sel = $('parentSchool');
+  var hint = $('parentCloudHint');
   if (!sel || !hint) return;
   hint.classList.toggle('hidden', !(sel.value && sel.value.indexOf('cloud:') === 0));
 }
@@ -5946,7 +5954,9 @@ function loginCloudStudent(acct, slice, opts) {
   // Like loginAs, but the db IS the cloud slice — no local school DB is
   // loaded, and DB_KEY points at a dedicated cloud key so an accidental
   // saveDB could never land in a school's data.
-  state.role = 'student'; state.user = acct; state.cloudDb = slice; state.view = 'dashboard'; state.profileStudent = null;
+  // v86: opts.role lets a parent log in through the same cloud slice —
+  // the role comes from the account, never from the payload.
+  state.role = (opts && opts.role) || acct.role || 'student'; state.user = acct; state.cloudDb = slice; state.view = 'dashboard'; state.profileStudent = null;
   db = slice; DB_KEY = 'schoolSaathiCloudDB';
   try { sessSet(CLOUD_STUDENT_KEY, JSON.stringify({ acct: acct, slice: slice })); } catch (e) {}
   showView('app'); renderApp();
@@ -5975,6 +5985,69 @@ function doStudentCloudLogin(serverId, adm, pin, err) {
     var acct = { role: 'student', name: me.name, sub: t('stuSub') + ' • ' + me.name, email: 'cloud-student:' + serverId + ':' + me.id, uid: 'cloud-student-' + me.id, studentId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
     err.classList.add('hidden');
     loginCloudStudent(acct, slice);
+  });
+}
+// v86 (Phase 4): the Parent role returns as its OWN role. A parent logs
+// in with the child's admission number + PIN — the same credentials and
+// the same server check as the student login (ss_student_cloud_login) —
+// but the session role is 'parent', so the portal is view-only: the
+// child's attendance, fees, results, homework and notices, and nothing
+// else. The parent never edits, never sees other students, and never
+// sees the school's totals.
+function doParentLogin(e) {
+  e.preventDefault();
+  var adm = $('parentAdmNo').value.trim();
+  var pin = $('parentPin').value.trim();
+  var err = $('parentErr');
+  var schoolUid = $('parentSchool') ? $('parentSchool').value : '';
+  if (schoolUid && schoolUid.indexOf('cloud:') === 0) {
+    doParentCloudLogin(schoolUid.slice(6), adm, pin, err);
+    return false;
+  }
+  var found = schoolUid ? findStudentByAdmNoInSchool(adm, schoolUid) : null;
+  // One generic error: never reveal whether the number or the PIN was wrong.
+  var stu = found ? found.student : null;
+  if (stu && pinLockUntil(schoolUid, stu.id)) {
+    err.textContent = t('tPinLocked');
+    err.classList.remove('hidden');
+    return false;
+  }
+  var ok = false;
+  if (stu && digitsOnly(pin).length >= 4) {
+    if (stu.parentPinHash) ok = verifyPin(pin, stu);
+    else if (stu.parentPin) ok = digitsOnly(pin) === digitsOnly(stu.parentPin);
+  }
+  if (!found || !ok) {
+    if (stu && pinHasPin(stu)) pinFailRecord(schoolUid, stu.id);
+    err.textContent = t('tInvalidStudent');
+    err.classList.remove('hidden');
+    return false;
+  }
+  pinFailClear(schoolUid, stu.id);
+  DB_KEY = found.dbKey;
+  var acct = { role: 'parent', name: found.student.name, sub: t('parentSub') + ' • ' + found.student.name, email: 'parent:' + schoolUid + ':' + found.student.id, uid: 'parent-' + found.student.id, studentId: found.student.id, schoolUid: schoolUid };
+  err.classList.add('hidden');
+  loginAs(acct);
+  return false;
+}
+function doParentCloudLogin(serverId, adm, pin, err) {
+  if (digitsOnly(pin).length < 4) {
+    err.textContent = t('tInvalidStudent');
+    err.classList.remove('hidden');
+    return;
+  }
+  err.classList.add('hidden');
+  sbStudentCloudLogin(serverId, adm, pin).then(function (res) {
+    if (!res || !res.ok) {
+      err.textContent = t(res && res.locked ? 'tPinLocked' : 'tInvalidStudent');
+      err.classList.remove('hidden');
+      return;
+    }
+    var slice = mapCloudStudentPayload(res);
+    var me = slice.students[0];
+    var acct = { role: 'parent', name: me.name, sub: t('parentSub') + ' • ' + me.name, email: 'cloud-parent:' + serverId + ':' + me.id, uid: 'cloud-parent-' + me.id, studentId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
+    err.classList.add('hidden');
+    loginCloudStudent(acct, slice, { role: 'parent' });
   });
 }
 // v62: teacher cloud login (SQL 18). Unlike students, teachers WRITE —
@@ -6496,7 +6569,7 @@ var NAV = {
     ['dashboard', '🏠', 'dashboard'], ['notices', '📢', 'notices']
   ],
   parent: [
-    ['dashboard', '🏠', 'dashboard'], ['notices', '📢', 'notices']
+    ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['fees', '💰', 'fees'], ['results', '📊', 'results'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
   ],
   superadmin: [
     ['dashboard', '🏠', 'dashboard'], ['notices', '📢', 'notices']
@@ -6514,7 +6587,7 @@ var PERMS = {
   principal: ['dashboard', 'notices'],
   accountant: ['dashboard', 'notices'],
   staff: ['dashboard', 'notices'],
-  parent: ['dashboard', 'notices'],
+  parent: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'], // v86: the parent portal reuses the student views, view-only
   superadmin: ['dashboard', 'notices']
 };
 function canAccessView(role, view) {
@@ -6722,7 +6795,7 @@ function renderApp() {
     return '<button class="' + (state.view === n[0] ? 'active' : '') + '" onclick="go(\'' + n[0] + '\')"><span class="ic">' + n[1] + '</span>' + esc(t(n[2])) + '</button>';
   }).join('');
   var u = state.user;
-  var me = state.role === 'student' ? meStudent() : null;
+  var me = (state.role === 'student' || state.role === 'parent') ? meStudent() : null; // v86: a parent's sidebar avatar is the child's photo too
   var whoPhoto = me ? me.photo : null;
   var schoolLogo = (db.profile && db.profile.logo) || null;
   var wa = $('whoAvatar');
@@ -9518,17 +9591,23 @@ function meStudent() {
   // v35: the logged-in student is found by id, never by name and never
   // by falling back to the first student in the list (the old code did
   // both — a name match could open the wrong child).
-  if (state.role !== 'student' || !state.user || !state.user.studentId) return null;
+  // v86 (Phase 4): a parent is tied to the same ONE student
+  // (state.user.studentId), so the parent portal reuses the student
+  // views — the parent sees only that child's data.
+  if ((state.role !== 'student' && state.role !== 'parent') || !state.user || !state.user.studentId) return null;
   return db.students.find(function (x) { return x.id === state.user.studentId; }) || null;
 }
 function homeworkPage() {
   var isStudent = state.role === 'student';
   var isTeacher = state.role === 'teacher';
+  var isParent = state.role === 'parent';
   var me = meStudent();
   var myCls = me ? me.cls : '10th-A';
   // v35: a teacher sees homework for their own assigned classes only
   // (and may post it); a student sees only their own class.
-  var list = db.homework.filter(function (h) { return isStudent ? h.cls === myCls : isTeacher ? teacherClasses().indexOf(h.cls) !== -1 : true; });
+  // v86: a parent sees only their own child's class — never the whole
+  // school's homework — and never gets the Add button.
+  var list = db.homework.filter(function (h) { return (isStudent || isParent) ? h.cls === myCls : isTeacher ? teacherClasses().indexOf(h.cls) !== -1 : true; });
   var items = list.map(function (h) {
     var done = me ? h.doneBy.indexOf(me.id) !== -1 : false;
     var box = isStudent
@@ -9538,7 +9617,7 @@ function homeworkPage() {
       '<div><b>' + esc(h.title) + '</b><span>' + esc(h.subject) + ' • Class ' + esc(h.cls) + ' • Due ' + esc(h.due) + (isStudent ? '' : ' • ' + h.doneBy.length + ' ' + t('doneSuffix')) + '</span></div></div>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('homework') + '</h2><p>' + (isStudent ? 'Class ' + esc(myCls) + ' — ' + t('tapDone') : t('subHomework')) + '</p></div>' +
-    (isStudent ? '' : '<div class="toolbar"><button class="btn" onclick="homeworkForm()">+ ' + t('addHomework') + '</button></div>') + '</div>' +
+    ((isStudent || isParent) ? '' : '<div class="toolbar"><button class="btn" onclick="homeworkForm()">+ ' + t('addHomework') + '</button></div>') + '</div>' +
     '<div class="card">' + (items || '<div class="empty">' + t('tNoHw') + '</div>') + '</div>';
 }
 function toggleHw(id, done) {
@@ -9945,7 +10024,12 @@ var PAGE_TEACHER = { dashboard: teacherDashboard, students: studentsPage, attend
 var PAGE_PRINCIPAL = { dashboard: roleDashboard, notices: noticesPage };
 var PAGE_ACCOUNTANT = { dashboard: roleDashboard, notices: noticesPage };
 var PAGE_STAFF = { dashboard: roleDashboard, notices: noticesPage };
-var PAGE_PARENT = { dashboard: roleDashboard, notices: noticesPage };
+// v86 (Phase 4): the Parent role reuses the student portal's read-only
+// views — the parent sees only their own child's data (meStudent() now
+// covers the parent role). Homework is scoped to the child's class and
+// has no Add button for a parent; toggleHwDone already refuses
+// non-students.
+var PAGE_PARENT = { dashboard: studentDashboard, attendance: studentAttendancePage, fees: studentFeesPage, results: studentResultsPage, homework: homeworkPage, notices: noticesPage };
 var PAGE_SUPERADMIN = { dashboard: roleDashboard, notices: noticesPage };
 
 /* ================= init ================= */
