@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 78;
+var APP_VERSION = 79;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -1913,10 +1913,42 @@ function sbMapAdmissionRequest(r, schoolId, stuMap) {
 }
 function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // School row first: profile, fee extras, counters.
+  // Phase 3 (v79): keep an un-synced local logo/logoUrl. Content
+  // tables keep un-synced rows via the v33/v46 merge below; the
+  // profile had no such keep, so a pull between a settings save and
+  // the flush wiped the new logo — live v78: a school logo saved at
+  // 12:38 UTC was wiped by the pull, the next diff re-queued the
+  // school row with an empty logo (sbOutboxAdd replaces the older
+  // entry for the same row), and the flush sent both logo fields as
+  // null, so the logo was lost on the server although its Storage
+  // object had uploaded fine. The keep is logo-only: a pending
+  // ss_schools upsert proves the logo has not reached the server yet,
+  // and a fresh/empty profile carries no logo, so the download/pull
+  // server-wins behaviour for name/city/feeExtras/counters (v30/v31)
+  // is unchanged. When the logo is kept, the flush sends it and the
+  // next pull then reflects it.
+  var keepLogo79 = false;
+  var localLogo79 = d.profile ? d.profile.logo : null;
+  var localLogoUrl79 = d.profile ? d.profile.logoUrl : null;
+  if (localLogo79 || localLogoUrl79) {
+    try {
+      var uid79 = (account && account.sbUid) || (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
+      if (uid79) {
+        var ob79 = sbOutboxLoad(uid79) || [];
+        for (var i79 = 0; i79 < ob79.length; i79++) {
+          if (ob79[i79] && ob79[i79].table === 'ss_schools' && ob79[i79].op === 'upsert') { keepLogo79 = true; break; }
+        }
+      }
+    } catch (e79) {}
+  }
   if (schoolRow) {
     d.profile = { name: schoolRow.name || d.profile.name || '', city: schoolRow.city || '', principal: schoolRow.principal || '', phone: schoolRow.phone || '', email: schoolRow.email || '', session: schoolRow.session || '2025–26', address: schoolRow.address || '' };
     if (schoolRow.logo_data_url || schoolRow.logo_url) d.profile.logo = schoolRow.logo_data_url || schoolRow.logo_url;
     d.profile.logoUrl = schoolRow.logo_url || null; // Phase 3 (v78)
+    if (keepLogo79) {
+      if (localLogo79) d.profile.logo = localLogo79;
+      if (localLogoUrl79) d.profile.logoUrl = localLogoUrl79;
+    }
     d.feeExtras = { admissionFee: schoolRow.admission_fee || 0, cautionMoney: schoolRow.caution_money || 0, annualCharges: schoolRow.annual_charges || 0, transportFee: schoolRow.transport_fee || 0 };
     d.admCounter = schoolRow.adm_counter || 1;
     d.receiptCounter = schoolRow.receipt_counter || 1;
