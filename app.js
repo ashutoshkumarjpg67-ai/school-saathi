@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 71;
+var APP_VERSION = 72;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -528,7 +528,8 @@ function sbLoginNewSchool(meta, email, pw, uid, token, serverSchool) {
   // metadata (fresh signup, not yet migrated), then log in and migrate.
   var school = (serverSchool && serverSchool.name) || meta.school || '';
   var name = (serverSchool && serverSchool.principal) || meta.name || email;
-  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: pw ? hashPwNew(pw) : '', hashScheme: pw ? 'sha256' : '', role: 'school', sub: 'School Admin • ' + school, created: todayIST(), sbUid: uid };
+  var pwH = pw ? hashPwNew(pw) : '';
+  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: pwH, hashScheme: hashSchemeOf(pwH), role: 'school', sub: 'School Admin • ' + school, created: todayIST(), sbUid: uid };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   state.sb = { uid: uid, email: email };
   $('loginErr').classList.add('hidden');
@@ -796,7 +797,7 @@ function doResetPassword(e) {
         var a = findAccount(em);
         if (a) {
           a.pwHash = hashPwNew(pw);
-          a.hashScheme = 'sha256';
+          a.hashScheme = hashSchemeOf(a.pwHash);
           var l2 = loadAccounts();
           for (var i = 0; i < l2.length; i++) if (l2[i].email === em) l2[i] = a;
           saveAccounts(l2);
@@ -887,15 +888,15 @@ function sbMapTeacher(te, schoolId) {
   // v62: the teacher's login email + salted password hash ride with the
   // row too, so the teacher can log in from any device (SQL 18). The
   // hash-diff sync sees the new fields and PATCHes every teacher row up
-  // once. Only s256$ hashes are sent — a legacy djb2 hash is skipped
-  // (the teacher logs in once on the school device, which upgrades it,
-  // and syncs). The hash is never pulled back down: the accounts store
-  // stays the source of truth.
+  // once. Only bcrypt$ / s256$ hashes are sent — a legacy djb2 hash is
+  // skipped (the teacher logs in once on the school device, which
+  // upgrades it, and syncs). The hash is never pulled back down: the
+  // accounts store stays the source of truth.
   var row = { school_id: schoolId, local_id: te.id, name: te.name || '', subject: te.subject || '', cls: te.cls || '', classes: Array.isArray(te.classes) ? te.classes.slice() : [] };
   try {
     var acc = loadAccounts().filter(function (a) { return a.role === 'teacher' && a.teacherId === te.id; })[0];
     if (acc && acc.email) row.email = String(acc.email).toLowerCase();
-    if (acc && acc.pwHash && String(acc.pwHash).indexOf('s256$') === 0) row.pw_hash = acc.pwHash;
+    if (acc && acc.pwHash && (String(acc.pwHash).indexOf('s256$') === 0 || String(acc.pwHash).indexOf('bcrypt$') === 0)) row.pw_hash = acc.pwHash;
   } catch (e) {}
   return row;
 }
@@ -1770,7 +1771,7 @@ function sbRowToStudent(row) {
     admissionNo: row.admission_no || '', admissionDate: row.admission_date || '',
     session: row.session || '', status: row.status || 'Active', result: (row.result === undefined || row.result === null) ? null : row.result,
     parentPin: undefined, // Phase 1 (H-3): a server PIN is NEVER stored as plaintext locally. A missing PIN leaves the field unset (v55: never null — a null used to land here and migrateV12 only refilled `undefined`, the live V21/2108 loss, v54).
-    parentPinHash: (!row.parent_pin ? undefined : (String(row.parent_pin).indexOf('s256$') === 0 ? String(row.parent_pin) : hashPin(row.parent_pin))), // Phase 1 (H-3): a hash arrives as-is; a legacy PLAINTEXT server PIN is hashed immediately on pull (hashPin is sync — hand-rolled SHA-256 — so this is safe in the pull path). The hash uploads on the next sync and heals the server row; until then one pull may re-hash with a fresh salt, exactly like the old migrateV54 flow. Dropping the value instead would have locked those students out until an admin reset each PIN.
+    parentPinHash: (!row.parent_pin ? undefined : ((String(row.parent_pin).indexOf('s256$') === 0 || String(row.parent_pin).indexOf('bcrypt$') === 0) ? String(row.parent_pin) : hashPin(row.parent_pin))), // Phase 1 (H-3): a hash arrives as-is; a legacy PLAINTEXT server PIN is hashed immediately on pull (hashPin is sync, so this is safe in the pull path). The hash uploads on the next sync and heals the server row; until then one pull may re-hash with a fresh salt, exactly like the old migrateV54 flow. Dropping the value instead would have locked those students out until an admin reset each PIN.
     photo: row.photo_data_url || null,
     documents: row.documents || { birthCert: false, tc: false, tcNumber: '', other: '' },
     aadhaar: aadhaarLast4(row.aadhaar) }; // v36: a full number from an old server row is reduced on pull too
@@ -6147,7 +6148,8 @@ function doSignup(e) {
   if (pw.length < 6) return failInto(err, t('tPwShort'));
   if (pw !== pw2) return failInto(err, t('tPwMismatch'));
   if (findAccount(email)) return failInto(err, t('tEmailTaken'));
-  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: hashPwNew(pw), hashScheme: 'sha256', role: 'school', sub: 'School Admin • ' + school, created: todayIST(), sbUid: null };
+  var pwH = hashPwNew(pw);
+  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: pwH, hashScheme: hashSchemeOf(pwH), role: 'school', sub: 'School Admin • ' + school, created: todayIST(), sbUid: null };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   err.classList.add('hidden');
   toast(t('tAccountCreated') + name);
@@ -9553,9 +9555,10 @@ function saveTeacher(e, id) {
   }
   if (ownAcct) {
     ownAcct.name = name; ownAcct.email = email; ownAcct.sub = t('tchrSub') + ' • ' + db.profile.name;
-    if (pw) { ownAcct.pwHash = hashPwNew(pw); ownAcct.hashScheme = 'sha256'; }
+    if (pw) { ownAcct.pwHash = hashPwNew(pw); ownAcct.hashScheme = hashSchemeOf(ownAcct.pwHash); }
   } else {
-    list.push({ uid: uniqueId('u'), name: name, school: db.profile.name, email: email, pwHash: hashPwNew(pw), hashScheme: 'sha256', role: 'teacher', sub: t('tchrSub') + ' • ' + db.profile.name, teacherId: te.id, schoolUid: state.user.uid, created: todayIST() });
+    var pwH = hashPwNew(pw);
+    list.push({ uid: uniqueId('u'), name: name, school: db.profile.name, email: email, pwHash: pwH, hashScheme: hashSchemeOf(pwH), role: 'teacher', sub: t('tchrSub') + ' • ' + db.profile.name, teacherId: te.id, schoolUid: state.user.uid, created: todayIST() });
   }
   saveAccounts(list);
   logAudit(ownAcct ? 'Teacher updated' : 'Teacher added', name + ' • ' + (te.classes || []).join(', '));

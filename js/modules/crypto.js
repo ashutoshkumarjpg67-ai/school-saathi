@@ -1,6 +1,7 @@
 /* School Saathi — js/modules/crypto.js (Phase 2, module 1 of the app.js split).
-   Crypto / identity helpers: legacy djb2 + salted SHA-256 password hashes,
-   collision-proof record ids, random PINs, Aadhaar last-4.
+   Crypto / identity helpers: bcrypt (v72) + salted SHA-256 (legacy) +
+   djb2 (legacy) password hashes, collision-proof record ids, random
+   PINs, Aadhaar last-4.
    Classic script, NO build step: loaded with defer BEFORE app.js in
    index.html (and before app.js in the QA harness vm), so these globals
    exist by the time app.js runs. Pure functions + two counters; the only
@@ -99,24 +100,41 @@ function sha256Hex(input) {
   for (i = 0; i < 8; i++) out += ('00000000' + (H[i] >>> 0).toString(16)).slice(-8);
   return out;
 }
+/* v72 (P1-1): bcrypt replaces salted SHA-256 as the new-hash scheme.
+   bcryptjs 2.4.3 is vendored at js/bcrypt.js (loaded before this file)
+   and emits $2a$ hashes, which the server verifies natively with
+   pgcrypto crypt() (SQL 23) — bcryptjs 3.x emits $2b$, which pgcrypto
+   does NOT verify (returns garbage), so 2.4.3 is pinned deliberately.
+   Cost 10 (~100 ms) keeps logins fast on low-end phones. bcrypt caps
+   input at 72 bytes; passwords/PINs here are far shorter. If bcryptjs
+   ever fails to load, new hashes fall back to the s256$ scheme and
+   logins keep working — never break a login for a missing library. */
+function bcryptAvailable() { return !!(typeof dcodeIO !== 'undefined' && dcodeIO && dcodeIO.bcrypt && dcodeIO.bcrypt.hashSync && dcodeIO.bcrypt.compareSync); }
+function hashPwBcrypt(pw) { return 'bcrypt$' + dcodeIO.bcrypt.hashSync(pw, 10); }
+function hashSchemeOf(h) { if (!h) return ''; if (h.indexOf('bcrypt$') === 0) return 'bcrypt'; if (h.indexOf('s256$') === 0) return 'sha256'; return 'djb2'; }
 function hashPwNew(pw) {
-  // v36: salted SHA-256, stored self-describing as s256$<salt>$<hash>.
-  // The salt is per-account, so two accounts with the same password
-  // hash differently and a rainbow table is useless.
+  // v72: bcrypt when available, s256$ fallback (see note above).
+  // The stored value is self-describing (bcrypt$ / s256$ / h...),
+  // so verifyPw() below accepts all three forever.
+  if (bcryptAvailable()) return hashPwBcrypt(pw);
   var salt = randomHex(16);
   return 's256$' + salt + '$' + sha256Hex(salt + '|' + pw);
 }
 function verifyPw(pw, a) {
-  // Verifies against either scheme. Returns { ok, legacy }: legacy is
-  // true when the stored hash is the pre-v36 djb2 — the caller upgrades
-  // it to the new scheme after a successful login (never locks anyone
-  // out: the old hash verifies first).
+  // Verifies against any of the three schemes. Returns { ok, legacy }:
+  // legacy is true for djb2 AND s256$ — the caller upgrades both to
+  // bcrypt after a successful login (never locks anyone out: the old
+  // hash verifies first, then the upgrade re-hashes).
   if (!a || !a.pwHash) return { ok: false };
   var h = a.pwHash;
+  if (h.indexOf('bcrypt$') === 0) {
+    if (!bcryptAvailable()) return { ok: false };
+    return { ok: dcodeIO.bcrypt.compareSync(pw, h.slice(7)), legacy: false };
+  }
   if (h.indexOf('s256$') === 0) {
     var parts = h.split('$');
     if (parts.length !== 3) return { ok: false };
-    return { ok: sha256Hex(parts[1] + '|' + pw) === parts[2], legacy: false };
+    return { ok: sha256Hex(parts[1] + '|' + pw) === parts[2], legacy: true };
   }
   return { ok: hashPw(pw) === h, legacy: true };
 }
@@ -125,7 +143,7 @@ function upgradePwHash(a, pw) {
   // persist. The account object is mutated in place (state.user keeps
   // working) and the stored list is rewritten by email.
   a.pwHash = hashPwNew(pw);
-  a.hashScheme = 'sha256';
+  a.hashScheme = a.pwHash.indexOf('bcrypt$') === 0 ? 'bcrypt' : 'sha256';
   var list = loadAccounts();
   for (var i = 0; i < list.length; i++) if (list[i].email === a.email) list[i] = a;
   saveAccounts(list);
