@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 77;
+var APP_VERSION = 78;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -245,6 +245,94 @@ function sbRestNoteRetry() {
     var sl = document.getElementById('sbStatusLine'); if (sl) sl.textContent = txt;
     var lg = document.getElementById('sbStatus'); if (lg) lg.textContent = txt;
   } catch (e) {}
+}
+// Phase 3 (v78): Supabase Storage upload for school logos / student
+// photos. The server holds the buckets (SQL 28) and the URL columns
+// (logo_url / photo_url); the old Data URL columns stay as fallback.
+// Uploads happen at SAVE time, awaited, so the sync sends the URL
+// instead of the data URL. Every helper here resolves to null on ANY
+// failure (offline, no session, no server school, rejected upload) —
+// a null result is NOT an error, it just keeps the data URL path.
+function sbStoragePublicUrl(bucket, path) { return SB_URL + '/storage/v1/object/public/' + bucket + '/' + path; }
+function dataUrlToBlob(url) {
+  try {
+    if (!url || typeof url !== 'string' || url.indexOf('data:') !== 0) return null;
+    if (typeof atob === 'undefined' || typeof Blob === 'undefined' || typeof Uint8Array === 'undefined') return null;
+    var comma = url.indexOf(',');
+    if (comma < 0) return null;
+    var mime = url.slice(5, comma).split(';')[0] || 'application/octet-stream';
+    var bin = atob(url.slice(comma + 1));
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
+  } catch (e) { return null; }
+}
+function sbUploadImage(bucket, path, dataUrl) {
+  // POST /storage/v1/object/<bucket>/<path> with x-upsert: true.
+  // Returns Promise<public URL | null>. Never rejects.
+  return sbGetValidToken().then(function (token) {
+    if (!token) return null;
+    var blob = dataUrlToBlob(dataUrl);
+    if (!blob) return null;
+    if (typeof fetch !== 'function') return null;
+    var headers = { 'apikey': SB_ANON_KEY, 'Authorization': 'Bearer ' + token, 'Content-Type': blob.type || 'application/octet-stream', 'x-upsert': 'true' };
+    return sbFetchWithTimeout(SB_URL + '/storage/v1/object/' + bucket + '/' + path, { method: 'POST', headers: headers, body: blob }).then(function (res) {
+      return res.ok ? sbStoragePublicUrl(bucket, path) : null;
+    }).catch(function () { return null; });
+  }).catch(function () { return null; });
+}
+function sbSchoolIdForUpload() {
+  // The server school UUID for the logged-in school, from the stored
+  // local->server map (sbSaveServerSchool). Null for local-only
+  // accounts and schools not yet linked to the server.
+  try {
+    if (typeof state === 'undefined' || !state || !state.user || !state.user.uid) return null;
+    var m = sbServerSchoolMap();
+    return m[state.user.uid] || null;
+  } catch (e) { return null; }
+}
+function sbUploadStudentPhoto(studentId, dataUrl) {
+  if (!studentId || !dataUrl) return Promise.resolve(null);
+  var schoolId = sbSchoolIdForUpload();
+  if (!schoolId) return Promise.resolve(null);
+  if (!sbSyncActive() || !sbIsOnline()) return Promise.resolve(null);
+  return sbUploadImage('student-photos', schoolId + '/' + studentId + '.jpg', dataUrl);
+}
+function sbUploadSchoolLogo(dataUrl) {
+  if (!dataUrl) return Promise.resolve(null);
+  var schoolId = sbSchoolIdForUpload();
+  if (!schoolId) return Promise.resolve(null);
+  if (!sbSyncActive() || !sbIsOnline()) return Promise.resolve(null);
+  return sbUploadImage('school-logos', schoolId + '/logo.png', dataUrl);
+}
+// Fire-and-forget wrappers for the save paths. The save itself NEVER
+// waits for the upload (the admission/settings forms stay synchronous,
+// exactly as before). On success the Storage URL is recorded on the
+// local row and persisted, so the NEXT sync cycle's hash diff queues
+// an update that sends the URL instead of the data URL. If the first
+// flush already sent the data URL, that same update corrects the
+// server row to the URL (and nulls the data URL) on the next cycle.
+function sbUploadStudentPhotoBg(studentId, dataUrl) {
+  sbUploadStudentPhoto(studentId, dataUrl).then(function (url) {
+    if (!url) return;
+    try {
+      if (typeof db === 'undefined' || !db || !db.students) return;
+      var s = db.students.find(function (x) { return x.id === studentId; });
+      if (!s) return;
+      s.photoUrl = url;
+      saveDB(db);
+    } catch (e) {}
+  });
+}
+function sbUploadSchoolLogoBg(dataUrl) {
+  sbUploadSchoolLogo(dataUrl).then(function (url) {
+    if (!url) return;
+    try {
+      if (typeof db === 'undefined' || !db || !db.profile) return;
+      db.profile.logoUrl = url;
+      saveDB(db);
+    } catch (e) {}
+  });
 }
 function sbSignUp(email, pw, school, name) {
   return sbAuthFetch('/auth/v1/signup', { method: 'POST', body: { email: email, password: pw, data: { school: school, name: name } } });
@@ -892,7 +980,7 @@ function sbMapStudent(s, schoolId) {
     previous_school: s.previousSchool || '', previous_class: s.previousClass || '',
     admission_no: sbNullIfEmpty(s.admissionNo), admission_date: sbNullIfEmpty(s.admissionDate),
     session: s.session || '', status: s.status || 'Active', result: (s.result === undefined || s.result === null) ? null : s.result,
-    parent_pin: s.parentPinHash || null, photo_data_url: s.photo || null, // v54 (A1): the server column now carries the salted hash, never the plaintext PIN
+    parent_pin: s.parentPinHash || null, photo_url: s.photoUrl || null, photo_data_url: s.photoUrl ? null : (s.photo || null), // Phase 3 (v78): a Storage URL replaces the data URL on the server; the data URL is sent only when no URL exists (offline save / upload failed)
     documents: s.documents || { birthCert: false, tc: false, tcNumber: '', other: '' },
     aadhaar: sbNullIfEmpty(aadhaarLast4(s.aadhaar)) }; // v36: only the last 4 digits ever leave the device
 }
@@ -1794,7 +1882,7 @@ function sbRowToStudent(row) {
     session: row.session || '', status: row.status || 'Active', result: (row.result === undefined || row.result === null) ? null : row.result,
     parentPin: undefined, // Phase 1 (H-3): a server PIN is NEVER stored as plaintext locally. A missing PIN leaves the field unset (v55: never null — a null used to land here and migrateV12 only refilled `undefined`, the live V21/2108 loss, v54).
     parentPinHash: (!row.parent_pin ? undefined : ((String(row.parent_pin).indexOf('s256$') === 0 || String(row.parent_pin).indexOf('bcrypt$') === 0) ? String(row.parent_pin) : hashPin(row.parent_pin))), // Phase 1 (H-3): a hash arrives as-is; a legacy PLAINTEXT server PIN is hashed immediately on pull (hashPin is sync, so this is safe in the pull path). The hash uploads on the next sync and heals the server row; until then one pull may re-hash with a fresh salt, exactly like the old migrateV54 flow. Dropping the value instead would have locked those students out until an admin reset each PIN.
-    photo: row.photo_data_url || null,
+    photo: row.photo_data_url || row.photo_url || null, photoUrl: row.photo_url || null, // Phase 3 (v78): Storage URL first-class; the data URL still displays when present (offline-safe)
     documents: row.documents || { birthCert: false, tc: false, tcNumber: '', other: '' },
     aadhaar: aadhaarLast4(row.aadhaar) }; // v36: a full number from an old server row is reduced on pull too
 }
@@ -1827,7 +1915,8 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // School row first: profile, fee extras, counters.
   if (schoolRow) {
     d.profile = { name: schoolRow.name || d.profile.name || '', city: schoolRow.city || '', principal: schoolRow.principal || '', phone: schoolRow.phone || '', email: schoolRow.email || '', session: schoolRow.session || '2025–26', address: schoolRow.address || '' };
-    if (schoolRow.logo_data_url) d.profile.logo = schoolRow.logo_data_url;
+    if (schoolRow.logo_data_url || schoolRow.logo_url) d.profile.logo = schoolRow.logo_data_url || schoolRow.logo_url;
+    d.profile.logoUrl = schoolRow.logo_url || null; // Phase 3 (v78)
     d.feeExtras = { admissionFee: schoolRow.admission_fee || 0, cautionMoney: schoolRow.caution_money || 0, annualCharges: schoolRow.annual_charges || 0, transportFee: schoolRow.transport_fee || 0 };
     d.admCounter = schoolRow.adm_counter || 1;
     d.receiptCounter = schoolRow.receipt_counter || 1;
@@ -2380,7 +2469,7 @@ function sbSyncSchoolPayloadFromParts(profile, feeExtras, admCounter, receiptCou
   var e = feeExtras || {};
   return { name: p.name || '', city: p.city || '', principal: p.principal || '', phone: p.phone || '',
     email: p.email || '', session: p.session || '2025–26', address: p.address || '',
-    logo_data_url: p.logo || null,
+    logo_url: p.logoUrl || null, logo_data_url: p.logoUrl ? null : (p.logo || null), // Phase 3 (v78): a Storage URL replaces the data URL on the server; the data URL is sent only when no URL exists
     adm_counter: admCounter || 1, receipt_counter: receiptCounter || 1,
     admission_fee: e.admissionFee || 0, caution_money: e.cautionMoney || 0,
     annual_charges: e.annualCharges || 0, transport_fee: e.transportFee || 0 };
@@ -7143,7 +7232,10 @@ function saveStudent(e, id, mode) {
     // change.
     if (pinLogin) { s.parentPinHash = hashPin(pinLogin); delete s.parentPin; }
     s.status = mode === 'draft' ? 'Draft' : 'Active';
-    if (pendingPhoto !== null) { if (pendingPhoto) s.photo = pendingPhoto; else delete s.photo; }
+    if (pendingPhoto !== null) {
+      if (pendingPhoto) { s.photo = pendingPhoto; sbUploadStudentPhotoBg(s.id, pendingPhoto); }
+      else { delete s.photo; delete s.photoUrl; }
+    }
     logAudit('Student updated', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
     toast(t('tStudentUpdated'));
     finishSave();
@@ -7159,7 +7251,7 @@ function saveStudent(e, id, mode) {
   function createWith(admNo, enr, numPending) {
     var newStu = Object.assign({ id: nid, att: 100, result: 0, fee: 'Pending', enr: enr, admissionNo: admNo, status: mode === 'draft' ? 'Draft' : 'Active', parentPinHash: hashPin(newPin) }, data);
     if (numPending) newStu.numPending = true;
-    if (pendingPhoto) newStu.photo = pendingPhoto;
+    if (pendingPhoto) { newStu.photo = pendingPhoto; sbUploadStudentPhotoBg(nid, pendingPhoto); }
     db.students.push(newStu);
     var reqId = fval('fStAdmReq');
     if (reqId) {
@@ -9491,7 +9583,11 @@ function saveSettings(e) {
   p.name = $('fPfName').value.trim(); p.city = $('fPfCity').value.trim();
   p.principal = $('fPfPr').value.trim(); p.phone = $('fPfPh').value.trim(); p.email = $('fPfEm').value.trim();
   p.session = $('fPfSe').value; p.address = $('fPfAd').value.trim();
-  if (pendingLogo !== null) { if (pendingLogo) p.logo = pendingLogo; else delete p.logo; pendingLogo = null; }
+  if (pendingLogo !== null) {
+    if (pendingLogo) { p.logo = pendingLogo; sbUploadSchoolLogoBg(pendingLogo); }
+    else { delete p.logo; delete p.logoUrl; }
+    pendingLogo = null;
+  }
   saveDB(db); renderApp();
   toast('✓ ' + t('tSettingsSaved'));
   return false;
