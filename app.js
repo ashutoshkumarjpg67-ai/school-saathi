@@ -40,7 +40,7 @@ var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
-var FEE_MONTHS = [ // monthly ledger — sums MUST equal 8,45,000 collected / 1,20,000 pending
+var FEE_MONTHS = [ // seed-only monthly ledger (seedDB splits it into feeRecords) — sums MUST equal 8,45,000 collected / 1,20,000 pending. Never stored on a real school DB (no db.feeMonths field).
   { m: 'Apr', collected: 165000, pending: 25000 },
   { m: 'May', collected: 178000, pending: 22000 },
   { m: 'Jun', collected: 162000, pending: 28000 },
@@ -1845,9 +1845,10 @@ function sbMaybeMigrate(account, sbUid, token, force) {
     return { done: false, reason: 'error', detail: (err && err.message) || 'error' };
   });
 }
-function sbRetryMigration() {
+function sbRetryMigration(btn) {
   if (!state.user || state.user.role !== 'school') { toast(t('sbStatusNotSchool')); return; }
   if (!state.sb || !state.sb.uid) { toast(t('sbStatusPending')); return; }
+  var restoreBtn = setBtnLoading(btn, '⏳ ' + t('sbBackupNow')); // L-18 loading state
   toast(t('sbStatusUploading'));
   sbGetValidToken().then(function (tok) {
     if (!tok) { sbSetStatus(sbSessionExpired ? 'session-expired' : 'offline'); toast(t(sbSessionExpired ? 'sbStatusSessionExpired' : 'sbStatusOffline')); renderApp(); return; }
@@ -1864,7 +1865,7 @@ function sbRetryMigration() {
         renderApp();
       });
     });
-  }).catch(function () { toast(t('sbBackupFailed')); });
+  }).catch(function () { toast(t('sbBackupFailed')); }).then(restoreBtn, restoreBtn);
 }
 // v30: second-device download — the inverse of sbMaybeMigrate. A school
 // signing in on a new phone has its data on the server but an empty local
@@ -2276,9 +2277,10 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   }
   return { stuMap: stuMap, examMap: examMap, kept: kept };
 }
-function sbRetryDownload() {
+function sbRetryDownload(btn) {
   if (!state.user || state.user.role !== 'school') { toast(t('sbStatusNotSchool')); return; }
   if (!state.sb || !state.sb.uid) { toast(t('sbStatusPending')); return; }
+  var restoreBtn = setBtnLoading(btn, '⏳ ' + t('sbDownloadNow')); // L-18 loading state
   // v31: the Download button is now the manual refresh — a server-wins
   // pull (same guards as login) followed by an outbox flush.
   // Phase D (L-6): the old empty-store-only download was removed —
@@ -2289,7 +2291,7 @@ function sbRetryDownload() {
     else if (r.reason === 'no-server-school') toast(t('sbDownloadNoServer'));
     else if (r.reason === 'offline' || r.reason === 'no-token') toast(t('sbDownloadOffline'));
     else toast(t('sbDownloadFailed'));
-  }).catch(function () { toast(t('sbDownloadFailed')); });
+  }).catch(function () { toast(t('sbDownloadFailed')); }).then(restoreBtn, restoreBtn);
 }
 
 /* ================= v31: server-first sync ("Target app ki tarah") =================
@@ -4077,7 +4079,6 @@ function emptyDb(profile, schools) {
     schools: schools || [],
     students: [],
     teachers: [],
-    feeMonths: FEE_MONTHS,
     feeRecords: [],
     feeStructure: defaultFeeStructure(),
     feeExtras: defaultFeeExtras(),
@@ -4434,7 +4435,7 @@ function sbStorageFreePhotos() {
 var db = loadDB();
 
 /* ================= state ================= */
-var state = { role: null, user: null, view: 'dashboard', lang: 'en', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, sb: null };
+var state = { role: null, user: null, view: 'dashboard', lang: 'en', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, sb: null };
 
 /* Phase 2: bulk import + promotion state (in-memory only, never persisted). */
 var importState = { rows: null, fileName: '', result: null };
@@ -4555,6 +4556,18 @@ function toast(msg) {
     // a toast still pinned on screen.
     var el = $('toast'); if (el) { el.classList.remove('show'); el.textContent = ''; }
   }, 2600);
+}
+// Minimal loading state for async flows (L-18): disables a button and
+// swaps its label to a busy text while the work runs; call the returned
+// restore() when done. Safe when the button is gone (re-rendered) or
+// null — restore() then does nothing.
+function setBtnLoading(btn, busyText) {
+  if (!btn) return function () {};
+  var prev = { disabled: btn.disabled, text: btn.textContent };
+  try { btn.disabled = true; if (busyText) btn.textContent = busyText; } catch (e) {}
+  return function () {
+    try { btn.disabled = prev.disabled; btn.textContent = prev.text; } catch (e2) {}
+  };
 }
 /* ================= numbers in words (Indian numbering) ================= */
 var WORD_ONES = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
@@ -4689,6 +4702,7 @@ function feeFiltered() {
 function filterFees(q) {
   // Client-side row filter only — the page is NOT re-rendered, so the search
   // input keeps focus and the typed text (same pattern as the fees search filter).
+  state.feeLimit = 120; // a new search starts from the first page again
   q = (q || '').toLowerCase();
   var visible = 0, total = 0;
   document.querySelectorAll('#feeBody tr').forEach(function (tr) {
@@ -5380,7 +5394,7 @@ var I18N = {
     subReports: 'Download CSV reports', subStudents: 'St. Xavier School, Patna', subAttendance: 'Mark & view attendance', subFees: 'Fee collection & pending dues', subExams: 'Exams & marks entry', subHomework: 'Assign & track homework', subNotices: 'Notice board',
     fSchoolName: 'School Name', fCity: 'City', fStudentName: 'Student Name', fClass: 'Class', fRoll: 'Roll No', fGuardian: 'Guardian', fPhone: 'Phone', fTitle: 'Title', fSubject: 'Subject', fDue: 'Due Date', fMessage: 'Message', fPrincipal: 'Principal / Admin', fEmail: 'Email', fAddress: 'Address', fSession: 'Academic Session',
     tLoggedIn: 'Logged in as', tAccountCreated: 'Account created. Welcome, ', tInvalidCreds: 'Invalid email or password.', tFillAll: 'Please fill in all fields.', tInvalidEmail: 'Please enter a valid email address.', tPwShort: 'Password must be at least 6 characters.', tPwMismatch: 'Passwords do not match.', tEmailTaken: 'An account with this email already exists. Please log in.', tLoggedOut: 'Logged out. See you soon!', tBackExit: 'Press back again to exit', tStudentAdded: 'Student added.', tStudentUpdated: 'Student updated.', tStudentDeleted: 'Student deleted.', tAttSaved: 'Attendance saved', tMarksSaved: 'Marks saved for', tHwDone: 'Homework marked done.', tHwNotDone: 'Homework marked not done.', tHwAssigned: 'Homework assigned.', tNoticePub: 'Notice published.', tReportDl: 'Report downloaded.', tSettingsSaved: 'Settings saved.', tAllReset: 'All data deleted — the school is now empty.', tSessionChanged: 'Academic session changed to', tNoChanges: 'No changes.', tFutureDate: 'Future date not allowed — showing today.', tDueFuture: 'Due date must be today or later.', tDemoLogin: 'Demo account — use one-tap login below.', tGoogleDemo: 'Demo build — please use a one-tap demo login.', tNoStudentData: 'No student data — ask your school admin to add students.', tNoExams: 'No exams yet.', tNoHw: 'No homework yet.', tNoMarks: 'No marks entered yet for this exam.', tNoMatch: 'No students match.', tNotEntered: 'Not entered', tCollectedFrom: 'collected from', tDupStudent: 'already exists in', tNotSaved: 'Not saved', tCheckMarks: 'check marks', tStudentsWord: 'students', tNoFeeData: 'No fee data yet.',
-    searchStudent: 'Search student…', viewAll: 'View All →', classAvg: 'Class average', studentsMarked: 'students marked', ofWord: 'of', showingRec: 'Showing', ofRec: 'of', recordsWord: 'records.', tapDone: 'tap the box when done', myHwSub: 'Tap the box when you finish', myAttSub: 'Your day-by-day attendance record', myFeesSub: 'Every fee record — what is paid and what is pending', myResultsSub: 'Marks in every exam', tileAtt: 'Attendance', tileFees: 'Fees', tileResults: 'Results', tileHw: 'Homework', doneSuffix: 'done', presBtn: 'Present', absBtn: 'Absent', lateBtn: 'Late',
+    searchStudent: 'Search student…', viewAll: 'View All →', classAvg: 'Class average', studentsMarked: 'students marked', ofWord: 'of', showingRec: 'Showing', ofRec: 'of', recordsWord: 'records.', loadMore: 'Load more', tapDone: 'tap the box when done', myHwSub: 'Tap the box when you finish', myAttSub: 'Your day-by-day attendance record', myFeesSub: 'Every fee record — what is paid and what is pending', myResultsSub: 'Marks in every exam', tileAtt: 'Attendance', tileFees: 'Fees', tileResults: 'Results', tileHw: 'Homework', doneSuffix: 'done', presBtn: 'Present', absBtn: 'Absent', lateBtn: 'Late',
     qaAddStudent: 'Add Student', qaAddStudentD: 'New admission', qaMarkAtt: 'Mark Attendance', qaMarkAttD: 'Today\'s register', qaEnterMarks: 'Enter Marks', qaEnterMarksD: 'Exam results', qaGenReport: 'Generate Report', qaGenReportD: 'CSV download',
     dlStudents: 'Download Students CSV', dlFees: 'Download Fees CSV', dlAtt: 'Download Attendance CSV', repStudentsSub: 'Name, class, roll, guardian, phone, attendance, fee status', repFeesSub: 'Student, class, month, amount, status — Apr to Mar',
     subSettingsS: 'School profile', settingsSub: 'Edit and save — changes sync to the server when you are online.',
@@ -5424,7 +5438,7 @@ var I18N = {
     subReports: 'CSV रिपोर्ट डाउनलोड करें', subStudents: 'सेंट ज़ेवियर स्कूल, पटना', subAttendance: 'उपस्थिति दर्ज करें और देखें', subFees: 'शुल्क संग्रह और बकाया', subExams: 'परीक्षा और अंक प्रविष्टि', subHomework: 'होमवर्क सौंपें और देखें', subNotices: 'नोटिस बोर्ड',
     fSchoolName: 'स्कूल का नाम', fCity: 'शहर', fStudentName: 'छात्र का नाम', fClass: 'कक्षा', fRoll: 'रोल नंबर', fGuardian: 'अभिभावक', fPhone: 'फ़ोन', fTitle: 'शीर्षक', fSubject: 'विषय', fDue: 'देय तारीख', fMessage: 'संदेश', fPrincipal: 'प्रधानाचार्य / एडमिन', fEmail: 'ईमेल', fAddress: 'पता', fSession: 'शैक्षणिक सत्र',
     tLoggedIn: 'के रूप में लॉगिन हुआ', tAccountCreated: 'अकाउंट बन गया। स्वागत है, ', tInvalidCreds: 'ईमेल या पासवर्ड गलत है।', tFillAll: 'कृपया सभी फ़ील्ड भरें।', tInvalidEmail: 'कृपया सही ईमेल पता डालें।', tPwShort: 'पासवर्ड कम से कम 6 अक्षर का हो।', tPwMismatch: 'पासवर्ड मेल नहीं खाते।', tEmailTaken: 'इस ईमेल से अकाउंट पहले से बना है। कृपया लॉग इन करें।', tLoggedOut: 'लॉगआउट हो गया। फिर मिलते हैं!', tBackExit: 'बाहर निकलने के लिए बैक फिर से दबाएँ', tStudentAdded: 'छात्र जोड़ा गया।', tStudentUpdated: 'छात्र अपडेट हुआ।', tStudentDeleted: 'छात्र हटाया गया।', tAttSaved: 'उपस्थिति सहेजी गई', tMarksSaved: 'अंक सहेजे गए', tHwDone: 'होमवर्क पूर्ण के रूप में चिह्नित।', tHwNotDone: 'होमवर्क अपूर्ण के रूप में चिह्नित।', tHwAssigned: 'होमवर्क सौंपा गया।', tNoticePub: 'नोटिस प्रकाशित हुआ।', tReportDl: 'रिपोर्ट डाउनलोड हुई।', tSettingsSaved: 'सेटिंग्स सहेजी गईं।', tAllReset: 'सारा डेटा मिट गया — स्कूल अब खाली है।', tSessionChanged: 'शैक्षणिक सत्र बदला गया', tNoChanges: 'कोई बदलाव नहीं।', tFutureDate: 'भविष्य की तारीख नहीं चुन सकते — आज की तारीख दिखा रहे हैं।', tDueFuture: 'देय तारीख आज या आगे की होनी चाहिए।', tDemoLogin: 'डेमो खाता — नीचे एक-टैप लॉगिन इस्तेमाल करें।', tGoogleDemo: 'डेमो बिल्ड — कृपया एक-टैप डेमो लॉगिन इस्तेमाल करें।', tNoStudentData: 'कोई छात्र डेटा नहीं — अपने स्कूल एडमिन से छात्र जोड़ने को कहें।', tNoExams: 'अभी कोई परीक्षा नहीं है।', tNoHw: 'अभी कोई होमवर्क नहीं है।', tNoMarks: 'इस परीक्षा के लिए अभी कोई अंक नहीं भरे गए।', tNoMatch: 'कोई छात्र नहीं मिला।', tNotEntered: 'नहीं भरा गया', tCollectedFrom: 'से वसूला गया', tDupStudent: 'में पहले से मौजूद है', tNotSaved: 'सहेजा नहीं गया', tCheckMarks: 'अंक जाँचें', tStudentsWord: 'छात्र', tNoFeeData: 'अभी कोई शुल्क डेटा नहीं है।',
-    searchStudent: 'छात्र खोजें…', viewAll: 'सभी देखें →', classAvg: 'कक्षा औसत', studentsMarked: 'छात्रों के अंक भरे गए', ofWord: 'में से', showingRec: 'दिखाए जा रहे हैं', ofRec: 'में से', recordsWord: 'रिकॉर्ड।', tapDone: 'पूरा होने पर बॉक्स पर टैप करें', myHwSub: 'पूरा होने पर बॉक्स पर टैप करें', myAttSub: 'आपकी दिन-प्रतिदिन उपस्थिति', myFeesSub: 'हर शुल्क रिकॉर्ड — क्या जमा हुआ और क्या बाकी है', myResultsSub: 'हर परीक्षा के अंक', tileAtt: 'उपस्थिति', tileFees: 'शुल्क', tileResults: 'परिणाम', tileHw: 'होमवर्क', doneSuffix: 'पूर्ण', presBtn: 'उपस्थित', absBtn: 'अनुपस्थित', lateBtn: 'देर से',
+    searchStudent: 'छात्र खोजें…', viewAll: 'सभी देखें →', classAvg: 'कक्षा औसत', studentsMarked: 'छात्रों के अंक भरे गए', ofWord: 'में से', showingRec: 'दिखाए जा रहे हैं', ofRec: 'में से', recordsWord: 'रिकॉर्ड।', loadMore: 'और दिखाएँ', tapDone: 'पूरा होने पर बॉक्स पर टैप करें', myHwSub: 'पूरा होने पर बॉक्स पर टैप करें', myAttSub: 'आपकी दिन-प्रतिदिन उपस्थिति', myFeesSub: 'हर शुल्क रिकॉर्ड — क्या जमा हुआ और क्या बाकी है', myResultsSub: 'हर परीक्षा के अंक', tileAtt: 'उपस्थिति', tileFees: 'शुल्क', tileResults: 'परिणाम', tileHw: 'होमवर्क', doneSuffix: 'पूर्ण', presBtn: 'उपस्थित', absBtn: 'अनुपस्थित', lateBtn: 'देर से',
     qaAddStudent: 'छात्र जोड़ें', qaAddStudentD: 'नया प्रवेश', qaMarkAtt: 'उपस्थिति दर्ज करें', qaMarkAttD: 'आज का रजिस्टर', qaEnterMarks: 'अंक भरें', qaEnterMarksD: 'परीक्षा परिणाम', qaGenReport: 'रिपोर्ट बनाएँ', qaGenReportD: 'CSV डाउनलोड',
     dlStudents: 'छात्र CSV डाउनलोड करें', dlFees: 'शुल्क CSV डाउनलोड करें', dlAtt: 'उपस्थिति CSV डाउनलोड करें', repStudentsSub: 'नाम, कक्षा, रोल, अभिभावक, फ़ोन, उपस्थिति, शुल्क स्थिति', repFeesSub: 'छात्र, कक्षा, महीना, राशि, स्थिति — अप्रैल से मार्च',
     subSettingsS: 'स्कूल प्रोफ़ाइल', settingsSub: 'बदलें और सहेजें — ऑनलाइन होने पर बदलाव सर्वर पर सिंक होते हैं।',
@@ -6155,6 +6169,11 @@ function doLogin(e) {
     return false;
   }
   if (sbIsOnline()) {
+    // Loading state (L-18): disable the Log In button with a busy label
+    // while the server round-trip runs; restored on every exit path.
+    var loginBtn = null;
+    try { loginBtn = e.target && e.target.querySelector ? e.target.querySelector('button[type="submit"]') : null; } catch (e2) {}
+    var restoreLoginBtn = setBtnLoading(loginBtn, '⏳ ' + t('loginBtn'));
     // Server first when we can reach it. The device account is the
     // fallback ONLY when the server cannot be reached at all (a network
     // failure, .catch below) — or when this device account has NO server
@@ -6178,6 +6197,7 @@ function doLogin(e) {
       if (pre && pre.locked) {
         err.textContent = t('tPinLocked');
         err.classList.remove('hidden');
+        restoreLoginBtn();
         return;
       }
       sbSignIn(id, pw).then(function (res) {
@@ -6222,7 +6242,7 @@ function doLogin(e) {
       err.textContent = t('tInvalidCreds');
       err.classList.remove('hidden');
       return;
-    }).catch(function () { sbLocalLogin(id, pw, err, true); });
+    }).catch(function () { sbLocalLogin(id, pw, err, true); }).then(restoreLoginBtn, restoreLoginBtn);
     });
   } else {
     sbLocalLogin(id, pw, err, true);
@@ -7995,7 +8015,10 @@ function feesPage() {
   var typeOpts = ['All'].concat(feeAllTypes()).map(function (x) {
     return '<option value="' + esc(x) + '" ' + (ty === x ? 'selected' : '') + '>' + (x === 'All' ? t('allTypes') : esc(feeTypeLabel(x))) + '</option>';
   }).join('');
-  var rows = list.slice(0, 120).map(function (r) {
+  // Load-more: the first feeLimit rows render (default 120, as before);
+  // older records are one tap away instead of unreachable.
+  var shown = Math.min(state.feeLimit || 120, list.length);
+  var rows = list.slice(0, state.feeLimit || 120).map(function (r) {
     return '<tr><td><button class="linklike" onclick="return openFeeProfile(\'' + r.studentId + '\', event)">' + esc(r.student) + '</button></td><td>' + esc(enrOf(r.studentId)) + '</td><td>' + esc(r.cls) + '</td><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td>' +
       '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
       '<td>' + receiptCellForRecord(r) + '</td>' +
@@ -8003,9 +8026,9 @@ function feesPage() {
   }).join('');
   return '<div class="page-head"><div><h2>' + t('fees') + '</h2><p>' + t('collectedW') + ' ' + inr(ft.collected) + ' • ' + t('pendingW') + ' ' + inr(ft.pending) + ' (' + feeRangeLabel() + ')</p></div>' +
     '<div class="toolbar"><div class="pill-tabs">' + ['All', 'Pending', 'Collected'].map(function (x) {
-      return '<button class="' + (f === x ? 'on' : '') + '" onclick="state.feeFilter=\'' + x + '\';renderPage()">' + (x === 'All' ? t('allW') : x === 'Pending' ? t('pendingW') : t('collectedW')) + '</button>';
+      return '<button class="' + (f === x ? 'on' : '') + '" onclick="state.feeFilter=\'' + x + '\';state.feeLimit=120;renderPage()">' + (x === 'All' ? t('allW') : x === 'Pending' ? t('pendingW') : t('collectedW')) + '</button>';
     }).join('') + '</div>' +
-    '<select onchange="state.feeType=this.value;renderPage()" aria-label="Fee type">' + typeOpts + '</select>' +
+    '<select onchange="state.feeType=this.value;state.feeLimit=120;renderPage()" aria-label="Fee type">' + typeOpts + '</select>' +
     '<input id="feeSearchInput" placeholder="' + t('searchFee') + '" value="' + esc(state.feeSearch) + '" oninput="state.feeSearch=this.value;filterFees(this.value)" style="min-width:200px">' +
     '<button class="btn ghost" onclick="printFeeList()">🖨 ' + t('printList') + '</button></div></div>' +
     '<div class="stats">' +
@@ -8016,7 +8039,8 @@ function feesPage() {
     '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted" style="margin-top:8px"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div>' +
     '<div class="card"><div class="tbl-wrap fee-list-tbl"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thEnr') + '</th><th>' + t('thClass') + '</th><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thReceipt') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody id="feeBody">' +
     (rows || '<tr><td colspan="10"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '<tr id="feeNoMatch" style="display:none"><td colspan="10"><div class="empty">' + t('tNoMatch') + '</div></td></tr></tbody></table></div>' +
-    '<p class="muted" id="feeCount" style="margin-top:10px">' + t('showingRec') + ' ' + Math.min(120, list.length) + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('recordsWord') + '</p></div>' +
+    '<p class="muted" id="feeCount" style="margin-top:10px">' + t('showingRec') + ' ' + shown + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('recordsWord') + '</p>' +
+    (list.length > shown ? '<div style="margin-top:10px"><button class="btn ghost" onclick="state.feeLimit=(state.feeLimit||120)+120;renderPage()">' + t('loadMore') + '</button></div>' : '') + '</div>' +
     feeFormCard() + feeStructureCard();
 }
 
@@ -9510,15 +9534,16 @@ function onBackupFileChosen(input) {
   // core above is UI-free and harness-covered.
   var f = input && input.files && input.files[0];
   if (!f) return;
+  try { input.disabled = true; } catch (e0) {} // L-18: no double-pick while the file reads
   var reader = new FileReader();
   reader.onload = function () {
     var parsed = null;
     try { parsed = JSON.parse(reader.result); } catch (e) { parsed = null; }
     if (!parsed) { toast(t('tBackupBadFile')); }
     else requestRestore(parsed);
-    try { input.value = ''; } catch (e2) {}
+    try { input.value = ''; input.disabled = false; } catch (e2) {}
   };
-  reader.onerror = function () { toast(t('tBackupBadFile')); try { input.value = ''; } catch (e3) {} };
+  reader.onerror = function () { toast(t('tBackupBadFile')); try { input.value = ''; input.disabled = false; } catch (e3) {} };
   reader.readAsText(f);
 }
 function settingsPage() {
@@ -9541,7 +9566,7 @@ function settingsPage() {
   '</div><div class="actions" style="justify-content:flex-start"><button class="btn" type="submit">' + t('saveSettingsBtn') + '</button>' +
   '<button type="button" class="btn danger" onclick="resetAllData()">' + t('resetAllData') + '</button>' +
   '<button type="button" class="btn danger" onclick="deleteAccount()">' + t('delAccount') + '</button></div></form></div>' +
-  '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub" id="sbStatusLine">' + sbStatusText() + '</p><div id="sbSyncDetails">' + sbSyncDetailsHtml() + '</div><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration()">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload()">' + t('sbDownloadNow') + '</button>' + (state.user && state.user.role === 'school' && !state.user.sbUid ? '<button type="button" class="btn ghost" onclick="openLinkServerModal()">' + t('sbLinkServer') + '</button>' : '') + (sbSessionExpired ? '<button type="button" class="btn ghost" onclick="logout()">' + t('authLogin') + '</button>' : '') + '</div></div>' +
+  '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub" id="sbStatusLine">' + sbStatusText() + '</p><div id="sbSyncDetails">' + sbSyncDetailsHtml() + '</div><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration(this)">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload(this)">' + t('sbDownloadNow') + '</button>' + (state.user && state.user.role === 'school' && !state.user.sbUid ? '<button type="button" class="btn ghost" onclick="openLinkServerModal()">' + t('sbLinkServer') + '</button>' : '') + (sbSessionExpired ? '<button type="button" class="btn ghost" onclick="logout()">' + t('authLogin') + '</button>' : '') + '</div></div>' +
   '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('fullBackup') + '</h3><p class="card-sub">' + t('fullBackupSub') + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="exportFullBackup()">' + t('backupExport') + '</button><label class="btn ghost" style="cursor:pointer">' + t('backupImport') + '<input type="file" accept="application/json,.json" style="display:none" onchange="onBackupFileChosen(this)"></label></div></div>' +
   '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('raiseSupport') + '</h3><p class="card-sub">' + t('contactSub') + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="openSupportForm()">' + t('raiseSupport') + '</button></div></div>';
 }
@@ -9770,6 +9795,43 @@ function triggerSwUpdateReload() {
   } catch (e) {}
   doReload();
   return canReload;
+}
+
+/* ================= Global error handler (M-31) =================
+   Before this, an uncaught error left a silent blank/broken screen.
+   Now the user sees a plain-language message with a Reload button;
+   the error still reaches the console (nothing is swallowed). The
+   overlay is shown once per page load; the handler itself never
+   throws. Resource-load failures (no message/error on the event) do
+   NOT trigger the overlay — only real JS errors do. Unhandled promise
+   rejections get a toast instead of the full overlay, so a failed
+   background task never blanks the screen. */
+var fatalErrorShown = false;
+function showFatalError(msg) {
+  try {
+    if (fatalErrorShown || !document.body) return;
+    fatalErrorShown = true;
+    var box = document.getElementById('fatalError');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'fatalError';
+      box.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#0A1E4B;color:#fff;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;';
+      box.innerHTML = '<div><h2 style="margin:0 0 8px">Something went wrong</h2><p style="opacity:.85;margin:0 0 16px">School Saathi hit an unexpected error. Your data is saved on this device — please reload to continue.</p><p style="opacity:.85;margin:0 0 16px">कुछ गलत हो गया है। कृपया पेज दोबारा लोड करें।</p><button style="background:#F5B731;color:#0A1E4B;border:0;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer" onclick="location.reload()">Reload • दोबारा लोड करें</button></div>';
+      document.body.appendChild(box);
+    }
+    if (msg) { try { console.error('[School Saathi] ' + msg); } catch (e2) {} }
+  } catch (e) { /* never let the error screen itself throw */ }
+}
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('error', function (e) {
+    if (e && (e.message || e.error)) showFatalError(e.message || (e.error && e.error.message) || 'Unknown error');
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e && e.reason;
+    var msg = (r && (r.message || String(r))) || 'Unhandled promise rejection';
+    try { console.error('[School Saathi] ' + msg); } catch (e2) {}
+    try { toast(msg); } catch (e3) { /* toast needs the DOM — skip if unavailable */ }
+  });
 }
 
 document.addEventListener('DOMContentLoaded', function () {
