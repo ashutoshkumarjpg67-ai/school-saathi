@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 81;
+var APP_VERSION = 82;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -4525,11 +4525,24 @@ function compressAttempts(w, h, opts) {
 var PHOTO_MAX = 512, PHOTO_CAP = 120 * 1024, LOGO_MAX = 256, LOGO_CAP = 250 * 1024;
 var pendingPhoto = null, pendingLogo = null;
 function compressImageFile(file, opts, cb) {
-  if (typeof FileReader === 'undefined' || typeof Image === 'undefined' || typeof document === 'undefined' || !document.createElement) { cb(null, 'not-supported'); return; }
+  // v82: the guard must NOT require Image — the small-file fast path
+  // (FileReader only) is the whole point of v82, and it must work even
+  // where Image/canvas is unavailable. Image is required only by the
+  // large-file down-size branch below.
+  if (typeof FileReader === 'undefined' || typeof document === 'undefined' || !document.createElement) { cb(null, 'not-supported'); return; }
   if (!file) { cb(null, 'no-file'); return; }
   var reader = new FileReader();
   reader.onerror = function () { cb(null, 'read-failed'); };
   reader.onload = function () {
+    // v82 (Phase 3): a file already under the cap needs no canvas work —
+    // use its data URL directly. The Image/canvas path is only for
+    // down-sizing large files, and it can stall (a hung Image load
+    // leaves the preview blank and the save with no photo). A small
+    // file is already a compressed JPEG/PNG, so its data URL is safe
+    // to store and display as-is.
+    var raw = reader.result;
+    if (typeof raw === 'string' && file.size && file.size <= opts.cap && dataUrlBytes(raw) <= opts.cap) { cb(raw, null); return; }
+    if (typeof Image === 'undefined') { cb(null, 'not-supported'); return; }
     var img = new Image();
     img.onerror = function () { cb(null, 'bad-image'); };
     img.onload = function () {
@@ -4558,10 +4571,18 @@ function compressImageFile(file, opts, cb) {
 function onStudentPhoto(input) {
   var file = input && input.files && input.files[0];
   if (!file) return;
+  // v82 (Phase 3): the preview must update as soon as a file is chosen,
+  // even before compression finishes — show the raw file immediately via
+  // an object URL, then replace it with the compressed data URL when
+  // compression completes. This also makes a stalled compression visible
+  // (the raw preview shows) instead of leaving a bare placeholder.
+  var prev = $('fStPhotoPrev');
+  var rawUrl = null;
+  try { if (typeof URL !== 'undefined' && URL.createObjectURL) rawUrl = URL.createObjectURL(file); } catch (e) {}
+  if (rawUrl && prev) prev.innerHTML = '<img class="photo-prev" src="' + esc(rawUrl) + '" alt="">';
   compressImageFile(file, { max: PHOTO_MAX, cap: PHOTO_CAP, format: 'jpeg' }, function (url, err) {
-    if (!url) { toast(err === 'too-big' ? t('tPhotoTooBig') : t('tPhotoError')); input.value = ''; return; }
+    if (!url) { toast(err === 'too-big' ? t('tPhotoTooBig') : t('tPhotoError')); input.value = ''; if (prev) prev.innerHTML = photoPrevHTML(null, $('fStName') ? $('fStName').value : ''); return; }
     pendingPhoto = url;
-    var prev = $('fStPhotoPrev');
     if (prev) prev.innerHTML = photoPrevHTML(url, $('fStName') ? $('fStName').value : '');
   });
 }
@@ -4574,10 +4595,15 @@ function clearStudentPhoto() {
 function onSchoolLogo(input) {
   var file = input && input.files && input.files[0];
   if (!file) return;
+  // v82: same immediate-preview rule as the student photo — show the raw
+  // file at once via an object URL, then the compressed data URL.
+  var prev = $('fPfLogoPrev');
+  var rawUrl = null;
+  try { if (typeof URL !== 'undefined' && URL.createObjectURL) rawUrl = URL.createObjectURL(file); } catch (e) {}
+  if (rawUrl && prev) prev.innerHTML = '<img class="photo-prev" src="' + esc(rawUrl) + '" alt="">';
   compressImageFile(file, { max: LOGO_MAX, cap: LOGO_CAP, format: 'png' }, function (url, err) {
-    if (!url) { toast(err === 'too-big' ? t('tLogoTooBig') : t('tPhotoError')); input.value = ''; return; }
+    if (!url) { toast(err === 'too-big' ? t('tLogoTooBig') : t('tPhotoError')); input.value = ''; if (prev) prev.innerHTML = '<span class="photo-prev">🎓</span>'; return; }
     pendingLogo = url;
-    var prev = $('fPfLogoPrev');
     if (prev) prev.innerHTML = '<img class="photo-prev" src="' + esc(url) + '" alt="">';
   });
 }
