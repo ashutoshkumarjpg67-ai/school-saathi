@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 79;
+var APP_VERSION = 80;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -5935,11 +5935,15 @@ function sbTeacherStudentPhoto(token, studentServerId) {
   // v74 (P1-2): on-demand student photo for a cloud teacher — the login
   // payload no longer ships photos (SQL 24). Returns the photo data URL
   // string, or null when there is none / the call fails.
+  // Phase 3 (v80): SQL 29 also returns photo_url — after the v78 Storage
+  // migration a synced photo lives in photo_url and photo_data_url is
+  // null, so the data URL alone returned nothing. Prefer the data URL
+  // (offline-safe) and fall back to the Storage URL.
   var _photoBody = {};
   _photoBody.p_token = token;
   _photoBody.p_student_id = studentServerId;
   return sbRest('POST', 'rpc/ss_teacher_student_photo', SB_ANON_KEY, _photoBody).then(function (r) {
-    return (r && r.ok && r.data && typeof r.data === 'object' && r.data.ok) ? (r.data.photo_data_url || null) : null;
+    return (r && r.ok && r.data && typeof r.data === 'object' && r.data.ok) ? (r.data.photo_data_url || r.data.photo_url || null) : null;
   }).catch(function () { return null; });
 }
 function mapCloudTeacherPayload(p) {
