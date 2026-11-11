@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 90;
+var APP_VERSION = 91;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -7037,7 +7037,7 @@ function renderApp() {
   var vt = VIEW_TITLES[state.view] || ['Dashboard', ''];
   $('topTitle').textContent = t(state.view) === state.view ? vt[0] : t(state.view);
   if (state.view === 'dashboard') $('topTitle').textContent = t('dashboard');
-  $('topCrumb').textContent = state.role === 'school' ? prof.name + ', ' + prof.city : (state.role === 'student' ? t('stuDashboard') : state.role === 'parent' ? t('parentDash') : state.role === 'principal' ? t('principalDash') : t('tchrDashboard')); // v86: a parent's top crumb says Parent Dashboard, never Teacher Dashboard; v88b: a principal's says Principal Dashboard
+  $('topCrumb').textContent = state.role === 'school' ? prof.name + ', ' + prof.city : (state.role === 'student' ? t('stuDashboard') : state.role === 'parent' ? t('parentDash') : state.role === 'principal' ? t('principalDash') : state.role === 'staff' ? t('staffDash') : state.role === 'accountant' ? t('accountantDash') : t('tchrDashboard')); // v86: a parent's top crumb says Parent Dashboard, never Teacher Dashboard; v88b: a principal's says Principal Dashboard; v91: a staff member's says Staff Dashboard, an accountant's says Accountant Dashboard
   sbOfflineChipRefresh(); // B7 (M-26): the topbar chip is re-driven on every render
   sbStorageWarnRender(); // B17/B18: re-show the sticky storage warning (if any) on every render
   renderPage();
@@ -10225,7 +10225,7 @@ function staffPage() {
   }).join('');
   return '<div class="page-head"><div><h2>' + t('staffPage') + '</h2><p>' + t('staffPageSub') + '</p></div>' +
     '<div class="toolbar"><button class="btn" onclick="staffForm()">+ ' + t('staffAdd') + '</button></div></div>' +
-    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thName') + '</th><th>' + t('staffRole') + '</th><th>' + t('staffClasses') + '</th><th>' + t('loginEmail') + '</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="5"><div class="empty">' + t('tNoTeachers') + '</div></td></tr>') + '</tbody></table></div></div>';
+    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thName') + '</th><th>' + t('staffRole') + '</th><th>' + t('staffClasses') + '</th><th>' + t('loginEmail') + '</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="5"><div class="empty">' + t('tNoStaff') + '</div></td></tr>') + '</tbody></table></div></div>'; // v91: the empty state said "No teachers yet."
 }
 function staffForm(id) {
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }

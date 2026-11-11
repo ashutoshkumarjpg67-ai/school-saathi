@@ -1,0 +1,18 @@
+-- SQL 32 — Grant the ss_staff table to authenticated (v91 fix).
+--
+-- Root cause (found by the v90 live check, 11 Nov 2026): SQL 30 created
+-- the ss_staff table + its RLS policy but never granted the TABLE to
+-- anyone. The grant loop in 02_rls.sql only covers the tables that
+-- existed when it was written, and ss_staff was not among them. So
+-- PostgREST (as authenticated) got 403 on every ss_staff INSERT/SELECT/
+-- UPDATE/DELETE — the app showed "Backup failed — it will retry on your
+-- next login. (post-ss_staff-403)" right after a staff record was saved.
+-- The staff login itself worked (the RPC has its own execute grants),
+-- but the record never reached the server.
+--
+-- This mirrors ss_teachers exactly: authenticated gets full DML, and
+-- the RLS policy (ss_owner_all_ss_staff: owner-or-admin) still decides
+-- WHOSE rows each caller can touch. Anon gets nothing on the table
+-- (like ss_teachers); the staff login RPC is the only anon path.
+-- Idempotent: GRANT is a no-op when already granted.
+grant select, insert, update, delete on public.ss_staff to authenticated;
