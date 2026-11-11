@@ -238,19 +238,78 @@ var cloudSchoolsCache = null; // v61: public school directory [{id, name, city}]
 function sbIsOnline() {
   if (typeof fetch !== 'function') return false;
   try { if (typeof navigator !== 'undefined' && navigator.onLine === false) return false; } catch (e) {}
+  // B8 (M-17): navigator.onLine lies behind captive portals and dead
+  // endpoints. After 3 consecutive fetch-level failures the device
+  // counts as offline for 30s — long enough to stop futile calls and
+  // fall back to local login, short enough that a recovered network
+  // is usable again on the next attempt (a successful probe or any
+  // HTTP response clears it sooner).
+  if (sbNetDownAt && Date.now() - sbNetDownAt < SB_NET_DOWN_MS) return false;
   return true;
 }
+// B8 (M-17/M-18): connectivity bookkeeping + bounded retry. sbRestNetFails
+// counts consecutive fetch-level failures (a request that got NO HTTP
+// response at all — a 429/5xx response still proves the network is up
+// and resets the count). sbNetDownAt is stamped on the 3rd failure.
+var sbRestNetFails = 0;
+var sbNetDownAt = 0;
+var SB_NET_DOWN_MS = 30000;
+var SB_NET_FAIL_THRESHOLD = 3;
+var SB_REST_MAX_ATTEMPTS = 3; // B8 (M-18): initial try + at most 2 retries, 429/5xx only
+var SB_REST_RETRY_CAP_MS = 10000; // B8: never wait longer than this for one retry (Retry-After is capped too)
 // v34 (P1-2): fetch with an AbortController timeout. A request that hangs
 // (slow network, dead connection) rejects after sbFetchTimeoutMs so the
 // sync lock is released instead of holding "Syncing…" forever.
 function sbFetchWithTimeout(url, init) {
   if (typeof fetch !== 'function') return Promise.reject(new Error('no-fetch'));
-  if (typeof AbortController !== 'function') return fetch(url, init);
+  if (typeof AbortController !== 'function') return fetch(url, init).then(function (res) { sbRestNetOk(); return res; }, function (err) { sbRestNetFailed(); throw err; });
   var ctrl = new AbortController();
   var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, sbFetchTimeoutMs);
   init = init || {};
   init.signal = ctrl.signal;
-  return fetch(url, init).then(function (res) { clearTimeout(timer); return res; }, function (err) { clearTimeout(timer); throw err; });
+  // B8 (M-17): every request feeds the connectivity bookkeeping — a
+  // response of ANY status proves the path is alive; only a rejection
+  // (network down, DNS, timeout) counts toward "offline". On the 3rd
+  // consecutive failure a background probe is kicked off (see below).
+  return fetch(url, init).then(function (res) { clearTimeout(timer); sbRestNetOk(); return res; }, function (err) { clearTimeout(timer); sbRestNetFailed(); throw err; });
+}
+function sbRestNetOk() { sbRestNetFails = 0; sbNetDownAt = 0; }
+function sbRestNetFailed() {
+  sbRestNetFails++;
+  if (sbRestNetFails >= SB_NET_FAIL_THRESHOLD) {
+    sbNetDownAt = Date.now();
+    sbProbeKick(); // background re-check; its result gates the next cycle via sbIsOnline()
+  }
+}
+var sbProbeInFlight = false;
+function sbProbeKick() {
+  // B8 (M-17): one probe at a time, fire-and-forget. A success clears
+  // the offline window at once; a failure extends it by another 30s
+  // (the next cycle's own calls re-prove the failure and re-kick).
+  if (sbProbeInFlight) return;
+  sbProbeInFlight = true;
+  sbProbeOnline().then(function () { sbProbeInFlight = false; }, function () { sbProbeInFlight = false; });
+}
+function sbProbeOnline() {
+  // B8 (M-17): tiny connectivity probe — the GoTrue health endpoint, 5s
+  // cap, no auth needed. ANY HTTP response proves the path to Supabase
+  // is alive (even a 4xx); only a fetch failure means offline.
+  if (typeof fetch !== 'function') return Promise.resolve(false);
+  var ctrl = null, timer = null;
+  try {
+    if (typeof AbortController === 'function') { ctrl = new AbortController(); timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 5000); }
+  } catch (e) {}
+  var init = {};
+  if (ctrl) init.signal = ctrl.signal;
+  return fetch(SB_URL + '/auth/v1/health', init).then(function () {
+    if (timer) clearTimeout(timer);
+    sbRestNetOk();
+    return true;
+  }, function () {
+    if (timer) clearTimeout(timer);
+    sbNetDownAt = Date.now();
+    return false;
+  });
 }
 function sbAuthFetch(path, opts) {
   opts = opts || {};
@@ -267,17 +326,59 @@ function sbAuthFetch(path, opts) {
 }
 function sbRest(method, path, token, body, prefer) {
   if (typeof fetch !== 'function') return Promise.reject(new Error('no-fetch'));
-  sbSyncRestCalls++; // v53 diag: one REST round-trip per sbRest call
-  var headers = { 'apikey': SB_ANON_KEY, 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
-  if (prefer) headers['Prefer'] = prefer;
-  var init = { method: method, headers: headers };
-  if (body !== undefined) init.body = JSON.stringify(body);
-  return sbFetchWithTimeout(SB_URL + '/rest/v1/' + path, init).then(function (res) {
-    if (res.status === 204) return { ok: res.ok, status: res.status, data: null };
-    return res.json().catch(function () { return null; }).then(function (data) {
-      return { ok: res.ok, status: res.status, data: data };
+  // B8 (M-18): bounded retry for 429/5xx ONLY — at most SB_REST_MAX_ATTEMPTS
+  // tries in total, exponential backoff (500ms, then 1000ms), honouring
+  // Retry-After (seconds, capped). Any other 4xx is never retried, and
+  // a network failure (no response) is never retried here either — it
+  // feeds the offline bookkeeping instead, and the outbox + next cycle
+  // replay the call. (A retried POST replays exactly like the next
+  // cycle's outbox replay already would; tables with business unique
+  // keys turn a commit-then-500 duplicate into a 409, never a silent dup.)
+  var attempts = 0;
+  function attempt() {
+    attempts++;
+    sbSyncRestCalls++; // v53 diag: one REST round-trip per sbRest call
+    var headers = { 'apikey': SB_ANON_KEY, 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
+    if (prefer) headers['Prefer'] = prefer;
+    var init = { method: method, headers: headers };
+    if (body !== undefined) init.body = JSON.stringify(body);
+    return sbFetchWithTimeout(SB_URL + '/rest/v1/' + path, init).then(function (res) {
+      if (res.status === 204) return { ok: res.ok, status: res.status, data: null };
+      return res.json().catch(function () { return null; }).then(function (data) {
+        var out = { ok: res.ok, status: res.status, data: data };
+        if (!res.ok && (res.status === 429 || res.status >= 500) && attempts < SB_REST_MAX_ATTEMPTS) return retryAfter(out, res);
+        return out;
+      });
     });
-  });
+  }
+  function retryAfter(out, res) {
+    var wait = 500 * Math.pow(2, attempts - 1); // 500ms, then 1000ms
+    try {
+      var ra = res.headers && res.headers.get ? res.headers.get('Retry-After') : null;
+      if (ra !== null && ra !== undefined && ra !== '') {
+        var secs = parseInt(ra, 10);
+        if (!isNaN(secs) && secs >= 0) wait = Math.min(secs * 1000, SB_REST_RETRY_CAP_MS);
+      }
+    } catch (e) {}
+    sbRestNoteRetry();
+    return new Promise(function (resolve) { setTimeout(function () { resolve(attempt()); }, wait); });
+  }
+  return attempt();
+}
+function sbRestNoteRetry() {
+  // B8 (M-18): surface the retry in the status line — transiently, on
+  // the two visible nodes only, without persisting a status state (a
+  // persisted "retrying" would lie on the login screen if the app died
+  // mid-retry; the cycle's own end state overwrites this right after).
+  // Only while a school sync is live: a login-time call must not write
+  // sync status.
+  try {
+    if (!sbSyncActive()) return;
+    if (typeof document === 'undefined' || !document.getElementById) return;
+    var txt = t('sbSyncRetrying');
+    var sl = document.getElementById('sbStatusLine'); if (sl) sl.textContent = txt;
+    var lg = document.getElementById('sbStatus'); if (lg) lg.textContent = txt;
+  } catch (e) {}
 }
 function sbSignUp(email, pw, school, name) {
   return sbAuthFetch('/auth/v1/signup', { method: 'POST', body: { email: email, password: pw, data: { school: school, name: name } } });
@@ -389,7 +490,42 @@ function sbSetStatus(st, detail) {
       var sl43 = document.getElementById('sbStatusLine'); if (sl43) sl43.textContent = txt43;
       var lg43 = document.getElementById('sbStatus'); if (lg43) lg43.textContent = txt43;
       sbSyncDetailsRefresh(); // v53: keep the Settings sync-details section in step
+      sbOfflineChipRefresh(); // B7: the topbar chip follows every status change
     }
+  } catch (e2) {}
+}
+function sbOfflineChipRefresh() {
+  // B7 (M-26): the offline/pending chip in the topbar — the app's only
+  // always-visible connectivity indicator (the status line lives on the
+  // login screen / Settings only). Driven by sbIsOnline() + the outbox
+  // count, for a server-linked school only: a local-only school has no
+  // server to sync to, and cloud student/teacher slices have no outbox.
+  // The node is created once from app.js (no index.html change) and
+  // only its text/visibility changes afterwards. Inline styles only —
+  // styles.css is untouched.
+  try {
+    if (typeof document === 'undefined' || !document.querySelector) return;
+    var bar = document.querySelector('.topbar');
+    if (!bar) return;
+    var chip = document.getElementById('offlineChip');
+    var show = false, txt = '';
+    if (state && state.user && state.user.role === 'school' && state.sb && state.sb.uid) {
+      var left = 0;
+      try { left = sbOutboxLoad(state.sb.uid).length; } catch (e) {}
+      if (!sbIsOnline()) { show = true; txt = t('sbStatusPendingSync'); }
+      else if (left > 0) { show = true; txt = t('sbSyncPendingUploads') + ': ' + left; }
+    }
+    if (!show) { if (chip) chip.classList.add('hidden'); return; }
+    if (!chip) {
+      chip = document.createElement('span');
+      chip.id = 'offlineChip';
+      chip.style.cssText = 'font-size:12px;padding:4px 10px;border-radius:999px;background:#FEF3C7;color:#92400E;border:1px solid #FCD34D;white-space:nowrap';
+      var sp = bar.querySelector('.spacer');
+      if (sp && sp.parentNode && sp.parentNode.insertBefore) sp.parentNode.insertBefore(chip, sp.nextSibling);
+      else if (bar.appendChild) bar.appendChild(chip);
+    }
+    chip.textContent = txt;
+    chip.classList.remove('hidden');
   } catch (e2) {}
 }
 function sbLoadStatus() {
@@ -3096,6 +3232,7 @@ function sbSyncFlushWithToken(act, tok) {
       sbSetStatus(left ? 'pending' : 'synced');
     } else {
       sbSetStatus('failed', r.detail || '');
+      sbSyncFailToastOnce(); // B6 (M-22): a background flush failure toasts once per episode (not while logging out)
     }
     // v53 diag: the flush's real cost, read by Settings "Sync details".
     sbSyncDiagSet({ lastFlush: { at: new Date().toISOString(), ms: Date.now() - flushT0, pushed: r.pushed || 0, conflicts: r.conflicts || 0, leftover: left, calls: sbSyncRestCalls - flushCalls0 } });
@@ -3721,6 +3858,7 @@ function sbSyncCycleRun(account, sbUid, token) {
     });
   }).catch(function (err) {
     sbSetStatus('failed', (err && err.message) || 'error');
+    sbSyncFailToastOnce(); // B6 (M-22): one toast per failure episode
     return { done: false, reason: 'error', detail: (err && err.message) || 'error' };
   }).then(function (r) {
     if (!r) return r;
@@ -3728,13 +3866,17 @@ function sbSyncCycleRun(account, sbUid, token) {
       // The flush already set pending/synced; only confirm synced when
       // the outbox really is empty (a pull that succeeded while entries
       // are still queued must not claim to be synced).
-      if (!sbOutboxLoad(sbUid).length) sbSetStatus('synced');
+      if (!sbOutboxLoad(sbUid).length) {
+        sbSetStatus('synced');
+        sbSyncFailToasted = false; // B6: only a TRULY synced cycle ends the failure episode — a done pull with entries still queued does not
+      }
     } else if (r.reason === 'no-server-school' || r.reason === 'upload-failed') {
       // The only failure paths where the flush never ran (or the upload
       // itself failed): do not leave the status stuck on 'syncing'.
       // Other failures already had their status set by the flush
       // (failed / pending / offline).
       sbSetStatus('failed', r.detail || '');
+      sbSyncFailToastOnce(); // B6 (M-22): one toast per failure episode
     }
     // v34 (P1-7/P1-8): retry queued support requests and admission
     // applications once a cycle has run (they are fire-and-forget).
@@ -3745,10 +3887,28 @@ function sbSyncCycleRun(account, sbUid, token) {
     // v53 diag: the cycle's real cost, read by Settings "Sync details".
     // sbLoadStatus() is read here (not sbSetStatus's node update) so
     // the record survives a logout and the next verifier can read it.
-    sbSyncDiagSet({ lastCycle: { at: new Date().toISOString(), ms: Date.now() - cycleT0, result: r.done ? 'synced' : ('failed: ' + (r.reason || r.detail || 'error')), detail: r.detail || '', outbox: sbOutboxLoad(sbUid).length, calls: sbSyncRestCalls - cycleCalls0 } });
+    // B5 (M-19): "synced" ONLY when the pull is done AND the flush is
+    // done AND the outbox is empty — a done pull with entries still
+    // queued reports pending with the leftover count (the status line
+    // above already guards the same way; the diagnostic used to lie).
+    var leftCycle = sbOutboxLoad(sbUid).length;
+    var resCycle = r.done ? (leftCycle ? 'pending: ' + leftCycle + ' left' : 'synced') : ('failed: ' + (r.reason || r.detail || 'error'));
+    sbSyncDiagSet({ lastCycle: { at: new Date().toISOString(), ms: Date.now() - cycleT0, result: resCycle, detail: r.detail || '', outbox: leftCycle, calls: sbSyncRestCalls - cycleCalls0 } });
     sbSyncDetailsRefresh();
     return r;
   });
+}
+// B6 (M-22): background sync failures toast ONCE per failure episode —
+// the first failure shows "Backup failed — will retry on next login"
+// (t('sbStatusFailed')); repeats stay silent until a cycle succeeds.
+// Never toasts while logging out (sbLoggingOut): a logout-time flush
+// failure is not the user's problem anymore.
+var sbSyncFailToasted = false;
+function sbSyncFailToastOnce() {
+  if (sbSyncFailToasted) return;
+  try { if (typeof sbLoggingOut !== 'undefined' && sbLoggingOut) return; } catch (e) {}
+  sbSyncFailToasted = true;
+  try { toast(t('sbStatusFailed')); } catch (e2) {}
 }
 var sbSyncCyclePending = null; // the single queued follow-up cycle, if any
 function sbSyncCycle(account, sbUid, token) {
@@ -5237,7 +5397,8 @@ var I18N = {
     waLateMsg: 'Namaste, this is {school}. {student} (Class {cls}) arrived late to school today ({date}). Please ensure timely arrival. Thank you.',
     waReceiptMsg: 'Namaste, this is {school}. Fee receipt {receipt} — {student} (Class {cls}), {amount} paid for {month} on {date}. Thank you.',
     waGreetMsg: 'Namaste, this is {school}. This is regarding {student} (Class {cls}).',
-    waSchoolContact: 'School'
+    waSchoolContact: 'School',
+    sbSyncRetrying: 'Retrying…'
   },
   hi: {
     dashboard: 'डैशबोर्ड', settings: 'सेटिंग्स', reports: 'रिपोर्ट', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', results: 'परिणाम', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -5274,7 +5435,8 @@ var I18N = {
     waLateMsg: 'नमस्ते, यह {school} है। {student} (कक्षा {cls}) आज ({date}) स्कूल देर से आया/आई। कृपया समय पर भेजें। धन्यवाद।',
     waReceiptMsg: 'नमस्ते, यह {school} है। फीस रसीद {receipt} — {student} (कक्षा {cls}), {month} के लिए {amount} का भुगतान {date} को हुआ। धन्यवाद।',
     waGreetMsg: 'नमस्ते, यह {school} है। {student} (कक्षा {cls}) के बारे में बात करनी है।',
-    waSchoolContact: 'स्कूल'
+    waSchoolContact: 'स्कूल',
+    sbSyncRetrying: 'फिर कोशिश हो रही है…'
   }
 };
 function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || I18N.en[k] || k; }
@@ -6080,7 +6242,34 @@ function doSignup(e) {
   loginAs(a, { silent: true });
   return false;
 }
-function logout() {
+var SB_LOGOUT_FLUSH_TIMEOUT_MS = 5000; // B3 (M-4): longest a logout ever waits for the outbox flush
+var sbLoggingOut = false; // B3: a second logout tap while one is in flight is ignored
+function logout(opts) {
+  // B3 (M-4): best-effort outbox flush BEFORE any state is cleared — a
+  // logout is a "backed up" point. The flush needs the live session
+  // (sbSyncActive + the stored token), so the clear waits for it — but
+  // NEVER longer than the short timeout above, and never on failure:
+  // the clear always runs. The delete-account flow passes
+  // { skipFlush: true } — its data + outbox are already gone, so
+  // there is nothing to flush.
+  if (sbLoggingOut) return;
+  sbLoggingOut = true;
+  if (opts && opts.skipFlush) { logoutClear(); return; }
+  var finished = false;
+  function finishLogout() {
+    if (finished) return;
+    finished = true;
+    try { clearTimeout(logoutTimer); } catch (e) {}
+    logoutClear();
+  }
+  var logoutTimer = null;
+  try {
+    logoutTimer = setTimeout(finishLogout, SB_LOGOUT_FLUSH_TIMEOUT_MS);
+    sbSyncFlushNow().then(finishLogout, finishLogout);
+  } catch (e) { finishLogout(); }
+}
+function logoutClear() {
+  sbLoggingOut = false; // the clear below is synchronous from here on
   var sbUidBefore = state.sb && state.sb.uid; // v36: needed for the outbox check below, before the session is cleared
   var wasLocalOnlySchool = sbIsLocalOnlySchool(); // v37: captured before state is cleared — a local-only school logs out to the local-only line, never "Backed up"
   state.role = null; state.user = null; state.view = 'dashboard';
@@ -6105,6 +6294,7 @@ function logout() {
   sbClearSession();
   state.sb = null;
   sbSyncResetMemory(); // v31: drop the in-memory snapshot + pending flush timer (the persisted outbox/snapshot stay for the next login)
+  sbSyncFailToasted = false; // B6: a fresh login starts a fresh failure episode — the next failure toasts again
   sbSyncAutoStop(); // v32: stop the auto-pull interval (restarts on the next login)
   // v36 (logout-backup race): a cycle killed mid-flight by this logout
   // must not leave a transient "Syncing…" status on the login screen.
@@ -6369,6 +6559,7 @@ function renderApp() {
   $('topTitle').textContent = t(state.view) === state.view ? vt[0] : t(state.view);
   if (state.view === 'dashboard') $('topTitle').textContent = t('dashboard');
   $('topCrumb').textContent = state.role === 'school' ? prof.name + ', ' + prof.city : (state.role === 'student' ? t('stuDashboard') : t('tchrDashboard'));
+  sbOfflineChipRefresh(); // B7 (M-26): the topbar chip is re-driven on every render
   renderPage();
 }
 function changeSession(v) {
@@ -6648,7 +6839,9 @@ function deleteAccountConfirmed() {
   sbOutboxClear(uid); sbSrvIdsClear(uid); sbSnapClear(uid);
   sbClearServerSchool(uid);
   // Log out to the login screen (clears session keys + form fields).
-  logout();
+  // B3: skipFlush — this account's data + outbox are already deleted
+  // above, so there is nothing to flush; the logout clears at once.
+  logout({ skipFlush: true });
   // logout() settles a status line for the deleted account — drop it:
   // there is no account left for it to describe.
   try { localStorage.removeItem(SB_STATUS_KEY); } catch (e6) {}
@@ -9494,6 +9687,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // moment the app comes back (online, tab visible, window focused).
     // Fire-and-forget; a failed cycle retries on the next trigger.
     window.addEventListener('online', function () {
+      sbOfflineChipRefresh(); // B7: the chip clears the moment we are back
       if (state.user && state.user.role === 'school' && state.sb) sbSyncBackgroundTick(); // v53: skip when a cycle is in flight
       // v34 (P1-7/P1-8): queued support requests and admission
       // applications retry the moment the device is back online.
@@ -9502,6 +9696,10 @@ document.addEventListener('DOMContentLoaded', function () {
       // v37: re-check for a newer build when the device comes online.
       try { checkAppUpdate().catch(function () {}); } catch (e2) {}
     });
+    // B7 (M-26): previously NO offline listener existed at all — only
+    // 'online'. Going offline now refreshes the chip at once instead
+    // of waiting for the next render or status write.
+    window.addEventListener('offline', function () { sbOfflineChipRefresh(); });
     document.addEventListener('visibilitychange', function () {
       if (document.visibilityState === 'visible' && state.user && state.user.role === 'school' && state.sb) sbSyncBackgroundTick(); // v53: skip when a cycle is in flight
     });
