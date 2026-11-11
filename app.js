@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 88;
+var APP_VERSION = 89;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -6451,7 +6451,7 @@ function principalDashboard() {
     '<div class="tile orange"><div class="n">₹' + ft.collected + '</div><div class="l">' + t('feeCollected') + '</div></div>' +
     '<div class="tile red"><div class="n">₹' + ft.pending + '</div><div class="l">' + t('pendingFee') + '</div></div>' +
     '</div>' +
-    '<div class="card" style="margin-top:16px"><h3>' + t('todayAtt') + '</h3><p class="card-sub">' + st.att + '% ' + t('tileAtt') + ' • ' + db.students.length + ' ' + t('studentsW') + '</p>' +
+    '<div class="card" style="margin-top:16px"><h3>' + t('todayAtt') + '</h3><p class="card-sub">' + st.avgAtt + '% ' + t('tileAtt') + ' • ' + db.students.length + ' ' + t('studentsW') + '</p>' + // v88b: studentStats returns avgAtt, not att (the live check showed "undefined%")
     donutSVG([{ value: ta.present, color: GREEN, label: t('presBtn'), pct: donutPct(ta.present, ta.total) }, { value: ta.absent, color: RED, label: t('absBtn'), pct: donutPct(ta.absent, ta.total) }, { value: ta.late, color: ORANGE, label: t('lateBtn'), pct: donutPct(ta.late, ta.total) }], 190, donutPct(ta.present, ta.total) + '%', t('todayAtt')) + '</div>' +
     '<div class="card" style="margin-top:16px"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div>';
 }
@@ -6995,7 +6995,7 @@ function renderApp() {
   var vt = VIEW_TITLES[state.view] || ['Dashboard', ''];
   $('topTitle').textContent = t(state.view) === state.view ? vt[0] : t(state.view);
   if (state.view === 'dashboard') $('topTitle').textContent = t('dashboard');
-  $('topCrumb').textContent = state.role === 'school' ? prof.name + ', ' + prof.city : (state.role === 'student' ? t('stuDashboard') : state.role === 'parent' ? t('parentDash') : t('tchrDashboard')); // v86: a parent's top crumb says Parent Dashboard, never Teacher Dashboard
+  $('topCrumb').textContent = state.role === 'school' ? prof.name + ', ' + prof.city : (state.role === 'student' ? t('stuDashboard') : state.role === 'parent' ? t('parentDash') : state.role === 'principal' ? t('principalDash') : t('tchrDashboard')); // v86: a parent's top crumb says Parent Dashboard, never Teacher Dashboard; v88b: a principal's says Principal Dashboard
   sbOfflineChipRefresh(); // B7 (M-26): the topbar chip is re-driven on every render
   sbStorageWarnRender(); // B17/B18: re-show the sticky storage warning (if any) on every render
   renderPage();
@@ -7529,8 +7529,8 @@ function studentsPage() {
     '<th onclick="sortStu(\'class\')" style="cursor:pointer">' + t('thClass') + sortArrow('class') + '</th>' +
     '<th>' + t('thRoll') + '</th><th>' + t('thFather') + '</th><th>' + t('thPhone') + '</th>' +
     '<th onclick="sortStu(\'att\')" style="cursor:pointer">' + t('thAtt') + sortArrow('att') + '</th>' +
-    (isTeacher ? '' : '<th>' + t('thFee') + '</th>') + '<th>' + t('thStatus') + '</th>' + (isTeacher ? '' : '<th>' + t('actionsW') + '</th>') + '</tr></thead><tbody>' +
-    (trs || '<tr><td colspan="' + (isTeacher ? 8 : 11) + '"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '</tbody></table></div>' +
+    (isTeacher ? '' : '<th>' + t('thFee') + '</th>') + '<th>' + t('thStatus') + '</th>' + ((isTeacher || isPrincipal) ? '' : '<th>' + t('actionsW') + '</th>') + '</tr></thead><tbody>' + // v88b: the ACTIONS header hides for a principal too (the cells were already empty)
+    (trs || '<tr><td colspan="' + (isTeacher ? 8 : isPrincipal ? 9 : 11) + '"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '</tbody></table></div>' + // v88b: the principal has 9 columns (no select-all, no actions)
     '<div class="toolbar" style="margin-top:12px;justify-content:space-between"><span class="muted">' + t('showingRec') + ' ' + from + '–' + to + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('studentsW') + '</span>' +
     '<span><button class="btn ghost sm" ' + (state.stuPage <= 1 ? 'disabled' : '') + ' onclick="state.stuPage--;renderPage()">← ' + t('prevW') + '</button> ' +
     '<span class="muted">' + t('pgPage') + ' ' + state.stuPage + ' ' + t('pgOf') + ' ' + pages + '</span> ' +
@@ -8370,9 +8370,13 @@ function attendancePage() {
     // wa.me chat, parent presses nothing here — the admin presses Send
     // inside WhatsApp). The button appears only for Absent/Late marks.
     // v88: a principal sees the status as text — no mark buttons, no
-    // WhatsApp button.
+    // WhatsApp button. v88b: an unmarked student shows "Not marked", not
+    // "Present" — the row used to default to Present while the header
+    // counts (correctly) said Not marked.
     if (state.role === 'principal') {
-      return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td><span class="badge ' + (cur === 'Present' ? 'green' : cur === 'Absent' ? 'red' : 'orange') + '">' + cur + '</span></td><td><span class="muted">—</span></td></tr>';
+      var curP = recs[s.id];
+      var badgeP = curP ? '<span class="badge ' + (curP === 'Present' ? 'green' : curP === 'Absent' ? 'red' : 'orange') + '">' + curP + '</span>' : '<span class="badge grey">' + t('attNotMarked') + '</span>';
+      return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td>' + badgeP + '</td><td><span class="muted">—</span></td></tr>';
     }
     var notifyCell = (cur === 'Absent' || cur === 'Late')
       ? '<button class="btn ghost sm" onclick="waAbsentAlert(\'' + s.id + '\')">💬 ' + t('waNotifyBtn') + '</button>'
@@ -8398,7 +8402,7 @@ function attendancePage() {
   return '<div class="page-head"><div><h2>' + t('attendance') + '</h2><p>Class ' + esc(cls) + ' • ' + esc(state.attDate) + ' — ' + counts.Present + ' ' + t('presBtn') + ', ' + counts.Absent + ' ' + t('absBtn') + ', ' + counts.Late + ' ' + t('lateBtn') + (counts.NotMarked ? ', ' + counts.NotMarked + ' ' + t('attNotMarked') : '') + '</p></div>' +
     '<div class="toolbar"><select onchange="state.attCls=this.value;renderPage()">' + clsOpts + '</select>' +
     '<input type="date" value="' + esc(state.attDate) + '" max="' + todayIST() + '" onchange="onAttDate(this.value)" style="min-width:160px">' +
-    '<button class="btn green" onclick="saveAttendance()">✓ ' + t('saveAttendance') + '</button></div></div>' +
+    (state.role === 'principal' ? '' : '<button class="btn green" onclick="saveAttendance()">✓ ' + t('saveAttendance') + '</button>') + '</div></div>' + // v88b: a principal never sees the Save Attendance button
     '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thStatus') + '</th><th>' + t('waNotifyCol') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
     (state.role === 'teacher' ? '' : '<p class="muted" style="margin-top:12px">School-wide today: ' + num(ta.present) + ' Present • ' + num(ta.absent) + ' Absent • ' + num(ta.late) + ' Late (' + donutPct(ta.present, ta.total) + '% attendance).</p>') + '</div>';
 }
@@ -8440,6 +8444,8 @@ function markAtt(id, m) {
   renderPage();
 }
 function saveAttendance() {
+  // v88b: a principal is read-only — they never save attendance.
+  if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
   // v35: a teacher saves only their own assigned class.
   if (state.role === 'teacher' && teacherClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
   // v62: a cloud teacher's taps already went to the server one by one —
@@ -9549,7 +9555,7 @@ function examsPage() {
     '<button class="btn" onclick="editExam(\'' + ex.id + '\')">✎ ' + t('editExam') + '</button>' +
     (state.role === 'school' ? '<button class="btn danger" onclick="deleteExam(\'' + ex.id + '\')">🗑 ' + t('deleteExam') + '</button>' : '') +
     '<button class="btn green" onclick="saveMarks(\'' + ex.id + '\')">✓ ' + t('saveMarks') + '</button>') + '</div></div>' + // v88: a principal sees the exam picker + marks table only — no Create/Edit/Delete/Save
-    '<div class="card"><div class="head-row"><div><h3>' + t('enterMarks') + '</h3><p class="card-sub">' + (n ? t('classAvg') + ': ' + Math.round(avg / n / ex.total * 100) + '% (' + n + ' ' + t('studentsMarked') + ')' : t('tNoMarks')) + '</p></div></div>' +
+    '<div class="card"><div class="head-row"><div><h3>' + (state.role === 'principal' ? t('results') : t('enterMarks')) + '</h3><p class="card-sub">' + (n ? t('classAvg') + ': ' + Math.round(avg / n / ex.total * 100) + '% (' + n + ' ' + t('studentsMarked') + ')' : t('tNoMarks')) + '</p></div></div>' + // v88b: for a principal the card is "Results", not "Enter Marks"
     '<div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thMarks') + '</th><th>' + t('thResult') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>' + deletedExamsSection();
 }
 function deletedExamsSection() {
