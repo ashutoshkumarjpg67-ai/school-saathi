@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 74;
+var APP_VERSION = 76;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -267,18 +267,40 @@ function sbGetUser(token) {
 function sbSetNewPassword(recoveryToken, pw) {
   return sbAuthFetch('/auth/v1/user', { method: 'PUT', token: recoveryToken, body: { password: pw } });
 }
+// v75 (P1-3): session-scoped storage for tokens and cloud snapshots.
+// The Supabase bearer token and the cloud teacher/student snapshots live
+// in sessionStorage (they end with the tab) instead of localStorage.
+// sessGet adopts a pre-v75 localStorage copy once (copy to sessionStorage,
+// remove the localStorage copy) so nobody is logged out by the update.
+// sessSet/sessRemove keep both storages clean.
+function sessGet(key) {
+  try { var r = sessionStorage.getItem(key); if (r) return r; } catch (e) {}
+  try {
+    var old = localStorage.getItem(key);
+    if (old) { try { sessionStorage.setItem(key, old); } catch (e2) {} try { localStorage.removeItem(key); } catch (e3) {} return old; }
+  } catch (e4) {}
+  return null;
+}
+function sessSet(key, val) {
+  try { sessionStorage.setItem(key, val); } catch (e) {}
+  try { localStorage.removeItem(key); } catch (e2) {}
+}
+function sessRemove(key) {
+  try { sessionStorage.removeItem(key); } catch (e) {}
+  try { localStorage.removeItem(key); } catch (e2) {}
+}
 function sbStoreSession(d) {
   try {
     var s = { access_token: d.access_token, refresh_token: d.refresh_token || '', expires_at: Date.now() + ((d.expires_in || 3600) * 1000), user_id: (d.user && d.user.id) || '', email: (d.user && d.user.email) || '' };
-    localStorage.setItem(SB_SESSION_KEY, JSON.stringify(s));
+    sessSet(SB_SESSION_KEY, JSON.stringify(s));
     sbSessionExpired = false; // v34 (P1-3): a fresh session is never expired
     return s;
   } catch (e) { return null; }
 }
 function sbLoadSession() {
-  try { var r = localStorage.getItem(SB_SESSION_KEY); return r ? JSON.parse(r) : null; } catch (e) { return null; }
+  try { var r = sessGet(SB_SESSION_KEY); return r ? JSON.parse(r) : null; } catch (e) { return null; }
 }
-function sbClearSession() { try { localStorage.removeItem(SB_SESSION_KEY); } catch (e) {} }
+function sbClearSession() { try { sessRemove(SB_SESSION_KEY); } catch (e) {} }
 function sbGetValidToken() {
   var s = sbLoadSession();
   if (!s || !s.access_token) return Promise.resolve(null);
@@ -5271,7 +5293,7 @@ var I18N = {
     loginWelcome: 'Log in or sign up<br>to continue', loginWelcomeBack: 'Welcome back', loginNewSchool: 'New school?', loginCreateAccount: 'Create a school account →', featTitle: 'WHAT YOU GET', featAttendance: 'Attendance', featFees: 'Fees & Receipts', featExams: 'Exams & Marks', featHomework: 'Homework', featWhatsApp: 'WhatsApp Alerts', loginEmail: 'Email', loginPassword: 'Password', loginEmailPh: 'you@school.edu.in', loginPwPh: '••••••••', loginBtn: 'Log In', authLogin: 'Log In', authSignup: 'Sign Up', authNote: 'One account per school.', suSchool: 'School Name', suYourName: 'Your Name', suEmail: 'Email', suPw: 'Password', suPw2: 'Confirm Password', suBtn: 'Create Account', loginOr: 'Or continue with', demoTitle: '— One-tap demo login —', loginBack: '← Back to website',
     schoolDashboard: 'School Admin Dashboard', studentDashboard: 'Student Dashboard',
     confirmTitle: 'Confirm', cancel: 'Cancel', confirmYes: 'Yes, continue', saveBtn: 'Save',
-    addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', delAccount: 'Delete Account', delPwTitle: 'Delete this account?', delPwHint: 'This deletes the school account from THIS device only. Enter your password to continue.', delNameTitle: 'Type the school name to confirm', delNameHint: 'This is the last step before the account is deleted. Type the exact school name.', delConfirmMsg: 'Delete this school account from this device? Login, students, fees, attendance — everything for this school on this device goes. The server copy (if any) is NOT deleted; logging in again with the same email would bring a server-linked school back. A school that was never linked is gone for good.', delDone: 'Account deleted.', delServerTitle: 'Delete this account everywhere?', delServerMsg: 'This permanently deletes the school account from the SERVER too — students, fees, attendance, everything — on all devices. You will not be able to log in with this email again. This cannot be undone.', delServerBtn: 'Delete from server too', delServerDone: 'Account deleted from the server and this device.', delServerFailed: 'Could not delete the server account — nothing was deleted. Check your connection and try again.', delServerNotSetup: 'Server deletion is not set up yet — your data on this device was deleted. The server copy remains.', delServerNoSchool: 'No school was found on the server — your data on this device was deleted.', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmTitle: 'Reset — choose what to delete', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', resetNameTitle: 'Type the school name to confirm', resetNameHint: 'This is the last step before everything is deleted. Type the exact school name.', resetNameLabel: 'School name', resetNameWrong: 'That name does not match — nothing was reset.', resetNameGo: 'Confirm Reset', publishBtn: 'Publish', assignHw: 'Assign Homework', saveStudentBtn: 'Save Student',
+    addStudent: 'Add Student', saveAttendance: 'Save Attendance', saveMarks: 'Save Marks', addHomework: 'Add Homework', publishNotice: 'Publish Notice', downloadReport: 'Download Report', editBtn: 'Edit', deleteBtn: 'Delete', collectBtn: 'Collect', saveSettingsBtn: 'Save Settings', resetAllData: 'Reset All Data', delAccount: 'Delete Account', removeDeviceData: 'Remove school data from this device', removeDeviceDataMsg: 'This removes students, fees, attendance, exams, homework, notices and receipts for this school from THIS device only. The school account stays — log in again to download the data back from the server (if it was linked). A school that was never linked is gone for good.', removeDeviceDataDone: 'School data removed from this device.', sharedDeviceNote: 'Shared device? Your school data stays on this device until you remove it — Settings → Remove school data from this device.', delPwTitle: 'Delete this account?', delPwHint: 'This deletes the school account from THIS device only. Enter your password to continue.', delNameTitle: 'Type the school name to confirm', delNameHint: 'This is the last step before the account is deleted. Type the exact school name.', delConfirmMsg: 'Delete this school account from this device? Login, students, fees, attendance — everything for this school on this device goes. The server copy (if any) is NOT deleted; logging in again with the same email would bring a server-linked school back. A school that was never linked is gone for good.', delDone: 'Account deleted.', delServerTitle: 'Delete this account everywhere?', delServerMsg: 'This permanently deletes the school account from the SERVER too — students, fees, attendance, everything — on all devices. You will not be able to log in with this email again. This cannot be undone.', delServerBtn: 'Delete from server too', delServerDone: 'Account deleted from the server and this device.', delServerFailed: 'Could not delete the server account — nothing was deleted. Check your connection and try again.', delServerNotSetup: 'Server deletion is not set up yet — your data on this device was deleted. The server copy remains.', delServerNoSchool: 'No school was found on the server — your data on this device was deleted.', resetPwTitle: 'Enter your password to reset', resetPwHint: 'Resetting permanently deletes ALL school data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmMsg: 'This will permanently delete ALL data — students, teachers, fees, attendance, exams, homework, notices and receipts. This cannot be undone.', resetConfirmTitle: 'Reset — choose what to delete', resetPwLabel: 'Account password', resetPwWrong: 'Wrong password — nothing was reset.', resetPwGo: 'Verify & Continue', resetNameTitle: 'Type the school name to confirm', resetNameHint: 'This is the last step before everything is deleted. Type the exact school name.', resetNameLabel: 'School name', resetNameWrong: 'That name does not match — nothing was reset.', resetNameGo: 'Confirm Reset', publishBtn: 'Publish', assignHw: 'Assign Homework', saveStudentBtn: 'Save Student',
     attOverview: 'Attendance Overview', todayAtt: 'Today\'s Attendance', feeTrend: 'Fee Collection Trend', feeTrendSub: 'Apr – Mar (Collected vs Pending)', feeTrendSub2: 'Apr to Mar (Collected vs Pending)', recentAct: 'Recent Activities', activityLog: 'Activity Log', actLogSub: 'Full audit history — newest first.', thDetails: 'Details', actBy: 'By', supYourName: 'Your name', quickLinks: 'Quick Links', jumpTask: 'Jump to a task', enterMarks: 'Enter Marks', myHomework: 'My Homework', noticesH: 'Notices', latestNotices: 'Latest from school', contactSub: 'We reply within one working day', studentsReport: 'Students Report', feesReport: 'Fees Report', attReport: 'Attendance Report', thName: 'Name', thClass: 'Class', thRoll: 'Roll', thGuardian: 'Guardian', thPhone: 'Phone', thAtt: 'Att.', thFee: 'Fee', thAction: 'Action', thReceipt: 'Receipt', thStudent: 'Student', thMonth: 'Month', thAmount: 'Amount', thDate: 'Date', thStatus: 'Status', thMarks: 'Marks', thResult: 'Result', thRole: 'Role',
     subReports: 'Download CSV reports', subStudents: 'St. Xavier School, Patna', subAttendance: 'Mark & view attendance', subFees: 'Fee collection & pending dues', subExams: 'Exams & marks entry', subHomework: 'Assign & track homework', subNotices: 'Notice board',
     fSchoolName: 'School Name', fCity: 'City', fStudentName: 'Student Name', fClass: 'Class', fRoll: 'Roll No', fGuardian: 'Guardian', fPhone: 'Phone', fTitle: 'Title', fSubject: 'Subject', fDue: 'Due Date', fMessage: 'Message', fPrincipal: 'Principal / Admin', fEmail: 'Email', fAddress: 'Address', fSession: 'Academic Session',
@@ -5315,7 +5337,7 @@ var I18N = {
     loginWelcome: 'लॉग इन करें या साइन अप करें<br>जारी रखने के लिए', loginWelcomeBack: 'फिर से स्वागत है', loginNewSchool: 'नया स्कूल?', loginCreateAccount: 'स्कूल अकाउंट बनाएँ →', featTitle: 'आपको क्या मिलेगा', featAttendance: 'उपस्थिति', featFees: 'फीस व रसीद', featExams: 'परीक्षा व अंक', featHomework: 'गृहकार्य', featWhatsApp: 'WhatsApp अलर्ट', loginEmail: 'ईमेल', loginPassword: 'पासवर्ड', loginEmailPh: 'आप@school.edu.in', loginPwPh: '••••••••', loginBtn: 'लॉग इन करें', authLogin: 'लॉग इन', authSignup: 'साइन अप', authNote: 'एक स्कूल, एक अकाउंट।', suSchool: 'स्कूल का नाम', suYourName: 'आपका नाम', suEmail: 'ईमेल', suPw: 'पासवर्ड', suPw2: 'पासवर्ड दोबारा डालें', suBtn: 'अकाउंट बनाएँ', loginOr: 'या जारी रखें', demoTitle: '— एक टैप में डेमो लॉगिन —', loginBack: '← वेबसाइट पर वापस',
     schoolDashboard: 'स्कूल एडमिन डैशबोर्ड', studentDashboard: 'छात्र डैशबोर्ड',
     confirmTitle: 'पुष्टि करें', cancel: 'रद्द करें', confirmYes: 'हाँ, जारी रखें', saveBtn: 'सहेजें',
-    addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', delAccount: 'अकाउंट हटाएँ', delPwTitle: 'यह अकाउंट हटाएँ?', delPwHint: 'इससे स्कूल का अकाउंट सिर्फ इस डिवाइस से हटेगा। जारी रखने के लिए अपना पासवर्ड डालें।', delNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', delNameHint: 'अकाउंट हटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', delConfirmMsg: 'इस डिवाइस से यह स्कूल अकाउंट हटा दें? लॉगिन, छात्र, फीस, उपस्थिति — इस डिवाइस पर इस स्कूल का सब कुछ चला जाएगा। सर्वर की कॉपी (अगर है तो) नहीं मिटेगी; उसी ईमेल से दोबारा लॉगिन करने पर सर्वर से जुड़ा स्कूल वापस आ जाएगा। जो स्कूल कभी जुड़ा ही नहीं, वह हमेशा के लिए चला जाएगा।', delDone: 'अकाउंट हटा दिया गया।', delServerTitle: 'अकाउंट हर जगह से हटाएँ?', delServerMsg: 'इससे स्कूल का अकाउंट सर्वर से भी हमेशा के लिए मिट जाएगा — छात्र, फीस, उपस्थिति, सब कुछ — सभी डिवाइसों से। आप इस ईमेल से दोबारा लॉग इन नहीं कर पाएँगे। यह वापस नहीं होगा।', delServerBtn: 'सर्वर से भी हटाएँ', delServerDone: 'अकाउंट सर्वर और इस डिवाइस से हट गया।', delServerFailed: 'सर्वर अकाउंट हटा नहीं जा सका — कुछ भी नहीं हटा। कनेक्शन जाँचकर फिर कोशिश करें।', delServerNotSetup: 'सर्वर से हटाना अभी तैयार नहीं है — इस डिवाइस का डेटा हटा दिया गया। सर्वर की कॉपी अभी बाकी है।', delServerNoSchool: 'सर्वर पर कोई स्कूल नहीं मिला — इस डिवाइस का डेटा हटा दिया गया।', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmTitle: 'रीसेट — क्या मिटाना है चुनें', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', resetNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', resetNameHint: 'सब कुछ मिटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', resetNameLabel: 'स्कूल का नाम', resetNameWrong: 'यह नाम मेल नहीं खाता — कुछ भी रीसेट नहीं हुआ।', resetNameGo: 'रीसेट की पुष्टि करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveStudentBtn: 'छात्र सहेजें',
+    addStudent: 'छात्र जोड़ें', saveAttendance: 'उपस्थिति सहेजें', saveMarks: 'अंक सहेजें', addHomework: 'होमवर्क जोड़ें', publishNotice: 'नोटिस प्रकाशित करें', downloadReport: 'रिपोर्ट डाउनलोड करें', editBtn: 'बदलें', deleteBtn: 'हटाएँ', collectBtn: 'वसूलें', saveSettingsBtn: 'सेटिंग्स सहेजें', resetAllData: 'सारा डेटा रीसेट करें', delAccount: 'अकाउंट हटाएँ', removeDeviceData: 'इस डिवाइस से स्कूल का डेटा हटाएँ', removeDeviceDataMsg: 'इससे इस डिवाइस से इस स्कूल के छात्र, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें हट जाएँगी। स्कूल का अकाउंट रहेगा — दोबारा लॉगिन करके सर्वर से डेटा वापस लाया जा सकता है (अगर स्कूल जुड़ा था)। जो स्कूल कभी जुड़ा ही नहीं, वह हमेशा के लिए चला जाएगा।', removeDeviceDataDone: 'इस डिवाइस से स्कूल का डेटा हटा दिया गया।', sharedDeviceNote: 'साझा डिवाइस? आपके स्कूल का डेटा इस डिवाइस पर तब तक रहेगा जब तक आप इसे हटाते नहीं — सेटिंग्स → इस डिवाइस से स्कूल का डेटा हटाएँ।', delPwTitle: 'यह अकाउंट हटाएँ?', delPwHint: 'इससे स्कूल का अकाउंट सिर्फ इस डिवाइस से हटेगा। जारी रखने के लिए अपना पासवर्ड डालें।', delNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', delNameHint: 'अकाउंट हटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', delConfirmMsg: 'इस डिवाइस से यह स्कूल अकाउंट हटा दें? लॉगिन, छात्र, फीस, उपस्थिति — इस डिवाइस पर इस स्कूल का सब कुछ चला जाएगा। सर्वर की कॉपी (अगर है तो) नहीं मिटेगी; उसी ईमेल से दोबारा लॉगिन करने पर सर्वर से जुड़ा स्कूल वापस आ जाएगा। जो स्कूल कभी जुड़ा ही नहीं, वह हमेशा के लिए चला जाएगा।', delDone: 'अकाउंट हटा दिया गया।', delServerTitle: 'अकाउंट हर जगह से हटाएँ?', delServerMsg: 'इससे स्कूल का अकाउंट सर्वर से भी हमेशा के लिए मिट जाएगा — छात्र, फीस, उपस्थिति, सब कुछ — सभी डिवाइसों से। आप इस ईमेल से दोबारा लॉग इन नहीं कर पाएँगे। यह वापस नहीं होगा।', delServerBtn: 'सर्वर से भी हटाएँ', delServerDone: 'अकाउंट सर्वर और इस डिवाइस से हट गया।', delServerFailed: 'सर्वर अकाउंट हटा नहीं जा सका — कुछ भी नहीं हटा। कनेक्शन जाँचकर फिर कोशिश करें।', delServerNotSetup: 'सर्वर से हटाना अभी तैयार नहीं है — इस डिवाइस का डेटा हटा दिया गया। सर्वर की कॉपी अभी बाकी है।', delServerNoSchool: 'सर्वर पर कोई स्कूल नहीं मिला — इस डिवाइस का डेटा हटा दिया गया।', resetPwTitle: 'रीसेट करने के लिए पासवर्ड डालें', resetPwHint: 'रीसेट करने से स्कूल का सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmMsg: 'इससे सारा डेटा हमेशा के लिए मिट जाएगा — छात्र, शिक्षक, फीस, उपस्थिति, परीक्षा, होमवर्क, नोटिस और रसीदें। यह वापस नहीं होगा।', resetConfirmTitle: 'रीसेट — क्या मिटाना है चुनें', resetPwLabel: 'अकाउंट पासवर्ड', resetPwWrong: 'गलत पासवर्ड — कुछ भी रीसेट नहीं हुआ।', resetPwGo: 'जाँचें और जारी रखें', resetNameTitle: 'पुष्टि के लिए स्कूल का नाम लिखें', resetNameHint: 'सब कुछ मिटने से पहले यह आखिरी कदम है। स्कूल का सही नाम लिखें।', resetNameLabel: 'स्कूल का नाम', resetNameWrong: 'यह नाम मेल नहीं खाता — कुछ भी रीसेट नहीं हुआ।', resetNameGo: 'रीसेट की पुष्टि करें', publishBtn: 'प्रकाशित करें', assignHw: 'होमवर्क सौंपें', saveStudentBtn: 'छात्र सहेजें',
     attOverview: 'उपस्थिति अवलोकन', todayAtt: 'आज की उपस्थिति', feeTrend: 'शुल्क संग्रह प्रवृत्ति', feeTrendSub: 'अप्रैल – मार्च (संग्रह बनाम बकाया)', feeTrendSub2: 'अप्रैल से मार्च (संग्रह बनाम बकाया)', recentAct: 'हाल की गतिविधियाँ', activityLog: 'गतिविधि लॉग', actLogSub: 'पूरी ऑडिट हिस्ट्री — नई पहले।', thDetails: 'विवरण', actBy: 'द्वारा', supYourName: 'आपका नाम', quickLinks: 'त्वरित लिंक', jumpTask: 'किसी कार्य पर जाएँ', enterMarks: 'अंक भरें', myHomework: 'मेरा होमवर्क', noticesH: 'नोटिस', latestNotices: 'स्कूल से नवीनतम', contactSub: 'हम एक कार्य दिवस के भीतर जवाब देते हैं', studentsReport: 'छात्र रिपोर्ट', feesReport: 'शुल्क रिपोर्ट', attReport: 'उपस्थिति रिपोर्ट', thName: 'नाम', thClass: 'कक्षा', thRoll: 'रोल', thGuardian: 'अभिभावक', thPhone: 'फ़ोन', thAtt: 'उप.', thFee: 'शुल्क', thAction: 'कार्रवाई', thReceipt: 'रसीद', thStudent: 'छात्र', thMonth: 'महीना', thAmount: 'राशि', thDate: 'तारीख', thStatus: 'स्थिति', thMarks: 'अंक', thResult: 'परिणाम', thRole: 'भूमिका',
     subReports: 'CSV रिपोर्ट डाउनलोड करें', subStudents: 'सेंट ज़ेवियर स्कूल, पटना', subAttendance: 'उपस्थिति दर्ज करें और देखें', subFees: 'शुल्क संग्रह और बकाया', subExams: 'परीक्षा और अंक प्रविष्टि', subHomework: 'होमवर्क सौंपें और देखें', subNotices: 'नोटिस बोर्ड',
     fSchoolName: 'स्कूल का नाम', fCity: 'शहर', fStudentName: 'छात्र का नाम', fClass: 'कक्षा', fRoll: 'रोल नंबर', fGuardian: 'अभिभावक', fPhone: 'फ़ोन', fTitle: 'शीर्षक', fSubject: 'विषय', fDue: 'देय तारीख', fMessage: 'संदेश', fPrincipal: 'प्रधानाचार्य / एडमिन', fEmail: 'ईमेल', fAddress: 'पता', fSession: 'शैक्षणिक सत्र',
@@ -5410,8 +5432,8 @@ function clearStoredSession() {
   // local session key (both storages) and the Supabase tokens.
   try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
-  try { localStorage.removeItem(CLOUD_STUDENT_KEY); } catch (e2) {} // v61: an expired cloud session drops its snapshot too
-  try { localStorage.removeItem(CLOUD_TEACHER_KEY); } catch (e3) {} // v62: same for a cloud teacher session
+  try { sessRemove(CLOUD_STUDENT_KEY); } catch (e2) {} // v61: an expired cloud session drops its snapshot too
+  try { sessRemove(CLOUD_TEACHER_KEY); } catch (e3) {} // v62: same for a cloud teacher session
   sbClearSession();
 }
 function loginAs(a, opts) {
@@ -5463,7 +5485,7 @@ function restoreSession() {
       // stored; the token rides with the snapshot and is re-checked by
       // the server on every write, so a missing snapshot means a fresh login.
       try {
-        var rawCloudT = localStorage.getItem(CLOUD_TEACHER_KEY);
+        var rawCloudT = sessGet(CLOUD_TEACHER_KEY);
         var cloudT = rawCloudT ? JSON.parse(rawCloudT) : null;
         if (cloudT && cloudT.acct && cloudT.slice && cloudT.token && cloudT.slice.teachers && cloudT.slice.teachers[0] && cloudT.slice.teachers[0].id === cloudT.acct.teacherId) {
           state.role = 'teacher'; state.user = cloudT.acct; state.cloudDb = cloudT.slice; state.cloudTeacherToken = cloudT.token; state.view = 'dashboard'; state.profileStudent = null;
@@ -5480,7 +5502,7 @@ function restoreSession() {
       // (the school's data was never on this device). No PIN is stored,
       // so a missing snapshot means a fresh login.
       try {
-        var rawCloud = localStorage.getItem(CLOUD_STUDENT_KEY);
+        var rawCloud = sessGet(CLOUD_STUDENT_KEY);
         var cloud = rawCloud ? JSON.parse(rawCloud) : null;
         if (cloud && cloud.acct && cloud.slice && cloud.slice.students && cloud.slice.students[0] && cloud.slice.students[0].id === cloud.acct.studentId) {
           state.role = 'student'; state.user = cloud.acct; state.cloudDb = cloud.slice; state.view = 'dashboard'; state.profileStudent = null;
@@ -5817,7 +5839,7 @@ function loginCloudStudent(acct, slice, opts) {
   // saveDB could never land in a school's data.
   state.role = 'student'; state.user = acct; state.cloudDb = slice; state.view = 'dashboard'; state.profileStudent = null;
   db = slice; DB_KEY = 'schoolSaathiCloudDB';
-  try { localStorage.setItem(CLOUD_STUDENT_KEY, JSON.stringify({ acct: acct, slice: slice })); } catch (e) {}
+  try { sessSet(CLOUD_STUDENT_KEY, JSON.stringify({ acct: acct, slice: slice })); } catch (e) {}
   showView('app'); renderApp();
   persistSession();
   lastBackAt = 0; histExiting = false;
@@ -5931,7 +5953,7 @@ function loginCloudTeacher(acct, slice, token, opts) {
   // Like loginCloudStudent, plus the session token the write RPCs need.
   state.role = 'teacher'; state.user = acct; state.cloudDb = slice; state.cloudTeacherToken = token; state.view = 'dashboard'; state.profileStudent = null;
   db = slice; DB_KEY = 'schoolSaathiCloudDB';
-  try { localStorage.setItem(CLOUD_TEACHER_KEY, JSON.stringify({ acct: acct, slice: slice, token: token })); } catch (e) {}
+  try { sessSet(CLOUD_TEACHER_KEY, JSON.stringify({ acct: acct, slice: slice, token: token })); } catch (e) {}
   showView('app'); renderApp();
   persistSession();
   lastBackAt = 0; histExiting = false;
@@ -6240,8 +6262,8 @@ function logoutClear() {
   promoState = null; importState.rows = null; importState.result = null;
   try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
-  try { localStorage.removeItem(CLOUD_STUDENT_KEY); } catch (e2) {} // v61
-  try { localStorage.removeItem(CLOUD_TEACHER_KEY); } catch (e3) {} // v62
+  try { sessRemove(CLOUD_STUDENT_KEY); } catch (e2) {} // v61
+  try { sessRemove(CLOUD_TEACHER_KEY); } catch (e3) {} // v62
   // Sign out of the server too (best-effort) and drop the server session.
   try {
     var sbSess = sbLoadSession();
@@ -6741,6 +6763,39 @@ function resetAllConfirmed() {
   // wiping — restart it here so the 30s auto-pull keeps running.
   if (state.sb && state.sb.uid) sbSyncAutoStart();
 }
+// v75 (P1-3): remove this school's data from THIS device only. The account
+// itself stays — it can log in again and re-download from the server (if it
+// was linked). Used by the Settings action and by Delete Account (which
+// also removes the account row). Only this account's keys are touched —
+// the DB, its .bak/.quarantine copies, the outbox, the server-id map, the
+// sync snapshot, the server-school map entry and the cloud snapshots.
+function removeSchoolDataFromDevice(a) {
+  if (!a) return;
+  var uid = a.uid;
+  var sbUid = (state.sb && state.sb.uid) || a.sbUid || null;
+  sbSyncAutoStop();
+  sbSyncResetMemory();
+  try { localStorage.removeItem(dbKeyFor(a)); } catch (e) {}
+  try { localStorage.removeItem(dbKeyFor(a) + '.bak'); } catch (e2) {}
+  try { localStorage.removeItem(dbKeyFor(a) + '.quarantine'); } catch (e3) {}
+  if (sbUid) { sbOutboxClear(sbUid); sbSrvIdsClear(sbUid); try { localStorage.removeItem(SB_MIGRATED_KEY + ':' + sbUid); } catch (e4) {} }
+  sbOutboxClear(uid); sbSrvIdsClear(uid); sbSnapClear(uid);
+  sbClearServerSchool(uid);
+  sessRemove(CLOUD_TEACHER_KEY);
+  sessRemove(CLOUD_STUDENT_KEY);
+}
+// v75 (P1-3): Settings action — remove this school's data from this device.
+// The account stays; the user is logged out (the in-memory data is gone).
+function removeSchoolData() {
+  if (!state.role || !state.user || state.role !== 'school') return;
+  confirmModal(t('removeDeviceDataMsg'), function () {
+    var a = state.user;
+    removeSchoolDataFromDevice(a);
+    logout({ skipFlush: true });
+    try { localStorage.removeItem(SB_STATUS_KEY); } catch (e) {}
+    toast(t('removeDeviceDataDone'));
+  });
+}
 // v60: Delete Account — removes THIS school account from THIS device only.
 // The server copy (if any) is NOT deleted: a server-linked school comes
 // back on the next login with the same email; a local-only school is gone
@@ -6849,8 +6904,6 @@ function deleteAccountConfirmed(serverDeleted) {
   var a = state.user;
   if (!a || a.role !== 'school') return;
   var email = (a.email || '').toLowerCase();
-  var uid = a.uid;
-  var sbUid = (state.sb && state.sb.uid) || a.sbUid || null;
   sbSyncAutoStop();
   sbSyncResetMemory();
   // Best-effort server sign-out (clears the server session, deletes nothing).
@@ -6860,10 +6913,7 @@ function deleteAccountConfirmed(serverDeleted) {
   var list = loadAccounts().filter(function (x) { return (x.email || '').toLowerCase() !== email; });
   saveAccounts(list);
   // Remove this account's data + sync state — keyed by its own uids only.
-  try { localStorage.removeItem(dbKeyFor(a)); } catch (e3) {}
-  if (sbUid) { sbOutboxClear(sbUid); sbSrvIdsClear(sbUid); try { localStorage.removeItem(SB_MIGRATED_KEY + ':' + sbUid); } catch (e5) {} }
-  sbOutboxClear(uid); sbSrvIdsClear(uid); sbSnapClear(uid);
-  sbClearServerSchool(uid);
+  removeSchoolDataFromDevice(a);
   // Log out to the login screen (clears session keys + form fields).
   // B3: skipFlush — this account's data + outbox are already deleted
   // above, so there is nothing to flush; the logout clears at once.
@@ -7521,7 +7571,7 @@ function maybeLoadCloudStudentPhoto(id) {
     if (!cur) return;
     cur.photo = url;
     // Keep the photo in the saved cloud snapshot so a refresh keeps it.
-    try { localStorage.setItem(CLOUD_TEACHER_KEY, JSON.stringify({ acct: state.user, slice: db, token: state.cloudTeacherToken })); } catch (e) {}
+    try { sessSet(CLOUD_TEACHER_KEY, JSON.stringify({ acct: state.user, slice: db, token: state.cloudTeacherToken })); } catch (e) {}
     if (state.profileStudent === id) renderPage();
   });
 }
@@ -9518,6 +9568,7 @@ function settingsPage() {
   '<p class="muted">' + t('logoHint') + '</p></div>' +
   '</div><div class="actions" style="justify-content:flex-start"><button class="btn" type="submit">' + t('saveSettingsBtn') + '</button>' +
   '<button type="button" class="btn danger" onclick="resetAllData()">' + t('resetAllData') + '</button>' +
+  '<button type="button" class="btn" onclick="removeSchoolData()">' + t('removeDeviceData') + '</button>' +
   '<button type="button" class="btn danger" onclick="deleteAccount()">' + t('delAccount') + '</button></div></form></div>' +
   '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub" id="sbStatusLine">' + sbStatusText() + '</p><div id="sbSyncDetails">' + sbSyncDetailsHtml() + '</div><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration(this)">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload(this)">' + t('sbDownloadNow') + '</button>' + (state.user && state.user.role === 'school' && !state.user.sbUid ? '<button type="button" class="btn ghost" onclick="openLinkServerModal()">' + t('sbLinkServer') + '</button>' : '') + (sbSessionExpired ? '<button type="button" class="btn ghost" onclick="logout()">' + t('authLogin') + '</button>' : '') + '</div></div>' +
   '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('fullBackup') + '</h3><p class="card-sub">' + t('fullBackupSub') + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="exportFullBackup()">' + t('backupExport') + '</button><label class="btn ghost" style="cursor:pointer">' + t('backupImport') + '<input type="file" accept="application/json,.json" style="display:none" onchange="onBackupFileChosen(this)"></label></div></div>' +

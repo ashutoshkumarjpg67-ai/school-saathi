@@ -120,6 +120,17 @@ function hashPwNew(pw) {
   var salt = randomHex(16);
   return 's256$' + salt + '$' + sha256Hex(salt + '|' + pw);
 }
+// v76 (P1-4): constant-time string comparison for hash checks. A plain
+// === short-circuits on the first differing character, leaking the hash
+// prefix position by timing. The bcrypt$ branch already uses bcrypt's own
+// constant-time compare; the s256$ and djb2 branches use this helper.
+function timingSafeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  if (a.length !== b.length) return false;
+  var acc = 0;
+  for (var i = 0; i < a.length; i++) acc |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return acc === 0;
+}
 function verifyPw(pw, a) {
   // Verifies against any of the three schemes. Returns { ok, legacy }:
   // legacy is true for djb2 AND s256$ — the caller upgrades both to
@@ -134,9 +145,9 @@ function verifyPw(pw, a) {
   if (h.indexOf('s256$') === 0) {
     var parts = h.split('$');
     if (parts.length !== 3) return { ok: false };
-    return { ok: sha256Hex(parts[1] + '|' + pw) === parts[2], legacy: true };
+    return { ok: timingSafeEqual(sha256Hex(parts[1] + '|' + pw), parts[2]), legacy: true };
   }
-  return { ok: hashPw(pw) === h, legacy: true };
+  return { ok: timingSafeEqual(hashPw(pw), h), legacy: true };
 }
 function upgradePwHash(a, pw) {
   // After a successful legacy login: re-hash with the new scheme and

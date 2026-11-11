@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self' https://bsjqeeeemwimzldrehpw.supabase.co; object-src 'none'; base-uri 'self'; form-action 'self'">
 <title>School Saathi — Smart Education. Better Tomorrow.</title>
 <meta name="description" content="School Saathi — Smart Education. Better Tomorrow. School management system for schools in Bihar with School Admin & Student dashboards — attendance, fees, exams, homework, notices & reports.">
 <meta name="theme-color" content="#0A1E4B">
@@ -13,11 +14,11 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=74">
-<script src="qrgen.js?v=74" defer></script>
-<script src="js/bcrypt.js?v=74" defer></script>
-<script src="js/modules/crypto.js?v=74" defer></script>
-<script src="app.js?v=74" defer></script>
+<link rel="stylesheet" href="styles.css?v=76">
+<script src="qrgen.js?v=76" defer></script>
+<script src="js/bcrypt.js?v=76" defer></script>
+<script src="js/modules/crypto.js?v=76" defer></script>
+<script src="app.js?v=76" defer></script>
 </head>
 <body>
 
@@ -42,6 +43,7 @@
         <div class="field"><label data-i18n="loginPassword">Password</label><div class="pw-wrap"><input id="loginPw" type="password" placeholder="••••••••" data-i18n-ph="loginPwPh" autocomplete="current-password"><button type="button" class="eye-btn" onclick="togglePw('loginPw',this)" aria-label="Show password">👁</button></div></div>
         <button class="btn" type="submit" style="width:100%" data-i18n="loginBtn">Log In</button>
       </form>
+      <p class="shared-device-note" style="text-align:center;margin-top:10px;font-size:12px;color:var(--muted)" data-i18n="sharedDeviceNote">Shared device? Your school data stays on this device until you remove it — Settings → Remove school data from this device.</p>
       <p id="forgotRow" style="text-align:center;margin-top:10px;font-size:13px"><a href="#" onclick="showRecoverForm();return false" data-i18n="sbForgotPw">Forgot password?</a></p>
       <p class="signup-cta"><span data-i18n="loginNewSchool">New school?</span> <a href="#" onclick="switchAuth('signup');return false" data-i18n="loginCreateAccount">Create a school account →</a></p>
       <div class="feat-divider"><span data-i18n="featTitle">WHAT YOU GET</span></div>
@@ -108,7 +110,7 @@
         <div id="sideSchoolInfo"></div>
         <label style="color:#94A3B8;margin-top:10px">Academic Session</label>
         <select id="sessionSel" onchange="changeSession(this.value)"></select>
-        <div style="margin-top:12px">v74<br>© 2026 School Saathi</div>
+        <div style="margin-top:12px">v76<br>© 2026 School Saathi</div>
       </div>
     </aside>
     <div class="main">
