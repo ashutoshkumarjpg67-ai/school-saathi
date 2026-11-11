@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 92;
+var APP_VERSION = 93;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -6428,6 +6428,27 @@ function teacherClasses() {
   if (!te) return [];
   return Array.isArray(te.classes) ? te.classes.slice() : (te.cls ? [te.cls] : []);
 }
+function staffRecord() {
+  // v93: the staff record for the signed-in staff member (mirrors
+  // teacherRecord). The login sets state.user.staffId.
+  if (state.role !== 'staff' || !state.user) return null;
+  return (db.staff || []).find(function (x) { return x.id === state.user.staffId; }) || null;
+}
+function staffClasses() {
+  // v93: the classes a staff member is assigned to (mirrors
+  // teacherClasses). A staff member with no classes sees nothing.
+  var st = staffRecord();
+  if (!st) return [];
+  return Array.isArray(st.classes) ? st.classes.slice() : [];
+}
+function roleClasses() {
+  // v93: the classes the signed-in role may work with. A teacher and a
+  // staff member see only their assigned classes; everyone else sees
+  // the whole school.
+  if (state.role === 'teacher') return teacherClasses();
+  if (state.role === 'staff') return staffClasses();
+  return CLASSES;
+}
 function openTeacherClass(cls) {
   // v84: a dashboard tile opens the Students list — a class tile filters
   // to that class, the "My Students" tile shows all of the teacher's
@@ -6785,7 +6806,7 @@ var NAV = {
     ['dashboard', '🏠', 'dashboard'], ['fees', '💰', 'fees'], ['reports', '📄', 'reports'], ['notices', '📢', 'notices'] // v92: fees-focused nav — no students, no settings
   ],
   staff: [
-    ['dashboard', '🏠', 'dashboard'], ['notices', '📢', 'notices']
+    ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices'] // v93: attendance + homework for their own classes only
   ],
   parent: [
     ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['fees', '💰', 'fees'], ['results', '📊', 'results'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
@@ -6805,7 +6826,7 @@ var PERMS = {
   student: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'],
   principal: ['dashboard', 'students', 'teachers', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports'], // v88: the principal oversees the whole school, read-only
   accountant: ['dashboard', 'fees', 'reports', 'notices'], // v92: the accountant works fees + reports (receipts ride the fees page)
-  staff: ['dashboard', 'notices'],
+  staff: ['dashboard', 'attendance', 'homework', 'notices'], // v93: a staff member works attendance + homework for their own classes
   parent: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'], // v86: the parent portal reuses the student views, view-only
   superadmin: ['dashboard', 'notices']
 };
@@ -8398,8 +8419,9 @@ function attendancePage() {
   // v35: a teacher only ever sees their own assigned classes — the class
   // picker is restricted, and a stale attCls outside the assignment is
   // pulled back to the first assigned class.
-  if (state.role === 'teacher') {
-    var myCls35 = teacherClasses();
+  // v93: a staff member is restricted the same way (their own classes).
+  if (state.role === 'teacher' || state.role === 'staff') {
+    var myCls35 = roleClasses();
     if (!myCls35.length) return '<div class="page-head"><div><h2>' + t('attendance') + '</h2></div></div><div class="card"><div class="empty">' + t('tchrNoClassesYet') + '</div></div>';
     if (myCls35.indexOf(state.attCls) === -1) state.attCls = myCls35[0];
   }
@@ -8442,7 +8464,7 @@ function attendancePage() {
     else if (m === 'Absent') counts.Absent++;
     else counts.Late++;
   });
-  var clsOpts = (state.role === 'teacher' ? teacherClasses() : CLASSES).map(function (c) { return '<option ' + (cls === c ? 'selected' : '') + '>' + c + '</option>'; }).join('');
+  var clsOpts = roleClasses().map(function (c) { return '<option ' + (cls === c ? 'selected' : '') + '>' + c + '</option>'; }).join(''); // v35: a teacher's picker is their own classes; v93: a staff member's too
   var ta = todayAtt();
   return '<div class="page-head"><div><h2>' + t('attendance') + '</h2><p>Class ' + esc(cls) + ' • ' + esc(state.attDate) + ' — ' + counts.Present + ' ' + t('presBtn') + ', ' + counts.Absent + ' ' + t('absBtn') + ', ' + counts.Late + ' ' + t('lateBtn') + (counts.NotMarked ? ', ' + counts.NotMarked + ' ' + t('attNotMarked') : '') + '</p></div>' +
     '<div class="toolbar"><select onchange="state.attCls=this.value;renderPage()">' + clsOpts + '</select>' +
@@ -8459,9 +8481,10 @@ function onAttDate(v) {
 function markAtt(id, m) {
   // v35: a teacher marks only their own assigned class, and only a
   // student on this class's roster.
+  // v93: a staff member marks only their own assigned class too.
   // v88: a principal is read-only — they never mark attendance.
   if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
-  if (state.role === 'teacher' && teacherClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
+  if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
   var stu = db.students.find(function (x) { return x.id === id; });
   if (stu && stu.cls !== state.attCls) { toast(t('tNotAllowed')); return; }
   var key = state.attDate + '|' + state.attCls;
@@ -8492,7 +8515,8 @@ function saveAttendance() {
   // v88b: a principal is read-only — they never save attendance.
   if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
   // v35: a teacher saves only their own assigned class.
-  if (state.role === 'teacher' && teacherClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
+  // v93: a staff member saves only their own assigned class too.
+  if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
   // v62: a cloud teacher's taps already went to the server one by one —
   // there is nothing local to save, and no audit/activity row to write
   // (the server keeps the attendance itself).
@@ -9848,13 +9872,15 @@ function homeworkPage() {
   var isStudent = state.role === 'student';
   var isTeacher = state.role === 'teacher';
   var isParent = state.role === 'parent';
+  var isStaff = state.role === 'staff'; // v93: a staff member sees homework for their own assigned classes only (and may post it, like a teacher)
   var me = meStudent();
   var myCls = me ? me.cls : '10th-A';
   // v35: a teacher sees homework for their own assigned classes only
   // (and may post it); a student sees only their own class.
   // v86: a parent sees only their own child's class — never the whole
   // school's homework — and never gets the Add button.
-  var list = db.homework.filter(function (h) { return (isStudent || isParent) ? h.cls === myCls : isTeacher ? teacherClasses().indexOf(h.cls) !== -1 : true; });
+  // v93: a staff member sees only their own assigned classes too.
+  var list = db.homework.filter(function (h) { return (isStudent || isParent) ? h.cls === myCls : (isTeacher || isStaff) ? roleClasses().indexOf(h.cls) !== -1 : true; });
   var items = list.map(function (h) {
     var done = me ? h.doneBy.indexOf(me.id) !== -1 : false;
     var box = isStudent
@@ -9884,7 +9910,8 @@ function toggleHw(id, done) {
 }
 function homeworkForm() {
   // v35: a teacher assigns homework only to their own classes.
-  var clsList35 = state.role === 'teacher' ? teacherClasses() : CLASSES;
+  // v93: a staff member assigns homework only to their own classes too.
+  var clsList35 = (state.role === 'teacher' || state.role === 'staff') ? roleClasses() : CLASSES;
   var clsOpts = clsList35.map(function (c) { return '<option>' + c + '</option>'; }).join('');
   var subOpts = SUBJECTS.map(function (s) { return '<option>' + s + '</option>'; }).join('');
   openModal('<h3>' + t('addHomework') + '</h3><form onsubmit="return saveHomework(event)"><div class="form-grid">' +
@@ -9900,7 +9927,9 @@ function saveHomework(e) {
   // v88: a principal is read-only — they never post homework.
   if (state.role === 'principal') { toast(t('tNotAllowed')); return false; }
   // v35: a teacher posts homework only to their own assigned class.
-  if (state.role === 'teacher' && teacherClasses().indexOf($('fHwCls').value) === -1) { toast(t('tNotAllowed')); return false; }
+  // v93: a staff member posts homework only to their own assigned
+  // class too.
+  if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf($('fHwCls').value) === -1) { toast(t('tNotAllowed')); return false; }
   // v62: a cloud teacher posts through the server RPC. The row joins the
   // slice only after the server confirms it.
   if (state.cloudTeacherToken) {
@@ -10370,7 +10399,7 @@ var PAGE_TEACHER = { dashboard: teacherDashboard, students: studentsPage, attend
 // construction (canPost is school-only; reports only download).
 var PAGE_PRINCIPAL = { dashboard: principalDashboard, students: studentsPage, teachers: teachersPage, attendance: attendancePage, fees: feesPage, exams: examsPage, homework: homeworkPage, notices: noticesPage, reports: reportsPage };
 var PAGE_ACCOUNTANT = { dashboard: roleDashboard, fees: feesPage, reports: reportsPage, notices: noticesPage }; // v92: the accountant opens the fees + reports pages (the principal's read-only fees stay untouched)
-var PAGE_STAFF = { dashboard: roleDashboard, notices: noticesPage };
+var PAGE_STAFF = { dashboard: roleDashboard, attendance: attendancePage, homework: homeworkPage, notices: noticesPage }; // v93: a staff member opens attendance + homework (scoped to their classes) + notices
 // v86 (Phase 4): the Parent role reuses the student portal's read-only
 // views — the parent sees only their own child's data (meStudent() now
 // covers the parent role). Homework is scoped to the child's class and
