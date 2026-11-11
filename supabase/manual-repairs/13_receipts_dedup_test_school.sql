@@ -1,3 +1,4 @@
+-- NOT A TEST — manual, one-off, human approval required.
 -- School Saathi v41 — DEDUP the receipts the v40 repair loop created on the
 -- TEST school only (Test Sunrise School).
 -- WRITE ONLY — DO NOT APPLY BLINDLY. Review the preview first, then run the

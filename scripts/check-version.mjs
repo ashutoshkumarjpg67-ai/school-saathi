@@ -47,6 +47,26 @@ console.log(`sw.js ?v= occurrences: ${swVs.length} [${swVs.join(', ')}]`);
 check('sw.js ?v= count', swVs.length, 3);
 swVs.forEach((v, i) => check(`sw.js ?v= #${i + 1}`, v, truth));
 
+// 7. sw.js — APP_SHELL me icons/logo.svg precache hona chahiye (L-22; PR #7)
+//    Logo login screen par <img src="icons/logo.svg"> se dikhta hai — offline
+//    login par bhi dikhe, isliye precache list me hona zaroori hai.
+const shellBlock = sw.match(/APP_SHELL\s*=\s*\[([\s\S]*?)\]/);
+check('sw.js APP_SHELL has icons/logo.svg', shellBlock ? shellBlock[1].includes("'icons/logo.svg'") : 'MISSING', true);
+
+// 8. manifest.json — app ke actual values se consistent hona chahiye (L-22).
+//    Expected values invent nahi kiye — index.html / styles.css se liye gaye:
+//    naam = apple-mobile-web-app-title, theme = meta theme-color / CSS --navy.
+check('index.html links manifest.json', html.includes('rel="manifest" href="manifest.json"'), true);
+const manifest = JSON.parse(read('manifest.json'));
+const appTitle = html.match(/<meta name="apple-mobile-web-app-title" content="([^"]+)"/);
+const htmlTheme = html.match(/<meta name="theme-color" content="([^"]+)"/);
+const css = read('styles.css');
+const cssNavy = css.match(/--navy:\s*(#[0-9A-Fa-f]{6})/);
+check('manifest.json name', manifest.name, appTitle ? appTitle[1] : 'MISSING');
+check('manifest.json short_name', manifest.short_name, appTitle ? appTitle[1] : 'MISSING');
+check('manifest.json theme_color vs index.html', manifest.theme_color, htmlTheme ? htmlTheme[1] : 'MISSING');
+check('manifest.json theme_color vs styles.css --navy', manifest.theme_color, cssNavy ? cssNavy[1] : 'MISSING');
+
 if (failures.length) {
   console.error(`\nVERSION DRIFT: ${failures.length} check(s) failed — ${failures.join(', ')}`);
   console.error('version.json ka number baaki jagah bhi wahi rakho, phir dobara chalao.');
