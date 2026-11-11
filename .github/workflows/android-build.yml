@@ -11,8 +11,8 @@
 #   1. build-debug — always runs. Builds an unsigned-for-release DEBUG APK
 #      (Gradle signs debug builds with its own auto debug key, good enough
 #      for installing on a test phone). No secrets needed.
-#   2. build-release — SKIPPED automatically until signing secrets exist.
-#      Builds a signed release AAB for the Play Store.
+#   2. build-release — runs ONLY when "Build signed release AAB" is ticked
+#      on the Run workflow form. Builds a signed release AAB for the Play Store.
 #
 # RELEASE SIGNING (needed later, in Phase 8 — NOT set up here):
 #   The release job needs these four repository secrets
@@ -39,6 +39,12 @@ name: Android Build
 
 on:
   workflow_dispatch:
+    inputs:
+      build_release:
+        description: 'Also build the signed release AAB (needs the 4 signing secrets)'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -90,9 +96,12 @@ jobs:
   build-release:
     name: Release AAB (signed)
     needs: build-debug
-    # Runs ONLY when the signing secrets exist. Until the keystore decision
-    # is made and the four secrets are added, this job is skipped silently.
-    if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+    # Runs ONLY when "Build signed release AAB" is ticked on the Run workflow
+    # form. NOTE: GitHub does NOT allow the `secrets` context in a job-level
+    # `if`, so the gate is the workflow_dispatch input above — NOT the
+    # signing secrets. Until the keystore decision is made and the four
+    # secrets are added, leave the box unticked and this job is skipped.
+    if: ${{ inputs.build_release }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
