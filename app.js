@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 72;
+var APP_VERSION = 74;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -5878,6 +5878,17 @@ function sbTeacherRevokeSession(token) {
     return (r && r.ok) ? true : false;
   }).catch(function () { return false; });
 }
+function sbTeacherStudentPhoto(token, studentServerId) {
+  // v74 (P1-2): on-demand student photo for a cloud teacher — the login
+  // payload no longer ships photos (SQL 24). Returns the photo data URL
+  // string, or null when there is none / the call fails.
+  var _photoBody = {};
+  _photoBody.p_token = token;
+  _photoBody.p_student_id = studentServerId;
+  return sbRest('POST', 'rpc/ss_teacher_student_photo', SB_ANON_KEY, _photoBody).then(function (r) {
+    return (r && r.ok && r.data && typeof r.data === 'object' && r.data.ok) ? (r.data.photo_data_url || null) : null;
+  }).catch(function () { return null; });
+}
 function mapCloudTeacherPayload(p) {
   // Build a db-shaped slice from the server payload. The teacher views
   // (dashboard, attendance, homework, exams) read `db`, so the slice
@@ -5893,7 +5904,10 @@ function mapCloudTeacherPayload(p) {
   d.students = (p.students || []).filter(function (row) { return tClasses.indexOf(row.cls) !== -1; }).map(function (row) { var s = sbRowToStudent(row); if (row.id) { stuMap[row.id] = s.id; s.srvId = row.id; } return s; });
   d.teachers = [{ id: (p.teacher && p.teacher.local_id) || ('srv-' + (p.teacher && p.teacher.id)), name: (p.teacher && p.teacher.name) || '', subject: (p.teacher && p.teacher.subject) || '', cls: (p.teacher && p.teacher.cls) || '', classes: Array.isArray(p.teacher && p.teacher.classes) ? p.teacher.classes.slice() : [] }];
   var examMap = {};
-  d.exams = (p.exams || []).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100, deleted: !!row.deleted }; if (row.id) { examMap[row.id] = e.id; e.srvId = row.id; } return e; });
+  // v74 (P1-2): exams are class-filtered server-side (SQL 24); the mapper
+  // re-checks, like it already does for students/attendance/homework, so
+  // a stray row in the payload can never leak another class's exam.
+  d.exams = (p.exams || []).filter(function (row) { return tClasses.indexOf(row.cls) !== -1; }).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100, deleted: !!row.deleted }; if (row.id) { examMap[row.id] = e.id; e.srvId = row.id; } return e; });
   d.attendance = {};
   (p.attendance || []).forEach(function (row) {
     if (tClasses.indexOf(row.cls) === -1) return;
@@ -5961,6 +5975,19 @@ function doTeacherLogin(e) {
   // Local-only login (v35): teacher accounts live in schoolSaathiAccounts
   // on this device, with no server account — no Supabase attempt.
   var a = findAccount(id);
+  // v73: cloud fallback — a teacher whose school is on this device but
+  // who has no login account here (e.g. the account was created on
+  // another device) used to hit "Invalid email or password" without the
+  // server ever being asked, because the local school hides the cloud
+  // option ("local wins"). If there is no local account for this email
+  // and the picked school is linked to the server, verify on the server
+  // instead. A wrong password for an EXISTING local account never falls
+  // back (it must fail locally, without recording a server attempt).
+  if (!a && schoolSel) {
+    var srvId = null;
+    try { srvId = sbServerSchoolMap()[schoolSel] || null; } catch (e2) { srvId = null; }
+    if (srvId) { doTeacherCloudLogin(srvId, id, pw, err); return false; }
+  }
   // v59 (H-4): same device-local rate limit as the school login — 5 wrong
   // guesses lock this email's local login on this device for 15 minutes.
   // Only a real account counts; an unknown email never locks anything.
@@ -7475,6 +7502,28 @@ function openStudentProfile(id) {
   persistSession();
   histPush({ view: 'students', sub: 'profile:' + id });
   renderPage();
+  // v74 (P1-2): the cloud login no longer ships student photos — a cloud
+  // teacher fetches the photo on demand when opening a profile.
+  maybeLoadCloudStudentPhoto(id);
+}
+var _cloudPhotoLoading = {}; // v74 (P1-2): one in-flight photo fetch per student, so a profile re-open never double-fetches
+function maybeLoadCloudStudentPhoto(id) {
+  // Only a cloud teacher session has a token and a server photo to fetch.
+  // The school's own device already has the photo locally (or none).
+  if (!state.cloudTeacherToken || !state.user || !state.user.cloud) return;
+  var s = db.students.find(function (x) { return x.id === id; });
+  if (!s || s.photo || !s.srvId || _cloudPhotoLoading[id]) return;
+  _cloudPhotoLoading[id] = true;
+  sbTeacherStudentPhoto(state.cloudTeacherToken, s.srvId).then(function (url) {
+    _cloudPhotoLoading[id] = false;
+    if (!url) return;
+    var cur = db.students.find(function (x) { return x.id === id; });
+    if (!cur) return;
+    cur.photo = url;
+    // Keep the photo in the saved cloud snapshot so a refresh keeps it.
+    try { localStorage.setItem(CLOUD_TEACHER_KEY, JSON.stringify({ acct: state.user, slice: db, token: state.cloudTeacherToken })); } catch (e) {}
+    if (state.profileStudent === id) renderPage();
+  });
 }
 function setProfileTab(tab) { state.profileTab = tab; renderPage(); }
 function studentProfilePage(id) {
