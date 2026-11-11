@@ -6,16 +6,16 @@
    an icon not yet uploaded) must not fail the whole app shell.
    v37: version.json is network-first too — the in-app update check must see the
    LIVE version, never a cached marker. */
-var CACHE_NAME = 'school-saathi-v83';
+var CACHE_NAME = 'school-saathi-v84';
 var APP_SHELL = [
   './',
   'index.html',
-  'styles.css?v=83',
-  'app.js?v=83',
-  'js/modules/crypto.js?v=83',
-  'js/modules/i18n.js?v=83',
-  'js/bcrypt.js?v=83',
-  'qrgen.js?v=83',
+  'styles.css?v=84',
+  'app.js?v=84',
+  'js/modules/crypto.js?v=84',
+  'js/modules/i18n.js?v=84',
+  'js/bcrypt.js?v=84',
+  'qrgen.js?v=84',
   'version.json',
   'manifest.json',
   'icons/icon-192.png',

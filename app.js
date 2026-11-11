@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 83;
+var APP_VERSION = 84;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -4943,11 +4943,12 @@ function sessionOptions() {
   return out;
 }
 function studentStats() {
-  var total = db.students.length, active = 0, inactive = 0, draft = 0, cancelled = 0, boys = 0, girls = 0, unspec = 0, pend = 0, attSum = 0;
+  var vis = visibleStudents();
+  var total = vis.length, active = 0, inactive = 0, draft = 0, cancelled = 0, boys = 0, girls = 0, unspec = 0, pend = 0, attSum = 0;
   var byClass = {};
   var curSess = currentSession();
   var newAdm = 0;
-  db.students.forEach(function (s) {
+  vis.forEach(function (s) {
     var st = s.status || 'Active';
     if (st === 'Active') active++; else if (st === 'Inactive') inactive++; else if (st === 'Draft') draft++; else if (st === 'Cancelled') cancelled++;
     if (s.gender === 'Boy') boys++; else if (s.gender === 'Girl') girls++; else unspec++;
@@ -4969,7 +4970,7 @@ function classBarsHTML(byClass) {
 }
 function stuFiltered() {
   var q = (state.stuSearch || '').trim().toLowerCase();
-  return db.students.filter(function (s) {
+  return visibleStudents().filter(function (s) {
     if (state.stuClass !== 'All' && s.cls !== state.stuClass) return false;
     if (state.stuSection !== 'All' && sectionOf(s.cls) !== state.stuSection) return false;
     if (state.stuSession !== 'All' && (s.session || '') !== state.stuSession) return false;
@@ -6167,6 +6168,19 @@ function teacherClasses() {
   if (!te) return [];
   return Array.isArray(te.classes) ? te.classes.slice() : (te.cls ? [te.cls] : []);
 }
+function openTeacherClass(cls) {
+  // v84: a dashboard tile opens the Students list — a class tile filters
+  // to that class, the "My Students" tile shows all of the teacher's
+  // classes. Only the teacher's own classes are ever offered (the class
+  // filter itself is restricted), so a crafted cls cannot leak another
+  // class's students.
+  if (state.role !== 'teacher') return;
+  var tc = teacherClasses();
+  state.stuClass = (cls && tc.indexOf(cls) !== -1) ? cls : 'All';
+  state.stuPage = 1;
+  state.profileStudent = null;
+  go('students');
+}
 function canViewStudent(id) {
   // School: everything. Student: ONLY their own profile. Teacher: only
   // students in the classes they teach. Anyone else: nothing.
@@ -6178,6 +6192,21 @@ function canViewStudent(id) {
     return teacherClasses().indexOf(s.cls) !== -1;
   }
   return false;
+}
+function visibleStudents() {
+  // v84: the student set a role may see at all. School: everything.
+  // Teacher: only the classes they teach (a teacher must never see
+  // another class's students, their fees, or the school totals).
+  // Student: only themself (the list view is never opened by a student,
+  // but the helper keeps the rule in one place).
+  if (state.role === 'teacher') {
+    var tc = teacherClasses();
+    return db.students.filter(function (s) { return tc.indexOf(s.cls) !== -1; });
+  }
+  if (state.role === 'student') {
+    return db.students.filter(function (s) { return !!state.user && s.id === state.user.studentId; });
+  }
+  return db.students;
 }
 function teacherDashboard() {
   var te = teacherRecord();
@@ -6196,13 +6225,13 @@ function teacherDashboard() {
   }).join('');
   var classTiles = myClasses.map(function (c) {
     var n = myStudents.filter(function (s) { return s.cls === c; }).length;
-    return '<div class="tile blue"><div class="n">' + n + '</div><div class="l">' + esc(c) + '</div></div>';
+    return '<div class="tile blue" style="cursor:pointer" onclick="openTeacherClass(\'' + esc(c) + '\')"><div class="n">' + n + '</div><div class="l">' + esc(c) + '</div></div>';
   }).join('');
   return '<div class="phone"><div class="card"><div class="stu-hero">' + avatarHTML(null, te.name, 'avatar') + '</div>' +
     '<h3>' + esc(te.name) + '</h3><p>' + esc(te.subject || '') + ' • ' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div>' +
     '<div class="tile-grid">' +
     '<div class="tile green"><div class="n">' + myClasses.length + '</div><div class="l">' + t('tchrMyClasses') + '</div></div>' +
-    '<div class="tile yellow"><div class="n">' + myStudents.length + '</div><div class="l">' + t('tchrStudents') + '</div></div>' +
+    '<div class="tile yellow" style="cursor:pointer" onclick="openTeacherClass(\'\')"><div class="n">' + myStudents.length + '</div><div class="l">' + t('tchrStudents') + '</div></div>' +
     '<div class="tile purple"><div class="n">' + attToday + '</div><div class="l">' + t('presBtn') + ' ' + t('todayW') + '</div></div>' +
     '<div class="tile blue"><div class="n">' + hwDue + '</div><div class="l">' + t('tileHw') + '</div></div>' +
     '</div></div>' +
@@ -6435,7 +6464,7 @@ var NAV = {
     ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['fees', '💰', 'fees'], ['results', '📊', 'results'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
   ],
   teacher: [
-    ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
+    ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['attendance', '✅', 'attendance'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
   ]
 };
 var VIEW_TITLES = {
@@ -7132,6 +7161,9 @@ function activityLogPage() {
 function studentsPage() {
   if (state.profileStudent) return studentProfilePage(state.profileStudent);
   if (promoState) return promotionPage();
+  // v84: a teacher sees this page read-only — only their own classes,
+  // no fees, no checkboxes, no actions, no Add/Import/Promote.
+  var isTeacher = state.role === 'teacher';
   var st = studentStats();
   var list = stuSorted(stuFiltered());
   var pages = stuPageCount(list);
@@ -7141,11 +7173,11 @@ function studentsPage() {
     var fs = studentFeeStatus(s.id);
     var stt = s.status || 'Active';
     var badgeCls = stt === 'Active' ? 'green' : stt === 'Inactive' ? 'grey' : stt === 'Draft' ? 'blue' : 'red';
-    return '<tr><td class="sel-col"><input type="checkbox" ' + ((state.stuSel || {})[s.id] ? 'checked' : '') + ' onchange="toggleStuSel(\'' + s.id + '\', this.checked)" aria-label="' + esc(s.name) + '"></td><td>' + avatarHTML(s.photo, s.name, 'mini-avatar') + '<button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td>' +
+    return '<tr>' + (isTeacher ? '' : '<td class="sel-col"><input type="checkbox" ' + ((state.stuSel || {})[s.id] ? 'checked' : '') + ' onchange="toggleStuSel(\'' + s.id + '\', this.checked)" aria-label="' + esc(s.name) + '"></td>') + '<td>' + avatarHTML(s.photo, s.name, 'mini-avatar') + '<button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td>' +
       '<td>' + esc(s.numPending ? t('sbNumAssigning') : (s.admissionNo || '—')) + '</td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.fatherName || s.guardian) + '</td><td>' + esc(s.phone) + '</td><td>' + studentAttPct(s) + '%</td>' +
-      '<td><span class="badge ' + (fs === 'Paid' ? 'green' : fs === 'Pending' ? 'orange' : 'grey') + '">' + fs + '</span></td>' +
+      (isTeacher ? '' : '<td><span class="badge ' + (fs === 'Paid' ? 'green' : fs === 'Pending' ? 'orange' : 'grey') + '">' + fs + '</span></td>') +
       '<td><span class="badge ' + badgeCls + '">' + stt + '</span></td>' +
-      '<td><button class="btn ghost sm" onclick="stuActions(\'' + s.id + '\')">⋮ ' + t('actionsW') + '</button></td></tr>';
+      (isTeacher ? '' : '<td><button class="btn ghost sm" onclick="stuActions(\'' + s.id + '\')">⋮ ' + t('actionsW') + '</button></td>') + '</tr>';
   }).join('');
   var opt = function (vals, cur, allLabel) {
     return ['All'].concat(vals).map(function (v) {
@@ -7156,24 +7188,24 @@ function studentsPage() {
   var selCount = stuSelCount();
   var allPageSel = rows.length > 0 && rows.every(function (s) { return !!(state.stuSel || {})[s.id]; });
   var to = Math.min(list.length, state.stuPage * STU_PAGE_SIZE);
-  return '<div class="page-head"><div><h2>' + t('students') + '</h2><p>' + list.length + ' ' + t('ofWord') + ' ' + db.students.length + ' ' + t('studentsW') + '</p></div>' +
+  return '<div class="page-head"><div><h2>' + t('students') + '</h2><p>' + list.length + ' ' + t('ofWord') + ' ' + visibleStudents().length + ' ' + t('studentsW') + '</p></div>' +
     '<div class="toolbar"><input id="stuSearchInput" placeholder="' + t('stuSearchPh') + '" value="' + esc(state.stuSearch) + '" oninput="onStuSearch(this)" style="min-width:200px">' +
-    '<select onchange="state.stuClass=this.value;state.stuPage=1;renderPage()">' + opt(CLASSES, state.stuClass, t('allClasses')) + '</select>' +
+    '<select onchange="state.stuClass=this.value;state.stuPage=1;renderPage()">' + opt(isTeacher ? teacherClasses() : CLASSES, state.stuClass, t('allClasses')) + '</select>' +
     '<select onchange="state.stuSection=this.value;state.stuPage=1;renderPage()">' + opt(SECTIONS, state.stuSection, t('allSections')) + '</select>' +
     '<select onchange="state.stuSession=this.value;state.stuPage=1;renderPage()">' + opt(sessionOptions(), state.stuSession, t('allSessions')) + '</select>' +
     '<select onchange="state.stuGender=this.value;state.stuPage=1;renderPage()">' + opt(GENDERS, state.stuGender, t('allGenders')) + '</select>' +
-    '<select onchange="state.stuFee=this.value;state.stuPage=1;renderPage()">' + opt(['Paid', 'Pending', '—'], state.stuFee, t('allFeeSt')) + '</select>' +
+    (isTeacher ? '' : '<select onchange="state.stuFee=this.value;state.stuPage=1;renderPage()">' + opt(['Paid', 'Pending', '—'], state.stuFee, t('allFeeSt')) + '</select>') +
     '<select onchange="state.stuStatus=this.value;state.stuPage=1;renderPage()">' + opt(STU_STATUSES, state.stuStatus, t('allStatus')) + '</select>' +
     '<button class="btn ghost" onclick="exportStudentsCSV()">⬇ ' + t('exportCsv') + '</button>' +
-    '<button class="btn ghost" onclick="openImportModal()">📥 ' + t('impImportBtn') + '</button>' +
+    (isTeacher ? '' : '<button class="btn ghost" onclick="openImportModal()">📥 ' + t('impImportBtn') + '</button>' +
     '<button class="btn ghost" onclick="openPromotion()">⬆️ ' + t('promoBtn') + '</button>' +
-    '<button class="btn" onclick="studentForm()">+ ' + t('addStudent') + '</button></div></div>' +
+    '<button class="btn" onclick="studentForm()">+ ' + t('addStudent') + '</button>') + '</div></div>' +
     '<div class="stats">' +
     statCard('👥', 'blue', t('stTotal'), st.total, '', 'up') +
     statCard('✅', 'green', t('stActive'), st.active, '', 'up') +
     statCard('⏸️', 'blue', t('stInactive'), st.inactive, '', 'up') +
     statCard('🆕', 'orange', t('stNewAdm'), st.newAdm, '', 'up') +
-    statCard('⏰', 'red', t('stPendFee'), st.pendFee, '', 'down') +
+    (isTeacher ? '' : statCard('⏰', 'red', t('stPendFee'), st.pendFee, '', 'down')) +
     statCard('📊', 'blue', t('stAvgAtt'), st.avgAtt, '', 'up', { suffix: '%' }) +
     '</div>' +
     '<div class="grid2" style="margin-top:16px"><div class="card"><h3>' + t('stByClass') + '</h3><p class="muted">' + t('stByClassSub') + '</p><div style="margin-top:10px">' + classBarsHTML(st.byClass) + '</div></div>' +
@@ -7182,16 +7214,16 @@ function studentsPage() {
     '<div><div class="type-row"><b>' + t('stBoys') + '</b><span>' + st.boys + '</span></div>' +
     '<div class="type-row"><b>' + t('stGirls') + '</b><span>' + st.girls + '</span></div>' +
     '<div class="type-row"><b>' + t('stNotSpec') + '</b><span>' + st.unspec + '</span></div></div></div></div></div>' +
-    (selCount ? '<div class="card id-bulk-bar"><span><b>' + selCount + '</b> ' + t('promoSelected') + '</span><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" onclick="printIdCardsBulk()">🪪 ' + t('idcPrintCards') + ' (' + selCount + ')</button><button class="btn ghost sm" onclick="clearStuSel()">' + t('idcClearSel') + '</button></span></div>' : '') +
+    ((selCount && !isTeacher) ? '<div class="card id-bulk-bar"><span><b>' + selCount + '</b> ' + t('promoSelected') + '</span><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" onclick="printIdCardsBulk()">🪪 ' + t('idcPrintCards') + ' (' + selCount + ')</button><button class="btn ghost sm" onclick="clearStuSel()">' + t('idcClearSel') + '</button></span></div>' : '') +
     '<div class="card" style="margin-top:16px"><div class="tbl-wrap"><table><thead><tr>' +
-    '<th class="sel-col"><input type="checkbox" ' + (allPageSel ? 'checked' : '') + ' onchange="toggleStuSelAll(this.checked)" aria-label="' + t('idcSelectAll') + '"></th>' +
+    (isTeacher ? '' : '<th class="sel-col"><input type="checkbox" ' + (allPageSel ? 'checked' : '') + ' onchange="toggleStuSelAll(this.checked)" aria-label="' + t('idcSelectAll') + '"></th>') +
     '<th onclick="sortStu(\'name\')" style="cursor:pointer">' + t('thName') + sortArrow('name') + '</th>' +
     '<th>' + t('thAdmNo') + '</th>' +
     '<th onclick="sortStu(\'class\')" style="cursor:pointer">' + t('thClass') + sortArrow('class') + '</th>' +
     '<th>' + t('thRoll') + '</th><th>' + t('thFather') + '</th><th>' + t('thPhone') + '</th>' +
     '<th onclick="sortStu(\'att\')" style="cursor:pointer">' + t('thAtt') + sortArrow('att') + '</th>' +
-    '<th>' + t('thFee') + '</th><th>' + t('thStatus') + '</th><th>' + t('actionsW') + '</th></tr></thead><tbody>' +
-    (trs || '<tr><td colspan="11"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '</tbody></table></div>' +
+    (isTeacher ? '' : '<th>' + t('thFee') + '</th>') + '<th>' + t('thStatus') + '</th>' + (isTeacher ? '' : '<th>' + t('actionsW') + '</th>') + '</tr></thead><tbody>' +
+    (trs || '<tr><td colspan="' + (isTeacher ? 8 : 11) + '"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '</tbody></table></div>' +
     '<div class="toolbar" style="margin-top:12px;justify-content:space-between"><span class="muted">' + t('showingRec') + ' ' + from + '–' + to + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('studentsW') + '</span>' +
     '<span><button class="btn ghost sm" ' + (state.stuPage <= 1 ? 'disabled' : '') + ' onclick="state.stuPage--;renderPage()">← ' + t('prevW') + '</button> ' +
     '<span class="muted">' + t('pgPage') + ' ' + state.stuPage + ' ' + t('pgOf') + ' ' + pages + '</span> ' +
@@ -7397,6 +7429,7 @@ function saveStudent(e, id, mode) {
   return false;
 }
 function stuActions(id) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; } // v84: teachers are read-only — the Actions button is hidden for them; this is the backstop
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
   var stt = s.status || 'Active';
@@ -9850,7 +9883,7 @@ function studentResultsPage() {
   return '<div class="page-head"><div><h2>' + t('results') + '</h2><p>' + t('myResultsSub') + '</p></div></div>' + profileTabBody(me, 'results');
 }
 var PAGE_STUDENT = { dashboard: studentDashboard, attendance: studentAttendancePage, fees: studentFeesPage, results: studentResultsPage, homework: homeworkPage, notices: noticesPage };
-var PAGE_TEACHER = { dashboard: teacherDashboard, attendance: attendancePage, exams: examsPage, homework: homeworkPage, notices: noticesPage };
+var PAGE_TEACHER = { dashboard: teacherDashboard, students: studentsPage, attendance: attendancePage, exams: examsPage, homework: homeworkPage, notices: noticesPage };
 
 /* ================= init ================= */
 /* ================= App-update check (v61) =================
