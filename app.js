@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 82;
+var APP_VERSION = 83;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -4607,6 +4607,35 @@ function onSchoolLogo(input) {
     if (prev) prev.innerHTML = '<img class="photo-prev" src="' + esc(url) + '" alt="">';
   });
 }
+/* v83 (Phase 3): the file input's `change` event is the ONLY trigger for
+   onStudentPhoto — and in the cloud browser it does not always fire when
+   a file is set (v81/v82: the file name showed but the preview never
+   updated, so the photo was never read). A short poll watches the input
+   while the Edit Student form is open and processes a newly-selected
+   file even when no change event arrives. It is a no-op when the event
+   fires normally (pendingPhoto is already set for that file). */
+var photoWatchId = null, photoWatchFile = null;
+function startPhotoWatch() {
+  stopPhotoWatch();
+  photoWatchFile = null;
+  if (typeof setInterval === 'undefined') return;
+  photoWatchId = setInterval(function () {
+    try {
+      var input = $('fStPhoto');
+      if (!input) { stopPhotoWatch(); return; }
+      var file = input.files && input.files[0];
+      if (!file) { photoWatchFile = null; return; }
+      if (file === photoWatchFile) return;
+      if (pendingPhoto) { photoWatchFile = file; return; }
+      photoWatchFile = file;
+      onStudentPhoto(input);
+    } catch (e) { /* the watch must never break the form */ }
+  }, 400);
+}
+function stopPhotoWatch() {
+  if (photoWatchId !== null) { try { clearInterval(photoWatchId); } catch (e) {} photoWatchId = null; }
+  photoWatchFile = null;
+}
 function clearSchoolLogo() {
   pendingLogo = '';
   var inp = $('fPfLogo'); if (inp) inp.value = '';
@@ -5385,7 +5414,7 @@ function downloadCSV(filename, rows) {
   setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
 }
 function openModal(html, wide) { $('modalRoot').innerHTML = '<div class="modal-back" onclick="if(event.target===this)closeModal()"><div class="modal' + (wide ? ' wide' : '') + '">' + html + '</div></div>'; }
-function closeModal() { $('modalRoot').innerHTML = ''; }
+function closeModal() { $('modalRoot').innerHTML = ''; stopPhotoWatch(); }
 var confirmCb = null;
 function confirmModal(msg, cb) {
   confirmCb = cb;
@@ -7251,6 +7280,7 @@ function studentForm(id) {
     '<button type="button" class="btn ghost" onclick="return saveStudent(event,\'' + (id || '') + '\',\'draft\')">' + t('saveDraft') + '</button>' +
     '<button type="button" class="btn ghost" onclick="return saveStudent(event,\'' + (id || '') + '\',\'another\')">' + t('saveAddAnother') + '</button>' +
     '<button class="btn" type="submit">' + t('saveStudentBtn') + '</button></div></form>', true);
+  startPhotoWatch(); // v83: catch a file chosen without a change event
 }
 function saveStudent(e, id, mode) {
   if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
@@ -7301,6 +7331,7 @@ function saveStudent(e, id, mode) {
   if (dup) return failInto(errEl, t('tDupFound') + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' • ' + dup.cls + ')', true);
   function finishSave() {
     pendingPhoto = null;
+    stopPhotoWatch();
     saveDB(db); closeModal();
     if (mode === 'another') { renderApp(); studentForm(''); }
     else renderApp();
