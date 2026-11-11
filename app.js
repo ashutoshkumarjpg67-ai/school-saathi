@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 94;
+var APP_VERSION = 95;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -5966,6 +5966,16 @@ function doStudentLogin(e) {
     // a successful legacy login no plaintext PIN is left in localStorage.
     else if (stu.parentPin) ok = digitsOnly(pin) === digitsOnly(stu.parentPin);
   }
+  // v95 (hash sweep): a successful login upgrades a legacy PIN hash
+  // (s256$ or djb2) to bcrypt — the same upgrade-on-login the password
+  // paths already do. The upgraded hash syncs to the server on the next
+  // cycle, healing the server row too. writeDbByKey targets the
+  // SCHOOL's key (saveDB would write to the pre-login DB_KEY, which is
+  // the wrong key here).
+  if (ok && stu && stu.parentPinHash && stu.parentPinHash.indexOf('bcrypt$') !== 0) {
+    stu.parentPinHash = hashPin(pin);
+    try { writeDbByKey(found.dbKey, found.db); } catch (e) {}
+  }
   if (!found || !ok) {
     // Only a real student WITH a PIN counts toward the lockout — an
     // unknown admission number never locks anything.
@@ -6127,6 +6137,11 @@ function doParentLogin(e) {
   if (stu && digitsOnly(pin).length >= 4) {
     if (stu.parentPinHash) ok = verifyPin(pin, stu);
     else if (stu.parentPin) ok = digitsOnly(pin) === digitsOnly(stu.parentPin);
+  }
+  // v95 (hash sweep): same PIN-hash upgrade on login as the student path.
+  if (ok && stu && stu.parentPinHash && stu.parentPinHash.indexOf('bcrypt$') !== 0) {
+    stu.parentPinHash = hashPin(pin);
+    try { writeDbByKey(found.dbKey, found.db); } catch (e) {}
   }
   if (!found || !ok) {
     if (stu && pinHasPin(stu)) pinFailRecord(schoolUid, stu.id);
