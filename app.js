@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 91;
+var APP_VERSION = 92;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -6445,9 +6445,12 @@ function canViewStudent(id) {
   // School: everything. Student: ONLY their own profile. Teacher: only
   // students in the classes they teach. Parent: only their own child
   // (v88 — the v86 parent dashboard's View button hit "own profile only"
-  // until this). Principal: everything, read-only. Anyone else: nothing.
+  // until this). Principal: everything, read-only. Accountant: everything
+  // (v92 — they collect fees, so the collect screen must open). Anyone
+  // else: nothing.
   if (state.role === 'school') return true;
   if (state.role === 'principal') return true;
+  if (state.role === 'accountant') return true;
   if (state.role === 'student') return !!state.user && id === state.user.studentId;
   if (state.role === 'parent') return !!state.user && id === state.user.studentId;
   if (state.role === 'teacher') {
@@ -6779,7 +6782,7 @@ var NAV = {
     ['fees', '💰', 'fees'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices'], ['reports', '📄', 'reports']
   ],
   accountant: [
-    ['dashboard', '🏠', 'dashboard'], ['notices', '📢', 'notices']
+    ['dashboard', '🏠', 'dashboard'], ['fees', '💰', 'fees'], ['reports', '📄', 'reports'], ['notices', '📢', 'notices'] // v92: fees-focused nav — no students, no settings
   ],
   staff: [
     ['dashboard', '🏠', 'dashboard'], ['notices', '📢', 'notices']
@@ -6801,7 +6804,7 @@ var PERMS = {
   teacher: ['dashboard', 'students', 'attendance', 'exams', 'homework', 'notices'],
   student: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'],
   principal: ['dashboard', 'students', 'teachers', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports'], // v88: the principal oversees the whole school, read-only
-  accountant: ['dashboard', 'notices'],
+  accountant: ['dashboard', 'fees', 'reports', 'notices'], // v92: the accountant works fees + reports (receipts ride the fees page)
   staff: ['dashboard', 'notices'],
   parent: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'], // v86: the parent portal reuses the student views, view-only
   superadmin: ['dashboard', 'notices']
@@ -8537,7 +8540,7 @@ function feesPage() {
     return '<tr><td><button class="linklike" onclick="return openFeeProfile(\'' + r.studentId + '\', event)">' + esc(r.student) + '</button></td><td>' + esc(enrOf(r.studentId)) + '</td><td>' + esc(r.cls) + '</td><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td>' +
       '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
       '<td>' + receiptCellForRecord(r) + '</td>' +
-      '<td>' + (r.status === 'Pending' ? (state.role === 'principal' ? '<span class="muted">—</span>' : '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, r.studentId) + ' <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>') : '<span class="muted">—</span>') + '</td></tr>'; // v88: a principal sees the fee list read-only — no Collect/Delete/WhatsApp (openCollectFee/deleteFeeRecord already refuse non-school; this hides the dead buttons)
+      '<td>' + (r.status === 'Pending' ? (state.role === 'principal' ? '<span class="muted">—</span>' : state.role === 'accountant' ? '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, r.studentId) : '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, r.studentId) + ' <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>') : '<span class="muted">—</span>') + '</td></tr>'; // v88: a principal sees the fee list read-only — no Collect/Delete/WhatsApp; v92: an accountant collects + reminds but never deletes (deleteFeeRecord refuses non-school anyway)
   }).join('');
   return '<div class="page-head"><div><h2>' + t('fees') + '</h2><p>' + t('collectedW') + ' ' + inr(ft.collected) + ' • ' + t('pendingW') + ' ' + inr(ft.pending) + ' (' + feeRangeLabel() + ')</p></div>' +
     '<div class="toolbar"><div class="pill-tabs">' + ['All', 'Pending', 'Collected'].map(function (x) {
@@ -8556,7 +8559,7 @@ function feesPage() {
     (rows || '<tr><td colspan="10"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '<tr id="feeNoMatch" style="display:none"><td colspan="10"><div class="empty">' + t('tNoMatch') + '</div></td></tr></tbody></table></div>' +
     '<p class="muted" id="feeCount" style="margin-top:10px">' + t('showingRec') + ' ' + shown + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('recordsWord') + '</p>' +
     (list.length > shown ? '<div style="margin-top:10px"><button class="btn ghost" onclick="state.feeLimit=(state.feeLimit||120)+120;renderPage()">' + t('loadMore') + '</button></div>' : '') + '</div>' +
-    (state.role === 'principal' ? '' : feeFormCard() + feeStructureCard()); // v88: the fee-entry + fee-structure cards are school-only — a principal never sees them
+    (state.role === 'school' ? feeFormCard() + feeStructureCard() : ''); // v88: the fee-entry + fee-structure cards are school-only — a principal never sees them; v92: an accountant never sees them either
 }
 
 /* ================= student fee profile ================= */
@@ -8582,12 +8585,12 @@ function studentFeeProfile(sid) {
   var rows = recs.map(function (r) {
     return '<tr><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td>' +
       '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
-      '<td>' + (r.status === 'Pending' ? '<button class="btn green sm" onclick="openCollectFee(\'' + s.id + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, s.id) + ' <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>' : '<span class="muted">—</span>') + '</td></tr>';
+      '<td>' + (r.status === 'Pending' ? (state.role === 'principal' ? '<span class="muted">—</span>' : state.role === 'accountant' ? '<button class="btn green sm" onclick="openCollectFee(\'' + s.id + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, s.id) : '<button class="btn green sm" onclick="openCollectFee(\'' + s.id + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, s.id) + ' <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>') : '<span class="muted">—</span>') + '</td></tr>'; // v92: the fee-profile rows follow the same rule as the fee list — principal read-only, accountant collects but never deletes
   }).join('');
   return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • ' + t('thGuardian') + ' ' + esc(s.guardian) + ' • ' + t('thPhone') + ' ' + esc(s.phone) + '</p><p class="muted">' + t('feeProfileSub') + '</p></div></div>' +
     '<div class="toolbar"><button class="btn ghost" onclick="backFromFeeProfile()">← ' + t('backFees') + '</button>' +
-    '<button class="btn green" onclick="openCollectFee(\'' + s.id + '\')">💰 ' + t('collectFeeBtn') + '</button>' +
-    '<button class="btn" onclick="openAddFeeFor(\'' + s.id + '\')">+ ' + t('addFee') + '</button>' +
+    ((state.role === 'school' || state.role === 'accountant') ? '<button class="btn green" onclick="openCollectFee(\'' + s.id + '\')">💰 ' + t('collectFeeBtn') + '</button>' : '') + // v92: the fee-profile Collect button is school + accountant only — a principal never sees it
+    (state.role === 'school' ? '<button class="btn" onclick="openAddFeeFor(\'' + s.id + '\')">+ ' + t('addFee') + '</button>' : '') + // v92: the Add Fee button is school-only (was visible to every role)
     '<button class="btn ghost" onclick="printStudentStatement(\'' + s.id + '\')">🖨 ' + t('printStmt') + '</button></div></div>' +
     '<div class="stats">' +
     statCard('🧾', 'blue', t('totalBilled'), billed, '', 'up', { prefix: '₹' }) +
@@ -9058,7 +9061,9 @@ function newCollectDraft(sid, recordId) {
   return { studentId: sid, month: month, counterNo: 'COUNTER-1', payMode: 'Cash', payDate: todayIST(), bank: '', number: '', lines: buildCollectLines(sid, recordId, month), busIncluded: busDefault(sid) };
 }
 function openCollectFee(sid, recordId) {
-  if (state.role !== 'school') return;
+  // v92: the accountant collects fees too — the school admin and the
+  // accountant are the only roles that open the collect screen.
+  if (state.role !== 'school' && state.role !== 'accountant') return;
   var s = db.students.find(function (x) { return x.id === sid; });
   if (!s || !canViewStudent(sid)) return;
   if (s.status === 'Cancelled' || s.status === 'Draft') { toast(t('tCollectNotActive')); return; }
@@ -9259,6 +9264,8 @@ function collectFeePage(sid) {
 }
 function saveCollectFee(e) {
   if (e) e.preventDefault();
+  // v92: only the school admin and the accountant ever collect a fee.
+  if (state.role !== 'school' && state.role !== 'accountant') { toast(t('tNotAllowed')); return false; }
   var d = collectDraft; if (!d) return false;
   readCollectInputs();
   var s = db.students.find(function (x) { return x.id === d.studentId; });
@@ -10362,7 +10369,7 @@ var PAGE_TEACHER = { dashboard: teacherDashboard, students: studentsPage, attend
 // gating in each page). Notices and reports are read-only by
 // construction (canPost is school-only; reports only download).
 var PAGE_PRINCIPAL = { dashboard: principalDashboard, students: studentsPage, teachers: teachersPage, attendance: attendancePage, fees: feesPage, exams: examsPage, homework: homeworkPage, notices: noticesPage, reports: reportsPage };
-var PAGE_ACCOUNTANT = { dashboard: roleDashboard, notices: noticesPage };
+var PAGE_ACCOUNTANT = { dashboard: roleDashboard, fees: feesPage, reports: reportsPage, notices: noticesPage }; // v92: the accountant opens the fees + reports pages (the principal's read-only fees stay untouched)
 var PAGE_STAFF = { dashboard: roleDashboard, notices: noticesPage };
 // v86 (Phase 4): the Parent role reuses the student portal's read-only
 // views — the parent sees only their own child's data (meStudent() now
