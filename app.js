@@ -2808,12 +2808,32 @@ function sbSyncQueueDiff() {
   });
   return queued;
 }
+var sbSyncDiffSkipped = false; // B22 (M-16): offline saves skipped the diff — the next online cycle re-runs it
+function sbSyncCatchUpDiff() {
+  // B22 (M-16): run the full diff that offline saves skipped, so the
+  // outbox is complete before anything uploads. The flag is cleared
+  // first, so a throwing diff never wedges it on. This is also the
+  // periodic self-heal: the full diff runs on every reconnect cycle
+  // that follows offline saves (the idle-cycle hasWork43 check runs it
+  // too when there is no other work).
+  if (!sbSyncDiffSkipped) return 0;
+  sbSyncDiffSkipped = false;
+  try { return sbSyncQueueDiff(); } catch (e) { return 0; }
+}
 function sbSyncOnSave() {
   // Called from saveDB after every local write. Queues the change and
   // schedules a push when a server session is active. Local-only
   // accounts: no-op. Sync must never break a local save.
   if (!sbSyncActive()) return;
   try {
+    // B22 (M-16): offline saves skip the full re-hash entirely —
+    // hashing every row (with ~120KB base64 photos) on every tap while
+    // offline is pure cost with no server to send to. The change is
+    // NOT lost: sbSyncCatchUpDiff re-runs the full diff at the start
+    // of the next online cycle (sbSyncCycleRun), before the repair and
+    // upload passes, so the outbox it produces is identical to the
+    // one the per-save diff would have produced.
+    if (!sbIsOnline()) { sbSyncDiffSkipped = true; sbSetStatus('pending'); return; }
     var n = sbSyncQueueDiff();
     if (n && sbIsOnline()) sbSyncScheduleFlush();
     else if (n) sbSetStatus('pending');
@@ -3791,6 +3811,7 @@ function sbSyncCycleRun(account, sbUid, token) {
     sbSetStatus(left ? 'pending' : 'offline');
     return Promise.resolve({ done: false, reason: 'offline' });
   }
+  sbSyncCatchUpDiff(); // B22 (M-16): queue the changes saved while offline, before the repair/upload passes
   var tokP = token ? Promise.resolve(token) : sbGetValidToken();
   return tokP.then(function (tok) {
     if (!tok) { sbSetStatus(sbSessionExpired ? 'session-expired' : 'offline'); return { done: false, reason: 'no-token' }; } // v34 (P1-3)
@@ -4397,13 +4418,33 @@ function readDbByKey(key) {
 }
 function writeDbByKey(key, d) { try { localStorage.setItem(key, JSON.stringify(d)); } catch (e) {} }
 function loadDB(override) {
+  // B17 (H-8): a corrupt stored DB used to be silently replaced by an
+  // empty one (and the failed save overwrote DB_KEY). Now: try the
+  // .bak first; if that fails too, quarantine the corrupt payload and
+  // say so out loud instead of silently starting empty.
+  var pendingBak = null; // unknown-version payload, preserved as .bak AFTER the fresh save below
   try {
     var raw = localStorage.getItem(DB_KEY);
     if (raw) {
-      var d = JSON.parse(raw);
+      var d = null;
+      try { d = JSON.parse(raw); } catch (eParse) { d = null; }
       if (d && d.v === 2) { var m = migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))))); saveDB(m); return m; }
-      // Unknown version: keep a backup, never wipe silently.
-      try { localStorage.setItem(DB_KEY + '.bak', raw); } catch (e2) { /* ignore */ }
+      if (d) {
+        // Parsed but unknown version: keep a backup, never wipe silently.
+        pendingBak = raw;
+      } else {
+        // Corrupt JSON: the .bak holds the last successfully saved DB.
+        var recovered = sbLoadBak();
+        if (recovered) {
+          try { toast(t('sbRecoveredBak')); } catch (eT) {}
+          return recovered;
+        }
+        // .bak is corrupt/missing too: quarantine the torn payload so
+        // it can still be recovered by hand, and warn persistently.
+        try { localStorage.setItem(DB_KEY + '.quarantine', raw); } catch (eQ) {}
+        sbStorageWarnSet('corrupt');
+        try { toast(t('sbDataCorrupt')); } catch (eT2) {}
+      }
     }
   } catch (e) { /* storage unavailable — fall back to memory */ }
   // v36: a fresh device starts EMPTY — the demo DB no longer seeds on
@@ -4415,14 +4456,140 @@ function loadDB(override) {
   var fresh = emptyDb();
   if (override) applySchoolProfile(fresh, override);
   saveDB(fresh);
+  // The fresh save rewrote .bak with the empty DB — restore the
+  // unknown-version backup on top of it (it is the only copy left).
+  if (pendingBak) { try { localStorage.setItem(DB_KEY + '.bak', pendingBak); } catch (eB) {} }
   return fresh;
 }
+function sbLoadBak() {
+  // B17 (H-8): read DB_KEY + '.bak' (rewritten by saveDB on every
+  // successful save). Returns the migrated DB, or null when the .bak
+  // is missing, corrupt, or the wrong version.
+  try {
+    var raw = localStorage.getItem(DB_KEY + '.bak');
+    if (!raw) return null;
+    var d = JSON.parse(raw);
+    if (!d || d.v !== 2) return null;
+    var m = migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))))))));
+    saveDB(m);
+    return m;
+  } catch (e) { return null; }
+}
 var MEM_FALLBACK = null;
+function sbIsQuotaError(e) {
+  // B18 (H-9): localStorage throws a DOMException named
+  // QuotaExceededError (code 22 in older browsers) when the device
+  // storage is full.
+  if (!e) return false;
+  return e.name === 'QuotaExceededError' || e.code === 22 || /quota/i.test(String(e.message || ''));
+}
 function saveDB(db) {
-  try { localStorage.setItem(DB_KEY, JSON.stringify(db)); }
-  catch (e) { MEM_FALLBACK = db; }
+  // B17 (H-8): the .bak is rewritten on every successful save (not
+  // only on version change), so it always holds the last good DB.
+  // A failing .bak write never breaks the primary save.
+  var ok = false;
+  try {
+    var s = JSON.stringify(db);
+    localStorage.setItem(DB_KEY, s);
+    ok = true;
+    try { localStorage.setItem(DB_KEY + '.bak', s); } catch (eBak) {}
+  } catch (e) {
+    MEM_FALLBACK = db;
+    // B18 (H-9): a full device must never fall back to memory-only
+    // silently — raise a sticky warning with a way out.
+    if (sbIsQuotaError(e)) sbStorageWarnSet('quota');
+  }
   MEM_FALLBACK = db;
+  // A successful save means the device is no longer full (photos were
+  // removed or space was freed elsewhere) — clear the quota warning.
+  // A 'corrupt' warning is NOT cleared here: it is only resolved by a
+  // backup restore (restoreFullBackup) or a session dismiss.
+  if (ok) sbStorageWarnClear('quota');
   sbSyncOnSave(); // v31: server-first — queue + push local changes (no-op for local-only accounts)
+  return ok;
+}
+
+/* ================= storage warnings (B17/B18) ================= */
+// A sticky (non-toast) warning bar: it survives reloads until the
+// condition is resolved, because a 2.6 s toast is not enough for
+// "your data did not save" or "your data was corrupt". The marker
+// lives in localStorage; the bar is rendered by renderApp().
+var SB_STORAGE_WARN_KEY = 'schoolSaathiStorageWarn';
+var sbStorageWarnCur = null; // in-memory current warning — the source of truth for this session (on a quota-full device even the marker write can fail, so the bar must not depend on it)
+var sbStorageWarnDismissed = false; // session-only: a dismiss hides the bar until the next reload
+function sbStorageWarnLoad() {
+  if (sbStorageWarnCur) return sbStorageWarnCur;
+  try { var r = localStorage.getItem(SB_STORAGE_WARN_KEY); return r ? JSON.parse(r) : null; }
+  catch (e) { return null; }
+}
+function sbStorageWarnSet(kind, detail) {
+  sbStorageWarnCur = { kind: kind, at: new Date().toISOString(), detail: detail || '' };
+  try { localStorage.setItem(SB_STORAGE_WARN_KEY, JSON.stringify(sbStorageWarnCur)); } catch (e) {}
+  sbStorageWarnDismissed = false;
+  sbStorageWarnRender();
+}
+function sbStorageWarnClear(kind) {
+  var cur = sbStorageWarnLoad();
+  if (kind && cur && cur.kind !== kind) return;
+  sbStorageWarnCur = null;
+  try { localStorage.removeItem(SB_STORAGE_WARN_KEY); } catch (e) {}
+  sbStorageWarnRender();
+}
+function sbStorageWarnDismiss() { sbStorageWarnDismissed = true; sbStorageWarnRender(); }
+function sbStorageWarnRender() {
+  try {
+    if (typeof document === 'undefined' || !document.getElementById) return;
+    var warn = sbStorageWarnDismissed ? null : sbStorageWarnLoad();
+    var bar = document.getElementById('storageWarn');
+    if (!warn) { if (bar && bar.classList) bar.classList.add('hidden'); return; }
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'storageWarn';
+      bar.style.cssText = 'margin:8px 12px 0;padding:10px 12px;border:1px solid #f59e0b;background:#fffbeb;border-radius:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:14px;';
+      var main = (document.querySelector && document.querySelector('.main')) || null;
+      var page = document.getElementById('page');
+      if (main && page && main.insertBefore) main.insertBefore(bar, page);
+      else if (main && main.appendChild) main.appendChild(bar);
+      else if (document.body && document.body.appendChild) document.body.appendChild(bar);
+      else return;
+    }
+    var msg = warn.kind === 'quota' ? t('sbStorageQuota') : t('sbDataCorrupt');
+    var act = warn.kind === 'quota'
+      ? '<button type="button" class="btn sm" onclick="sbStorageFreePhotos()">' + esc(t('sbStorageRemovePhotos')) + '</button>'
+      : '<button type="button" class="btn sm" onclick="sbStorageOpenRestore()">' + esc(t('sbStorageRestoreBackup')) + '</button>';
+    bar.innerHTML = '<span>' + esc(msg) + '</span> ' + act + ' <button type="button" class="btn ghost sm" onclick="sbStorageWarnDismiss()">' + esc(t('closeW')) + '</button>';
+    if (bar.classList) bar.classList.remove('hidden');
+  } catch (e) {}
+}
+function sbStorageOpenRestore() {
+  // B17: the corrupt-data bar sends the user to Settings, where the
+  // backup-restore file picker lives (restoring also clears the
+  // warning — see restoreFullBackup).
+  try { if (state && state.user) go('settings'); } catch (e) {}
+}
+function sbStorageFreePhotos() {
+  // B18 (H-9): remove student photos oldest-first until a save
+  // succeeds, or until no photos are left. Only runs on an explicit
+  // tap of the warning bar's button; every removal is logged.
+  var students = (db.students || []).filter(function (s) { return s.photo; });
+  students.sort(function (a, b) {
+    var da = String(a.admissionDate || ''), dbb = String(b.admissionDate || '');
+    return da < dbb ? -1 : (da > dbb ? 1 : 0);
+  });
+  var removed = 0;
+  while (students.length) {
+    var s = students.shift();
+    s.photo = '';
+    removed++;
+    if (saveDB(db)) {
+      try { logAudit('Photos removed to free storage', removed + ' oldest photos removed'); } catch (eL) {}
+      toast(t('sbPhotosRemoved').replace('{n}', String(removed)));
+      try { renderApp(); } catch (eR) {}
+      return removed;
+    }
+  }
+  // No photos left (or none at all) — the sticky warning stays up.
+  return 0;
 }
 var db = loadDB();
 
@@ -5398,7 +5565,13 @@ var I18N = {
     waReceiptMsg: 'Namaste, this is {school}. Fee receipt {receipt} — {student} (Class {cls}), {amount} paid for {month} on {date}. Thank you.',
     waGreetMsg: 'Namaste, this is {school}. This is regarding {student} (Class {cls}).',
     waSchoolContact: 'School',
-    sbSyncRetrying: 'Retrying…'
+    sbSyncRetrying: 'Retrying…',
+    sbStorageQuota: 'Storage full — remove photos or export a backup.',
+    sbDataCorrupt: 'Data corrupt — restore from backup.',
+    sbRecoveredBak: 'Your data was recovered from the last saved copy.',
+    sbPhotosRemoved: 'Removed {n} oldest photos — storage freed.',
+    sbStorageRemovePhotos: 'Remove oldest photos',
+    sbStorageRestoreBackup: 'Open backup restore'
   },
   hi: {
     dashboard: 'डैशबोर्ड', settings: 'सेटिंग्स', reports: 'रिपोर्ट', students: 'छात्र प्रबंधन', attendance: 'उपस्थिति', fees: 'शुल्क', results: 'परिणाम', exams: 'परीक्षा', homework: 'होमवर्क', notices: 'नोटिस', totalStudents: 'कुल छात्र', totalTeachers: 'कुल शिक्षक', feeCollected: 'शुल्क संग्रह', pendingFee: 'बकाया शुल्क', logout: 'लॉगआउट',
@@ -5436,7 +5609,13 @@ var I18N = {
     waReceiptMsg: 'नमस्ते, यह {school} है। फीस रसीद {receipt} — {student} (कक्षा {cls}), {month} के लिए {amount} का भुगतान {date} को हुआ। धन्यवाद।',
     waGreetMsg: 'नमस्ते, यह {school} है। {student} (कक्षा {cls}) के बारे में बात करनी है।',
     waSchoolContact: 'स्कूल',
-    sbSyncRetrying: 'फिर कोशिश हो रही है…'
+    sbSyncRetrying: 'फिर कोशिश हो रही है…',
+    sbStorageQuota: 'स्टोरेज भर गया है — फ़ोटो हटाएँ या बैकअप निर्यात करें।',
+    sbDataCorrupt: 'डेटा खराब हो गया है — बैकअप से रिस्टोर करें।',
+    sbRecoveredBak: 'आपका डेटा आखिरी सहेजी हुई प्रति से वापस लाया गया।',
+    sbPhotosRemoved: '{n} सबसे पुरानी फ़ोटो हटाई गईं — स्टोरेज खाली हुआ।',
+    sbStorageRemovePhotos: 'सबसे पुरानी फ़ोटो हटाएँ',
+    sbStorageRestoreBackup: 'बैकअप रिस्टोर खोलें'
   }
 };
 function t(k) { return (I18N[state.lang] && I18N[state.lang][k]) || I18N.en[k] || k; }
@@ -6560,6 +6739,7 @@ function renderApp() {
   if (state.view === 'dashboard') $('topTitle').textContent = t('dashboard');
   $('topCrumb').textContent = state.role === 'school' ? prof.name + ', ' + prof.city : (state.role === 'student' ? t('stuDashboard') : t('tchrDashboard'));
   sbOfflineChipRefresh(); // B7 (M-26): the topbar chip is re-driven on every render
+  sbStorageWarnRender(); // B17/B18: re-show the sticky storage warning (if any) on every render
   renderPage();
 }
 function changeSession(v) {
@@ -9442,6 +9622,7 @@ function restoreFullBackup(obj) {
   sbSyncResetMemory();
   logAudit('Backup restored', counts.students + ' students • ' + counts.teachers + ' teachers • ' + counts.exams + ' exams • ' + counts.feeRecords + ' fee records');
   saveDB(db);
+  sbStorageWarnClear('corrupt'); // B17: a successful restore resolves the corrupt-data warning
   return { ok: true, counts: counts };
 }
 function requestRestore(parsed) {
