@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 67;
+var APP_VERSION = 68;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -5880,8 +5880,15 @@ function sbSchoolLoginFailed(email) {
     return (r && r.data) || null;
   }).catch(function () { return null; });
 }
-function sbSchoolLoginOk(email) {
-  return sbRest('POST', 'rpc/ss_school_login_ok', SB_ANON_KEY, { p_email: email }).catch(function () {});
+function sbSchoolLoginOk(email, token) {
+  // v68 (audit P0-1): the reset RPC is auth-bound (SQL 21) — it only
+  // clears the counter for the caller's own email, and anon is revoked
+  // on it. Call it with the fresh GoTrue access token from the
+  // just-completed sign-in, never with the anon key. No token means no
+  // reset (the counter simply is not cleared that once — login itself
+  // is unaffected, and the old call already swallowed its errors).
+  if (!token) return Promise.resolve(null);
+  return sbRest('POST', 'rpc/ss_school_login_ok', token, { p_email: email }).catch(function () {});
 }
 function sbPublicSchools() {
   if (cloudSchoolsCache) return Promise.resolve(cloudSchoolsCache);
@@ -6201,7 +6208,7 @@ function doLogin(e) {
         return;
       }
       sbSignIn(id, pw).then(function (res) {
-      if (res.ok && res.data && res.data.access_token) { sbSchoolLoginOk(id); sbFinishSupabaseLogin(res.data, id, pw); return; }
+      if (res.ok && res.data && res.data.access_token) { sbSchoolLoginOk(id, res.data.access_token); sbFinishSupabaseLogin(res.data, id, pw); return; }
       // v63: record a wrong-password failure BEFORE any branch — even
       // when this device has no local account for the email (a fresh
       // device must still count attempts, or the lock would never engage
