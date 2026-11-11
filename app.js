@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 80;
+var APP_VERSION = 81;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -2124,6 +2124,28 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
       if (old.parentPinHash) s.parentPinHash = old.parentPinHash;
       else if (old.parentPin === '') s.parentPin = '';
       else if (typeof old.parentPin === 'string' && old.parentPin) s.parentPinHash = hashPin(old.parentPin); // Phase 1 (H-3): a legacy plaintext PIN is hashed, never kept as plaintext (loadDB normally hashes it before the sync runs, so this is a backstop, not the main path)
+    });
+  })();
+  // v81 (Phase 3): photo heal — a local student with NO photo takes the
+  // server's photo when the server has one. A missing local photo is
+  // never a deliberate delete (a delete queues an upsert that clears
+  // the server fields too), so a server photo here means the local row
+  // is stale — a pull that ran before the photo uploaded, or a v56 keep
+  // that returned the pre-photo local row. This only FILLS a missing
+  // photo; it never overwrites a local photo.
+  (function () {
+    var srvPhotoById = {};
+    (byTable.ss_students || []).forEach(function (row) {
+      var id = row.local_id || ('srv-' + row.id);
+      var ph = row.photo_data_url || row.photo_url || null;
+      if (ph) srvPhotoById[id] = { photo: ph, photoUrl: row.photo_url || null };
+    });
+    d.students.forEach(function (s) {
+      if (s.photo) return;
+      var p = srvPhotoById[s.id];
+      if (!p) return;
+      s.photo = p.photo;
+      if (p.photoUrl) s.photoUrl = p.photoUrl;
     });
   })();
   d.teachers = mergeById('ss_teachers', d.teachers || [], byTable.ss_teachers || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [] }; });
