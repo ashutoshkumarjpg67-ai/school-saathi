@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 89;
+var APP_VERSION = 90;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -1012,6 +1012,23 @@ function sbMapTeacher(te, schoolId) {
   } catch (e) {}
   return row;
 }
+function sbMapStaff(st, schoolId) {
+  // v90 (Phase 4): the staff row for ss_staff. Mirrors sbMapTeacher —
+  // the login email + salted password hash ride with the row, so the
+  // staff member can log in from any device (SQL 30). Only bcrypt$ /
+  // s256$ hashes are sent — a legacy djb2 hash is skipped (the staff
+  // member logs in once on the school device, which upgrades it, and
+  // syncs). The hash is never pulled back down: the accounts store
+  // stays the source of truth. The role rides the row (the server
+  // checks it on login); classes[] rides for the Staff role only.
+  var row = { school_id: schoolId, local_id: st.id, name: st.name || '', role: st.role || 'staff', classes: Array.isArray(st.classes) ? st.classes.slice() : [] };
+  try {
+    var acc = loadAccounts().filter(function (a) { return (a.role === 'principal' || a.role === 'accountant' || a.role === 'staff') && a.staffId === st.id; })[0];
+    if (acc && acc.email) row.email = String(acc.email).toLowerCase();
+    if (acc && acc.pwHash && (String(acc.pwHash).indexOf('s256$') === 0 || String(acc.pwHash).indexOf('bcrypt$') === 0)) row.pw_hash = acc.pwHash;
+  } catch (e) {}
+  return row;
+}
 function sbMapExam(e, schoolId) {
   return { school_id: schoolId, local_id: e.id, name: e.name || '', cls: e.cls || '', subject: e.subject || '',
     exam_date: sbNullIfEmpty(e.date), total: e.total || 100, deleted: !!e.deleted }; // v67 (SQL 20): the deleted flag rides the upload, so a soft delete travels
@@ -1585,6 +1602,21 @@ function sbSyncUploadMissing(account, sbUid, token) {
         function (row) { return row.local_id; });
     });
   }
+  function stepStaff() {
+    // v90 (Phase 4): staff members upload like teachers — Phase A (no
+    // id map needed). A staff row with no login account yet (created by
+    // an older build) still uploads the name/role/classes; the login
+    // lands when the account is created.
+    return step('ss_staff', function () {
+      var stRows = (d.staff || []).filter(function (st) { return !sbIsSeedRow('ss_staff', st, d); }).map(function (st) { return sbMapStaff(st, schoolId); });
+      var stUpload = schoolRecreated
+        ? freshRows('ss_staff', stRows, function (row) { return row.local_id; })
+        : stRows;
+      return sbUploadMissing(token, schoolId, 'ss_staff', 'local_id',
+        stUpload,
+        function (row) { return row.local_id; });
+    });
+  }
   function stepExams() {
     return step('ss_exams', function () {
       var exRows = (d.exams || []).filter(function (e) { return !sbIsSeedRow('ss_exams', e, d); }).map(function (e) { return sbMapExam(e, schoolId); });
@@ -1762,7 +1794,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
     // PATCH stays last, after the tables. Per-table error handling is
     // unchanged: step() still records a failure per table and the
     // chain continues with the rest.
-    return Promise.all([stepFeeStructure(), stepStudents(), stepTeachers(), stepExams(), stepNotices(), stepAuditLog(), stepActivities()]);
+    return Promise.all([stepFeeStructure(), stepStudents(), stepTeachers(), stepStaff(), stepExams(), stepNotices(), stepAuditLog(), stepActivities()]);
   }).then(function () {
     return Promise.all([stepFeeRecords(), stepAttendance(), stepReceipts(), stepMarks(), stepHomework()]);
   }).then(function () {
@@ -2151,6 +2183,11 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     });
   })();
   d.teachers = mergeById('ss_teachers', d.teachers || [], byTable.ss_teachers || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [] }; });
+  // v90 (Phase 4): the staff list mirrors the server. The pull never
+  // carries a password hash (the accounts store is the source of truth)
+  // and never overwrites a local-only staff row that has not uploaded
+  // yet — mergeById keeps un-synced rows, like it does for teachers.
+  d.staff = mergeById('ss_staff', d.staff || [], byTable.ss_staff || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', role: row.role || 'staff', classes: Array.isArray(row.classes) ? row.classes.slice() : [] }; });
   var oldExams = d.exams || [];
   d.exams = mergeById('ss_exams', d.exams || [], byTable.ss_exams || [], function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100, deleted: !!row.deleted }; examMap[row.id] = e.id; return e; });
   // v67 (SQL 20): the server row now carries the deleted flag, so the
@@ -2634,6 +2671,7 @@ function sbSyncMapRow(table, row, schoolId, maps, d) {
   // re-queued (with the right id) once its parent is pushed.
   if (table === 'ss_students') return sbMapStudent(row, schoolId);
   if (table === 'ss_teachers') return sbMapTeacher(row, schoolId);
+  if (table === 'ss_staff') return sbMapStaff(row, schoolId); // v90 (Phase 4): staff edits ride the outbox like teacher edits do
   if (table === 'ss_exams') return sbMapExam(row, schoolId);
   if (table === 'ss_fee_records') return sbMapFeeRecord(row, schoolId, maps.stu);
   if (table === 'ss_homework') return sbMapHomework(row, schoolId, maps.stu);
@@ -2661,6 +2699,7 @@ function sbSyncPayloadReady(table, payload) {
 }
 var SB_SYNC_TABLES = {
   ss_students: { local: 'students', key: 'id' }, ss_teachers: { local: 'teachers', key: 'id' },
+  ss_staff: { local: 'staff', key: 'id' }, // v90 (Phase 4): staff members sync to ss_staff like teachers do
   ss_exams: { local: 'exams', key: 'id' }, ss_fee_records: { local: 'feeRecords', key: 'id' },
   ss_homework: { local: 'homework', key: 'id' }, ss_notices: { local: 'notices', key: 'id' },
   ss_admission_requests: { local: 'admissionRequests', key: 'id' }, ss_receipts: { local: 'receipts', key: 'receiptNo' }
@@ -3338,7 +3377,7 @@ function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
     : sbGetServerSchoolId(sbUid, token).then(function (row) { return row ? row.id : null; });
   return idP.then(function (sid) {
     if (!sid) return { done: false, reason: 'no-server-school' };
-    var tables = ['ss_fee_structure', 'ss_students', 'ss_teachers', 'ss_exams', 'ss_fee_records', 'ss_attendance', 'ss_receipts', 'ss_marks', 'ss_homework', 'ss_notices', 'ss_admission_requests'];
+    var tables = ['ss_fee_structure', 'ss_students', 'ss_teachers', 'ss_staff', 'ss_exams', 'ss_fee_records', 'ss_attendance', 'ss_receipts', 'ss_marks', 'ss_homework', 'ss_notices', 'ss_admission_requests']; // v90: ss_staff joins the pull (the staff list mirrors the server)
     var gets = [sbRest('GET', 'ss_schools?select=*&id=eq.' + encodeURIComponent(sid), token)];
     tables.forEach(function (t) { gets.push(sbFetchAllPages(t, '*', sid, token)); });
     return Promise.all(gets).then(function (res) {
@@ -4128,6 +4167,7 @@ function emptyDb(profile, schools) {
     schools: schools || [],
     students: [],
     teachers: [],
+    staff: [], // v90 (Phase 4): staff members (Principal, Accountant, Staff) — created by the school admin, synced to ss_staff
     feeRecords: [],
     feeStructure: defaultFeeStructure(),
     feeExtras: defaultFeeExtras(),
@@ -4227,6 +4267,7 @@ function migrateV12(d) {
     if ((s.parentPin === undefined || s.parentPin === null) && !s.parentPinHash) s.parentPinHash = hashPin(randomPin());
   });
   if (!Array.isArray(d.admissionRequests)) d.admissionRequests = [];
+  if (!Array.isArray(d.staff)) d.staff = []; // v90 (Phase 4): staff members — old DBs have no staff list yet
   return d;
 }
 function migrateV54(d) {
@@ -6719,7 +6760,7 @@ function logoutClear() {
 
 var NAV = {
   school: [
-    ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['teachers', '👩‍🏫', 'teachers'], ['admissions', '📋', 'admissions'], ['attendance', '✅', 'attendance'],
+    ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['teachers', '👩‍🏫', 'teachers'], ['staff', '👔', 'staff'], ['admissions', '📋', 'admissions'], ['attendance', '✅', 'attendance'],
     ['fees', '💰', 'fees'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'],
     ['notices', '📢', 'notices'], ['reports', '📄', 'reports'], ['activityLog', '📜', 'activityLog'], ['settings', '⚙️', 'settings']
   ],
@@ -6756,7 +6797,7 @@ var NAV = {
 // exactly their current views; the five new roles start with dashboard
 // + notices and grow in their own step.
 var PERMS = {
-  school: ['dashboard', 'students', 'teachers', 'admissions', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog', 'settings'],
+  school: ['dashboard', 'students', 'teachers', 'staff', 'admissions', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog', 'settings'], // v90: the school admin manages staff accounts here
   teacher: ['dashboard', 'students', 'attendance', 'exams', 'homework', 'notices'],
   student: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'],
   principal: ['dashboard', 'students', 'teachers', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports'], // v88: the principal oversees the whole school, read-only
@@ -6774,6 +6815,7 @@ var VIEW_TITLES = {
   dashboard: ['Dashboard', ''],
   settings: ['Settings', 'School settings'], reports: ['Reports', 'Download CSV reports'],
   activityLog: ['Activity Log', 'Full audit history'], teachers: ['Teachers', 'Teacher accounts & classes'],
+  staff: ['Staff', 'Principal, Accountant & Staff accounts'], // v90 (Phase 4): the school admin creates staff logins here
   students: ['Student Management', 'St. Xavier School, Patna'], admissions: ['Admission Requests', 'New applications & approvals'], attendance: ['Attendance', 'Mark & view attendance'],
   fees: ['Fees', 'Fee collection & pending dues'], exams: ['Examinations', 'Exams & marks entry'],
   homework: ['Homework', 'Assign & track homework'], notices: ['Notices', 'Notice board']
@@ -10157,8 +10199,94 @@ function saveTeacher(e, id) {
   toast(t('tchrSaved'));
   return false;
 }
+/* ================= STAFF view (v90, Phase 4) =================
+   The school admin creates staff login accounts here: name, role
+   (Principal / Accountant / Staff), classes for the Staff role, email +
+   password. The account is a local device account (role 'principal' /
+   'accountant' / 'staff', bcrypt hash) linked to the staff record by
+   staffId; the staff member opens the school's DB. Staff records sync
+   to ss_staff like teacher records do (sbMapStaff); the login account
+   itself is local-only, and the hash never pulls back down. */
+var staffFormClasses = []; // in-memory class selection for the staff form
+function toggleStaffClass(cls, on) {
+  var i = staffFormClasses.indexOf(cls);
+  if (on && i === -1) staffFormClasses.push(cls);
+  if (!on && i !== -1) staffFormClasses.splice(i, 1);
+}
+function staffRoleLabel(role) {
+  return role === 'principal' ? t('staffRolePrincipal') : role === 'accountant' ? t('staffRoleAccountant') : t('staffRoleStaff');
+}
+function staffPage() {
+  if (state.role !== 'school') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
+  var rows = (db.staff || []).map(function (st) {
+    var acct = loadAccounts().find(function (a) { return (a.role === 'principal' || a.role === 'accountant' || a.role === 'staff') && a.staffId === st.id; });
+    var clsList = Array.isArray(st.classes) && st.classes.length ? st.classes.join(', ') : (st.role === 'staff' ? '—' : t('allClasses'));
+    return '<tr><td><b>' + esc(st.name) + '</b></td><td>' + esc(staffRoleLabel(st.role)) + '</td><td>' + esc(clsList) + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('staffNoLogin') + '</span>') + '</td><td><button class="btn ghost sm" onclick="staffForm(\'' + st.id + '\')">' + t('editBtn') + '</button></td></tr>';
+  }).join('');
+  return '<div class="page-head"><div><h2>' + t('staffPage') + '</h2><p>' + t('staffPageSub') + '</p></div>' +
+    '<div class="toolbar"><button class="btn" onclick="staffForm()">+ ' + t('staffAdd') + '</button></div></div>' +
+    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thName') + '</th><th>' + t('staffRole') + '</th><th>' + t('staffClasses') + '</th><th>' + t('loginEmail') + '</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="5"><div class="empty">' + t('tNoTeachers') + '</div></td></tr>') + '</tbody></table></div></div>';
+}
+function staffForm(id) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
+  var st = id ? (db.staff || []).find(function (x) { return x.id === id; }) : null;
+  var acct = st ? loadAccounts().find(function (a) { return (a.role === 'principal' || a.role === 'accountant' || a.role === 'staff') && a.staffId === st.id; }) : null;
+  staffFormClasses = st ? (Array.isArray(st.classes) ? st.classes.slice() : []) : [];
+  var clsBoxes = CLASSES.map(function (c) {
+    return '<label class="check"><input type="checkbox" ' + (staffFormClasses.indexOf(c) !== -1 ? 'checked' : '') + ' onchange="toggleStaffClass(\'' + c + '\', this.checked)"> ' + c + '</label>';
+  }).join('');
+  var roleOpts = ['principal', 'accountant', 'staff'].map(function (r) { return '<option value="' + r + '" ' + (st && st.role === r ? 'selected' : '') + '>' + staffRoleLabel(r) + '</option>'; }).join('');
+  openModal('<h3>' + (st ? t('staffEdit') : t('staffAdd')) + '</h3>' +
+    '<div id="fStaffErr" class="err hidden"></div>' +
+    '<form onsubmit="return saveStaff(event,\'' + (id || '') + '\')"><div class="form-grid">' +
+    '<div class="field"><label>' + t('staffName') + '</label><input id="fStaffName" value="' + esc(st ? st.name : '') + '"></div>' +
+    '<div class="field"><label>' + t('staffRole') + '</label><select id="fStaffRole" onchange="document.getElementById(\'fStaffClasses\').style.display = this.value === \'staff\' ? \'block\' : \'none\'">' + roleOpts + '</select></div>' +
+    '<div class="field" id="fStaffClasses" style="display:' + (st && st.role === 'staff' ? 'block' : 'none') + '"><label>' + t('staffClasses') + '</label><div class="check-grid">' + clsBoxes + '</div></div>' +
+    '<div class="field"><label>' + t('loginEmail') + '</label><input id="fStaffEmail" type="email" value="' + esc(acct ? acct.email : '') + '"></div>' +
+    '<div class="field"><label>' + t('loginPassword') + '</label><input id="fStaffPw" type="password" placeholder="' + (acct ? t('tchrPwHint') : '') + '"></div>' +
+    '</div><p class="muted" style="font-size:12.5px">' + t('staffRoleHint') + '</p>' +
+    '<div class="modal-actions"><button class="btn ghost" type="button" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + t('saveBtn') + '</button></div></form>');
+}
+function saveStaff(e, id) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
+  e.preventDefault();
+  var errEl = $('fStaffErr');
+  var name = ($('fStaffName') ? $('fStaffName').value : '').trim();
+  var email = ($('fStaffEmail') ? $('fStaffEmail').value : '').trim().toLowerCase();
+  var pw = $('fStaffPw') ? $('fStaffPw').value : '';
+  var role = $('fStaffRole') ? $('fStaffRole').value : 'staff';
+  if (!name || !email) return failInto(errEl, t('tFillAll'), true);
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return failInto(errEl, t('tInvalidEmail'), true);
+  if (role === 'staff' && !staffFormClasses.length) return failInto(errEl, t('tchrNoClasses'), true);
+  var list = loadAccounts();
+  var st = id ? (db.staff || []).find(function (x) { return x.id === id; }) : null;
+  var ownAcct = st ? list.find(function (a) { return (a.role === 'principal' || a.role === 'accountant' || a.role === 'staff') && a.staffId === st.id; }) : null;
+  var existing = list.find(function (a) { return a.email === email; });
+  if (existing && (!ownAcct || existing.uid !== ownAcct.uid)) return failInto(errEl, t('tchrEmailTaken'), true);
+  if (!ownAcct && pw.length < 6) return failInto(errEl, t('tPwShort'), true);
+  if (ownAcct && pw && pw.length < 6) return failInto(errEl, t('tPwShort'), true);
+  if (!st) {
+    st = { id: uniqueId('stf'), name: name, role: role, classes: role === 'staff' ? staffFormClasses.slice() : [] };
+    if (!Array.isArray(db.staff)) db.staff = []; // v90: a DB loaded without the migration still gets the list
+    db.staff.push(st);
+  } else {
+    st.name = name; st.role = role; st.classes = role === 'staff' ? staffFormClasses.slice() : [];
+  }
+  if (ownAcct) {
+    ownAcct.name = name; ownAcct.email = email; ownAcct.role = role; ownAcct.sub = staffRoleLabel(role) + ' • ' + db.profile.name;
+    if (pw) { ownAcct.pwHash = hashPwNew(pw); ownAcct.hashScheme = hashSchemeOf(ownAcct.pwHash); }
+  } else {
+    var pwH = hashPwNew(pw);
+    list.push({ uid: uniqueId('u'), name: name, school: db.profile.name, email: email, pwHash: pwH, hashScheme: hashSchemeOf(pwH), role: role, sub: staffRoleLabel(role) + ' • ' + db.profile.name, staffId: st.id, schoolUid: state.user.uid, created: todayIST() });
+  }
+  saveAccounts(list);
+  logAudit(ownAcct ? 'Staff updated' : 'Staff added', name + ' • ' + staffRoleLabel(role) + (role === 'staff' ? ' • ' + (st.classes || []).join(', ') : ''));
+  saveDB(db); closeModal(); renderApp();
+  toast(t('staffSaved'));
+  return false;
+}
 PAGE_SCHOOL.exams = examsPage; PAGE_SCHOOL.homework = homeworkPage; PAGE_SCHOOL.notices = noticesPage;
-PAGE_SCHOOL.teachers = teachersPage; PAGE_SCHOOL.reports = function () { return reportsPage(); }; PAGE_SCHOOL.settings = settingsPage; PAGE_SCHOOL.admissions = admissionRequestsPage; PAGE_SCHOOL.activityLog = activityLogPage;
+PAGE_SCHOOL.teachers = teachersPage; PAGE_SCHOOL.staff = staffPage; PAGE_SCHOOL.reports = function () { return reportsPage(); }; PAGE_SCHOOL.settings = settingsPage; PAGE_SCHOOL.admissions = admissionRequestsPage; PAGE_SCHOOL.activityLog = activityLogPage;
 
 /* ================= STUDENT view ================= */
 function studentDashboard() {
