@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 104;
+var APP_VERSION = 105;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -1313,7 +1313,11 @@ function sbUploadMissing(token, schoolId, table, selectCols, rows, keyFn, onInse
     var existing = Array.isArray(r.data) ? r.data : [];
     var seen = {};
     existing.forEach(function (row) { seen[keyFn(row)] = true; });
-    var missing = rows.filter(function (row) { return !seen[keyFn(row)]; });
+    var missing = rows.filter(function (row) {
+      if (seen[keyFn(row)]) return false;
+      if (sbTombUidCurrent && sbTombHas(sbTombUidCurrent, table, keyFn(row))) return false; // v105: a tombstoned row was deleted — never re-POST it, even when the caller bypassed the snapshot filter (the v47 bypass uploads every local row and relies on this dedupe)
+      return true;
+    });
     if (onInserted) onInserted(existing);
     if (!missing.length) return 0;
     return sbRest('POST', table, token, missing, 'return=representation').then(function (r2) {
@@ -1598,6 +1602,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
   if (sbMigPromise) return sbMigPromise;
   if (!account || account.role !== 'school') return Promise.resolve({ done: false, reason: 'not-school' });
   if (!sbIsOnline()) return Promise.resolve({ done: false, reason: 'offline' });
+  sbTombUidCurrent = sbUid; // v105: the upload pass honours this account's delete tombstones
   var d = db; // the account's DB is loaded by loginAs before this runs
   var schoolId = null, stuMap = {}, examMap = {};
   var byId = {};
@@ -1606,7 +1611,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
   // v52: read once per pass — the outbox does not change while the
   // upload runs (only the flush touches it, and it runs after).
   var outboxParents52 = sbOutboxReferencedParents(sbUid, d);
-  function notSynced(table, key) { return !(snap[table] && snap[table][key] !== undefined); }
+  function notSynced(table, key) { if (sbTombHas(sbUid, table, key)) return false; return !(snap[table] && snap[table][key] !== undefined); } // v105: a tombstoned row is never "fresh" — it was deleted, not new
   function freshRows(table, rows, keyFn) {
     return rows.filter(function (row) { return notSynced(table, keyFn(row)); });
   }
@@ -2207,6 +2212,16 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
       });
     }
   } catch (e102) {}
+  // v105: delete tombstones, same uid rule as outboxDelete102. A local
+  // row whose delete already PUSHED (the entry left the outbox) must
+  // drop here, not be kept as local-only — the other tab's stale copy
+  // is exactly that row, and keeping it lets its next cycle re-upload
+  // it (live 12 Nov: the holiday came back with a new server uuid).
+  var tomb105 = {};
+  try {
+    var uid105 = (account && account.sbUid) || (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
+    if (uid105) tomb105 = sbTombPrune(sbTombLoad(uid105));
+  } catch (e105) {}
   function mergeIsSeedRow(table, row) {
     if (table === 'ss_fee_records' || table === 'ss_receipts') return !!seedStudentIds[row.studentId];
     if (table === 'ss_marks') return !!(seedExamIds[row.examId] || seedStudentIds[row.studentId]);
@@ -2230,6 +2245,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     var merged = serverList.slice();
     (localArr || []).forEach(function (r) {
       if (!r.id || onServer[r.id]) return;
+      if (tomb105[table] && tomb105[table][r.id]) return; // v105: deleted (tombstoned) — drop, never keep as local-only
       if (snapHas(table, r.id)) {
         // v46: a fee record whose upload is still unconfirmed (a
         // pending outbox upsert) is KEPT, never dropped on snapshot
@@ -2264,6 +2280,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     (d.feeStructure || []).forEach(function (f) {
       var k = (f.cls || '') + '|' + (f.type || 'Tuition');
       if (srvFsKeys[k] || snapHas('ss_fee_structure', k)) return;
+      if (tomb105.ss_fee_structure && tomb105.ss_fee_structure[k]) return; // v105: deleted (tombstoned)
       mergedFs.push(f);
       keep('ss_fee_structure', k);
     });
@@ -2610,6 +2627,7 @@ var sbSyncDebounceMs = 600; // tests set this to 0 for a deterministic flush
 var sbSyncSnapshot = null; // in-memory snapshot for the current account
 var sbSyncSnapUid = null; // local account uid the in-memory snapshot belongs to
 var sbSyncApplying = false; // true while server rows are being applied locally (the saveDB hook skips the diff then)
+var sbTombUidCurrent = null; // v105: the Supabase uid whose tombstones the current upload pass honours (set by sbSyncUploadMissing; sbUploadMissing is also called directly for audit logs, where no tombstone can ever exist)
 
 function sbOutboxKey(uid) { return SB_OUTBOX_KEY + ':' + uid; }
 function sbOutboxLoad(uid) {
@@ -2642,6 +2660,25 @@ function sbOutboxRemove(uid, entry) {
   return list;
 }
 function sbOutboxClear(uid) { try { localStorage.removeItem(sbOutboxKey(uid)); } catch (e) {} }
+// v105: delete tombstones — a row the user deleted must stay deleted
+// across TABS. The outbox is shared (localStorage) but a pushed delete
+// leaves it, so a second tab holding a STALE in-memory copy of the row
+// would re-upload it on its next cycle (live 12 Nov: the holiday delete
+// pushed, and a stale tab re-POSTed the holiday with a NEW server uuid
+// minutes later — the new row's created_at proved it). A tombstone is
+// written when a delete is queued AND when it pushes; the upload pass
+// refuses to POST a tombstoned row, and the pull drops a tombstoned
+// local row instead of keeping it as local-only. 24h TTL: long enough
+// for every open tab to cycle once and drop its stale copy; a
+// re-created row gets a NEW local id, so the tombstone can never block
+// a legitimate re-add.
+var SB_TOMB_KEY = 'schoolSaathiTombstones';
+var SB_TOMB_TTL_MS = 24 * 60 * 60 * 1000;
+function sbTombLoad(uid) { try { var r = localStorage.getItem(SB_TOMB_KEY + ':' + uid); var o = r ? JSON.parse(r) : {}; return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; } }
+function sbTombSave(uid, map) { try { localStorage.setItem(SB_TOMB_KEY + ':' + uid, JSON.stringify(map)); } catch (e) {} }
+function sbTombPrune(map) { var now = Date.now(), out = {}, t, k; for (t in map) { if (!map[t] || typeof map[t] !== 'object') continue; out[t] = {}; for (k in map[t]) { if (map[t][k] && (now - map[t][k] < SB_TOMB_TTL_MS)) out[t][k] = map[t][k]; } if (!Object.keys(out[t]).length) delete out[t]; } return out; }
+function sbTombAdd(uid, table, key) { if (!uid || !table || !key) return; try { var m = sbTombPrune(sbTombLoad(uid)); if (!m[table]) m[table] = {}; m[table][key] = Date.now(); sbTombSave(uid, m); } catch (e) {} }
+function sbTombHas(uid, table, key) { if (!uid || !table || !key) return false; try { var m = sbTombPrune(sbTombLoad(uid)); return !!(m[table] && m[table][key]); } catch (e) { return false; } }
 function sbSrvIdsLoad(uid) {
   try { var r = localStorage.getItem(SB_SRVID_KEY + ':' + uid); var o = r ? JSON.parse(r) : {}; return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; }
 }
@@ -3028,6 +3065,7 @@ function sbSyncQueueDiff() {
       Object.keys(snapTable).forEach(function (key) {
         if (!seen[key]) {
           sbOutboxAdd(uid, { table: table, key: key, op: 'delete', at: new Date().toISOString() });
+          sbTombAdd(uid, table, key); // v105: guard from queue time, not just after the push
           queued++;
         }
       });
@@ -3106,6 +3144,13 @@ function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
   // The server row for an outbox entry, for the last-write-wins check
   // and for PATCH/DELETE by id. Null when the server has no such row.
   var known = sbSrvIdGet(uid, table, entry.key);
+  // v105: the find's select must only name columns the table HAS.
+  // ss_holidays has NO updated_at (SQL 38 created it with created_at
+  // only) — selecting it 42703s the find, so every holiday delete fell
+  // through to "row not found" and was silently skipped (live 12 Nov:
+  // the live find returned the 42703 error for the exact query the app
+  // sends). Any future table without updated_at must be added here.
+  var findCols105 = table === 'ss_receipts' ? 'id,updated_at,student_id,total,receipt_date,student_name,month' : (table === 'ss_holidays' ? 'id' : 'id,updated_at');
   // v44: a stored server id is only a hint — the row may have been
   // deleted and re-created under a new id (live: the V21 student row
   // was re-created 9 Nov 12:37 UTC with a new uuid but the same
@@ -3144,7 +3189,7 @@ function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
   // only THIS receipt when its content matches — the push entry checks
   // that before patching, so a same-number collision can never
   // overwrite another device's receipt.
-  var cols = table === 'ss_receipts' ? 'id,updated_at,student_id,total,receipt_date,student_name,month' : 'id,updated_at';
+  var cols = findCols105; // v105: ss_holidays has no updated_at — see findCols105 above
   // v44: the push guard below must never rename a server row's
   // local_id, so the students lookup also selects the server local_id.
   if (table === 'ss_students') cols = 'id,updated_at,local_id';
@@ -3160,7 +3205,7 @@ function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
   });
   }
   if (!known) return byNaturalKey();
-  return sbRest('GET', table + '?select=id,updated_at&id=eq.' + encodeURIComponent(known), token).then(function (r) {
+  return sbRest('GET', table + '?select=' + findCols105 + '&id=eq.' + encodeURIComponent(known), token).then(function (r) {
     if (r.ok && Array.isArray(r.data) && r.data.length) return r.data[0];
     return byNaturalKey();
   });
@@ -3420,7 +3465,7 @@ function sbSyncFlushWithToken(act, tok) {
               if (r.pushed) {
                 pushedThisPass++; pushedTotal++;
                 if (r.hash) sbSyncSnapSet(act.account.uid, entry.table, entry.key, r.hash);
-                if (entry.op === 'delete') sbSyncSnapDelete(act.account.uid, entry.table, entry.key);
+                if (entry.op === 'delete') { sbSyncSnapDelete(act.account.uid, entry.table, entry.key); sbTombAdd(act.uid, entry.table, entry.key); } // v105: the delete leaves the outbox here — the tombstone is what stops another tab re-uploading it
                 sbOutboxRemove(act.uid, entry);
                 maps = sbSyncBuildMaps(db, act.uid); // fresh ids for the next chunk
               } else if (r.conflict) {
