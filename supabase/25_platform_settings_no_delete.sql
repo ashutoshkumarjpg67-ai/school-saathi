@@ -38,8 +38,23 @@
 -- LAST statement's result — one statement per file, as with SQL 14/15).
 
 -- Only admins may change the platform settings — and never delete them.
+-- v114 fix: the original single policy used `for select, insert, update`,
+-- which is INVALID PostgreSQL grammar — CREATE POLICY takes exactly one
+-- command (or ALL) after FOR, so the file as-written could never run
+-- (caught by the external v113 review, 12 Nov 2026). Replaced with one
+-- policy per command. Intent unchanged: admins may SELECT/INSERT/UPDATE,
+-- DELETE stays denied (no DELETE policy + RLS enabled).
 drop policy if exists ss_settings_admin_write on public.ss_platform_settings;
-create policy ss_settings_admin_write on public.ss_platform_settings
-  for select, insert, update to authenticated
+drop policy if exists ss_settings_admin_select on public.ss_platform_settings;
+drop policy if exists ss_settings_admin_insert on public.ss_platform_settings;
+drop policy if exists ss_settings_admin_update on public.ss_platform_settings;
+create policy ss_settings_admin_select on public.ss_platform_settings
+  for select to authenticated
+  using (public.is_ss_admin());
+create policy ss_settings_admin_insert on public.ss_platform_settings
+  for insert to authenticated
+  with check (public.is_ss_admin());
+create policy ss_settings_admin_update on public.ss_platform_settings
+  for update to authenticated
   using (public.is_ss_admin())
   with check (public.is_ss_admin());
