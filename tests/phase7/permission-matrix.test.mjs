@@ -4,16 +4,15 @@
 // roleClasses / PAGE_* maps) in the Phase 1 harness. Fixtures only —
 // seedDB() demo data, never a real school.
 //
-// The matrix below is pinned EXACTLY as it stands in app.js at v108.
+// The matrix below is pinned EXACTLY as it stands in app.js at v111.
 // Any future PERMS change (a new view, a role gaining/losing a page)
 // must update this table in the same commit — that is the point: a
 // silent permission widening fails CI instead of shipping.
 //
 // Run: node --test tests/phase7/*.test.mjs
-// NOTE (CI gap, Phase 1 follow-up): package.json `npm test` runs
-// `node --test tests/*.test.mjs` (non-recursive), so tests/phase7/ does
-// NOT run in CI until the glob becomes tests/**/*.test.mjs. These tests
-// are green locally; the one-line CI change is tracked in the PR body.
+// NOTE (v111 — corrected): tests/run.mjs IS recursive, so this suite
+// runs in CI on every push/PR (green on HEAD 2516c097, 12 Nov 2026).
+// The earlier note claiming a non-recursive glob was wrong.
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createAppContext } from '../harness.mjs';
@@ -221,15 +220,13 @@ describe('visibleStudents / roleClasses — list scoping', () => {
     assert.equal(app.run(`visibleStudents().length`), 40);
   });
 
-  it('KNOWN GAP: visibleStudents() does NOT scope the parent — it falls through to the whole school', () => {
-    // canViewStudent() DOES scope the parent (own child only, tested
-    // above), and the parent UI opens views through meStudent(), so this
-    // path is not reachable from the parent dashboard today. But the
-    // helper itself returns all 40 students for a parent — if any future
-    // parent list view calls visibleStudents(), it leaks. Pinned here so
-    // the gap stays visible until Phase 4 adds the parent branch.
+  it('parent list shows only their own child (v111 — the C2 gap is closed)', () => {
+    // v111: visibleStudents() gained the parent branch, mirroring
+    // canViewStudent() (own child only, tested above). Before the fix
+    // this returned all 40 students — a parent list view would have
+    // leaked the whole school. Pinned here so the fix stays fixed.
     app.run(`state.role = 'parent'; state.user = { studentId: 'stu33' };`);
-    assert.equal(app.run(`visibleStudents().length`), 40);
+    assert.deepEqual(jq(app, `visibleStudents().map(function (s) { return s.id; })`), ['stu33']);
   });
 
   it('roleClasses: teacher/staff see only assigned classes, everyone else sees all 30', () => {
