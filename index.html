@@ -14,12 +14,12 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=98">
-<script src="qrgen.js?v=98" defer></script>
-<script src="js/bcrypt.js?v=98" defer></script>
-<script src="js/modules/crypto.js?v=98" defer></script>
-<script src="js/modules/i18n.js?v=98" defer></script>
-<script src="app.js?v=98" defer></script>
+<link rel="stylesheet" href="styles.css?v=99">
+<script src="qrgen.js?v=99" defer></script>
+<script src="js/bcrypt.js?v=99" defer></script>
+<script src="js/modules/crypto.js?v=99" defer></script>
+<script src="js/modules/i18n.js?v=99" defer></script>
+<script src="app.js?v=99" defer></script>
 </head>
 <body>
 
@@ -94,10 +94,21 @@
       <form id="parentForm" class="hidden" onsubmit="return doParentLogin(event)">
         <div class="field"><label data-i18n="admReqSchool">School</label><select id="parentSchool" onchange="onParentSchoolChange()"></select></div>
         <p id="parentCloudHint" class="hidden" style="text-align:center;font-size:12.5px;color:var(--muted)" data-i18n="parentCloudHint">Cloud login — this school is not on this device. Your admission number and PIN are checked on the server.</p>
+        <div id="parentLoginFields">
         <div class="field"><label data-i18n="stuAdmNo">Admission Number</label><input id="parentAdmNo" type="text" placeholder="e.g. ADM-2025-001" autocomplete="off"></div>
         <div class="field"><label data-i18n="stuPinLabel">Student PIN</label><input id="parentPin" type="password" inputmode="numeric" maxlength="6" placeholder="4–6 digits" autocomplete="off"></div>
         <button class="btn" type="submit" style="width:100%" data-i18n="parentLoginBtn">Login as Parent</button>
+        <p style="text-align:center;margin-top:10px;font-size:13px"><a href="#" onclick="showParentPinReset();return false" data-i18n="parentForgotPin">Forgot PIN?</a></p>
         <p style="text-align:center;margin-top:10px;font-size:12.5px;color:var(--muted)" data-i18n="parentNote">Parent login uses the PIN set by the school. Log in with your child’s admission number and PIN — attendance, fees and results are all here.</p>
+        </div>
+        <div id="parentResetFields" class="hidden">
+        <div class="field"><label data-i18n="parentResetTitle">Reset Parent PIN</label><input id="parentResetAdm" type="text" placeholder="e.g. ADM-2025-001" autocomplete="off"></div>
+        <div class="field"><label data-i18n="fDob">Date of Birth</label><input id="parentResetDob" type="date"></div>
+        <div class="field"><label data-i18n="parentResetPinNew">New PIN (4–6 digits)</label><input id="parentResetPin" type="password" inputmode="numeric" maxlength="6" placeholder="4–6 digits" autocomplete="off"></div>
+        <div class="field"><label data-i18n="parentResetPinConfirm">Confirm New PIN</label><input id="parentResetPin2" type="password" inputmode="numeric" maxlength="6" placeholder="4–6 digits" autocomplete="off"></div>
+        <button class="btn" type="button" onclick="doParentPinReset(event)" style="width:100%" data-i18n="parentResetBtn">Set New PIN</button>
+        <p style="text-align:center;margin-top:10px;font-size:13px"><a href="#" onclick="hideParentPinReset();return false" data-i18n="parentBackLogin">← Back to login</a></p>
+        </div>
       </form>
       <div id="teacherErr" class="err hidden"></div>
       <form id="teacherForm" class="hidden" onsubmit="return doTeacherLogin(event)">
@@ -135,7 +146,7 @@
         <div id="sideSchoolInfo"></div>
         <label style="color:#94A3B8;margin-top:10px">Academic Session</label>
         <select id="sessionSel" onchange="changeSession(this.value)"></select>
-        <div style="margin-top:12px">v98<br>© 2026 School Saathi</div>
+        <div style="margin-top:12px">v99<br>© 2026 School Saathi</div>
       </div>
     </aside>
     <div class="main">

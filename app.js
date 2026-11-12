@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 98;
+var APP_VERSION = 99;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -790,6 +790,14 @@ function sbLocalLogin(id, pw, err, offline) {
   if (ok && chk.legacy) upgradePwHash(a, pw); // v36: old djb2 hash verifies, then upgrades to salted SHA-256 on this login
   if (!a || !ok) {
     if (a) loginFailRecord(id);
+    // v99: a local wrong password counts server-side too, when online —
+    // otherwise the per-device lock is the only defence and 5 guesses
+    // per device are free forever. Fire-and-forget; offline login is
+    // unaffected. No ok-call here: clearing the server counter needs a
+    // GoTrue token (SQL 21), which a local login never has — the counter
+    // self-heals when its 15-minute lock expires, and a server login
+    // clears it. Unknown emails no-op inside the RPC.
+    if (a && !offline && sbIsOnline()) sbSchoolLoginFailed(id);
     err.textContent = t('tInvalidCreds');
     err.classList.remove('hidden');
     return false;
@@ -6036,6 +6044,50 @@ function sbSchoolLoginOk(email, token) {
   if (!token) return Promise.resolve(null);
   return sbRest('POST', 'rpc/ss_school_login_ok', token, { p_email: email }).catch(function () {});
 }
+// v99 (cons fix): server-side rate limit for the LOCAL parent-PIN login
+// (SQL 36). Mirrors the school-login RPCs above: precheck before the
+// PIN is tried, failed on a wrong PIN, ok on a success — all
+// best-effort and fail-open, so offline login keeps working. The cloud
+// parent login already gets server lockout through ss_student_cloud_login.
+function sbParentPinPrecheck(serverId, admNo) {
+  var _preBody = {};
+  _preBody.p_school_id = serverId;
+  _preBody.p_admission_no = admNo;
+  return sbRest('POST', 'rpc/ss_parent_pin_precheck', SB_ANON_KEY, _preBody).then(function (r) {
+    if (!r || !r.ok || !r.data || typeof r.data !== 'object') return null;
+    return r.data;
+  }).catch(function () { return null; });
+}
+function sbParentPinFailed(serverId, admNo) {
+  var _failBody = {};
+  _failBody.p_school_id = serverId;
+  _failBody.p_admission_no = admNo;
+  return sbRest('POST', 'rpc/ss_parent_pin_failed', SB_ANON_KEY, _failBody).then(function (r) {
+    return (r && r.data) || null;
+  }).catch(function () { return null; });
+}
+function sbParentPinOk(serverId, admNo) {
+  var _okBody = {};
+  _okBody.p_school_id = serverId;
+  _okBody.p_admission_no = admNo;
+  return sbRest('POST', 'rpc/ss_parent_pin_ok', SB_ANON_KEY, _okBody).then(function (r) {
+    return (r && r.data) || null;
+  }).catch(function () { return null; });
+}
+// v99 (cons fix): parent PIN self-service (SQL 37) — admission number +
+// date of birth, verified on the server. The new PIN is hashed
+// server-side; the plaintext is never stored.
+function sbParentPinResetByDob(serverId, admNo, dob, pin) {
+  var _resetBody = {};
+  _resetBody.p_school_id = serverId;
+  _resetBody.p_admission_no = admNo;
+  _resetBody.p_dob = dob;
+  _resetBody.p_new_pin = pin;
+  return sbRest('POST', 'rpc/ss_parent_pin_reset_by_dob', SB_ANON_KEY, _resetBody).then(function (r) {
+    if (!r || !r.ok || !r.data || typeof r.data !== 'object') return null;
+    return r.data;
+  }).catch(function () { return null; });
+}
 function sbPublicSchools() {
   if (cloudSchoolsCache) return Promise.resolve(cloudSchoolsCache);
   return sbRest('POST', 'rpc/ss_public_schools', SB_ANON_KEY, {}).then(function (r) {
@@ -6119,8 +6171,12 @@ function doStudentCloudLogin(serverId, adm, pin, err) {
 // child's attendance, fees, results, homework and notices, and nothing
 // else. The parent never edits, never sees other students, and never
 // sees the school's totals.
+var parentResetMode = false;
 function doParentLogin(e) {
   e.preventDefault();
+  // In reset mode the Enter key submits this form too — route it to the
+  // reset handler instead of the login.
+  if (parentResetMode) return doParentPinReset(e);
   var adm = $('parentAdmNo').value.trim();
   var pin = $('parentPin').value.trim();
   var err = $('parentErr');
@@ -6129,6 +6185,26 @@ function doParentLogin(e) {
     doParentCloudLogin(schoolUid.slice(6), adm, pin, err);
     return false;
   }
+  // v99: when online and the school is server-linked, consult the
+  // server lock before the PIN is tried. Fail-open: a failed precheck
+  // still runs the local login.
+  var srvId = null;
+  try { srvId = schoolUid ? (sbServerSchoolMap()[schoolUid] || null) : null; } catch (e2) { srvId = null; }
+  if (srvId && sbIsOnline()) {
+    sbParentPinPrecheck(srvId, adm).then(function (pre) {
+      if (pre && pre.locked) {
+        err.textContent = t('tPinLocked');
+        err.classList.remove('hidden');
+        return;
+      }
+      doParentLocalLogin(schoolUid, srvId, adm, pin, err);
+    }).catch(function () { doParentLocalLogin(schoolUid, srvId, adm, pin, err); });
+    return false;
+  }
+  doParentLocalLogin(schoolUid, srvId, adm, pin, err);
+  return false;
+}
+function doParentLocalLogin(schoolUid, srvId, adm, pin, err) {
   var found = schoolUid ? findStudentByAdmNoInSchool(adm, schoolUid) : null;
   // One generic error: never reveal whether the number or the PIN was wrong.
   var stu = found ? found.student : null;
@@ -6148,16 +6224,140 @@ function doParentLogin(e) {
     try { writeDbByKey(found.dbKey, found.db); } catch (e) {}
   }
   if (!found || !ok) {
-    if (stu && pinHasPin(stu)) pinFailRecord(schoolUid, stu.id);
+    if (stu && pinHasPin(stu)) {
+      pinFailRecord(schoolUid, stu.id);
+      // v99: a local wrong PIN counts server-side too, when the school
+      // is server-linked. Fire-and-forget; offline login is unaffected.
+      if (srvId) sbParentPinFailed(srvId, adm);
+    }
     err.textContent = t('tInvalidStudent');
     err.classList.remove('hidden');
     return false;
   }
   pinFailClear(schoolUid, stu.id);
+  // v99: a local success clears the server counter too.
+  if (srvId) sbParentPinOk(srvId, adm);
   DB_KEY = found.dbKey;
   var acct = { role: 'parent', name: found.student.name, sub: t('parentSub') + ' • ' + found.student.name, email: 'parent:' + schoolUid + ':' + found.student.id, uid: 'parent-' + found.student.id, studentId: found.student.id, schoolUid: schoolUid };
   err.classList.add('hidden');
   loginAs(acct);
+  return false;
+}
+// v99 (cons fix): parent PIN self-service — admission number + date of
+// birth, the two facts already on file. No SMS/email route exists, and
+// the admin's Set PIN stays the fallback for students with no DOB on
+// record. The cloud path verifies the DOB on the server (SQL 37); the
+// local path verifies it against the record on this device.
+function showParentPinReset() {
+  parentResetMode = true;
+  $('parentLoginFields').classList.add('hidden');
+  $('parentResetFields').classList.remove('hidden');
+  $('parentErr').classList.add('hidden');
+}
+function hideParentPinReset() {
+  parentResetMode = false;
+  $('parentResetFields').classList.add('hidden');
+  $('parentLoginFields').classList.remove('hidden');
+  $('parentErr').classList.add('hidden');
+  try { $('parentResetPin').value = ''; $('parentResetPin2').value = ''; } catch (e) {}
+}
+function doParentPinReset(e) {
+  if (e) e.preventDefault();
+  var adm = $('parentResetAdm').value.trim();
+  var dob = $('parentResetDob').value;
+  var pin1 = digitsOnly($('parentResetPin').value);
+  var pin2 = digitsOnly($('parentResetPin2').value);
+  var err = $('parentErr');
+  var schoolUid = $('parentSchool') ? $('parentSchool').value : '';
+  if (!adm || !dob || !isValidDateStr(dob)) {
+    err.textContent = t('tFillAll');
+    err.classList.remove('hidden');
+    return false;
+  }
+  if (pin1.length < 4 || pin1.length > 6) {
+    err.textContent = t('tPinLen');
+    err.classList.remove('hidden');
+    return false;
+  }
+  if (pin1 !== pin2) {
+    err.textContent = t('tPinMismatch');
+    err.classList.remove('hidden');
+    return false;
+  }
+  if (schoolUid && schoolUid.indexOf('cloud:') === 0) {
+    sbParentPinResetByDob(schoolUid.slice(6), adm, dob, pin1).then(function (res) {
+      if (!res || !res.ok) {
+        // One generic error: never reveal whether the number or the DOB
+        // was the problem — except the lock itself, which the user must
+        // wait out, and no-DOB, which needs the admin.
+        if (res && res.locked) err.textContent = t('tPinLocked');
+        else if (res && res.error === 'no_dob') err.textContent = t('tPinResetNoDob');
+        else err.textContent = t('tInvalidStudent');
+        err.classList.remove('hidden');
+        return;
+      }
+      toast(t('tPinResetDone'));
+      hideParentPinReset();
+    });
+    return false;
+  }
+  var found = schoolUid ? findStudentByAdmNoInSchool(adm, schoolUid) : null;
+  var stu = found ? found.student : null;
+  if (!stu) {
+    err.textContent = t('tInvalidStudent');
+    err.classList.remove('hidden');
+    return false;
+  }
+  if (pinLockUntil(schoolUid, stu.id)) {
+    err.textContent = t('tPinLocked');
+    err.classList.remove('hidden');
+    return false;
+  }
+  if (!stu.dob) {
+    err.textContent = t('tPinResetNoDob');
+    err.classList.remove('hidden');
+    return false;
+  }
+  var srvId = null;
+  try { srvId = schoolUid ? (sbServerSchoolMap()[schoolUid] || null) : null; } catch (e2) { srvId = null; }
+  // v99: a server lock binds the local reset too — a locked parent must
+  // not keep guessing DOBs on this device. Fail-open as usual.
+  if (srvId && sbIsOnline()) {
+    sbParentPinPrecheck(srvId, adm).then(function (pre) {
+      if (pre && pre.locked) {
+        err.textContent = t('tPinLocked');
+        err.classList.remove('hidden');
+        return;
+      }
+      doParentPinResetLocal(schoolUid, srvId, found, stu, dob, pin1, err);
+    }).catch(function () { doParentPinResetLocal(schoolUid, srvId, found, stu, dob, pin1, err); });
+    return false;
+  }
+  doParentPinResetLocal(schoolUid, srvId, found, stu, dob, pin1, err);
+  return false;
+}
+function doParentPinResetLocal(schoolUid, srvId, found, stu, dob, pin1, err) {
+  if (stu.dob !== dob) {
+    pinFailRecord(schoolUid, stu.id);
+    if (srvId && sbIsOnline()) sbParentPinFailed(srvId, stu.admissionNo || '');
+    err.textContent = t('tInvalidStudent');
+    err.classList.remove('hidden');
+    return false;
+  }
+  stu.parentPinHash = hashPin(pin1);
+  delete stu.parentPin;
+  // Audit row on the school's own copy, so the admin sees the reset —
+  // the actor is the parent, not whoever happens to be logged in.
+  try {
+    if (!Array.isArray(found.db.auditLog)) found.db.auditLog = [];
+    found.db.auditLog.unshift({ ts: new Date().toISOString(), actor: stu.name + ' (parent)', action: 'Parent PIN reset', details: 'Admission ' + (stu.admissionNo || '') + ' • ' + (stu.cls || '') });
+    if (found.db.auditLog.length > 200) found.db.auditLog.length = 200;
+  } catch (e3) {}
+  try { writeDbByKey(found.dbKey, found.db); } catch (e4) {}
+  pinFailClear(schoolUid, stu.id);
+  if (srvId && sbIsOnline()) sbParentPinOk(srvId, stu.admissionNo || '');
+  toast(t('tPinResetDone'));
+  hideParentPinReset();
   return false;
 }
 function doParentCloudLogin(serverId, adm, pin, err) {
@@ -6777,8 +6977,19 @@ function doLogin(e) {
       // when the LOCAL password is wrong — never "Wrong password for
       // the server account", because there is no server account.
       if (acct && !acct.sbUid) {
-        if (sbLocalLogin(id, pw, err, false)) toast(t('sbLocalOnlyLogin'));
-        return;
+        // v99: the server lock binds the local login too — check it
+        // before the local password is tried. Fail-open: a failed
+        // precheck (network/RPC error) returns null and the local login
+        // still runs. The promise is returned so the login button
+        // restores only after the login finishes.
+        return sbSchoolLoginPrecheck(id).then(function (pre) {
+          if (pre && pre.locked) {
+            err.textContent = t('tPinLocked');
+            err.classList.remove('hidden');
+            return;
+          }
+          if (sbLocalLogin(id, pw, err, false)) toast(t('sbLocalOnlyLogin'));
+        });
       }
       // No local account at all: nothing to fall back to. Generic
       // error — do not claim a server password is wrong.
@@ -9874,7 +10085,7 @@ function saveMarks(examId) {
   };
   var doneToast = function () {
     if (bad.length) toast(t('tNotSaved') + ': ' + bad.join(', ') + ' — ' + t('tCheckMarks') + ' (max ' + ex.total + ').');
-    else if (saved) toast('✓ ' + t('tMarksSaved') + ' ' + saved + ' ' + t('tStudentsWord') + '.');
+    else if (saved) toast('✓ ' + t('tMarksSaved') + ' ' + saved + ' ' + t(saved === 1 ? 'tStudentWord' : 'tStudentsWord') + '.');
     else toast(t('tNoChanges'));
   };
   // v62: a cloud teacher writes through the server RPC (one call for the
@@ -9898,7 +10109,7 @@ function saveMarks(examId) {
         return;
       }
       applyChanges(changes);
-      if (saved) sbLogAuditCloud(mkToken98, 'Marks saved', ex.name + ' • ' + ex.cls + ' • ' + saved + ' students', 'Marks saved', ex.name + ' • ' + ex.cls, '📝', 'blue');
+      if (saved) sbLogAuditCloud(mkToken98, 'Marks saved', ex.name + ' • ' + ex.cls + ' • ' + saved + ' ' + (saved === 1 ? 'student' : 'students'), 'Marks saved', ex.name + ' • ' + ex.cls, '📝', 'blue');
       renderApp();
       doneToast();
     });
@@ -9908,7 +10119,7 @@ function saveMarks(examId) {
   // v97: a marks save never wrote an audit row (local or cloud) — the
   // Activity Log showed the exam being created, never the marks going
   // in. One save = one entry in each list, like attendance.
-  if (saved) { logAudit('Marks saved', ex.name + ' • ' + ex.cls + ' • ' + saved + ' students'); addActivity('📝', 'blue', 'Marks saved', ex.name + ' • ' + ex.cls); }
+  if (saved) { logAudit('Marks saved', ex.name + ' • ' + ex.cls + ' • ' + saved + ' ' + (saved === 1 ? 'student' : 'students')); addActivity('📝', 'blue', 'Marks saved', ex.name + ' • ' + ex.cls); }
   saveDB(db); renderApp();
   doneToast();
 }
