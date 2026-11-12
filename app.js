@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 103;
+var APP_VERSION = 104;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -420,13 +420,40 @@ function sbGetValidToken() {
 // own session-expired handling then applies).
 function sbValidateSchoolSession() {
   var checked = sbGetValidToken().then(function (tok) {
-    if (!tok) return !sbSessionExpired; // no token: offline (keep) unless the server rejected the refresh (drop)
+    if (!tok) {
+      // v104: NO stored session is not "offline" — the school is not
+      // authenticated (a new tab: the Supabase session lives in
+      // sessionStorage, which is per-tab, so a reload in a fresh tab
+      // has nothing to refresh from). Restoring such a school into
+      // the dashboard leaves sbSyncActive() null forever: every save
+      // silently skips its diff, nothing ever queues, and the UI
+      // still says "Backed up to the server" (live 12 Nov: Remove
+      // Holiday failed five checks in a row). Drop to the login
+      // screen. A stored session whose token cannot be refreshed is
+      // genuinely offline (keep) unless the server rejected it (drop).
+      if (!sbLoadSession()) return false;
+      return !sbSessionExpired;
+    }
     return sbGetUser(tok).then(function (r) {
       return !!r.ok; // non-2xx = the server rejected this token
     }, function () { return true; }); // network error = offline, keep the local session
   }, function () { return true; }); // network error = offline, keep the local session
   var giveUp = new Promise(function (resolve) { setTimeout(function () { resolve(true); }, 10000); });
   return Promise.race([checked, giveUp]);
+}
+function sbHealSchoolSession() {
+  // v104: adopt a stored Supabase session into state.sb when the
+  // restore missed it (validation give-up race, or a session stored
+  // after restore). Without this a tab can sit session-less forever
+  // even though a valid session exists in storage — sync stays dead
+  // while the UI looks logged in.
+  try {
+    if (typeof state === 'undefined' || !state || !state.user || state.user.role !== 'school') return false;
+    if (state.sb && state.sb.uid) return true;
+    var ss = sbLoadSession();
+    if (ss && ss.user_id && (!ss.email || ss.email === state.user.email)) { state.sb = { uid: ss.user_id, email: ss.email || state.user.email }; return true; }
+  } catch (e) {}
+  return false;
 }
 function sbIsLocalOnlySchool() {
   // v37: a school account with NO server session — no sbUid on the
@@ -525,6 +552,10 @@ function sbStatusText() {
   // local-only wording whatever the persisted status says — an old
   // "Backed up" written before v37 must not survive the upgrade.
   if (sbIsLocalOnlySchool()) return t('sbStatusLocalOnly');
+  // v104: a server-linked school with no Supabase session is not
+  // synced — the persisted "Backed up" line (written by an earlier
+  // tab's cycle) must not stand while this tab cannot sync at all.
+  if (typeof state !== 'undefined' && state && state.user && state.user.role === 'school' && state.user.sbUid && !(state.sb && state.sb.uid)) return t('sbStatusSessionExpired');
   var st = sbLoadStatus();
   if (!st) {
     // v47: no status was ever recorded on this device — claiming
@@ -3020,6 +3051,7 @@ function sbSyncOnSave() {
   // Called from saveDB after every local write. Queues the change and
   // schedules a push when a server session is active. Local-only
   // accounts: no-op. Sync must never break a local save.
+  sbHealSchoolSession(); // v104: adopt a session stored after restore
   if (!sbSyncActive()) return;
   try {
     // B22 (M-16): offline saves skip the full re-hash entirely —
@@ -3998,6 +4030,7 @@ function sbSyncCycleRun(account, sbUid, token) {
   // and picks up other devices' changes; the flush pushes the outbox.
   var cycleT0 = Date.now(); // v53 diag: the cycle's wall-time + REST calls
   var cycleCalls0 = sbSyncRestCalls;
+  sbHealSchoolSession(); // v104: adopt a session stored after restore
   var act = sbSyncActive();
   if (!act) return Promise.resolve({ done: false, reason: 'no-session' });
   account = account || act.account;
