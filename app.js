@@ -3608,12 +3608,21 @@ function sbSyncFlushWithToken(act, tok) {
     if (!schoolId) return Promise.resolve({ done: false, reason: 'no-server-school' });
     var maps = sbSyncBuildMaps(db, act.uid);
     // One find GET per table, in parallel — the batch for this pass.
+    // Phase 3 (v64 follow-up): the batch fetch used to be a single
+    // unpaged GET, so a table over the server's default row cap came
+    // back truncated and every missing row fell through to a per-entry
+    // live GET. sbFetchAllPages returns the same {ok, data} shape,
+    // paged with a keyset cursor, so the batch is complete.
     var tables53 = [];
     outbox.forEach(function (e) { if (tables53.indexOf(e.table) === -1) tables53.push(e.table); });
     return Promise.all(tables53.map(function (tb) {
-      return sbRest('GET', tb + '?select=*&school_id=eq.' + encodeURIComponent(schoolId), tok).then(function (r) {
+      // The .catch keeps the old failure shape: a failed batch fetch
+      // yields an empty batch and the per-entry live GET fallback
+      // still runs (sbFetchAllPages throws on a read error instead of
+      // returning {ok:false}).
+      return sbFetchAllPages(tb, '*', schoolId, tok).then(function (r) {
         return { table: tb, rows: (r.ok && Array.isArray(r.data)) ? r.data : [] };
-      });
+      }).catch(function () { return { table: tb, rows: [] }; });
     })).then(function (fetched) {
       var batch = {};
       fetched.forEach(function (f) { batch[f.table] = f.rows; });
