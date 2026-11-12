@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 96;
+var APP_VERSION = 98;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -6227,6 +6227,70 @@ function sbTeacherStudentPhoto(token, studentServerId) {
     return (r && r.ok && r.data && typeof r.data === 'object' && r.data.ok) ? (r.data.photo_data_url || r.data.photo_url || null) : null;
   }).catch(function () { return null; });
 }
+// v97 (cons fix): audit rows for cloud writes. A cloud teacher's
+// attendance, homework and marks go through RPCs, so no local audit row
+// ever existed for them — the school admin's Activity Log never saw
+// their work. This posts the row to the server directly (SQL 34
+// ss_log_audit); the actor name + role and the school come from the
+// session token ON THE SERVER, never from the caller. Fire-and-forget:
+// a failed audit insert must never break the save it describes.
+function sbLogAuditCloud(token, action, details, title, sub, icon, bg) {
+  if (!token) return Promise.resolve(null);
+  var _auditBody = {};
+  _auditBody.p_token = token;
+  _auditBody.p_action = action;
+  _auditBody.p_details = details || '';
+  _auditBody.p_title = title || '';
+  _auditBody.p_sub = sub || '';
+  _auditBody.p_icon = icon || '';
+  _auditBody.p_bg = bg || '';
+  return sbRest('POST', 'rpc/ss_log_audit', SB_ANON_KEY, _auditBody).then(function (r) {
+    return (r && r.ok && r.data && typeof r.data === 'object') ? r.data : null;
+  }).catch(function () { return null; });
+}
+// v98 (cons fix): staff cloud writes (SQL 35). Mirror the teacher RPCs
+// (SQL 18); the staff token resolves via ss_staff_token_owner, role +
+// classes enforced server-side. The revoke RPC is SQL 30's — it already
+// existed, the app just never called it (wired up in logoutClear below).
+function sbStaffMarkAttendance(token, date, cls, studentServerId, status) {
+  var _markBody = {};
+  _markBody.p_token = token;
+  _markBody.p_date = date;
+  _markBody.p_cls = cls;
+  _markBody.p_student_id = studentServerId;
+  _markBody.p_status = status;
+  return sbRest('POST', 'rpc/ss_staff_mark_attendance', SB_ANON_KEY, _markBody).then(function (r) {
+    return (r && r.ok && r.data && typeof r.data === 'object') ? r.data : null;
+  }).catch(function () { return null; });
+}
+function sbStaffPostHomework(token, cls, subject, title, due, localId) {
+  var _hwBody = {};
+  _hwBody.p_token = token;
+  _hwBody.p_cls = cls;
+  _hwBody.p_subject = subject;
+  _hwBody.p_title = title;
+  _hwBody.p_due = due;
+  _hwBody.p_local_id = localId;
+  return sbRest('POST', 'rpc/ss_staff_post_homework', SB_ANON_KEY, _hwBody).then(function (r) {
+    return (r && r.ok && r.data && typeof r.data === 'object') ? r.data : null;
+  }).catch(function () { return null; });
+}
+function sbStaffSetMarks(token, examServerId, marks) {
+  var _marksBody = {};
+  _marksBody.p_token = token;
+  _marksBody.p_exam_id = examServerId;
+  _marksBody.p_marks = marks;
+  return sbRest('POST', 'rpc/ss_staff_set_marks', SB_ANON_KEY, _marksBody).then(function (r) {
+    return (r && r.ok && r.data && typeof r.data === 'object') ? r.data : null;
+  }).catch(function () { return null; });
+}
+function sbStaffRevokeSession(token) {
+  var _revokeBody = {};
+  _revokeBody.p_token = token;
+  return sbRest('POST', 'rpc/ss_staff_revoke_session', SB_ANON_KEY, _revokeBody).then(function (r) {
+    return (r && r.ok) ? true : false;
+  }).catch(function () { return false; });
+}
 function mapCloudTeacherPayload(p) {
   // Build a db-shaped slice from the server payload. The teacher views
   // (dashboard, attendance, homework, exams) read `db`, so the slice
@@ -6387,6 +6451,12 @@ function mapCloudStaffPayload(p) {
   var stuMap = {};
   d.students = (data.students || []).map(function (row) { var s = sbRowToStudent(row); if (row.id) { stuMap[row.id] = s.id; s.srvId = row.id; } return s; });
   d.teachers = (data.teachers || []).map(function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [] }; });
+  // v98: the slice carries the signed-in staff member's OWN record, so
+  // staffRecord()/staffClasses()/roleClasses() resolve — before v98 the
+  // slice had no db.staff row, roleClasses() returned [] and every cloud
+  // staff write was refused at the gate before it could reach any RPC.
+  // (Mirrors the teacher slice, which carries the logged-in teacher.)
+  d.staff = [{ id: (p.staff && p.staff.id) || '', name: (p.staff && p.staff.name) || '', role: role, classes: Array.isArray(p.staff && p.staff.classes) ? p.staff.classes.slice() : [], email: (p.staff && p.staff.email) || '' }];
   var staffClasses = role === 'principal' ? null : ((p.staff && Array.isArray(p.staff.classes)) ? p.staff.classes : []);
   var examMap = {};
   d.exams = (data.exams || []).filter(function (row) { return !staffClasses || staffClasses.indexOf(row.cls) !== -1; }).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100, deleted: !!row.deleted }; if (row.id) { examMap[row.id] = e.id; e.srvId = row.id; } return e; });
@@ -6809,6 +6879,11 @@ function logoutClear() {
   // drop its token with the session — a logged-out token stops working.
   if (state.cloudTeacherToken) { try { sbTeacherRevokeSession(state.cloudTeacherToken); } catch (e9) {} }
   state.cloudTeacherToken = null;
+  // v98: revoke a cloud staff session too (SQL 30 already had the RPC;
+  // the app never called it) and drop its token — before v98 a staff
+  // logout left a live 30-day token on the server.
+  if (state.cloudStaffToken) { try { sbStaffRevokeSession(state.cloudStaffToken); } catch (e9) {} }
+  state.cloudStaffToken = null;
   state.feeStudent = null; state.feeSearch = ''; state.feeType = 'All'; state.feeFilter = 'All'; state.feeFormOpen = false; state.feePreselect = null;
   state.profileStudent = null; state.profileTab = 'overview'; state.stuPage = 1;
   state.admReqFilter = 'All';
@@ -6817,6 +6892,7 @@ function logoutClear() {
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
   try { sessRemove(CLOUD_STUDENT_KEY); } catch (e2) {} // v61
   try { sessRemove(CLOUD_TEACHER_KEY); } catch (e3) {} // v62
+  try { sessRemove(CLOUD_STAFF_KEY); } catch (e3) {} // v98: drop the staff session snapshot too
   // Sign out of the server too (best-effort) and drop the server session.
   try {
     var sbSess = sbLoadSession();
@@ -8575,13 +8651,17 @@ function markAtt(id, m) {
   // v62: a cloud teacher writes through the server RPC, not the local
   // DB. Optimistic: the slice updates at once, and a failed call reverts
   // it. A dead token logs the teacher out (re-login mints a new one).
-  if (state.cloudTeacherToken) {
+  // v98: a cloud staff member writes through the STAFF RPCs (SQL 35) —
+  // before v98 their taps only ever reached the local slice.
+  var attToken98 = state.cloudTeacherToken || state.cloudStaffToken;
+  var attFn98 = state.cloudTeacherToken ? sbTeacherMarkAttendance : sbStaffMarkAttendance;
+  if (attToken98) {
     if (!stu || !stu.srvId) { toast(t('tNotSaved')); return; }
     var prev = (db.attendance[key] || {})[id];
     if (!db.attendance[key]) db.attendance[key] = {};
     db.attendance[key][id] = m;
     renderPage();
-    sbTeacherMarkAttendance(state.cloudTeacherToken, state.attDate, state.attCls, stu.srvId, m).then(function (res) {
+    attFn98(attToken98, state.attDate, state.attCls, stu.srvId, m).then(function (res) {
       if (res && res.ok) return;
       if (prev === undefined) delete db.attendance[key][id]; else db.attendance[key][id] = prev;
       if (res && res.error === 'bad_token') { toast(t('tCloudSessionExpired')); logout(); return; }
@@ -8601,13 +8681,6 @@ function saveAttendance() {
   // v35: a teacher saves only their own assigned class.
   // v93: a staff member saves only their own assigned class too.
   if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
-  // v62: a cloud teacher's taps already went to the server one by one —
-  // there is nothing local to save, and no audit/activity row to write
-  // (the server keeps the attendance itself).
-  if (state.cloudTeacherToken) {
-    toast('✓ ' + t('tAttSaved') + ' — Class ' + state.attCls + ' (' + state.attDate + ').');
-    return;
-  }
   var key = state.attDate + '|' + state.attCls;
   var recs = db.attendance[key] || {};
   // v25: attendance saves go to the audit log too, so the full Activity
@@ -8616,6 +8689,9 @@ function saveAttendance() {
   // in either. v34 (P1-9): counts treat unmarked as "Not marked" (a
   // separate count), matching the page header; v34 (P1-10): Cancelled/
   // Draft students are not on the roster and not in the counts.
+  // v97: the counts are computed BEFORE the cloud branch now, because
+  // both paths log the same summary — the local path to db.auditLog,
+  // the cloud path to the server via sbLogAuditCloud (SQL 34).
   var counts = { Present: 0, Absent: 0, Late: 0, NotMarked: 0 };
   db.students.filter(function (s) { return s.cls === state.attCls && isEnrolledStudent(s); }).forEach(function (s) {
     var m = recs[s.id];
@@ -8624,7 +8700,20 @@ function saveAttendance() {
     else if (m === 'Absent') counts.Absent++;
     else counts.Late++;
   });
-  logAudit('Attendance updated', 'Class ' + state.attCls + ' • ' + state.attDate + ' • ' + counts.Present + ' Present, ' + counts.Absent + ' Absent, ' + counts.Late + ' Late' + (counts.NotMarked ? ', ' + counts.NotMarked + ' Not marked' : ''));
+  var attSummary = 'Class ' + state.attCls + ' • ' + state.attDate + ' • ' + counts.Present + ' Present, ' + counts.Absent + ' Absent, ' + counts.Late + ' Late' + (counts.NotMarked ? ', ' + counts.NotMarked + ' Not marked' : '');
+  // v62: a cloud teacher's taps already went to the server one by one —
+  // there is nothing local to save. v97: the save STILL writes an audit
+  // row — via the server RPC, never a local row (the v62 harness pins
+  // that a cloud save leaves the local audit list untouched).
+  // v98: a cloud staff member's save logs the same way — the audit RPC
+  // (SQL 34) already accepts staff tokens.
+  var attSaveToken98 = state.cloudTeacherToken || state.cloudStaffToken;
+  if (attSaveToken98) {
+    sbLogAuditCloud(attSaveToken98, 'Attendance updated', attSummary, 'Attendance updated', 'Class ' + state.attCls, '✅', 'blue');
+    toast('✓ ' + t('tAttSaved') + ' — Class ' + state.attCls + ' (' + state.attDate + ').');
+    return;
+  }
+  logAudit('Attendance updated', attSummary);
   addActivity('✅', 'blue', 'Attendance updated', 'Class ' + state.attCls);
   saveDB(db);
   toast('✓ ' + t('tAttSaved') + ' — Class ' + state.attCls + ' (' + state.attDate + ').');
@@ -9791,7 +9880,10 @@ function saveMarks(examId) {
   // v62: a cloud teacher writes through the server RPC (one call for the
   // whole save). The slice changes only after the server confirms, and
   // every student must resolve to a server id or the whole save aborts.
-  if (state.cloudTeacherToken) {
+  // v98: a cloud staff member sets marks through the STAFF RPC (SQL 35).
+  var mkToken98 = state.cloudTeacherToken || state.cloudStaffToken;
+  var mkFn98 = state.cloudTeacherToken ? sbTeacherSetMarks : sbStaffSetMarks;
+  if (mkToken98) {
     if (!ex.srvId) { toast(t('tNotSaved')); return; }
     var serverMarks = [];
     for (var ci = 0; ci < changes.length; ci++) {
@@ -9799,19 +9891,24 @@ function saveMarks(examId) {
       if (!cst || !cst.srvId) { toast(t('tNotSaved')); return; }
       serverMarks.push({ student_id: cst.srvId, marks: changes[ci].marks });
     }
-    sbTeacherSetMarks(state.cloudTeacherToken, ex.srvId, serverMarks).then(function (res) {
+    mkFn98(mkToken98, ex.srvId, serverMarks).then(function (res) {
       if (!res || !res.ok) {
         if (res && res.error === 'bad_token') { toast(t('tCloudSessionExpired')); logout(); return; }
         toast(t('tNotSaved'));
         return;
       }
       applyChanges(changes);
+      if (saved) sbLogAuditCloud(mkToken98, 'Marks saved', ex.name + ' • ' + ex.cls + ' • ' + saved + ' students', 'Marks saved', ex.name + ' • ' + ex.cls, '📝', 'blue');
       renderApp();
       doneToast();
     });
     return;
   }
   applyChanges(changes);
+  // v97: a marks save never wrote an audit row (local or cloud) — the
+  // Activity Log showed the exam being created, never the marks going
+  // in. One save = one entry in each list, like attendance.
+  if (saved) { logAudit('Marks saved', ex.name + ' • ' + ex.cls + ' • ' + saved + ' students'); addActivity('📝', 'blue', 'Marks saved', ex.name + ' • ' + ex.cls); }
   saveDB(db); renderApp();
   doneToast();
 }
@@ -10016,21 +10113,27 @@ function saveHomework(e) {
   if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf($('fHwCls').value) === -1) { toast(t('tNotAllowed')); return false; }
   // v62: a cloud teacher posts through the server RPC. The row joins the
   // slice only after the server confirms it.
-  if (state.cloudTeacherToken) {
+  // v98: a cloud staff member posts homework through the STAFF RPC (SQL 35).
+  var hwToken98 = state.cloudTeacherToken || state.cloudStaffToken;
+  var hwFn98 = state.cloudTeacherToken ? sbTeacherPostHomework : sbStaffPostHomework;
+  if (hwToken98) {
     var hw = { id: uniqueId('hw'), cls: $('fHwCls').value, subject: $('fHwSub').value, title: $('fHwTitle').value.trim(), due: $('fHwDue').value, doneBy: [] };
-    sbTeacherPostHomework(state.cloudTeacherToken, hw.cls, hw.subject, hw.title, hw.due, hw.id).then(function (res) {
+    hwFn98(hwToken98, hw.cls, hw.subject, hw.title, hw.due, hw.id).then(function (res) {
       if (!res || !res.ok) {
         if (res && res.error === 'bad_token') { toast(t('tCloudSessionExpired')); logout(); return; }
         toast(t('tNotSaved'));
         return;
       }
       db.homework.unshift(hw);
+      sbLogAuditCloud(hwToken98, 'Homework assigned', hw.subject + ' • Class ' + hw.cls + ' • due ' + hw.due, 'Homework assigned', hw.subject + ' • Class ' + hw.cls, '📚', 'orange');
       closeModal(); renderApp();
       toast(t('tHwAssigned'));
     });
     return false;
   }
   db.homework.unshift({ id: uniqueId('hw'), cls: $('fHwCls').value, subject: $('fHwSub').value, title: $('fHwTitle').value.trim(), due: $('fHwDue').value, doneBy: [] });
+  // v97: homework wrote the dashboard activity but never the audit log.
+  logAudit('Homework assigned', $('fHwSub').value + ' • Class ' + $('fHwCls').value + ' • due ' + $('fHwDue').value);
   addActivity('📚', 'orange', 'Homework assigned', $('fHwSub').value + ' • Class ' + $('fHwCls').value);
   saveDB(db); closeModal(); renderApp();
   toast(t('tHwAssigned'));
