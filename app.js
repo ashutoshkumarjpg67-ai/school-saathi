@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 105;
+var APP_VERSION = 106;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -2222,6 +2222,17 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     var uid105 = (account && account.sbUid) || (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
     if (uid105) tomb105 = sbTombPrune(sbTombLoad(uid105));
   } catch (e105) {}
+  function tombRequeue106(table, key) {
+    // v106: a server row whose delete is tombstoned is a zombie — a stale
+    // tab re-created it after the delete pushed (live 12 Nov: the v104
+    // tab re-POSTed the holiday at 12:58:28 IST, minutes after the v105
+    // tab's flush deleted it). Skipping it is not enough: the row would
+    // sit on the server until the tombstone expires and then come back.
+    // Re-queue its delete, so this cycle's flush removes it from the
+    // server. Idempotent: the outbox holds one entry per (table,key).
+    if (!uid105 || !table || !key) return;
+    sbOutboxAdd(uid105, { table: table, key: key, op: 'delete', at: new Date().toISOString() });
+  }
   function mergeIsSeedRow(table, row) {
     if (table === 'ss_fee_records' || table === 'ss_receipts') return !!seedStudentIds[row.studentId];
     if (table === 'ss_marks') return !!(seedExamIds[row.examId] || seedStudentIds[row.studentId]);
@@ -2238,6 +2249,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     (serverRows || []).forEach(function (row) {
       var r = mapFn(row);
       if (r.id && outboxDelete102[table] && outboxDelete102[table][r.id]) return; // v102: pending delete wins — do not pull the row back
+      if (r.id && tomb105[table] && tomb105[table][r.id]) { tombRequeue106(table, r.id); return; } // v106: a tombstoned server row is a zombie — skip it and re-queue its delete
       if (r.id && onServer[r.id]) return;
       if (r.id) onServer[r.id] = true;
       serverList.push(r);
@@ -2273,7 +2285,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // still drops. When the server has no structure at all, the local
   // defaults stay.
   if ((byTable.ss_fee_structure || []).length) {
-    var srvFs = byTable.ss_fee_structure.map(function (row) { return { cls: row.cls || '', type: row.fee_type || 'Tuition', amount: row.amount || 0 }; }).filter(function (f) { var k = (f.cls || '') + '|' + (f.type || 'Tuition'); return !(outboxDelete102.ss_fee_structure && outboxDelete102.ss_fee_structure[k]); }); // v102: pending delete wins — do not pull the row back
+    var srvFs = byTable.ss_fee_structure.map(function (row) { return { cls: row.cls || '', type: row.fee_type || 'Tuition', amount: row.amount || 0 }; }).filter(function (f) { var k = (f.cls || '') + '|' + (f.type || 'Tuition'); if (outboxDelete102.ss_fee_structure && outboxDelete102.ss_fee_structure[k]) return false; if (tomb105.ss_fee_structure && tomb105.ss_fee_structure[k]) { tombRequeue106('ss_fee_structure', k); return false; } return true; }); // v102: pending delete wins — do not pull the row back; v106: a tombstoned row is a zombie — skip it and re-queue its delete
     var srvFsKeys = {};
     srvFs.forEach(function (f) { srvFsKeys[(f.cls || '') + '|' + (f.type || 'Tuition')] = true; });
     var mergedFs = srvFs.slice();
@@ -2412,6 +2424,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     var localId = stuMap[row.student_id];
     if (!localId) return;
     if (outboxDelete102.ss_attendance && outboxDelete102.ss_attendance[(row.att_date || '') + '|' + (row.cls || '') + '|' + localId]) return; // v102: pending delete wins — do not pull the mark back
+    if (tomb105.ss_attendance && tomb105.ss_attendance[(row.att_date || '') + '|' + (row.cls || '') + '|' + localId]) { tombRequeue106('ss_attendance', (row.att_date || '') + '|' + (row.cls || '') + '|' + localId); return; } // v106: tombstoned — zombie, skip + re-queue its delete
     var key = (row.att_date || '') + '|' + (row.cls || '');
     if (!d.attendance[key]) d.attendance[key] = {};
     d.attendance[key][localId] = row.status || 'Present';
@@ -2513,6 +2526,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     if (!examMap[row.exam_id] || !stuMap[row.student_id]) return;
     var m = { examId: examMap[row.exam_id], studentId: stuMap[row.student_id], marks: row.marks };
     if (outboxDelete102.ss_marks && outboxDelete102.ss_marks[m.examId + '|' + m.studentId]) return; // v102: pending delete wins — do not pull the mark back
+    if (tomb105.ss_marks && tomb105.ss_marks[m.examId + '|' + m.studentId]) { tombRequeue106('ss_marks', m.examId + '|' + m.studentId); return; } // v106: tombstoned — zombie, skip + re-queue its delete
     d.marks.push(m);
     serverMarkKeys[m.examId + '|' + m.studentId] = true;
   });
