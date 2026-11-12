@@ -119,8 +119,9 @@ PR, with regression tests under `tests/phase3/`.
   settings save 11078). On success the Storage URL is stored on the
   local row and the next sync sends the URL and nulls the Data URL;
   any failure (offline, no session, rejected upload) keeps the Data URL
-  path. Display prefers the URL and falls back to the Data URL
-  (`app.js` 2143, 2204, 2448).
+  path. Display prefers the Data URL and falls back to the Storage URL
+  (`app.js` 2143, 2204, 2448, 6801). (Corrected v111 — Phase 7 review
+  C4: the earlier text had this backwards.)
 - Old Data URL columns are kept as fallback and never dropped.
 - Live state could not be re-verified from the repo: SQL 28 records
   the server held ZERO logos/photos on 11 Nov 2026. Whether any

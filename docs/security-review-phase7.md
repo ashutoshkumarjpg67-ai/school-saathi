@@ -114,12 +114,13 @@ caller's auth and refuse otherwise). But `ss_school_owner()` still
 resolves any school UUID to its owner UUID for an anonymous caller,
 and the grants contradict the least-privilege pattern every later file
 follows. **Fix: Phase 3 SQL 39
-(`supabase/39_revoke_public_function_grants.sql`, branch
-`fix/ph3-revoke-public-grants`) revokes PUBLIC on all seven and
-re-asserts the explicit grants.** This Phase 7 PR deliberately does
-NOT duplicate it. The grant-matrix test pins the current 8-function
-PUBLIC set and must shrink to `['ss_touch_updated_at()']` once SQL 39
-merges — the test message says so.
+(`supabase/39_revoke_public_function_grants.sql`) revokes PUBLIC on
+all seven and re-asserts the explicit grants.** This Phase 7 PR
+deliberately does NOT duplicate it. **Update (v111, 12 Nov 2026):
+SQL 39 MERGED** (Phase 7 PRs #44–#56, HEAD d6d9c884), and the live
+grants were verified the same day (BAT): **0 PUBLIC on all 8
+functions** — the end state already holds, nothing left to apply.
+The grant-matrix test now pins the post-39 set.
 
 `ss_touch_updated_at()` (the `updated_at` trigger function) also keeps
 the PUBLIC default. That is standard and harmless: a trigger function
@@ -210,19 +211,21 @@ cannot be deleted from SQL, and no code path should try.
 
 | Roadmap criterion | Status |
 |---|---|
-| Cross-school access tests run in CI | ⚠️ TESTS WRITTEN, CI GLOB PENDING — `tests/phase7/cross-school.test.mjs` (15 tests) is green locally; `npm test` runs `tests/*.test.mjs` (non-recursive), so Phase 1 must widen the glob to `tests/**/*.test.mjs` before these run in CI. Same for the other Phase 7 suites. |
-| Rate-limit tests run in CI | ⚠️ Same CI-glob note — `tests/phase7/rate-limit.test.mjs` (20 tests) green locally. |
-| Permission-matrix tests run in CI | ⚠️ Same CI-glob note — `tests/phase7/permission-matrix.test.mjs` (18 tests) green locally. |
-| Security checklist green | ⚠️ PARTIAL — repo-side checklist is green except F1 (PUBLIC grants; fix written as SQL 39, awaiting merge + live apply) and the live checks in §6. F2/F3 are pinned gaps with owners (Phase 4 / Phase 3). |
-| No PUBLIC grant remains unverified | ⚠️ Every PUBLIC grant IS verified and listed in §2 — 8 functions, 7 of which SQL 39 closes. "Verified" here means repo-verified; live verification is §6 check L1. |
+| Cross-school access tests run in CI | ✅ RUNS IN CI — `tests/phase7/cross-school.test.mjs` (15 tests); `tests/run.mjs` is recursive (the earlier non-recursive-glob note was wrong), and the CI run on HEAD 2516c097 (12 Nov 2026) went green including the npm test step. |
+| Rate-limit tests run in CI | ✅ Same — `tests/phase7/rate-limit.test.mjs` (20 tests) runs in CI. |
+| Permission-matrix tests run in CI | ✅ Same — `tests/phase7/permission-matrix.test.mjs` (18 tests) runs in CI; the v111 parent-branch fix is pinned by the matrix test. |
+| Security checklist green | ✅ Repo-side green. F1 (PUBLIC grants): SQL 39 merged and the live state matches (L1 done 12 Nov). F2 (parent list scoping): FIXED in v111. F3 (Phase 3 photo live check): still owed — needs Ashutosh's phone. |
+| No PUBLIC grant remains unverified | ✅ Live-verified 12 Nov 2026 (BAT, §6 check L1): 0 PUBLIC on all 8 functions. |
 
-**Overall: Phase 7 is NOT fully green.** What is done: full offline
-test coverage of the critical flows (permission matrix, cross-school,
-rate limits, pagination, performance, grants), the security review
-above, and the Storage/page-weight state measured. What is not done:
-the CI glob change (Phase 1, one line), the SQL 39 merge + live apply
-(Phase 3), the live two-school and lockout checks (BAT), and the
-`rls-test@school-saathi.in` deletion (Ashutosh — §F6).
+**Overall (updated v111, 12 Nov 2026): Phase 7 is green except the
+live checks.** What is done: full offline test coverage of the
+critical flows (permission matrix, cross-school, rate limits,
+pagination, performance, grants) running in CI, the security review
+above, the Storage/page-weight state measured, SQL 39 merged with the
+live grants matching its end state, and the F2 parent-scoping gap
+fixed in v111. What is not done: the live two-school and lockout
+checks (BAT), the Phase 3 photo live check (Ashutosh's phone), and
+the `rls-test@school-saathi.in` deletion (Ashutosh — §F6).
 
 ## 6. Pending live evidence (for BAT / Ashutosh — exact steps)
 
@@ -239,10 +242,11 @@ select routine_name, grantee, privilege_type
  order by routine_name, grantee;
 ```
 
-Expect before SQL 39 is applied: `PUBLIC` appears on the first seven;
-`ss_parent_lookup` has only the `postgres` grantee (if listed);
-`ss_school_login_ok` has only `authenticated`; token owners have no
-rows. After SQL 39 is applied: no `PUBLIC` on any of them.
+Expect (SQL 39 merged 12 Nov 2026; L1 run the same day by BAT and
+matched): no `PUBLIC` on any of them — 0 PUBLIC on all 8 functions.
+(Pre-39 expectation, kept for reference: `PUBLIC` on the first seven;
+`ss_parent_lookup` only the `postgres` grantee; `ss_school_login_ok`
+only `authenticated`; token owners no rows.)
 
 **L2 — Live lockout check (BAT, staging preview):** with the anon key,
 call `ss_school_login_precheck` for the TEST school email (expect
