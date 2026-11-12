@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 100;
+var APP_VERSION = 101;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -2478,8 +2478,8 @@ function sbRetryDownload(btn) {
    Safety: the pull NEVER wipes local data when the school has never
    migrated and the server is empty for a table that has local rows — it
    runs the migration upload instead. A row that disappears locally is
-   only deleted on the server for fee records, fee structure, attendance
-   and marks (the ones the app hard-deletes); anything else is restored
+   only deleted on the server for fee records, fee structure, attendance,
+   marks and holidays (the ones the app hard-deletes); anything else is restored
    by the next pull. Conflicts are last-write-wins by updated_at
    (04_server_first.sql adds the column + touch trigger to every synced
    table): a push first reads the server row, and when the server copy is
@@ -2795,7 +2795,7 @@ var SB_SYNC_TABLES = {
   ss_holidays: { local: 'holidays', key: 'id' },
   ss_admission_requests: { local: 'admissionRequests', key: 'id' }, ss_receipts: { local: 'receipts', key: 'receiptNo' }
 };
-var SB_SYNC_DELETABLE = ['ss_fee_records', 'ss_fee_structure', 'ss_attendance', 'ss_marks'];
+var SB_SYNC_DELETABLE = ['ss_fee_records', 'ss_fee_structure', 'ss_attendance', 'ss_marks', 'ss_holidays'];
 function sbSyncTableHashes(d, schoolId, maps) {
   // Canonical hash per row = the exact server payload it would push.
   // Local rows and server-derived rows hash identically when their
