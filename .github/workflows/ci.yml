@@ -31,6 +31,7 @@ jobs:
           node --check sw.js
           node --check js/modules/crypto.js
           node --check js/modules/i18n.js
+          node --check js/bcrypt.js
           node --check scripts/check-version.mjs
           node --check scripts/seed-fixtures.js
           node --check tests/harness.mjs
