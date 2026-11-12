@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 96;
+var APP_VERSION = 95;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -54,9 +54,25 @@ var FEE_MONTHS = [ // seed-only monthly ledger (seedDB splits it into feeRecords
    and a Supabase account with no school
    tied to it gets a no-school message, never an admin view. */
 var ACC_KEY = 'schoolSaathiAccounts';
+/* H-5: js/modules/storage-crypto.js (loaded before app.js) provides the
+   sbProt/sbCrypto storage layer. If it failed to load (stale cache,
+   old harness), fall back to raw storage access so the app keeps working
+   in plaintext — never break the app for a missing module. */
+if (typeof sbProtGet !== 'function') {
+  var sbCryptoEncrypted = false;
+  var sbCryptoIsEnvelope = function (s) { return false; };
+  var sbProtGet = function (storage, key) { try { return (storage === 'session' ? sessionStorage : localStorage).getItem(key); } catch (e) { return null; } };
+  var sbProtSet = function (storage, key, plain, withBak) { var store = storage === 'session' ? sessionStorage : localStorage; store.setItem(key, plain); if (withBak) { try { store.setItem(key + '.bak', plain); } catch (e) {} } return true; };
+  var sbProtRemove = function (storage, key) { try { (storage === 'session' ? sessionStorage : localStorage).removeItem(key); } catch (e) {} };
+  var sbCryptoRawPeek = function (storage, key) { try { return (storage === 'session' ? sessionStorage : localStorage).getItem(key); } catch (e) { return null; } };
+  var sbCryptoWarmAll = function () { return Promise.resolve([]); };
+  var sbCryptoMigrateLegacy = function () {};
+  var sbCryptoInit = function () { return Promise.resolve(false); };
+  var sbCryptoFlush = function () { return Promise.resolve(); };
+}
 /* Phase 2 (v71): crypto / identity helpers (hashPw, randomHex, uniqueId, sha256Hex, hashPwNew, verifyPw, hashPin, aadhaarLast4, ...) moved to js/modules/crypto.js — loaded before app.js. */
-function loadAccounts() { try { var r = localStorage.getItem(ACC_KEY); if (r) { var a = JSON.parse(r); if (Array.isArray(a)) return a; } } catch (e) {} return []; }
-function saveAccounts(list) { try { localStorage.setItem(ACC_KEY, JSON.stringify(list)); } catch (e) {} }
+function loadAccounts() { try { var r = sbProtGet('local', ACC_KEY); if (r) { var a = JSON.parse(r); if (Array.isArray(a)) return a; } } catch (e) {} return []; }
+function saveAccounts(list) { try { sbProtSet('local', ACC_KEY, JSON.stringify(list)); } catch (e) {} }
 function findAccount(email) {
   email = (email || '').trim().toLowerCase();
   var list = loadAccounts();
@@ -364,18 +380,31 @@ function sbSetNewPassword(recoveryToken, pw) {
 // remove the localStorage copy) so nobody is logged out by the update.
 // sessSet/sessRemove keep both storages clean.
 function sessGet(key) {
+  // H-5: the Supabase session token rides here — it is a protected key
+  // and reads from the decrypted cache. Other keys (cloud snapshots)
+  // stay raw sessionStorage, exactly as before.
+  if (key === SB_SESSION_KEY) {
+    var cached = sbProtGet('session', key);
+    if (cached !== null && cached !== undefined) return cached;
+  }
   try { var r = sessionStorage.getItem(key); if (r) return r; } catch (e) {}
   try {
     var old = localStorage.getItem(key);
-    if (old) { try { sessionStorage.setItem(key, old); } catch (e2) {} try { localStorage.removeItem(key); } catch (e3) {} return old; }
+    // An encrypted value adopted from localStorage cannot be decrypted
+    // synchronously — never hand the envelope to JSON.parse. (Boot
+    // warm-up adopts it properly; this branch only ever sees
+    // pre-encryption legacy values and cross-tab leftovers.)
+    if (old && !sbCryptoIsEnvelope(old)) { try { sessionStorage.setItem(key, old); } catch (e2) {} try { localStorage.removeItem(key); } catch (e3) {} return old; }
   } catch (e4) {}
   return null;
 }
 function sessSet(key, val) {
+  if (key === SB_SESSION_KEY) { try { sbProtSet('session', key, val); } catch (e) {} return; }
   try { sessionStorage.setItem(key, val); } catch (e) {}
   try { localStorage.removeItem(key); } catch (e2) {}
 }
 function sessRemove(key) {
+  if (key === SB_SESSION_KEY) { try { sbProtRemove('session', key); } catch (e) {} }
   try { sessionStorage.removeItem(key); } catch (e) {}
   try { localStorage.removeItem(key); } catch (e2) {}
 }
@@ -4406,25 +4435,36 @@ function migrateV13(d) {
   return d;
 }
 function readDbByKey(key) {
-  try { var raw = localStorage.getItem(key); if (!raw) return null; var d = JSON.parse(raw); return (d && d.v === 2) ? d : null; }
+  // H-5: reads the decrypted cache (warmed at boot). A null here means
+  // "no DB on this device" — every caller already fails safe on null.
+  try { var raw = sbProtGet('local', key); if (!raw) return null; var d = JSON.parse(raw); return (d && d.v === 2) ? d : null; }
   catch (e) { return null; }
 }
-function writeDbByKey(key, d) { try { localStorage.setItem(key, JSON.stringify(d)); } catch (e) {} }
+function writeDbByKey(key, d) { try { sbProtSet('local', key, JSON.stringify(d)); } catch (e) {} }
 function loadDB(override) {
   // B17 (H-8): a corrupt stored DB used to be silently replaced by an
   // empty one (and the failed save overwrote DB_KEY). Now: try the
   // .bak first; if that fails too, quarantine the corrupt payload and
   // say so out loud instead of silently starting empty.
+  // H-5: `text` is the decrypted (or legacy plaintext) DB string from
+  // the cache; `raw` is the exact stored bytes, needed for the
+  // quarantine copy and the unknown-version backup.
   var pendingBak = null; // unknown-version payload, preserved as .bak AFTER the fresh save below
   try {
-    var raw = localStorage.getItem(DB_KEY);
-    if (raw) {
+    var text = sbProtGet('local', DB_KEY);
+    var raw = sbCryptoRawPeek('local', DB_KEY);
+    if ((text === null || text === undefined) && raw !== null && raw !== undefined && !sbCryptoIsEnvelope(raw)) {
+      // H-5: legacy plaintext that warm-up missed (warm-up failure edge)
+      // — parse it directly instead of starting empty over real data.
+      text = raw;
+    }
+    if (text !== null && text !== undefined) {
       var d = null;
-      try { d = JSON.parse(raw); } catch (eParse) { d = null; }
+      try { d = JSON.parse(text); } catch (eParse) { d = null; }
       if (d && d.v === 2) { var m = migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))))); saveDB(m); return m; }
       if (d) {
         // Parsed but unknown version: keep a backup, never wipe silently.
-        pendingBak = raw;
+        pendingBak = (raw !== null && raw !== undefined) ? raw : text;
       } else {
         // Corrupt JSON: the .bak holds the last successfully saved DB.
         var recovered = sbLoadBak();
@@ -4434,11 +4474,24 @@ function loadDB(override) {
         }
         // .bak is corrupt/missing too: quarantine the torn payload so
         // it can still be recovered by hand, and warn persistently.
-        try { localStorage.setItem(DB_KEY + '.quarantine', raw); } catch (eQ) {}
+        try { localStorage.setItem(DB_KEY + '.quarantine', (raw !== null && raw !== undefined) ? raw : text); } catch (eQ) {}
         sbStorageWarnSet('corrupt');
         try { toast(t('sbDataCorrupt')); } catch (eT2) {}
       }
+    } else if (raw !== null && raw !== undefined && sbCryptoIsEnvelope(raw)) {
+      // H-5: an encrypted value is stored but the device key could not
+      // decrypt it (key lost / torn write). NEVER start empty over it:
+      // try the .bak first, else quarantine the exact bytes and warn.
+      var recovered2 = sbLoadBak();
+      if (recovered2) {
+        try { toast(t('sbRecoveredBak')); } catch (eT3) {}
+        return recovered2;
+      }
+      try { localStorage.setItem(DB_KEY + '.quarantine', raw); } catch (eQ2) {}
+      sbStorageWarnSet('corrupt');
+      try { toast(t('sbDataCorrupt')); } catch (eT4) {}
     }
+    // else: no stored value at all (raw null, text null) → fresh below.
   } catch (e) { /* storage unavailable — fall back to memory */ }
   // v36: a fresh device starts EMPTY — the demo DB no longer seeds on
   // boot (audit item 17). The seed function stays in the code for TESTS
@@ -4451,15 +4504,23 @@ function loadDB(override) {
   saveDB(fresh);
   // The fresh save rewrote .bak with the empty DB — restore the
   // unknown-version backup on top of it (it is the only copy left).
-  if (pendingBak) { try { localStorage.setItem(DB_KEY + '.bak', pendingBak); } catch (eB) {} }
+  // H-5: an envelope is already encrypted bytes (write raw); legacy
+  // plaintext goes through the encrypted store.
+  if (pendingBak) { try { if (sbCryptoIsEnvelope(pendingBak)) localStorage.setItem(DB_KEY + '.bak', pendingBak); else sbProtSet('local', DB_KEY + '.bak', pendingBak); } catch (eB) {} }
   return fresh;
 }
 function sbLoadBak() {
   // B17 (H-8): read DB_KEY + '.bak' (rewritten by saveDB on every
   // successful save). Returns the migrated DB, or null when the .bak
   // is missing, corrupt, or the wrong version.
+  // H-5: reads the decrypted cache (the .bak is warmed at boot).
   try {
-    var raw = localStorage.getItem(DB_KEY + '.bak');
+    var raw = sbProtGet('local', DB_KEY + '.bak');
+    if (!raw) {
+      // H-5: legacy plaintext .bak that warm-up missed — same guard as loadDB.
+      var peek = sbCryptoRawPeek('local', DB_KEY + '.bak');
+      if (peek && !sbCryptoIsEnvelope(peek)) raw = peek;
+    }
     if (!raw) return null;
     var d = JSON.parse(raw);
     if (!d || d.v !== 2) return null;
@@ -4467,6 +4528,62 @@ function sbLoadBak() {
     saveDB(m);
     return m;
   } catch (e) { return null; }
+}
+/* H-5: boot-time storage init — MUST run before the first loadDB /
+   restoreSession / renderApp. Loads (or creates) the device key, then
+   decrypts every protected value into the in-memory cache. Always
+   resolves (never rejects): on any failure the app boots in plaintext
+   fallback and shows the login screen exactly as before. */
+function sbStorageBootInit() {
+  // Adopt a pre-v75 Supabase session that still sits in localStorage:
+  // move the exact stored bytes to sessionStorage first (an envelope
+  // moves as bytes; warm-up below decrypts it from there).
+  try {
+    if (!sessionStorage.getItem(SB_SESSION_KEY)) {
+      var oldSess = localStorage.getItem(SB_SESSION_KEY);
+      if (oldSess) {
+        try { sessionStorage.setItem(SB_SESSION_KEY, oldSess); } catch (eS) {}
+        try { localStorage.removeItem(SB_SESSION_KEY); } catch (eS2) {}
+      }
+    }
+  } catch (eS3) {}
+  // Enumerate every school-DB key on the device (the default key, plus
+  // one per school account). .bak copies are warmed too (decrypt-only:
+  // migration never rewrites them — see sbCryptoWarmAll) so sbLoadBak
+  // can read them synchronously; .quarantine copies are forensic and
+  // are never decrypted or rewritten.
+  var specs = [];
+  try {
+    for (var i = 0; i < localStorage.length; i++) {
+      var k = localStorage.key(i);
+      if (!k || k.indexOf('schoolSaathiDB') !== 0) continue;
+      if (k.slice(-12) === '.quarantine') continue;
+      specs.push({ storage: 'local', key: k, migrate: k.slice(-4) !== '.bak' });
+    }
+  } catch (eE) {}
+  specs.push({ storage: 'local', key: ACC_KEY, migrate: true });
+  specs.push({ storage: 'local', key: SESSION_KEY, migrate: true });
+  specs.push({ storage: 'session', key: SB_SESSION_KEY, migrate: true });
+  return sbCryptoInit().then(function (encrypted) {
+    if (!encrypted) {
+      // Plaintext fallback: warn once, and only if sensitive data is
+      // actually stored unencrypted on this device (a fresh device
+      // with nothing stored gets no warning).
+      try {
+        var hasData = false;
+        try { hasData = !!localStorage.getItem(DB_KEY) || !!localStorage.getItem(ACC_KEY); } catch (eH) {}
+        if (hasData) sbStorageWarnSet('unencrypted');
+      } catch (eH2) {}
+      return false;
+    }
+    try { sbStorageWarnClear('unencrypted'); } catch (eC) {}
+    return sbCryptoWarmAll(specs).then(function (legacy) {
+      // Fire-and-forget: legacy plaintext values rewrite themselves
+      // encrypted on the queue; boot does not wait for the writes.
+      try { sbCryptoMigrateLegacy(legacy); } catch (eM) {}
+      return true;
+    });
+  }).catch(function () { return false; });
 }
 var MEM_FALLBACK = null;
 function sbIsQuotaError(e) {
@@ -4480,12 +4597,17 @@ function saveDB(db) {
   // B17 (H-8): the .bak is rewritten on every successful save (not
   // only on version change), so it always holds the last good DB.
   // A failing .bak write never breaks the primary save.
+  // H-5: the write goes through the encrypted store. In encrypted mode
+  // sbProtSet queues the write and returns true ("queued", not
+  // "persisted") — a queued write that later fails (quota) re-raises
+  // the quota warning from the queue, undoing the optimistic clear
+  // below. In plaintext-fallback mode this is a plain setItem and the
+  // return value means exactly what it meant before.
   var ok = false;
   try {
     var s = JSON.stringify(db);
-    localStorage.setItem(DB_KEY, s);
+    sbProtSet('local', DB_KEY, s, true);
     ok = true;
-    try { localStorage.setItem(DB_KEY + '.bak', s); } catch (eBak) {}
   } catch (e) {
     MEM_FALLBACK = db;
     // B18 (H-9): a full device must never fall back to memory-only
@@ -4546,10 +4668,12 @@ function sbStorageWarnRender() {
       else if (document.body && document.body.appendChild) document.body.appendChild(bar);
       else return;
     }
-    var msg = warn.kind === 'quota' ? t('sbStorageQuota') : t('sbDataCorrupt');
+    var msg = warn.kind === 'quota' ? t('sbStorageQuota') : (warn.kind === 'unencrypted' ? t('sbStorageUnencrypted') : t('sbDataCorrupt'));
     var act = warn.kind === 'quota'
       ? '<button type="button" class="btn sm" onclick="sbStorageFreePhotos()">' + esc(t('sbStorageRemovePhotos')) + '</button>'
-      : '<button type="button" class="btn sm" onclick="sbStorageOpenRestore()">' + esc(t('sbStorageRestoreBackup')) + '</button>';
+      : (warn.kind === 'unencrypted'
+        ? '' // H-5: nothing to fix in-app — the browser cannot encrypt; dismiss only.
+        : '<button type="button" class="btn sm" onclick="sbStorageOpenRestore()">' + esc(t('sbStorageRestoreBackup')) + '</button>');
     bar.innerHTML = '<span>' + esc(msg) + '</span> ' + act + ' <button type="button" class="btn ghost sm" onclick="sbStorageWarnDismiss()">' + esc(t('closeW')) + '</button>';
     if (bar.classList) bar.classList.remove('hidden');
   } catch (e) {}
@@ -4569,6 +4693,9 @@ function sbStorageFreePhotos() {
     var da = String(a.admissionDate || ''), dbb = String(b.admissionDate || '');
     return da < dbb ? -1 : (da > dbb ? 1 : 0);
   });
+  // H-5: in encrypted mode saveDB returns true when the write is
+  // queued; a queued write that later fails with quota re-raises the
+  // warning, so the user taps again and another photo is removed.
   var removed = 0;
   while (students.length) {
     var s = students.shift();
@@ -4584,7 +4711,7 @@ function sbStorageFreePhotos() {
   // No photos left (or none at all) — the sticky warning stays up.
   return 0;
 }
-var db = loadDB();
+var db = emptyDb(); // H-5: placeholder only — the real load happens in sbStorageBootInit (DOMContentLoaded), once the device key is ready. Loading (or, worse, overwriting) the stored DB before then would read an undecrypted envelope or wipe it with an empty DB.
 
 /* ================= state ================= */
 var state = { role: null, user: null, view: 'dashboard', lang: 'en', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, sb: null };
@@ -5609,10 +5736,6 @@ function setLang(l) {
   $('langEn').classList.toggle('on', l === 'en');
   $('langHi').classList.toggle('on', l === 'hi');
   var lo = $('langOne'); if (lo) lo.textContent = l === 'en' ? 'EN' : 'हिं';
-  // v96: the login screen has its own toggle (the topbar is hidden
-  // until login) — keep it in sync too.
-  var lle = $('loginLangEn'); if (lle) lle.classList.toggle('on', l === 'en');
-  var llh = $('loginLangHi'); if (llh) llh.classList.toggle('on', l === 'hi');
   applyI18n();
   if (state.role) renderApp();
 }
@@ -5638,17 +5761,17 @@ function persistSession() {
     if (state.role && state.user) {
       var at = Date.now();
       try {
-        var prev = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+        var prev = JSON.parse(sbProtGet('local', SESSION_KEY) || 'null');
         if (prev && prev.role === state.role && prev.email === state.user.email && typeof prev.at === 'number' && !isNaN(prev.at)) at = prev.at;
       } catch (e) {}
-      localStorage.setItem(SESSION_KEY, JSON.stringify({ role: state.role, email: state.user.email, view: state.view, at: at }));
-    } else localStorage.removeItem(SESSION_KEY);
+      sbProtSet('local', SESSION_KEY, JSON.stringify({ role: state.role, email: state.user.email, view: state.view, at: at }));
+    } else sbProtRemove('local', SESSION_KEY);
   } catch (e) { /* private mode — session just won't survive */ }
 }
 function clearStoredSession() {
   // Phase 1 (CR-1/H-1): drop every trace of the stored session — the
   // local session key (both storages) and the Supabase tokens.
-  try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+  try { sbProtRemove('local', SESSION_KEY); } catch (e) {}
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
   try { sessRemove(CLOUD_STUDENT_KEY); } catch (e2) {} // v61: an expired cloud session drops its snapshot too
   try { sessRemove(CLOUD_TEACHER_KEY); } catch (e3) {} // v62: same for a cloud teacher session
@@ -5671,7 +5794,7 @@ function loginAs(a, opts) {
 function restoreSession() {
   try {
     var raw = null;
-    try { raw = localStorage.getItem(SESSION_KEY); } catch (e) {}
+    try { raw = sbProtGet('local', SESSION_KEY); } catch (e) {}
     if (!raw) {
       // One-time migration: an older build kept the session in
       // sessionStorage. Adopt it once so nobody is logged out by the update.
@@ -5679,7 +5802,7 @@ function restoreSession() {
         var old = sessionStorage.getItem(SESSION_KEY);
         if (old) {
           raw = old;
-          try { localStorage.setItem(SESSION_KEY, old); } catch (e2) {}
+          try { sbProtSet('local', SESSION_KEY, old); } catch (e2) {}
           try { sessionStorage.removeItem(SESSION_KEY); } catch (e3) {}
         }
       } catch (e4) {}
@@ -6813,7 +6936,7 @@ function logoutClear() {
   state.profileStudent = null; state.profileTab = 'overview'; state.stuPage = 1;
   state.admReqFilter = 'All';
   promoState = null; importState.rows = null; importState.result = null;
-  try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+  try { sbProtRemove('local', SESSION_KEY); } catch (e) {}
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
   try { sessRemove(CLOUD_STUDENT_KEY); } catch (e2) {} // v61
   try { sessRemove(CLOUD_TEACHER_KEY); } catch (e3) {} // v62
@@ -7370,9 +7493,12 @@ function removeSchoolDataFromDevice(a) {
   var sbUid = (state.sb && state.sb.uid) || a.sbUid || null;
   sbSyncAutoStop();
   sbSyncResetMemory();
-  try { localStorage.removeItem(dbKeyFor(a)); } catch (e) {}
-  try { localStorage.removeItem(dbKeyFor(a) + '.bak'); } catch (e2) {}
-  try { localStorage.removeItem(dbKeyFor(a) + '.quarantine'); } catch (e3) {}
+  // H-5: route through the protected store so the decrypted cache is
+  // cleared too — a raw removeItem would leave the plaintext in memory
+  // and the next read would resurrect the "deleted" data.
+  try { sbProtRemove('local', dbKeyFor(a)); } catch (e) {}
+  try { sbProtRemove('local', dbKeyFor(a) + '.bak'); } catch (e2) {}
+  try { sbProtRemove('local', dbKeyFor(a) + '.quarantine'); } catch (e3) {}
   if (sbUid) { sbOutboxClear(sbUid); sbSrvIdsClear(sbUid); try { localStorage.removeItem(SB_MIGRATED_KEY + ':' + sbUid); } catch (e4) {} }
   sbOutboxClear(uid); sbSrvIdsClear(uid); sbSnapClear(uid);
   sbClearServerSchool(uid);
@@ -10040,10 +10166,6 @@ function noticesPage() {
   var items = db.notices.map(function (n) {
     return '<div class="notice"><b>' + esc(n.title) + '</b><span>' + esc(n.date) + '</span><p>' + esc(n.body) + '</p></div>';
   }).join('');
-  // v96 (cons fix): an empty notices list showed a blank card with no
-  // message — now it says so, so a school admin never wonders whether
-  // the page failed to load.
-  if (!items) items = '<div class="empty">' + t('tNoNotices') + '</div>';
   var canPost = state.role === 'school'; // v35: teachers view notices only
   return '<div class="page-head"><div><h2>' + t('notices') + '</h2><p>' + t('subNotices') + ' — ' + esc(db.profile.name) + '</p></div>' +
     (canPost ? '<div class="toolbar"><button class="btn" onclick="noticeForm()">+ ' + t('publishNotice') + '</button></div>' : '') + '</div>' +
@@ -10606,10 +10728,17 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
 
 document.addEventListener('DOMContentLoaded', function () {
   applyI18n();
+  // H-5: the device key + decrypted cache must be ready before ANY
+  // stored value is read. The real loadDB() runs here (not at script
+  // eval — `db` holds an empty placeholder until then), then
+  // restoreSession proceeds exactly as before.
   // Phase 1 (CR-1/H-1): restoreSession is async now — the online server
   // validation runs before the app view is shown. sbBoot waits for it
   // so the first sync cycle never starts on a rejected session.
-  restoreSession().then(function (ok) {
+  sbStorageBootInit().then(function () {
+    try { db = loadDB(); } catch (e) { db = emptyDb(); }
+    return restoreSession();
+  }).then(function (ok) {
     if (!ok) showLogin();
     sbBoot(); // password-reset links + stored server session / pending backup
   });
