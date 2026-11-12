@@ -1,7 +1,7 @@
 // tests/phase7/grant-matrix.test.mjs — Phase 7 (roadmap §6 Phase 7):
 // RLS and grant re-verification after every revoke, plus the security
 // review of all RPCs — computed from the repo SQL files (supabase/*.sql,
-// files 01–38), not from a live database (this agent cannot query it).
+// files 01–39), not from a live database (this agent cannot query it).
 //
 // The parser below replays the repo's grant history the way PostgreSQL
 // would: CREATE FUNCTION grants EXECUTE to PUBLIC by default; GRANT /
@@ -9,12 +9,13 @@
 // blocks, SQL 15/22 style) then add/remove roles, in file order; DROP
 // FUNCTION removes the entry. The final matrix is asserted exactly.
 //
-// KNOWN GAP (pinned, not hidden): 8 functions still carry the default
-// PUBLIC grant at v108 — the 7 that Phase 3's SQL 39 revokes (not yet
-// merged to main) plus ss_touch_updated_at, a trigger function that
-// keeps PUBLIC by design (it can do nothing outside a trigger). When
-// SQL 39 lands, the PUBLIC set below must shrink to
-// ['ss_touch_updated_at()'] — the test says so in its message.
+// SQL 39 (merged in Phase 3, PR #48) revoked PUBLIC from the 7 known-gap
+// functions — only ss_touch_updated_at still carries it, a trigger
+// function that keeps PUBLIC by design (it can do nothing outside a
+// trigger). This file's expectations were updated for that landing:
+// the five revoked functions that had no anon grant are now
+// authenticated-only, and the two that had anon are now
+// anon+authenticated.
 //
 // Run: node --test tests/phase7/*.test.mjs
 import { describe, it } from 'node:test';
@@ -77,36 +78,29 @@ const byRoles = (roles) => [...MATRIX.entries()]
   .map(([k]) => k).sort();
 const withRole = (role) => [...MATRIX.entries()].filter(([, v]) => v.has(role)).map(([k]) => k).sort();
 
-// The 8 functions that still carry the default PUBLIC grant at v108.
-// Seven are closed by Phase 3 SQL 39 (not yet merged); the eighth,
-// ss_touch_updated_at, is the updated_at TRIGGER function — PUBLIC by
-// design, harmless (it can do nothing outside a trigger).
+// The only function that still carries the default PUBLIC grant after
+// Phase 3 SQL 39 (merged in PR #48): ss_touch_updated_at, the
+// updated_at TRIGGER function — PUBLIC by design, harmless (it can do
+// nothing outside a trigger).
 const EXPECTED_PUBLIC = [
-  'is_ss_admin()',
-  'ss_is_real_school(uuid)',
-  'ss_list_public_schools()',
-  'ss_next_adm_no(uuid)',
-  'ss_next_receipt_no(uuid)',
-  'ss_school_owner(uuid)',
   'ss_touch_updated_at()',
-  'ss_wipe_school(uuid)',
 ];
 
-describe('grant matrix (from repo SQL 01-38)', () => {
+describe('grant matrix (from repo SQL 01-39)', () => {
   it('33 RPCs exist in the repo (roadmap Appendix C listed 20 at v67)', () => {
     assert.equal(MATRIX.size, 33, [...MATRIX.keys()].sort().join(', '));
   });
 
-  it('PUBLIC execute remains on exactly the 8 known functions (KNOWN GAP — SQL 39 closes 7)', () => {
+  it('PUBLIC execute remains only on the trigger function (SQL 39 closed the other 7)', () => {
     assert.deepEqual(
       withRole('public'),
       [...EXPECTED_PUBLIC].sort(),
-      'PUBLIC set changed: if Phase 3 SQL 39 landed, shrink this list to [ss_touch_updated_at()] — do not silently widen it',
+      'PUBLIC set changed: only ss_touch_updated_at() may keep PUBLIC — do not silently widen it',
     );
   });
 
-  it('ss_wipe_school is callable by authenticated (and PUBLIC, known gap) but its body is ownership-checked', () => {
-    assert.deepEqual([...MATRIX.get('ss_wipe_school(uuid)')].sort(), ['authenticated', 'public']);
+  it('ss_wipe_school is callable by authenticated only (SQL 39 revoked PUBLIC) but its body is ownership-checked', () => {
+    assert.deepEqual([...MATRIX.get('ss_wipe_school(uuid)')].sort(), ['authenticated']);
     const wipe = readFileSync(join(SQL_DIR, '05_wipe_school.sql'), 'utf8');
     assert.match(wipe, /if public\.ss_school_owner\(p_school_id\) is distinct from auth\.uid\(\)\s+and not public\.is_ss_admin\(\) then\s+raise exception 'not your school'/,
       'ss_wipe_school must refuse non-owners inside its body — the grant alone must never be the protection');
@@ -129,8 +123,10 @@ describe('grant matrix (from repo SQL 01-38)', () => {
 
   it('login RPCs are anon + authenticated (they run before any session exists)', () => {
     assert.deepEqual(byRoles(['anon', 'authenticated']), [
-      // NOTE: ss_list_public_schools() is anon+authenticated+PUBLIC —
-      // it sits in the EXPECTED_PUBLIC list above, not here.
+      // NOTE: ss_is_real_school() and ss_list_public_schools() joined
+      // this list when SQL 39 revoked their PUBLIC grant (PR #48).
+      'ss_is_real_school(uuid)',
+      'ss_list_public_schools()',
       'ss_log_audit(uuid,text,text,text,text,text,text)',
       'ss_parent_pin_failed(uuid,text)',
       'ss_parent_pin_ok(uuid,text)',
@@ -154,8 +150,10 @@ describe('grant matrix (from repo SQL 01-38)', () => {
     ]);
   });
 
-  it('authenticated-only functions are exactly the super-admin check and the login reset', () => {
-    assert.deepEqual(byRoles(['authenticated']), ['ss_is_super_admin()', 'ss_school_login_ok(text)']);
+  it('authenticated-only functions are exactly the 7 post-SQL-39 functions', () => {
+    // The 5 revoked functions that had no anon grant (SQL 39, PR #48)
+    // joined the super-admin check and the login reset here.
+    assert.deepEqual(byRoles(['authenticated']), ['is_ss_admin()', 'ss_is_super_admin()', 'ss_next_adm_no(uuid)', 'ss_next_receipt_no(uuid)', 'ss_school_login_ok(text)', 'ss_school_owner(uuid)', 'ss_wipe_school(uuid)']);
   });
 
   it('no function grants EXECUTE to any other role (only anon / authenticated / public exist)', () => {
@@ -178,7 +176,7 @@ describe('SECURITY DEFINER hygiene (static)', () => {
 
   it('every SECURITY DEFINER function sets search_path (no search_path-hijack hole)', () => {
     const blocks = fnBlocks();
-    assert.equal(blocks.length, 42, 'expected 42 CREATE FUNCTION blocks in SQL 01-38');
+    assert.equal(blocks.length, 42, 'expected 42 CREATE FUNCTION blocks in SQL 01-39');
     for (const { name, head } of blocks) {
       if (/security definer/i.test(head)) {
         assert.match(head, /set search_path/i, `${name}: SECURITY DEFINER without search_path`);
