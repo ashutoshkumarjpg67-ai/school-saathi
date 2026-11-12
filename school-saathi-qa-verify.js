@@ -5277,6 +5277,39 @@ const test = `
   state.feeFilter = 'All'; state.feeType = 'All'; state.feeSearch = ''; state.feeLimit = 120;
   state.examId = null; state.collectStudent = null; state.feeStudent = null;
   loginAs(TEST_ACCOUNTS.school);
+  // ---- v112: small polish — status line + reset heading follow the language ----
+  // (i) The login screen's sync status line is set via textContent (not
+  // data-i18n), so a language switch left it in the old language until
+  // the next sync event. setLang now refreshes it. (The test school is
+  // local-only, so sbSetStatus coerces to the local-only line — the
+  // refresh is language-agnostic, and that line is translated too.)
+  setLang('en');
+  sbSetStatus('failed', '');
+  ok($('sbStatus').textContent.indexOf('Not linked to the server') !== -1, 'v112: the status line is English in English mode');
+  setLang('hi');
+  ok($('sbStatus').textContent.indexOf('सर्वर से जुड़ा नहीं है') !== -1, 'v112: the status line turns Hindi on the language switch');
+  setLang('en');
+  ok($('sbStatus').textContent.indexOf('Not linked to the server') !== -1, 'v112: the status line turns back to English');
+  // (ii) The login card's "Welcome back" heading stays visible above the
+  // password-reset forms — on a reset card it is the wrong heading. The
+  // heading now shows the reset title there, and "Welcome back" returns
+  // on the login form.
+  showRecoverForm();
+  eq($('welcomeTitle').textContent, t('sbRecoverTitle'), 'v112: the reset form shows the Reset Password heading');
+  eq($('welcomeSub').style.display, 'none', 'v112: the reset form hides the welcome sub-line');
+  setLang('hi');
+  eq($('welcomeTitle').textContent, 'पासवर्ड रीसेट करें', 'v112: the reset heading follows the language switch');
+  setLang('en');
+  switchAuth('login');
+  eq($('welcomeTitle').textContent, t('loginWelcomeBack'), 'v112: back on the login form, the heading is Welcome back again');
+  ok($('welcomeSub').style.display !== 'none', 'v112: back on the login form, the welcome sub-line is visible again');
+  // Reset the filter state this block set.
+  state.stuSearch = ''; state.stuClass = 'All'; state.stuSection = 'All'; state.stuSession = 'All'; state.stuGender = 'All'; state.stuFee = 'All'; state.stuStatus = 'All'; state.stuPage = 1;
+  state.attDate = todayIST(); state.attCls = '6th-A';
+  state.feeFilter = 'All'; state.feeType = 'All'; state.feeSearch = ''; state.feeLimit = 120;
+  state.examId = null; state.collectStudent = null; state.feeStudent = null;
+  loginAs(TEST_ACCOUNTS.school);
+
   // ---- v97: cons fix — audit rows for cloud attendance/homework/marks ----
   // (i) A LOCAL marks save writes an audit row AND a dashboard activity row.
   // Before v97 a marks save wrote neither — the Activity Log showed the

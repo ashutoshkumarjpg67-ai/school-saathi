@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 111;
+var APP_VERSION = 112;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -1053,12 +1053,26 @@ function submitLinkServer(e) {
   });
   return false;
 }
+function syncWelcomeHeading() {
+  // v112: the login card's "Welcome back" heading stays visible above the
+  // password-reset forms — on a reset card it is the wrong heading. Show
+  // the reset title there instead (and hide the "Log in or sign up"
+  // sub-line), and restore "Welcome back" on the login form. applyI18n
+  // re-applies data-i18n on every language switch, so this runs after it
+  // in setLang too.
+  try {
+    var resetMode = ($('recoverForm') && !$('recoverForm').classList.contains('hidden')) || ($('resetForm') && !$('resetForm').classList.contains('hidden'));
+    var b = $('welcomeTitle'); if (b) b.textContent = resetMode ? t('sbRecoverTitle') : t('loginWelcomeBack');
+    var s = $('welcomeSub'); if (s) s.style.display = resetMode ? 'none' : '';
+  } catch (e) {}
+}
 function showRecoverForm() {
   switchAuth('login');
   $('loginForm').classList.add('hidden');
   $('recoverForm').classList.remove('hidden');
   $('resetForm').classList.add('hidden');
   $('recoverEmail').focus();
+  syncWelcomeHeading();
 }
 function doRecover(e) {
   e.preventDefault();
@@ -1142,6 +1156,7 @@ function sbBoot() {
         showView('login'); switchAuth('login');
         $('loginForm').classList.add('hidden');
         $('resetForm').classList.remove('hidden');
+        syncWelcomeHeading(); // v112: the recovery link opens the reset card, not the login card
         return;
       }
       if ((params.type === 'signup' || params.type === 'invite') && params.access_token) {
@@ -5996,6 +6011,12 @@ function setLang(l) {
   var lle = $('loginLangEn'); if (lle) lle.classList.toggle('on', l === 'en');
   var llh = $('loginLangHi'); if (llh) llh.classList.toggle('on', l === 'hi');
   applyI18n();
+  // v112: the sync status lines are set via textContent (not data-i18n),
+  // so a language switch left them in the old language until the next
+  // sync event or login. Refresh them here.
+  try { var s112 = $('sbStatus'); if (s112) s112.textContent = sbStatusText(); } catch (e112) {}
+  try { var sl112 = $('sbStatusLine'); if (sl112) sl112.textContent = sbStatusText(); } catch (e112) {}
+  syncWelcomeHeading(); // v112: the reset heading follows the language too
   if (state.role) renderApp();
 }
 function toggleLang() { setLang(state.lang === 'en' ? 'hi' : 'en'); }
@@ -6192,6 +6213,7 @@ function switchAuth(tab) {
   if (tab === 'parent') fillSchoolPicker('parentSchool'); // v86: same school picker as the student form
   if (tab === 'staff') fillSchoolPicker('staffSchool', { neutral: true }); // v88: optional for staff (the role comes from the account)
   setTimeout(function () { $(tabs[tab][3]).focus(); }, 50);
+  syncWelcomeHeading(); // v112: switchAuth hides the reset forms, so the heading is Welcome back again
 }
 function togglePw(id, btn) {
   var el = $(id);
