@@ -129,7 +129,7 @@ describe('grant matrix (from repo SQL 01-39)', () => {
       'ss_list_public_schools()',
       'ss_log_audit(uuid,text,text,text,text,text,text)',
       'ss_parent_pin_failed(uuid,text)',
-      'ss_parent_pin_ok(uuid,text)',
+      'ss_parent_pin_ok(uuid,text,text,date)',
       'ss_parent_pin_precheck(uuid,text)',
       'ss_parent_pin_reset_by_dob(uuid,text,date,text)',
       'ss_public_schools()',
@@ -176,7 +176,7 @@ describe('SECURITY DEFINER hygiene (static)', () => {
 
   it('every SECURITY DEFINER function sets search_path (no search_path-hijack hole)', () => {
     const blocks = fnBlocks();
-    assert.equal(blocks.length, 42, 'expected 42 CREATE FUNCTION blocks in SQL 01-39');
+    assert.equal(blocks.length, 45, 'expected 45 CREATE FUNCTION blocks in SQL 01-40');
     for (const { name, head } of blocks) {
       if (/security definer/i.test(head)) {
         assert.match(head, /set search_path/i, `${name}: SECURITY DEFINER without search_path`);
