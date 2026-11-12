@@ -7133,6 +7133,47 @@ async function v28run() {
   var cy102m2 = await ctx.sbSyncStart(pullAcct, 'sb-uid-pull@school.in', 'tok-pull');
   v28eq(sbServer.ss_marks.filter(function (r) { return r.exam_id === srvEx102.id && r.student_id === srvStu102.id; }).length, 0, 'v102: server mark stays gone after a second cycle');
 
+  // ---- v110: an RPC-created attendance/marks row (no server-id map entry) must still delete ----
+  // Live 12 Nov (v108 check): 4 pre-existing deletes (3 attendance + 1 marks) drain then
+  // re-appear after reload. Those rows were created by the teacher RPC path, which never
+  // writes the server id into the outbox map — and a delete entry carries no row, so both
+  // find paths (batch + live) return null, the flush skips and drops it, and the end-of-pass
+  // re-diff re-queues it forever. The fix parses the delete entry's KEY in both find
+  // functions (attendance key date|cls|studentId, marks key examId|studentId).
+  // Attendance half: seed the server row directly, as the RPC would have created it.
+  var srvStu110 = sbServer.ss_students.filter(function (r) { return r.local_id === 'stu-w1'; })[0];
+  v28ok(!!srvStu110, 'v110: fixture student stu-w1 is on the mock server');
+  sbServer.ss_attendance.push({ id: 'srv-att-110', school_id: 'srv-school-31', att_date: '2026-11-19', cls: '6th-A', student_id: srvStu110.id, status: 'Absent' });
+  var pull110 = await ctx.sbSyncStart(pullAcct, 'sb-uid-pull@school.in', 'tok-pull');
+  v28eq(pull110.done, true, 'v110: pull brings the RPC-created attendance row down');
+  v28ok(!!(ctx.db.attendance['2026-11-19|6th-A'] && ctx.db.attendance['2026-11-19|6th-A']['stu-w1'] === 'Absent'), 'v110: local attendance has the pulled row');
+  v28eq(ctx.sbSrvIdGet('sb-uid-pull@school.in', 'ss_attendance', '2026-11-19|6th-A|stu-w1'), null, 'v110: the server-id map has NO entry for the RPC-created row (the bug precondition)');
+  delete ctx.db.attendance['2026-11-19|6th-A']['stu-w1'];
+  ctx.saveDB(ctx.db);
+  v28eq(ctx.sbOutboxLoad('sb-uid-pull@school.in').filter(function (e) { return e.table === 'ss_attendance' && e.key === '2026-11-19|6th-A|stu-w1' && e.op === 'delete'; }).length, 1, 'v110: removing the pulled mark queues one delete op');
+  var cy110 = await ctx.sbSyncStart(pullAcct, 'sb-uid-pull@school.in', 'tok-pull');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-19' && r.cls === '6th-A' && r.student_id === srvStu110.id; }).length, 0, 'v110: server attendance row is gone after the full cycle');
+  v28ok(!(ctx.db.attendance['2026-11-19|6th-A'] && ctx.db.attendance['2026-11-19|6th-A']['stu-w1']), 'v110: local mark stays gone after the full cycle');
+  var cy110b = await ctx.sbSyncStart(pullAcct, 'sb-uid-pull@school.in', 'tok-pull');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-19' && r.cls === '6th-A' && r.student_id === srvStu110.id; }).length, 0, 'v110: server attendance row stays gone after a second cycle');
+  v28eq(ctx.sbOutboxLoad('sb-uid-pull@school.in').filter(function (e) { return e.table === 'ss_attendance' && e.key === '2026-11-19|6th-A|stu-w1'; }).length, 0, 'v110: no delete op is left queued after the second cycle');
+  // Marks half: same shape — exam + mark seeded directly on the mock server.
+  sbServer.ss_exams.push({ id: 'srv-ex-110', school_id: 'srv-school-31', local_id: 'ex-110', name: 'Test Exam 110', cls: '6th-A', subject: 'Maths', date: '2026-11-19', total: 50 });
+  sbServer.ss_marks.push({ id: 'srv-mk-110', school_id: 'srv-school-31', exam_id: 'srv-ex-110', student_id: srvStu110.id, marks: 33 });
+  var pull110m = await ctx.sbSyncStart(pullAcct, 'sb-uid-pull@school.in', 'tok-pull');
+  v28eq(pull110m.done, true, 'v110: pull brings the RPC-created mark down');
+  v28ok(ctx.db.marks.some(function (m) { return m.examId === 'ex-110' && m.studentId === 'stu-w1' && Number(m.marks) === 33; }), 'v110: local marks have the pulled row');
+  v28eq(ctx.sbSrvIdGet('sb-uid-pull@school.in', 'ss_marks', 'ex-110|stu-w1'), null, 'v110: the server-id map has NO entry for the RPC-created mark (the bug precondition)');
+  ctx.db.marks = ctx.db.marks.filter(function (m) { return !(m.examId === 'ex-110' && m.studentId === 'stu-w1'); });
+  ctx.saveDB(ctx.db);
+  v28eq(ctx.sbOutboxLoad('sb-uid-pull@school.in').filter(function (e) { return e.table === 'ss_marks' && e.key === 'ex-110|stu-w1' && e.op === 'delete'; }).length, 1, 'v110: removing the pulled mark queues one delete op');
+  var cy110m = await ctx.sbSyncStart(pullAcct, 'sb-uid-pull@school.in', 'tok-pull');
+  v28eq(sbServer.ss_marks.filter(function (r) { return r.exam_id === 'srv-ex-110' && r.student_id === srvStu110.id; }).length, 0, 'v110: server mark is gone after the full cycle');
+  v28ok(!ctx.db.marks.some(function (m) { return m.examId === 'ex-110' && m.studentId === 'stu-w1'; }), 'v110: local mark stays gone after the full cycle');
+  var cy110m2 = await ctx.sbSyncStart(pullAcct, 'sb-uid-pull@school.in', 'tok-pull');
+  v28eq(sbServer.ss_marks.filter(function (r) { return r.exam_id === 'srv-ex-110' && r.student_id === srvStu110.id; }).length, 0, 'v110: server mark stays gone after a second cycle');
+  v28eq(ctx.sbOutboxLoad('sb-uid-pull@school.in').filter(function (e) { return e.table === 'ss_marks' && e.key === 'ex-110|stu-w1'; }).length, 0, 'v110: no marks delete op is left queued after the second cycle');
+
   // ---- v103: sync details expose the live sync state (snapshot keys, session, school map) ----
   var det103 = ctx.sbSyncDetailsHtml();
   v28ok(det103.indexOf('Snapshot holidays:') !== -1, 'v103: sync details show the snapshot holidays line');

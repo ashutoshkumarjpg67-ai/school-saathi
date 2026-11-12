@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 108;
+var APP_VERSION = 110;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -2931,15 +2931,22 @@ function sbSyncFindFromBatch(batch, table, entry, schoolId, maps, uid) {
     return null;
   }
   if (table === 'ss_attendance') {
+    // v110: a delete entry carries no row — parse its key (date|cls|studentId).
     var a = entry.row;
-    var sid = a && maps.stu[a.studentId];
-    if (!sid) return null;
-    for (i = 0; i < rows.length; i++) { if (rows[i] && rows[i].att_date === a.date && rows[i].cls === a.cls && rows[i].student_id === sid) return rows[i]; }
+    var aDate = a ? a.date : (entry.key || '').split('|')[0];
+    var aCls = a ? a.cls : (entry.key || '').split('|')[1];
+    var aStu = a ? a.studentId : (entry.key || '').split('|')[2];
+    var sid = aStu && maps.stu[aStu];
+    if (!sid || !aDate) return null;
+    for (i = 0; i < rows.length; i++) { if (rows[i] && rows[i].att_date === aDate && rows[i].cls === aCls && rows[i].student_id === sid) return rows[i]; }
     return null;
   }
   if (table === 'ss_marks') {
+    // v110: a delete entry carries no row — parse its key (examId|studentId).
     var m = entry.row;
-    var eid = m && maps.exam[m.examId], sid2 = m && maps.stu[m.studentId];
+    var mExam = m ? m.examId : (entry.key || '').split('|')[0];
+    var mStu = m ? m.studentId : (entry.key || '').split('|')[1];
+    var eid = mExam && maps.exam[mExam], sid2 = mStu && maps.stu[mStu];
     if (!eid || !sid2) return null;
     for (i = 0; i < rows.length; i++) { if (rows[i] && rows[i].exam_id === eid && rows[i].student_id === sid2) return rows[i]; }
     return null;
@@ -3352,13 +3359,20 @@ function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
     var p = entry.key.split('|');
     filter = 'school_id=eq.' + encodeURIComponent(schoolId) + '&cls=eq.' + encodeURIComponent(p[0]) + '&fee_type=eq.' + encodeURIComponent(p[1] || 'Tuition');
   } else if (table === 'ss_attendance') {
+    // v110: a delete entry carries no row — parse its key (date|cls|studentId).
     var a = entry.row;
-    var sid = a && maps.stu[a.studentId];
-    if (!sid) return Promise.resolve(null);
-    filter = 'school_id=eq.' + encodeURIComponent(schoolId) + '&att_date=eq.' + encodeURIComponent(a.date) + '&cls=eq.' + encodeURIComponent(a.cls) + '&student_id=eq.' + encodeURIComponent(sid);
+    var aDate = a ? a.date : (entry.key || '').split('|')[0];
+    var aCls = a ? a.cls : (entry.key || '').split('|')[1];
+    var aStu = a ? a.studentId : (entry.key || '').split('|')[2];
+    var sid = aStu && maps.stu[aStu];
+    if (!sid || !aDate) return Promise.resolve(null);
+    filter = 'school_id=eq.' + encodeURIComponent(schoolId) + '&att_date=eq.' + encodeURIComponent(aDate) + '&cls=eq.' + encodeURIComponent(aCls) + '&student_id=eq.' + encodeURIComponent(sid);
   } else if (table === 'ss_marks') {
+    // v110: a delete entry carries no row — parse its key (examId|studentId).
     var m = entry.row;
-    var eid = m && maps.exam[m.examId], sid2 = m && maps.stu[m.studentId];
+    var mExam = m ? m.examId : (entry.key || '').split('|')[0];
+    var mStu = m ? m.studentId : (entry.key || '').split('|')[1];
+    var eid = mExam && maps.exam[mExam], sid2 = mStu && maps.stu[mStu];
     if (!eid || !sid2) return Promise.resolve(null);
     filter = 'school_id=eq.' + encodeURIComponent(schoolId) + '&exam_id=eq.' + encodeURIComponent(eid) + '&student_id=eq.' + encodeURIComponent(sid2);
   } else if (table === 'ss_receipts') {
