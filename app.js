@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 114;
+var APP_VERSION = 115;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -5143,10 +5143,13 @@ function clearSchoolLogo() {
 }
 function inr(n) { return '₹' + Number(n).toLocaleString('en-IN'); }
 function num(n) { return Number(n).toLocaleString('en-IN'); }
-function todayIST() { // IST date, not UTC (before 5:30 AM UTC date is yesterday in IST)
-  var now = new Date();
-  var utc = now.getTime() + now.getTimezoneOffset() * 60000;
-  return new Date(utc + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+function todayIST() { // IST calendar date, in ANY runtime timezone.
+  // IST is always UTC+5:30, so the IST date is just the UTC date of
+  // (now + 5.5h). The old formula added getTimezoneOffset() too, which
+  // cancelled the shift in IST itself: on an IST phone it returned the
+  // UTC date, i.e. yesterday before 05:30 IST — and it shifted the other
+  // way on a UTC runner (v115: CI failed two v100 tests on exactly this).
+  return new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
 }
 var toastTimer = null;
 function toast(msg) {

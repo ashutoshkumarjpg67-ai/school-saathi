@@ -4595,6 +4595,17 @@ const test = `
   var rp114 = reportsPage();
   ok(rp114.indexOf('<img src=x') === -1, 'v114: Reports page does not render the raw school-name HTML');
   ok(rp114.indexOf('&lt;img src=x') !== -1, 'v114: Reports page escapes the school name');
+  // ---- v115: todayIST() must be the IST calendar date in ANY runtime
+  // timezone. The old formula added getTimezoneOffset(), which cancelled
+  // the +5:30 shift in IST itself (returned the UTC date — yesterday
+  // before 05:30 IST) and shifted the other way on a UTC runner, which
+  // failed two v100 tests in CI (run 43287354947). The +1000 ms
+  // alternative covers an IST-midnight crossing between the two reads.
+  var nowMs115 = Date.now();
+  var exp115a = new Date(nowMs115 + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+  var exp115b = new Date(nowMs115 + 1000 + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+  var got115 = todayIST();
+  ok(got115 === exp115a || got115 === exp115b, 'v115: todayIST returns the IST calendar date in any runtime timezone');
   db.profile.name = name114;
   // ---- v81 (Phase 3): photo heal — a pull must not leave a student photo-less when the server has one ----
   // Live v80: a photo uploaded and synced (server row has photo_url, Storage
@@ -5726,20 +5737,26 @@ const test = `
   fetch = undefined;
   // ---- v100: cons fix — bulk marks + bulk attendance + holidays ----
   loginAs(TEST_ACCOUNTS.school);
-  state.attDate = '2026-11-12'; state.attCls = '6th-A';
-  var savedAtt12_100 = db.attendance['2026-11-12|6th-A'];
-  var savedAtt11_100 = db.attendance['2026-11-11|6th-A'];
-  delete db.attendance['2026-11-12|6th-A'];
+  // v115: the (a)/(b) dates derive from todayIST(), never hardcoded —
+  // the old '2026-11-12' anchor only passed while todayIST() returned
+  // the 12th, i.e. while the buggy todayIST ran in IST; on the UTC CI
+  // runner todayIST returned the 13th and two v100 tests failed.
+  var dToday100 = todayIST();
+  var dPrev100 = new Date(Date.parse(dToday100 + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10);
+  state.attDate = dToday100; state.attCls = '6th-A';
+  var savedAttToday100 = db.attendance[dToday100 + '|6th-A'];
+  var savedAttPrev100 = db.attendance[dPrev100 + '|6th-A'];
+  delete db.attendance[dToday100 + '|6th-A'];
   // (a) Mark-all: one tap marks the whole register.
   markAllAtt('Present');
   var roster100 = db.students.filter(function (s) { return s.cls === '6th-A' && isEnrolledStudent(s); });
-  ok(roster100.length > 0 && roster100.every(function (s) { return (db.attendance['2026-11-12|6th-A'] || {})[s.id] === 'Present'; }), 'v100: mark-all Present marks every 6th-A student');
+  ok(roster100.length > 0 && roster100.every(function (s) { return (db.attendance[dToday100 + '|6th-A'] || {})[s.id] === 'Present'; }), 'v100: mark-all Present marks every 6th-A student');
   markAllAtt('Absent');
-  ok(roster100.every(function (s) { return (db.attendance['2026-11-12|6th-A'] || {})[s.id] === 'Absent'; }), 'v100: mark-all Absent marks every 6th-A student');
+  ok(roster100.every(function (s) { return (db.attendance[dToday100 + '|6th-A'] || {})[s.id] === 'Absent'; }), 'v100: mark-all Absent marks every 6th-A student');
   state.role = 'principal';
   markAllAtt('Present');
   ok($('toast').textContent.indexOf(t('tNotAllowed')) !== -1, 'v100: a principal cannot mark all (read-only)');
-  ok(roster100.every(function (s) { return (db.attendance['2026-11-12|6th-A'] || {})[s.id] === 'Absent'; }), 'v100: a principal mark-all leaves the register unchanged');
+  ok(roster100.every(function (s) { return (db.attendance[dToday100 + '|6th-A'] || {})[s.id] === 'Absent'; }), 'v100: a principal mark-all leaves the register unchanged');
   state.role = 'teacher'; state.user = { role: 'teacher', name: 'T84', email: 't84@school.in', teacherId: 'tchr-84', schoolUid: 'test-school' };
   state.attCls = '7th-A';
   markAllAtt('Present');
@@ -5748,7 +5765,7 @@ const test = `
   // (b) Holidays: mark, duplicate, page state, % exclusion, remove.
   markHoliday();
   eq((db.holidays || []).length, 1, 'v100: markHoliday adds one holiday row');
-  eq((db.holidays || [])[0].date, '2026-11-12', 'v100: the holiday row carries the viewed date');
+  eq((db.holidays || [])[0].date, dToday100, 'v100: the holiday row carries the viewed date');
   eq((db.holidays || [])[0].cls, '6th-A', 'v100: the holiday row carries the viewed class');
   markHoliday();
   ok($('toast').textContent.indexOf(t('tHolidayExists')) !== -1, 'v100: a second mark on the same class-day toasts instead of duplicating');
@@ -5757,14 +5774,14 @@ const test = `
   ok(attHtml100.indexOf(t('holidayWord')) !== -1, 'v100: a holiday day shows the Holiday word on the register');
   ok(attHtml100.indexOf('markAtt(') === -1, 'v100: a holiday day shows no mark buttons');
   var stu1_100 = db.students.find(function (s) { return s.id === 'stu1'; });
-  db.attendance['2026-11-11|6th-A'] = { stu1: 'Absent' };
-  db.attendance['2026-11-12|6th-A'] = { stu1: 'Present' };
+  db.attendance[dPrev100 + '|6th-A'] = { stu1: 'Absent' };
+  db.attendance[dToday100 + '|6th-A'] = { stu1: 'Present' };
   eq(studentAttPct(stu1_100), 0, 'v100: a holiday day is excluded from the student attendance % (Absent day only counts)');
   removeHoliday();
   eq((db.holidays || []).length, 0, 'v100: removeHoliday clears the holiday');
   eq(studentAttPct(stu1_100), 50, 'v100: without the holiday the same marks give 50%');
   markHoliday();
-  var today100 = todayIST();
+  var today100 = dToday100;
   Object.keys(db.attendance || {}).forEach(function (k) { if (k.indexOf(today100 + '|') === 0) delete db.attendance[k]; });
   db.attendance[today100 + '|6th-A'] = { stu1: 'Present' };
   db.attendance[today100 + '|7th-A'] = { stu9: 'Present' };
@@ -5776,8 +5793,8 @@ const test = `
   ok($('toast').textContent.indexOf(t('tNotAllowed')) !== -1, 'v100: a teacher cannot mark a holiday (school role only)');
   eq((db.holidays || []).length, 0, 'v100: a teacher holiday attempt stores nothing');
   state.role = 'school'; state.user = TEST_ACCOUNTS.school;
-  if (savedAtt12_100) db.attendance['2026-11-12|6th-A'] = savedAtt12_100; else delete db.attendance['2026-11-12|6th-A'];
-  if (savedAtt11_100) db.attendance['2026-11-11|6th-A'] = savedAtt11_100; else delete db.attendance['2026-11-11|6th-A'];
+  if (savedAttToday100) db.attendance[dToday100 + '|6th-A'] = savedAttToday100; else delete db.attendance[dToday100 + '|6th-A'];
+  if (savedAttPrev100) db.attendance[dPrev100 + '|6th-A'] = savedAttPrev100; else delete db.attendance[dPrev100 + '|6th-A'];
   delete db.attendance[today100 + '|7th-A'];
   saveDB(db);
   // (c) Mark-all on the cloud path: one RPC per student, a failed call
