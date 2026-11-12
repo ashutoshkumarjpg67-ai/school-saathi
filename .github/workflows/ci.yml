@@ -31,7 +31,7 @@ jobs:
           node --check scripts/check-version.mjs
           node --check scripts/seed-fixtures.js
           node --check tests/harness.mjs
-          node --check tests/smoke.test.mjs
+          for f in $(find tests -name '*.test.mjs'); do node --check "$f"; done
       - name: Version markers check
         run: node scripts/check-version.mjs
       - name: Test harness (npm test)
