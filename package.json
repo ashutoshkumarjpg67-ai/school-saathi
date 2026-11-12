@@ -5,7 +5,7 @@
   "description": "School Saathi — multi-tenant school management app (PWA + Capacitor native shell). Static build, no bundler.",
   "scripts": {
     "check-version": "node scripts/check-version.mjs",
-    "test": "node --test \"tests/**/*.test.mjs\"",
+    "test": "node --test \"tests/*.test.mjs\" \"tests/*/*.test.mjs\"",
     "build-www": "bash scripts/build-www.sh"
   },
   "dependencies": {
