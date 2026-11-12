@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 107;
+var APP_VERSION = 108;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -703,8 +703,8 @@ function sbSyncConflictsRefresh() {
 function sbSyncResolveConflict(idx, keepMine) {
   // v107: resolve one recorded conflict. School admin only — Settings
   // is school-only, and only the school role runs the sync cycle.
-  // Keep mine: re-queue the CURRENT local row as a fresh upsert with a
-  // new timestamp, so the next push's conflict check (server updated_at
+  // Keep mine: re-queue the LOCAL row as a fresh upsert with a new
+  // timestamp, so the next push's conflict check (server updated_at
   // vs the new entry.at) lets the local version win. Use server: drop
   // the record; the snapshot is already re-based to the local row, so
   // the next pull restores the server version. When Keep mine cannot
@@ -713,10 +713,26 @@ function sbSyncResolveConflict(idx, keepMine) {
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   if (!db || !db.syncConflicts || !db.syncConflicts[idx]) return;
   var rec = db.syncConflicts[idx];
+  // Keep mine: re-queue the LOCAL row as a fresh upsert with a new
+  // timestamp, so the next push's conflict check (server updated_at vs
+  // the new entry.at) lets the local version win. The row re-queued
+  // MUST be rec.localRow — the copy preserved in the record at
+  // conflict time. v107 re-read the CURRENT local row instead, but by
+  // the time the admin clicks, the pull has already overwritten the
+  // local row with the server version — so Keep mine pushed the server
+  // version back onto the server and nothing changed (live 12 Nov).
+  // Only when the record has no local copy (it always does since v107)
+  // fall back to the current local row.
   if (keepMine) {
     var act = sbSyncActive();
-    var localRow = sbSyncLocalRow({ table: rec.table, key: rec.key });
+    var localRow = rec.localRow || sbSyncLocalRow({ table: rec.table, key: rec.key });
     if (!act || !localRow) { toast(t('sbBackupFailed')); return; }
+    // v108: the local row becomes the kept version NOW, before the
+    // queue. The pull already overwrote it with the server version;
+    // without this the flush's end-of-pass re-diff sees local !=
+    // snapshot after the push and re-queues the server version, so
+    // pass 2 pushes it back over the server and Keep mine loses.
+    sbSyncSetLocalRow(rec.table, rec.key, localRow);
     sbOutboxAdd(act.uid, { table: rec.table, key: rec.key, op: 'upsert', row: JSON.parse(JSON.stringify(localRow)), at: new Date().toISOString() });
     toast(t('sbConflictsKept'));
   } else {
@@ -3242,6 +3258,68 @@ function sbSyncLocalRow(entry) {
   if (!cfg) return null;
   var arr = db[cfg.local] || [];
   return arr.filter(function (r) { return String(r[cfg.key]) === entry.key; })[0] || null;
+}
+function sbSyncSetLocalRow(table, key, row) {
+  // v108: the mirror of sbSyncLocalRow — write a row into the local db.
+  // Keep mine uses it: the pull already overwrote the local row with
+  // the server version, so after re-queueing the kept copy the local
+  // row must ALSO become the kept version. Without this, the flush's
+  // end-of-pass re-diff sees local != snapshot (the push just set the
+  // snapshot to the kept payload) and re-queues the server version —
+  // pass 2 of the same flush pushes it back over the server and Keep
+  // mine silently loses (harness, 12 Nov: pass 1 PATCHed the local
+  // name, pass 2 PATCHed the server name right back).
+  var copy = JSON.parse(JSON.stringify(row || {}));
+  if (table === 'ss_schools') {
+    db.profile = copy.profile || null; db.feeExtras = copy.feeExtras || {};
+    db.admCounter = copy.admCounter; db.receiptCounter = copy.receiptCounter;
+    return true;
+  }
+  if (table === 'ss_fee_structure') {
+    var p = String(key).split('|');
+    db.feeStructure = db.feeStructure || [];
+    var fi = -1;
+    db.feeStructure.forEach(function (f, i) { if ((f.cls || '') === p[0] && (f.type || 'Tuition') === (p[1] || 'Tuition')) fi = i; });
+    if (fi >= 0) db.feeStructure[fi] = copy; else db.feeStructure.push(copy);
+    return true;
+  }
+  if (table === 'ss_attendance') {
+    var a = String(key).split('|');
+    db.attendance = db.attendance || {};
+    var slot = (a[0] || '') + '|' + (a[1] || '');
+    db.attendance[slot] = db.attendance[slot] || {};
+    db.attendance[slot][a[2]] = copy.status;
+    return true;
+  }
+  if (table === 'ss_marks') {
+    var q = String(key).split('|');
+    db.marks = db.marks || [];
+    var mi = -1;
+    db.marks.forEach(function (m, i) { if (m.examId === q[0] && m.studentId === q[1]) mi = i; });
+    if (mi >= 0) db.marks[mi] = copy; else db.marks.push(copy);
+    return true;
+  }
+  if (table === 'ss_audit_log') {
+    db.auditLog = db.auditLog || [];
+    var ai = -1;
+    db.auditLog.forEach(function (x, i) { if ((sbNormTs(x.ts) + '|' + (x.actor || '') + '|' + (x.action || '') + '|' + (x.details || '')) === key) ai = i; });
+    if (ai >= 0) db.auditLog[ai] = copy; else db.auditLog.push(copy);
+    return true;
+  }
+  if (table === 'ss_activities') {
+    db.activities = db.activities || [];
+    var vi = -1;
+    db.activities.forEach(function (x, i) { if (((x.title || '') + '|' + (x.sub || '')) === key) vi = i; });
+    if (vi >= 0) db.activities[vi] = copy; else db.activities.push(copy);
+    return true;
+  }
+  var cfg = SB_SYNC_TABLES[table];
+  if (!cfg) return false;
+  var arr = db[cfg.local] = db[cfg.local] || [];
+  var ri = -1;
+  arr.forEach(function (r, i) { if (String(r[cfg.key]) === key) ri = i; });
+  if (ri >= 0) arr[ri] = copy; else arr.push(copy);
+  return true;
 }
 function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
   // The server row for an outbox entry, for the last-write-wins check
