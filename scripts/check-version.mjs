@@ -47,6 +47,11 @@ console.log(`sw.js ?v= occurrences: ${swVs.length} [${swVs.join(', ')}]`);
 check('sw.js ?v= count>=3', swVs.length >= 3, true); // Phase 2: modules add ?v= assets — count grows, every value must still equal truth
 swVs.forEach((v, i) => check(`sw.js ?v= #${i + 1}`, v, truth));
 
+// 7. package.json — major version must equal truth (review caught it drifted at 71.0.0)
+const pkg = JSON.parse(read('package.json'));
+const pkgMajor = Number(String(pkg.version).split('.')[0]);
+check('package.json major', pkgMajor, truth);
+
 if (failures.length) {
   console.error(`\nVERSION DRIFT: ${failures.length} check(s) failed — ${failures.join(', ')}`);
   console.error('version.json ka number baaki jagah bhi wahi rakho, phir dobara chalao.');
