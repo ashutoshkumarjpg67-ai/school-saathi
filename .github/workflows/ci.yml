@@ -7,6 +7,9 @@
 #   2. `node scripts/check-version.mjs` (version markers must agree)
 #   3. `npm test` (in-repo harness, audit CR-8: version markers,
 #      seeded fixtures, fresh-device empty start, backup round-trip)
+#   4. `node school-saathi-qa-verify.js` (full QA harness, 3140 checks:
+#      sync/conflicts/roles/pagination; CI=true skips the repo-vs-goal
+#      SQL equality checks, whose goal copies do not exist in the repo)
 # Branch protection ("Require status checks to pass" on main) is a GitHub-UI
 # step for the repo owner — no repo file can turn it on.
 name: CI
@@ -37,3 +40,7 @@ jobs:
         run: node scripts/check-version.mjs
       - name: Test harness (npm test)
         run: npm test
+      - name: QA harness (school-saathi-qa-verify.js)
+        run: node school-saathi-qa-verify.js
+        env:
+          CI: 'true'
