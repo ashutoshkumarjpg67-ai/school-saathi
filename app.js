@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 112;
+var APP_VERSION = 113;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -2186,43 +2186,52 @@ function sbMapAdmissionRequest(r, schoolId, stuMap) {
 }
 function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // School row first: profile, fee extras, counters.
-  // Phase 3 (v79): keep an un-synced local logo/logoUrl. Content
-  // tables keep un-synced rows via the v33/v46 merge below; the
-  // profile had no such keep, so a pull between a settings save and
-  // the flush wiped the new logo — live v78: a school logo saved at
-  // 12:38 UTC was wiped by the pull, the next diff re-queued the
+  // Phase 3 (v79) + Phase 5 (v113): keep an un-synced local profile.
+  // Content tables keep un-synced rows via the v33/v46 merge below;
+  // the profile had no such keep, so a pull between a settings save
+  // and the flush wiped the new value — live v78: a school logo saved
+  // at 12:38 UTC was wiped by the pull, the next diff re-queued the
   // school row with an empty logo (sbOutboxAdd replaces the older
   // entry for the same row), and the flush sent both logo fields as
   // null, so the logo was lost on the server although its Storage
-  // object had uploaded fine. The keep is logo-only: a pending
-  // ss_schools upsert proves the logo has not reached the server yet,
-  // and a fresh/empty profile carries no logo, so the download/pull
-  // server-wins behaviour for name/city/feeExtras/counters (v30/v31)
-  // is unchanged. When the logo is kept, the flush sends it and the
-  // next pull then reflects it.
-  var keepLogo79 = false;
-  var localLogo79 = d.profile ? d.profile.logo : null;
-  var localLogoUrl79 = d.profile ? d.profile.logoUrl : null;
-  if (localLogo79 || localLogoUrl79) {
-    try {
-      var uid79 = (account && account.sbUid) || (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
-      if (uid79) {
-        var ob79 = sbOutboxLoad(uid79) || [];
-        for (var i79 = 0; i79 < ob79.length; i79++) {
-          if (ob79[i79] && ob79[i79].table === 'ss_schools' && ob79[i79].op === 'upsert') { keepLogo79 = true; break; }
-        }
+  // object had uploaded fine. v79 kept only the logo; v113 keeps the
+  // whole profile (name/city/principal/phone/email/session/address/
+  // logo/logoUrl + feeExtras) under the same gate — a pending
+  // ss_schools upsert proves the edit has not reached the server yet.
+  // With no pending upsert the download/pull server-wins behaviour
+  // (v30/v31) is unchanged, and the counters always come from the
+  // server row (server-minted). When the profile is kept, the flush
+  // sends it and the next pull then reflects it.
+  // v113: the keep gate is a pending ss_schools upsert AND a snapshot
+  // entry for the school row. The upsert alone is not proof of an
+  // edit: on a first sync the catch-up diff queues the local default
+  // profile (account name, fees 0) as an upsert, and keeping it would
+  // wipe the server's real fees — the v30 download regression (the
+  // local profile was kept, admission fee stayed 0 instead of 100).
+  // The snapshot entry proves this device has synced the profile
+  // before, so a pending upsert after that is a genuine edit since
+  // the last sync. A name-only edit is kept too (no logo precondition,
+  // unlike v79). When the gate is open the whole local profile
+  // survives the pull; the counters still come from the server row.
+  var keepProfile113 = false;
+  try {
+    var uid113 = (account && account.sbUid) || (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
+    var snap113 = (account && account.uid) ? sbSnapLoad(account.uid) : {};
+    var hasSnap113 = !!(snap113 && snap113.ss_schools && snap113.ss_schools.school !== undefined);
+    if (uid113 && hasSnap113) {
+      var ob113 = sbOutboxLoad(uid113) || [];
+      for (var i113 = 0; i113 < ob113.length; i113++) {
+        if (ob113[i113] && ob113[i113].table === 'ss_schools' && ob113[i113].op === 'upsert') { keepProfile113 = true; break; }
       }
-    } catch (e79) {}
-  }
-  if (schoolRow) {
-    d.profile = { name: schoolRow.name || d.profile.name || '', city: schoolRow.city || '', principal: schoolRow.principal || '', phone: schoolRow.phone || '', email: schoolRow.email || '', session: schoolRow.session || '2025–26', address: schoolRow.address || '' };
-    if (schoolRow.logo_data_url || schoolRow.logo_url) d.profile.logo = schoolRow.logo_data_url || schoolRow.logo_url;
-    d.profile.logoUrl = schoolRow.logo_url || null; // Phase 3 (v78)
-    if (keepLogo79) {
-      if (localLogo79) d.profile.logo = localLogo79;
-      if (localLogoUrl79) d.profile.logoUrl = localLogoUrl79;
     }
-    d.feeExtras = { admissionFee: schoolRow.admission_fee || 0, cautionMoney: schoolRow.caution_money || 0, annualCharges: schoolRow.annual_charges || 0, transportFee: schoolRow.transport_fee || 0 };
+  } catch (e113) {}
+  if (schoolRow) {
+    if (!keepProfile113 || !d.profile) {
+      d.profile = { name: schoolRow.name || (d.profile && d.profile.name) || '', city: schoolRow.city || '', principal: schoolRow.principal || '', phone: schoolRow.phone || '', email: schoolRow.email || '', session: schoolRow.session || '2025–26', address: schoolRow.address || '' };
+      if (schoolRow.logo_data_url || schoolRow.logo_url) d.profile.logo = schoolRow.logo_data_url || schoolRow.logo_url;
+      d.profile.logoUrl = schoolRow.logo_url || null; // Phase 3 (v78)
+      d.feeExtras = { admissionFee: schoolRow.admission_fee || 0, cautionMoney: schoolRow.caution_money || 0, annualCharges: schoolRow.annual_charges || 0, transportFee: schoolRow.transport_fee || 0 };
+    }
     d.admCounter = schoolRow.adm_counter || 1;
     d.receiptCounter = schoolRow.receipt_counter || 1;
     if (account) sbSaveServerSchool(account.uid, sid);

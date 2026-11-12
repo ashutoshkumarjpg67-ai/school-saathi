@@ -4526,10 +4526,15 @@ const test = `
   // had no such keep. Now a pending ss_schools outbox upsert keeps the
   // local profile (counters still come from the server row).
   state.sb = { uid: 'sb-uid-79' };
+  // v113: the keep gate also needs a snapshot entry for the school row
+  // (proof this device synced the profile before) — the test passes
+  // the account and seeds one.
+  var acct79 = { uid: 'u-79', sbUid: 'sb-uid-79' };
+  sbSnapSave('u-79', { ss_schools: { school: { hash: 'h79', row: { profile: { name: 'Test School' }, feeExtras: {}, admCounter: 5, receiptCounter: 7 } } } });
   sbOutboxAdd('sb-uid-79', { table: 'ss_schools', key: 'school', op: 'upsert', row: { profile: { name: 'Test School', logo: 'data:image/png;base64,LOGO79' }, feeExtras: {}, admCounter: 5, receiptCounter: 7 }, at: new Date().toISOString() });
   var d79 = { profile: { name: 'Test School', city: 'Patna', principal: 'P', phone: '', email: '', session: '2025–26', address: '', logo: 'data:image/png;base64,LOGO79', logoUrl: 'https://x.supabase.co/storage/v1/object/public/school-logos/s79/logo.png' }, feeExtras: { admissionFee: 0, cautionMoney: 0, annualCharges: 0, transportFee: 0 }, admCounter: 5, receiptCounter: 7, students: [], teachers: [], exams: [], feeRecords: [], feeStructure: [], attendance: {}, receipts: [], marks: [], homework: [], notices: [], admissionRequests: [], auditLog: [], activities: [] };
   var schoolRow79 = { id: 'srv-school-79', name: 'Test School', city: 'Patna', principal: 'P', phone: '', email: '', session: '2025–26', address: '', logo_url: null, logo_data_url: null, adm_counter: 9, receipt_counter: 11, admission_fee: 0, caution_money: 0, annual_charges: 0, transport_fee: 0 };
-  sbApplyServerRows(d79, schoolRow79, {}, null, 'srv-school-79');
+  sbApplyServerRows(d79, schoolRow79, {}, acct79, 'srv-school-79');
   eq(d79.profile.logo, 'data:image/png;base64,LOGO79', 'v79: the pull keeps the LOCAL logo when a profile upsert is pending — the server row without a logo does not wipe it');
   eq(d79.profile.logoUrl, 'https://x.supabase.co/storage/v1/object/public/school-logos/s79/logo.png', 'v79: the pull keeps the LOCAL logo URL when a profile upsert is pending');
   eq(d79.admCounter, 9, 'v79: the counters still come from the server row even when the profile is kept');
@@ -4537,9 +4542,49 @@ const test = `
   // No pending upsert → server wins, exactly as before.
   sbOutboxRemove('sb-uid-79', { table: 'ss_schools', key: 'school' });
   var d79b = { profile: { name: 'Test School', city: 'Patna', principal: 'P', phone: '', email: '', session: '2025–26', address: '', logo: 'data:image/png;base64,LOGO79', logoUrl: 'https://x.supabase.co/storage/v1/object/public/school-logos/s79/logo.png' }, feeExtras: { admissionFee: 0, cautionMoney: 0, annualCharges: 0, transportFee: 0 }, admCounter: 5, receiptCounter: 7, students: [], teachers: [], exams: [], feeRecords: [], feeStructure: [], attendance: {}, receipts: [], marks: [], homework: [], notices: [], admissionRequests: [], auditLog: [], activities: [] };
-  sbApplyServerRows(d79b, schoolRow79, {}, null, 'srv-school-79');
+  sbApplyServerRows(d79b, schoolRow79, {}, acct79, 'srv-school-79');
   eq(d79b.profile.logo, undefined, 'v79: with NO pending profile upsert the server row wins and the local logo is replaced');
   eq(d79b.profile.logoUrl, null, 'v79: with NO pending profile upsert the logo URL is cleared from the server row');
+  sbSnapClear('u-79');
+  state.sb = null;
+  // ---- v113 (Phase 5, Module 1): the pull must not wipe an un-synced profile edit ----
+  // v79 kept only the logo: a name/phone/address/fee edit saved offline was
+  // still overwritten by the pull before the flush could send it, and the
+  // next diff re-queued the school row with the server values — the edit
+  // was lost on the server. A pending ss_schools upsert now keeps the
+  // whole local profile (counters still come from the server row, as in v79).
+  state.sb = { uid: 'sb-uid-113' };
+  var acct113 = { uid: 'u-113', sbUid: 'sb-uid-113' };
+  sbSnapSave('u-113', { ss_schools: { school: { hash: 'h113', row: { profile: { name: 'Test School' }, feeExtras: {}, admCounter: 5, receiptCounter: 7 } } } });
+  sbOutboxAdd('sb-uid-113', { table: 'ss_schools', key: 'school', op: 'upsert', row: { profile: { name: 'Test School Renamed', phone: '9876543210' }, feeExtras: { admissionFee: 500 }, admCounter: 5, receiptCounter: 7 }, at: new Date().toISOString() });
+  var d113 = { profile: { name: 'Test School Renamed', city: 'Gopalganj', principal: 'P', phone: '9876543210', email: '', session: '2025–26', address: 'New Address Road', logo: null, logoUrl: null }, feeExtras: { admissionFee: 500, cautionMoney: 0, annualCharges: 0, transportFee: 0 }, admCounter: 5, receiptCounter: 7, students: [], teachers: [], exams: [], feeRecords: [], feeStructure: [], attendance: {}, receipts: [], marks: [], homework: [], notices: [], admissionRequests: [], auditLog: [], activities: [] };
+  var schoolRow113 = { id: 'srv-school-113', name: 'Test School', city: 'Patna', principal: 'P', phone: '', email: '', session: '2025–26', address: '', logo_url: null, logo_data_url: null, adm_counter: 9, receipt_counter: 11, admission_fee: 0, caution_money: 0, annual_charges: 0, transport_fee: 0 };
+  sbApplyServerRows(d113, schoolRow113, {}, acct113, 'srv-school-113');
+  eq(d113.profile.name, 'Test School Renamed', 'v113: the pull keeps the LOCAL school name when a profile upsert is pending');
+  eq(d113.profile.phone, '9876543210', 'v113: the pull keeps the LOCAL school phone when a profile upsert is pending');
+  eq(d113.profile.city, 'Gopalganj', 'v113: the pull keeps the LOCAL school city when a profile upsert is pending');
+  eq(d113.profile.address, 'New Address Road', 'v113: the pull keeps the LOCAL school address when a profile upsert is pending');
+  eq(d113.feeExtras.admissionFee, 500, 'v113: the pull keeps the LOCAL admission fee when a profile upsert is pending');
+  eq(d113.admCounter, 9, 'v113: the counters still come from the server row even when the profile is kept');
+  eq(d113.receiptCounter, 11, 'v113: the receipt counter still comes from the server row even when the profile is kept');
+  // No pending upsert -> server wins, exactly as before (fresh-download behaviour unchanged).
+  sbOutboxRemove('sb-uid-113', { table: 'ss_schools', key: 'school' });
+  var d113b = { profile: { name: 'Test School Renamed', city: 'Gopalganj', principal: 'P', phone: '9876543210', email: '', session: '2025–26', address: 'New Address Road', logo: null, logoUrl: null }, feeExtras: { admissionFee: 500, cautionMoney: 0, annualCharges: 0, transportFee: 0 }, admCounter: 5, receiptCounter: 7, students: [], teachers: [], exams: [], feeRecords: [], feeStructure: [], attendance: {}, receipts: [], marks: [], homework: [], notices: [], admissionRequests: [], auditLog: [], activities: [] };
+  sbApplyServerRows(d113b, schoolRow113, {}, acct113, 'srv-school-113');
+  eq(d113b.profile.name, 'Test School', 'v113: with NO pending profile upsert the server name wins and the local edit is replaced');
+  eq(d113b.profile.phone, '', 'v113: with NO pending profile upsert the server phone wins');
+  eq(d113b.feeExtras.admissionFee, 0, 'v113: with NO pending profile upsert the server admission fee wins');
+  // First sync (no snapshot entry yet): a pending upsert is only the
+  // first-sync echo of the local default profile — the server row must
+  // win, or the download restores fees of 0 (the v30 regression).
+  sbSnapClear('u-113');
+  sbOutboxAdd('sb-uid-113', { table: 'ss_schools', key: 'school', op: 'upsert', row: { profile: { name: 'Test School Renamed', phone: '9876543210' }, feeExtras: { admissionFee: 500 }, admCounter: 5, receiptCounter: 7 }, at: new Date().toISOString() });
+  var d113c = { profile: { name: 'Test School Renamed', city: 'Gopalganj', principal: 'P', phone: '9876543210', email: '', session: '2025–26', address: 'New Address Road', logo: null, logoUrl: null }, feeExtras: { admissionFee: 500, cautionMoney: 0, annualCharges: 0, transportFee: 0 }, admCounter: 5, receiptCounter: 7, students: [], teachers: [], exams: [], feeRecords: [], feeStructure: [], attendance: {}, receipts: [], marks: [], homework: [], notices: [], admissionRequests: [], auditLog: [], activities: [] };
+  sbApplyServerRows(d113c, schoolRow113, {}, acct113, 'srv-school-113');
+  eq(d113c.profile.name, 'Test School', 'v113: with NO snapshot entry yet the server name wins even with a pending upsert (first-sync echo)');
+  eq(d113c.profile.phone, '', 'v113: with NO snapshot entry yet the server phone wins even with a pending upsert');
+  eq(d113c.feeExtras.admissionFee, 0, 'v113: with NO snapshot entry yet the server admission fee wins even with a pending upsert');
+  sbOutboxRemove('sb-uid-113', { table: 'ss_schools', key: 'school' });
   state.sb = null;
   // ---- v81 (Phase 3): photo heal — a pull must not leave a student photo-less when the server has one ----
   // Live v80: a photo uploaded and synced (server row has photo_url, Storage
