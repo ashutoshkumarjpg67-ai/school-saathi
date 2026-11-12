@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 106;
+var APP_VERSION = 107;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -655,6 +655,77 @@ function sbSyncDetailsRefresh() {
       if (el) el.innerHTML = sbSyncDetailsHtml();
     }
   } catch (e) {}
+  sbSyncConflictsRefresh(); // v107: the conflicts list lives beside the details
+}
+var SB_CONFLICT_TABLE_LABELS = { ss_students: 'Student', ss_teachers: 'Teacher', ss_staff: 'Staff', ss_fee_records: 'Fee record', ss_fee_structure: 'Fee structure', ss_attendance: 'Attendance', ss_marks: 'Marks', ss_exams: 'Exam', ss_homework: 'Homework', ss_notices: 'Notice', ss_holidays: 'Holiday', ss_receipts: 'Receipt', ss_schools: 'School profile' };
+var SB_CONFLICT_HIDE_KEYS = { id: 1, school_id: 1, local_id: 1, created_at: 1, updated_at: 1, _adoptedByNaturalKey: 1, photo_url: 1, photo_data_url: 1 };
+function sbSyncConflictLabel(k) {
+  var map = { name: 'Name', admission_no: 'Admission no.', cls: 'Class', section: 'Section', phone: 'Phone', dob: 'Date of birth', gender: 'Gender', status: 'Status', amount: 'Amount', month: 'Month', fee_type: 'Fee type', date: 'Date', holiday_date: 'Date', reason: 'Reason', marks: 'Marks', exam_id: 'Exam', student_id: 'Student', title: 'Title', sub: 'Details', action: 'Action', details: 'Details', actor: 'By', ts: 'When', receipt_no: 'Receipt no.', total: 'Total', counter_no: 'Counter no.', profile: 'Profile', admCounter: 'Admission counter', receiptCounter: 'Receipt counter', feeExtras: 'Fee extras' };
+  if (map[k]) return map[k];
+  return String(k).replace(/_/g, ' ');
+}
+function sbSyncConflictRowHtml(row) {
+  // v107: one side of a conflict — a readable field list, technical
+  // columns hidden. Works for any table without a per-table mapper.
+  if (!row || typeof row !== 'object') return '<div class="muted">—</div>';
+  var keys = Object.keys(row).filter(function (k) { return !SB_CONFLICT_HIDE_KEYS[k]; });
+  if (!keys.length) return '<div class="muted">—</div>';
+  var h = '<div style="font-size:13px;line-height:1.7">';
+  keys.slice(0, 10).forEach(function (k) {
+    var v = row[k];
+    var vs = (v === null || v === undefined || v === '') ? '—' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+    h += '<div><b>' + esc(sbSyncConflictLabel(k)) + ':</b> ' + esc(vs.slice(0, 80)) + '</div>';
+  });
+  if (keys.length > 10) h += '<div>… ' + esc(String(keys.length - 10)) + ' more</div>';
+  return h + '</div>';
+}
+function sbSyncConflictsHtml() {
+  // v107: the unresolved-conflicts list in Settings → Server Backup.
+  // Empty when there is nothing to resolve, so Settings stays clean.
+  var list = (typeof db !== 'undefined' && db && db.syncConflicts) || [];
+  if (!list.length) return '';
+  var h = '<div style="margin-top:12px"><div class="muted">' + esc(t('sbConflictsTitle')) + ' (' + list.length + ')</div>';
+  h += '<p class="card-sub">' + esc(t('sbConflictsHint')) + '</p>';
+  list.slice(0, 20).forEach(function (c, i) {
+    var label = SB_CONFLICT_TABLE_LABELS[c.table] || c.table;
+    h += '<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin-top:8px">';
+    h += '<div style="font-size:13px"><b>' + esc(label) + '</b> — ' + esc(String(c.key)) + (c.at ? ' · ' + esc(sbAtLabel(c.at)) : '') + '</div>';
+    h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px"><div><div class="muted">' + esc(t('sbConflictsYours')) + '</div>' + sbSyncConflictRowHtml(c.localRow) + '</div><div><div class="muted">' + esc(t('sbConflictsServer')) + '</div>' + sbSyncConflictRowHtml(c.serverRow) + '</div></div>';
+    h += '<div class="actions" style="justify-content:flex-start;margin-top:8px"><button type="button" class="btn sm" onclick="sbSyncResolveConflict(' + i + ', true)">' + esc(t('sbConflictsKeepMine')) + '</button><button type="button" class="btn ghost sm" onclick="sbSyncResolveConflict(' + i + ', false)">' + esc(t('sbConflictsUseServer')) + '</button></div>';
+    h += '</div>';
+  });
+  if (list.length > 20) h += '<div class="muted">… ' + esc(String(list.length - 20)) + ' more</div>';
+  return h + '</div>';
+}
+function sbSyncConflictsRefresh() {
+  try { if (typeof document !== 'undefined' && document.getElementById) { var el = document.getElementById('sbSyncConflicts'); if (el) el.innerHTML = sbSyncConflictsHtml(); } } catch (e) {}
+}
+function sbSyncResolveConflict(idx, keepMine) {
+  // v107: resolve one recorded conflict. School admin only — Settings
+  // is school-only, and only the school role runs the sync cycle.
+  // Keep mine: re-queue the CURRENT local row as a fresh upsert with a
+  // new timestamp, so the next push's conflict check (server updated_at
+  // vs the new entry.at) lets the local version win. Use server: drop
+  // the record; the snapshot is already re-based to the local row, so
+  // the next pull restores the server version. When Keep mine cannot
+  // queue (no session, or the local row is gone) the record is kept and
+  // the admin is told — never silently switch the choice to Use server.
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
+  if (!db || !db.syncConflicts || !db.syncConflicts[idx]) return;
+  var rec = db.syncConflicts[idx];
+  if (keepMine) {
+    var act = sbSyncActive();
+    var localRow = sbSyncLocalRow({ table: rec.table, key: rec.key });
+    if (!act || !localRow) { toast(t('sbBackupFailed')); return; }
+    sbOutboxAdd(act.uid, { table: rec.table, key: rec.key, op: 'upsert', row: JSON.parse(JSON.stringify(localRow)), at: new Date().toISOString() });
+    toast(t('sbConflictsKept'));
+  } else {
+    toast(t('sbConflictsUsedServer'));
+  }
+  db.syncConflicts.splice(idx, 1);
+  saveDB(db);
+  sbSyncConflictsRefresh();
+  sbSyncDetailsRefresh();
 }
 function sbLoadMig(uid) {
   try { var r = localStorage.getItem(SB_MIGRATED_KEY + ':' + uid); return r ? JSON.parse(r) : null; } catch (e) { return null; }
@@ -3043,6 +3114,24 @@ function sbSyncSnapSetFromLocalRow(accountUid, entry, schoolId, maps) {
   else payload = sbSyncMapRow(entry.table, row, schoolId, maps, db);
   if (payload) sbSyncSnapSet(accountUid, entry.table, entry.key, JSON.stringify(payload));
 }
+function sbSyncRecordConflict(act, entry, r) {
+  // v107: a sync conflict is no longer silent. Record it in
+  // db.syncConflicts (per-account; saveDB persists it, so it survives
+  // reloads) and the school admin resolves it in Settings — Keep mine /
+  // Use server. The snapshot is still re-based to the local row right
+  // after this (the "Use server" default), so recording changes nothing
+  // about what the next pull does until the admin chooses.
+  try {
+    if (!db) return;
+    if (!db.syncConflicts) db.syncConflicts = [];
+    var localRow = sbSyncLocalRow(entry) || entry.row || null;
+    var rec = { table: entry.table, key: entry.key, localRow: localRow, serverRow: (r && r.serverRow) || null, at: new Date().toISOString() };
+    var i, found = -1;
+    for (i = 0; i < db.syncConflicts.length; i++) { if (db.syncConflicts[i] && db.syncConflicts[i].table === rec.table && db.syncConflicts[i].key === rec.key) { found = i; break; } }
+    if (found >= 0) db.syncConflicts[found] = rec; else db.syncConflicts.push(rec);
+    saveDB(db);
+  } catch (e) {}
+}
 function sbSyncQueueDiff() {
   // Compare the local DB against the last synced snapshot and queue
   // every new/changed row into the outbox (with its full local row, so
@@ -3311,7 +3400,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
     var schRow = batch ? sbSyncFindFromBatch(batch, table, entry, schoolId, maps, uid) : null;
     var schP = schRow ? Promise.resolve(schRow) : sbSyncFindServerRow(table, entry, token, schoolId, maps, uid);
     return schP.then(function (row) {
-      if (row && row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true };
+      if (row && row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true, serverRow: row }; // v107: the record needs the server row for the conflicts view
       // v53: the school row is re-queued on every profile/counter
       // change, but its content is usually already on the server —
       // skip the PATCH when the full batch row matches.
@@ -3373,7 +3462,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
         return { pushed: false, skipped: true };
       }
       // Last-write-wins: a newer server copy beats this local change.
-      if (row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true };
+      if (row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true, serverRow: row }; // v107: the record needs the server row for the conflicts view
       // v53: identical content already on the server — resolve WITHOUT
       // a PATCH. The receipt collision check above still runs first,
       // so a same-number different receipt never resolves as
@@ -3484,6 +3573,7 @@ function sbSyncFlushWithToken(act, tok) {
                 maps = sbSyncBuildMaps(db, act.uid); // fresh ids for the next chunk
               } else if (r.conflict) {
                 conflicts++;
+                sbSyncRecordConflict(act, entry, r); // v107: record it — the admin resolves it in Settings
                 sbSyncSnapSetFromLocalRow(act.account.uid, entry, schoolId, maps);
                 sbOutboxRemove(act.uid, entry);
               } else if (r.skipped && !r.keep) {
@@ -4407,6 +4497,7 @@ function emptyDb(profile, schools) {
     homework: [],
     notices: [],
     holidays: [],
+    syncConflicts: [], // v107: unresolved sync conflicts {table, key, localRow, serverRow, at} — school admin resolves them in Settings
     activities: [],
     profile: p,
     feeClsAlignedV9: true
@@ -10894,7 +10985,7 @@ function settingsPage() {
   '<button type="button" class="btn danger" onclick="resetAllData()">' + t('resetAllData') + '</button>' +
   '<button type="button" class="btn" onclick="removeSchoolData()">' + t('removeDeviceData') + '</button>' +
   '<button type="button" class="btn danger" onclick="deleteAccount()">' + t('delAccount') + '</button></div></form></div>' +
-  '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub" id="sbStatusLine">' + sbStatusText() + '</p><div id="sbSyncDetails">' + sbSyncDetailsHtml() + '</div><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration(this)">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload(this)">' + t('sbDownloadNow') + '</button>' + (state.user && state.user.role === 'school' && !state.user.sbUid ? '<button type="button" class="btn ghost" onclick="openLinkServerModal()">' + t('sbLinkServer') + '</button>' : '') + (sbSessionExpired ? '<button type="button" class="btn ghost" onclick="logout()">' + t('authLogin') + '</button>' : '') + '</div></div>' +
+  '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub" id="sbStatusLine">' + sbStatusText() + '</p><div id="sbSyncDetails">' + sbSyncDetailsHtml() + '</div><div id="sbSyncConflicts">' + sbSyncConflictsHtml() + '</div><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration(this)">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload(this)">' + t('sbDownloadNow') + '</button>' + (state.user && state.user.role === 'school' && !state.user.sbUid ? '<button type="button" class="btn ghost" onclick="openLinkServerModal()">' + t('sbLinkServer') + '</button>' : '') + (sbSessionExpired ? '<button type="button" class="btn ghost" onclick="logout()">' + t('authLogin') + '</button>' : '') + '</div></div>' +
   '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('fullBackup') + '</h3><p class="card-sub">' + t('fullBackupSub') + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="exportFullBackup()">' + t('backupExport') + '</button><label class="btn ghost" style="cursor:pointer">' + t('backupImport') + '<input type="file" accept="application/json,.json" style="display:none" onchange="onBackupFileChosen(this)"></label></div></div>' +
   '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('raiseSupport') + '</h3><p class="card-sub">' + t('contactSub') + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="openSupportForm()">' + t('raiseSupport') + '</button></div></div>';
 }
