@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 115;
+var APP_VERSION = 116;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -5434,6 +5434,11 @@ function findDupStudent(data, excludeId) {
     if (data.admissionNo && s.admissionNo && s.admissionNo === data.admissionNo) { d = s; return true; }
     if (data.dob && s.dob && s.dob === data.dob && s.name.trim().toLowerCase() === String(data.name || '').trim().toLowerCase()) { d = s; return true; }
     if (data.phone && s.phone && digitsOnly(s.phone) === digitsOnly(data.phone) && s.name.trim().toLowerCase() === String(data.name || '').trim().toLowerCase()) { d = s; return true; }
+    // v116 (Module 3): a roll number is unique inside one class. Only an
+    // enrolled student (Active/Inactive) holds a roll — a Draft or a
+    // Cancelled record frees it, and editing a student never clashes
+    // with itself (excludeId is filtered above).
+    if (data.roll && s.cls === data.cls && Number(s.roll) === Number(data.roll) && isEnrolledStudent(s)) { d = s; return true; }
     return false;
   });
   return d;

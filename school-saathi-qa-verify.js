@@ -877,7 +877,7 @@ const test = `
   ok(true, 'downloadImportTemplate runs without throwing');
   try { onImportFile(null); ok(true, 'onImportFile null input does not throw'); } catch (e) { ok(false, 'onImportFile null throws: ' + e.message); }
   function impRow(o) {
-    var base = { name: 'Import One', dob: '2013-05-10', gender: 'Boy', bloodGroup: 'O+', category: 'OBC', address: 'Ward 1', state: 'Bihar', district: 'Gopalganj', pin: '841428', admissionDate: '2026-04-01', session: '2026–27', class: '6th', section: 'A', roll: '1', previousSchool: '', previousClass: '', fatherName: 'Mr. One', motherName: '', guardianName: 'Mr. One', mobile: '9812345701', mobile2: '', parentEmail: '', occupation: '', birthCert: 'Yes', tc: 'No', tcNumber: '', aadhaar: '' };
+    var base = { name: 'Import One', dob: '2013-05-10', gender: 'Boy', bloodGroup: 'O+', category: 'OBC', address: 'Ward 1', state: 'Bihar', district: 'Gopalganj', pin: '841428', admissionDate: '2026-04-01', session: '2026–27', class: '6th', section: 'A', roll: '77', previousSchool: '', previousClass: '', fatherName: 'Mr. One', motherName: '', guardianName: 'Mr. One', mobile: '9812345701', mobile2: '', parentEmail: '', occupation: '', birthCert: 'Yes', tc: 'No', tcNumber: '', aadhaar: '' };
     Object.keys(o || {}).forEach(function (k) { base[k] = o[k]; });
     return base;
   }
@@ -938,10 +938,10 @@ const test = `
     return r.join(',');
   }
   var csvText = IMPORT_CSV_HEAD.join(',') + '\\n' +
-    impCsvRow({ name: 'Import Alpha', dob: '2014-01-05', gender: 'Boy', bloodGroup: 'O+', category: 'General', address: 'Ward 2', state: 'Bihar', district: 'Gopalganj', pin: '841428', admissionDate: '2026-04-01', session: '2026–27', class: '6th', section: 'A', roll: '1', fatherName: 'Mr. Alpha', guardianName: 'Mr. Alpha', mobile: '9812345721', occupation: 'Farmer', birthCert: 'Yes', tc: 'No' }) + '\\n' +
+    impCsvRow({ name: 'Import Alpha', dob: '2014-01-05', gender: 'Boy', bloodGroup: 'O+', category: 'General', address: 'Ward 2', state: 'Bihar', district: 'Gopalganj', pin: '841428', admissionDate: '2026-04-01', session: '2026–27', class: '6th', section: 'A', roll: '77', fatherName: 'Mr. Alpha', guardianName: 'Mr. Alpha', mobile: '9812345721', occupation: 'Farmer', birthCert: 'Yes', tc: 'No' }) + '\\n' +
     impCsvRow({ name: 'Bad Row', gender: 'Boy', mobile: '123' }) + '\\n' +
     impCsvRow({ name: 'Import Beta', dob: '2013-08-19', gender: 'Girl', bloodGroup: 'A+', category: 'OBC', state: 'Bihar', district: 'Patna', pin: '800001', admissionDate: '2026-04-01', session: '2026–27', class: '7th', section: 'B', previousSchool: 'Sunrise', previousClass: '5th', fatherName: 'Mr. Beta', motherName: 'Mrs. Beta', guardianName: 'Mr. Beta', mobile: '9812345722', birthCert: 'Yes', tc: 'Yes', tcNumber: 'TC-9001' }) + '\\n' +
-    impCsvRow({ name: 'Import Alpha', dob: '2014-01-05', gender: 'Boy', bloodGroup: 'O+', category: 'General', address: 'Ward 2', state: 'Bihar', district: 'Gopalganj', pin: '841428', admissionDate: '2026-04-01', session: '2026–27', class: '6th', section: 'A', roll: '1', fatherName: 'Mr. Alpha', guardianName: 'Mr. Alpha', mobile: '9812345721', occupation: 'Farmer', birthCert: 'Yes', tc: 'No' });
+    impCsvRow({ name: 'Import Alpha', dob: '2014-01-05', gender: 'Boy', bloodGroup: 'O+', category: 'General', address: 'Ward 2', state: 'Bihar', district: 'Gopalganj', pin: '841428', admissionDate: '2026-04-01', session: '2026–27', class: '6th', section: 'A', roll: '77', fatherName: 'Mr. Alpha', guardianName: 'Mr. Alpha', mobile: '9812345721', occupation: 'Farmer', birthCert: 'Yes', tc: 'No' });
   var parsed37 = parseImportCSV(csvText);
   eq(parsed37.error, null, 'import csv parses without error');
   eq(parsed37.rows.length, 4, 'import csv has 4 data rows');
@@ -1372,7 +1372,7 @@ const test = `
   // P5 bulk import: only valid rows imported, fee totals unchanged, PIN random (v36)
   var ft45 = feeTotals();
   var impRow44 = function (vals) { var r = new Array(IMPORT_CSV_HEAD.length).fill(''); IMPORT_CSV_HEAD.forEach(function (c, i) { if (vals[c] !== undefined) r[i] = vals[c]; }); return r.join(','); };
-  var csv44 = IMPORT_CSV_HEAD.join(',') + '\\n' + impRow44({ name: 'Import Pin Test', dob: '2014-01-01', gender: 'Boy', class: '6th', section: 'A', roll: '1', fatherName: 'Mr. Pin', guardianName: 'Mr. Pin', mobile: '9812345001', admissionDate: '2026-04-01', session: '2026–27', birthCert: 'Yes', tc: 'No' });
+  var csv44 = IMPORT_CSV_HEAD.join(',') + '\\n' + impRow44({ name: 'Import Pin Test', dob: '2014-01-01', gender: 'Boy', class: '6th', section: 'A', roll: '78', fatherName: 'Mr. Pin', guardianName: 'Mr. Pin', mobile: '9812345001', admissionDate: '2026-04-01', session: '2026–27', birthCert: 'Yes', tc: 'No' });
   var parsed44 = parseImportCSV(csv44);
   var validated44 = validateImportRows(parsed44.rows);
   eq(validated44[0].status, 'valid', 'P5 import preview marks the row valid');
@@ -2617,7 +2617,7 @@ const test = `
   loginAs(TEST_ACCOUNTS.school);
   db = seedDB(); saveDB(db);
   state.role = 'school'; state.user = TEST_ACCOUNTS.school; state.view = 'students';
-  $('fStName').value = 'No Fee Test'; $('fStCls').value = '6th'; $('fStSec').value = 'A'; $('fStRoll').value = '3';
+  $('fStName').value = 'No Fee Test'; $('fStCls').value = '6th'; $('fStSec').value = 'A'; $('fStRoll').value = '5'; // v116: roll 3 is held by seed stu3 in 6th-A
   $('fStG').value = 'Mr. No Fee'; $('fStPh').value = '9812345001';
   $('fStDob').value = ''; $('fStPin').value = ''; $('fStAadhaar').value = '';
   $('fStGender').value = ''; $('fStBlood').value = ''; $('fStCategory').value = ''; $('fStSession').value = '2025–26'; $('fStAdmDate').value = '2025-09-01';
@@ -4607,6 +4607,80 @@ const test = `
   var got115 = todayIST();
   ok(got115 === exp115a || got115 === exp115b, 'v115: todayIST returns the IST calendar date in any runtime timezone');
   db.profile.name = name114;
+  // ---- v116: Module 3 (admission + profiles) ----
+  // (a) A roll number is unique inside one class: two enrolled students
+  // in the same class cannot share a roll. The rule lives in
+  // findDupStudent, so the admission form, the CSV import preview and
+  // the import confirm all enforce it. Holders are enrolled students
+  // only (Active/Inactive) — a Draft or a Cancelled record frees its roll.
+  // (b) End-to-end acceptance: one student admitted, attendance marked,
+  // a fee collected, marks entered — then edited and soft-deleted, with
+  // an audit row for create, update and delete.
+  loginAs(TEST_ACCOUNTS.school);
+  state.role = 'school'; state.user = TEST_ACCOUNTS.school; state.sb = null;
+  var ev116 = { preventDefault: function () {} };
+  var holder116 = { id: 'stu-roll-116', name: 'Roll Holder', cls: '5th-A', roll: 7, enr: 'ENR-116', admissionNo: 'ADM-2025-116', guardian: 'Mr. Holder', phone: '9812345116', att: 100, result: 0, fee: 'Pending', status: 'Active', session: '2025–26', dob: '', gender: 'Boy' };
+  db.students.push(holder116); saveDB(db);
+  ok(!!findDupStudent({ name: 'Other Kid', cls: '5th-A', roll: 7, dob: '', phone: '9812345997' }, null), 'v116: same class + roll is a duplicate');
+  ok(!findDupStudent({ name: 'Other Kid', cls: '5th-B', roll: 7, dob: '', phone: '9812345997' }, null), 'v116: same roll in another class is fine');
+  ok(!findDupStudent({ name: 'Other Kid', cls: '5th-A', roll: 8, dob: '', phone: '9812345997' }, null), 'v116: another roll in the same class is fine');
+  var n116 = db.students.length;
+  $('fStName').value = 'Roll Clash Kid'; $('fStCls').value = '5th'; $('fStSec').value = 'A'; $('fStRoll').value = '7';
+  $('fStG').value = 'Mr. Clash'; $('fStPh').value = '9812345997'; $('fStDob').value = ''; $('fStPin').value = ''; $('fStAadhaar').value = '';
+  $('fStGender').value = ''; $('fStBlood').value = ''; $('fStCategory').value = ''; $('fStSession').value = '2025–26'; $('fStAdmDate').value = todayIST(); $('fStAdmReq').value = '';
+  saveStudent(ev116, '', ''); // return value is false on success too — the count + error text prove the refusal
+  eq(db.students.length, n116, 'v116: refused roll-clash admission adds nothing');
+  ok($('fStErr').textContent.indexOf('Roll Holder') !== -1, 'v116: roll error names the student holding the roll');
+  var imp116 = validateImportRow({ name: 'Import Clash', dob: '', gender: 'Boy', bloodGroup: '', category: 'OBC', address: '', state: 'Bihar', district: 'Gopalganj', pin: '841428', admissionDate: todayIST(), session: '2025–26', class: '5th', section: 'A', roll: '7', previousSchool: '', previousClass: '', fatherName: '', motherName: '', guardianName: 'Mr. Import', mobile: '9812345996', mobile2: '', parentEmail: '', occupation: '', birthCert: 'Yes', tc: 'No', tcNumber: '', aadhaar: '' }, []);
+  eq(imp116.status, 'duplicate', 'v116: import row with a taken roll is a duplicate');
+  db.students = db.students.filter(function (s) { return s.id !== 'stu-roll-116'; }); saveDB(db);
+  // (b) End-to-end chain for one student.
+  var admBefore116 = db.admCounter;
+  var auditBefore116 = db.auditLog.slice();
+  var roll116 = nextRoll('6th-A');
+  $('fStName').value = 'Chain Test'; $('fStCls').value = '6th'; $('fStSec').value = 'A'; $('fStRoll').value = String(roll116);
+  $('fStG').value = 'Mr. Chain'; $('fStPh').value = '9812345997'; $('fStDob').value = '2014-05-05'; $('fStPin').value = ''; $('fStAadhaar').value = '';
+  $('fStGender').value = 'Boy'; $('fStBlood').value = ''; $('fStCategory').value = ''; $('fStSession').value = '2025–26'; $('fStAdmDate').value = todayIST(); $('fStAdmReq').value = '';
+  saveStudent(ev116, '', '');
+  var chain116 = db.students.filter(function (s) { return s.name === 'Chain Test'; })[0];
+  ok(!!chain116, 'v116: chain admission saves the student');
+  ok(!!chain116 && /^ADM-/.test(chain116.admissionNo), 'v116: chain student gets an admission number');
+  eq(chain116 && chain116.roll, roll116, 'v116: chain student keeps the next free roll');
+  ok(db.auditLog.some(function (a) { return a.action === 'Admission created' && a.details.indexOf(chain116.admissionNo) !== -1; }), 'v116: admission writes a create audit row');
+  state.attDate = todayIST(); state.attCls = '6th-A'; attendancePage();
+  markAtt(chain116.id, 'Present');
+  eq(db.attendance[todayIST() + '|6th-A'][chain116.id], 'Present', 'v116: chain student marked Present today');
+  eq(studentAttPct(chain116), 100, 'v116: chain student attendance is 100%');
+  $('fFeeStudent').value = chain116.id; $('fFeeAmount').value = '800'; $('fFeeMonth').value = 'Nov'; $('fFeeType').value = 'Tuition'; $('fFeeStatus').value = 'Collected'; $('fFeeDate').value = todayIST();
+  saveFeeRecord({ preventDefault: function () {} });
+  eq(db.feeRecords.filter(function (r) { return r.studentId === chain116.id; }).length, 1, 'v116: chain fee record exists');
+  eq(studentFeeStatus(chain116.id), 'Paid', 'v116: chain student fee status is Paid after a Collected record');
+  db.exams.push({ id: 'ex116', name: 'Unit Test 116', cls: '6th-A', subject: 'Maths', date: todayIST(), total: 100 });
+  db.students.filter(function (s) { return s.cls === '6th-A' && isEnrolledStudent(s); }).forEach(function (s) { $('mk-' + s.id).value = (s.id === chain116.id) ? '85' : ''; });
+  saveMarks('ex116');
+  var mk116 = db.marks.filter(function (m) { return m.examId === 'ex116' && m.studentId === chain116.id; })[0];
+  ok(!!mk116 && mk116.marks === 85, 'v116: chain student marks 85/100 saved');
+  $('fStName').value = 'Chain Test'; $('fStCls').value = '6th'; $('fStSec').value = 'A'; $('fStRoll').value = String(roll116);
+  $('fStG').value = 'Mr. Chain'; $('fStPh').value = '9812345995'; $('fStDob').value = '2014-05-05'; $('fStPin').value = ''; $('fStAadhaar').value = '';
+  $('fStGender').value = 'Boy'; $('fStBlood').value = ''; $('fStCategory').value = ''; $('fStSession').value = '2025–26'; $('fStAdmDate').value = todayIST(); $('fStAdmReq').value = '';
+  saveStudent(ev116, chain116.id);
+  eq(chain116.phone, '9812345995', 'v116: chain student edit saves the new phone');
+  ok(db.auditLog.some(function (a) { return a.action === 'Student updated' && a.details.indexOf(chain116.admissionNo) !== -1; }), 'v116: edit writes an update audit row');
+  deleteStudent(chain116.id); confirmYes();
+  eq(chain116.status, 'Cancelled', 'v116: chain student is Cancelled, not removed');
+  ok(!!db.students.find(function (s) { return s.id === chain116.id; }), 'v116: soft-deleted record is kept');
+  eq(db.feeRecords.filter(function (r) { return r.studentId === chain116.id; }).length, 1, 'v116: soft-delete keeps the fee history');
+  ok(!!db.marks.find(function (m) { return m.examId === 'ex116' && m.studentId === chain116.id; }), 'v116: soft-delete keeps the marks history');
+  eq(db.attendance[todayIST() + '|6th-A'][chain116.id], 'Present', 'v116: soft-delete keeps the attendance history');
+  ok(db.auditLog.some(function (a) { return a.action === 'Student removed' && a.details.indexOf(chain116.admissionNo) !== -1; }), 'v116: delete writes a delete audit row');
+  var day116 = db.attendance[todayIST() + '|6th-A']; if (day116) delete day116[chain116.id];
+  db.feeRecords = db.feeRecords.filter(function (r) { return r.studentId !== chain116.id; });
+  db.marks = db.marks.filter(function (m) { return m.examId !== 'ex116'; });
+  db.exams = db.exams.filter(function (e) { return e.id !== 'ex116'; });
+  db.students = db.students.filter(function (s) { return s.id !== chain116.id; });
+  db.admCounter = admBefore116;
+  db.auditLog = auditBefore116;
+  saveDB(db);
   // ---- v81 (Phase 3): photo heal — a pull must not leave a student photo-less when the server has one ----
   // Live v80: a photo uploaded and synced (server row has photo_url, Storage
   // object exists) still showed the placeholder in every portal. The
