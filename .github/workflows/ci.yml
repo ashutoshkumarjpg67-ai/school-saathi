@@ -1,11 +1,12 @@
 # CI — School Saathi (audit H-17, M-34)
-# Minimal, zero-dependency: this repo has no npm dependencies and no build
-# step, so there is deliberately no `npm install` / `npm test` step here.
+# Minimal, zero-dependency: the test harness uses Node built-ins only
+# (node:test / node:assert / node:vm), so there is deliberately no
+# `npm install` step here — `npm test` runs straight on the checkout.
 # Every push and every PR runs:
-#   1. `node --check` on the four plain-JS files (syntax check)
-#   2. `node scripts/check-version.mjs` (version markers must agree, 11/11)
-# The test-harness step (`npm test`) joins once the test harness lands
-# in-repo (audit CR-8 — the harness is currently external, not in this repo).
+#   1. `node --check` on the plain-JS files (syntax check)
+#   2. `node scripts/check-version.mjs` (version markers must agree)
+#   3. `npm test` (in-repo harness, audit CR-8: version markers,
+#      seeded fixtures, fresh-device empty start, backup round-trip)
 # Branch protection ("Require status checks to pass" on main) is a GitHub-UI
 # step for the repo owner — no repo file can turn it on.
 name: CI
@@ -25,6 +26,13 @@ jobs:
           node --check app.js
           node --check qrgen.js
           node --check sw.js
+          node --check js/modules/crypto.js
+          node --check js/modules/i18n.js
           node --check scripts/check-version.mjs
+          node --check scripts/seed-fixtures.js
+          node --check tests/harness.mjs
+          node --check tests/smoke.test.mjs
       - name: Version markers check
         run: node scripts/check-version.mjs
+      - name: Test harness (npm test)
+        run: npm test
