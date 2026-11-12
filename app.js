@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 101;
+var APP_VERSION = 102;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -2138,6 +2138,28 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
       });
     }
   } catch (e46) {}
+  // v102: pending outbox DELETEs, same uid rule as the upserts above.
+  // A row the user deleted on THIS device (delete op queued, flush not
+  // run yet) must NOT be pulled back by the cycle's pull — the pull runs
+  // BEFORE the flush, so without this the server row is restored locally
+  // and the post-flush pull then keeps it as local-only and re-uploads
+  // it: a delete can never stick (live 12 Nov: Remove Holiday failed
+  // twice although the delete op queued fine). Keyed by table, then by
+  // the same key the diff/flush use (local id for mergeById tables,
+  // cls|type for fee structure, date|cls|studentId for attendance,
+  // examId|studentId for marks).
+  var outboxDelete102 = {};
+  try {
+    var uid102 = (account && account.sbUid) || (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
+    if (uid102) {
+      (sbOutboxLoad(uid102) || []).forEach(function (e) {
+        if (e && e.op === 'delete' && e.table && e.key) {
+          if (!outboxDelete102[e.table]) outboxDelete102[e.table] = {};
+          outboxDelete102[e.table][e.key] = true;
+        }
+      });
+    }
+  } catch (e102) {}
   function mergeIsSeedRow(table, row) {
     if (table === 'ss_fee_records' || table === 'ss_receipts') return !!seedStudentIds[row.studentId];
     if (table === 'ss_marks') return !!(seedExamIds[row.examId] || seedStudentIds[row.studentId]);
@@ -2153,6 +2175,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     var onServer = {};
     (serverRows || []).forEach(function (row) {
       var r = mapFn(row);
+      if (r.id && outboxDelete102[table] && outboxDelete102[table][r.id]) return; // v102: pending delete wins — do not pull the row back
       if (r.id && onServer[r.id]) return;
       if (r.id) onServer[r.id] = true;
       serverList.push(r);
@@ -2187,7 +2210,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // still drops. When the server has no structure at all, the local
   // defaults stay.
   if ((byTable.ss_fee_structure || []).length) {
-    var srvFs = byTable.ss_fee_structure.map(function (row) { return { cls: row.cls || '', type: row.fee_type || 'Tuition', amount: row.amount || 0 }; });
+    var srvFs = byTable.ss_fee_structure.map(function (row) { return { cls: row.cls || '', type: row.fee_type || 'Tuition', amount: row.amount || 0 }; }).filter(function (f) { var k = (f.cls || '') + '|' + (f.type || 'Tuition'); return !(outboxDelete102.ss_fee_structure && outboxDelete102.ss_fee_structure[k]); }); // v102: pending delete wins — do not pull the row back
     var srvFsKeys = {};
     srvFs.forEach(function (f) { srvFsKeys[(f.cls || '') + '|' + (f.type || 'Tuition')] = true; });
     var mergedFs = srvFs.slice();
@@ -2324,6 +2347,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   (byTable.ss_attendance || []).forEach(function (row) {
     var localId = stuMap[row.student_id];
     if (!localId) return;
+    if (outboxDelete102.ss_attendance && outboxDelete102.ss_attendance[(row.att_date || '') + '|' + (row.cls || '') + '|' + localId]) return; // v102: pending delete wins — do not pull the mark back
     var key = (row.att_date || '') + '|' + (row.cls || '');
     if (!d.attendance[key]) d.attendance[key] = {};
     d.attendance[key][localId] = row.status || 'Present';
@@ -2424,6 +2448,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   (byTable.ss_marks || []).forEach(function (row) {
     if (!examMap[row.exam_id] || !stuMap[row.student_id]) return;
     var m = { examId: examMap[row.exam_id], studentId: stuMap[row.student_id], marks: row.marks };
+    if (outboxDelete102.ss_marks && outboxDelete102.ss_marks[m.examId + '|' + m.studentId]) return; // v102: pending delete wins — do not pull the mark back
     d.marks.push(m);
     serverMarkKeys[m.examId + '|' + m.studentId] = true;
   });
