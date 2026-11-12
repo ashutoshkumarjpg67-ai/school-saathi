@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 102;
+var APP_VERSION = 103;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -594,9 +594,22 @@ function sbSyncDetailsHtml() {
   }
   if (out.length) {
     h += '<div style="margin-top:4px">' + esc(t('sbSyncQueued')) + ':</div>';
-    out.slice(0, 10).forEach(function (e) { h += '<div>• ' + esc(e.table) + ' — ' + esc(String(e.key)) + (e.failReason ? ' (' + esc(String(e.failReason).slice(0, 60)) + ')' : '') + '</div>'; });
+    out.slice(0, 10).forEach(function (e) { h += '<div>• ' + esc(e.table) + ' — ' + esc(String(e.key)) + (e.op ? ' (' + esc(String(e.op)) + ')' : '') + (e.failReason ? ' (' + esc(String(e.failReason).slice(0, 60)) + ')' : '') + '</div>'; });
     if (out.length > 10) h += '<div>… ' + esc(t('sbSyncAndMore').replace('{n}', String(out.length - 10))) + '</div>';
   }
+  // v103: live sync-state diagnostics — the snapshot keys, session and
+  // school-map state the diff depends on. Display only; the verifier
+  // reads them from this HTML because the browser cannot run JS. The
+  // holiday delete never queued live (12 Nov), so the first question
+  // is whether the snapshot even holds the holiday key.
+  try {
+    var snapD = {};
+    if (state && state.user && state.user.uid) snapD = sbSnapLoad(state.user.uid) || {};
+    var holKeysD = snapD.ss_holidays ? Object.keys(snapD.ss_holidays) : [];
+    h += '<div style="margin-top:4px">Snapshot holidays: ' + (holKeysD.length ? esc(holKeysD.join(', ')) : '—') + '</div>';
+    h += '<div>Local holidays: ' + esc(((typeof db !== 'undefined' && db && db.holidays) || []).map(function (hh) { return hh.id; }).join(', ') || '—') + '</div>';
+    h += '<div>Online: ' + (sbIsOnline() ? 'yes' : 'no') + ' · Session: ' + ((state && state.sb && state.sb.uid) ? 'yes' : 'no') + ' · School mapped: ' + ((state && state.user && state.user.uid && (sbServerSchoolMap()[state.user.uid])) ? 'yes' : 'no') + '</div>';
+  } catch (eD) {}
   h += '</div>';
   return h;
 }
@@ -2143,8 +2156,11 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // run yet) must NOT be pulled back by the cycle's pull — the pull runs
   // BEFORE the flush, so without this the server row is restored locally
   // and the post-flush pull then keeps it as local-only and re-uploads
-  // it: a delete can never stick (live 12 Nov: Remove Holiday failed
-  // twice although the delete op queued fine). Keyed by table, then by
+  // it: a delete can never stick (the pull-before-flush resurrection,
+  // reproduced in the harness as v101c). Live 12 Nov the delete op
+  // never even queued (Pending uploads stayed 0) — a separate fault
+  // the v103 diagnostics below are built to expose — but this skip is
+  // still required: once the op IS queued, the pull must not undo it.
   // the same key the diff/flush use (local id for mergeById tables,
   // cls|type for fee structure, date|cls|studentId for attendance,
   // examId|studentId for marks).
