@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 99;
+var APP_VERSION = 100;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -1110,6 +1110,11 @@ function sbMapHomework(h, schoolId, stuMap) {
 function sbMapNotice(n, schoolId) {
   return { school_id: schoolId, local_id: n.id, title: n.title || '', notice_date: sbNullIfEmpty(n.date), body: n.body || '' };
 }
+function sbMapHoliday(h, schoolId) {
+  // v100: local holiday row -> server payload (SQL 38). Mirrors
+  // sbMapNotice: local_id is the local id, holiday_date is a date.
+  return { school_id: schoolId, local_id: h.id, holiday_date: h.date || null, cls: h.cls || '', reason: h.reason || '' };
+}
 function sbCounterNo(v) {
   // v40: ss_receipts.counter_no is an INTEGER column, but the Collect
   // Fee form stores the counter label as free text ('COUNTER-1' by
@@ -1205,7 +1210,7 @@ function sbLocalCountsReal(d) {
     activities: sbCountUnique(d.activities, function (a) { return (a.title || '') + '|' + (a.sub || ''); }),
     teachers: real('ss_teachers', d.teachers), exams: real('ss_exams', d.exams),
     marks: sbCountUnique((d.marks || []).filter(function (m) { return !sbIsSeedExamId(m.examId, d) && !sbIsSeedStudentId(m.studentId, d); }), function (m) { return m.examId + '|' + m.studentId; }),
-    homework: real('ss_homework', d.homework), notices: real('ss_notices', d.notices) };
+    homework: real('ss_homework', d.homework), notices: real('ss_notices', d.notices), holidays: real('ss_holidays', d.holidays) };
 }
 // v64: paged fetch — the sync pull/download/verify/upload-dedupe used to
 // fetch each table with a single `limit=5000`, so a table with more than
@@ -1325,7 +1330,7 @@ function sbVerifyCounts(token, schoolId, counts) {
     ['ss_receipts', 'receipt_no', counts.receipts], ['ss_audit_log', 'ts', counts.auditLog],
     ['ss_activities', 'title', counts.activities], ['ss_teachers', 'local_id', counts.teachers],
     ['ss_exams', 'local_id', counts.exams], ['ss_marks', 'exam_id', counts.marks],
-    ['ss_homework', 'local_id', counts.homework], ['ss_notices', 'local_id', counts.notices]
+    ['ss_homework', 'local_id', counts.homework], ['ss_notices', 'local_id', counts.notices], ['ss_holidays', 'local_id', counts.holidays]
   ];
   // v52: the 12 count checks ran as 12 SEQUENTIAL round-trips — the
   // manual "Back Up Now" path spent most of its 90s+ stall here (and
@@ -1811,6 +1816,19 @@ function sbSyncUploadMissing(account, sbUid, token) {
         function (row) { return row.local_id; });
     });
   }
+  function stepHolidays() {
+    // v100: holidays upload like notices (SQL 38) — INSERT-only, the
+    // fetch-filter inside sbUploadMissing skips rows the server has.
+    return step('ss_holidays', function () {
+      var hRows = (d.holidays || []).filter(function (h) { return !sbIsSeedRow('ss_holidays', h, d); }).map(function (h) { return sbMapHoliday(h, schoolId); });
+      var hUpload = schoolRecreated
+        ? freshRows('ss_holidays', hRows, function (row) { return row.local_id; })
+        : hRows;
+      return sbUploadMissing(token, schoolId, 'ss_holidays', 'local_id',
+        hUpload,
+        function (row) { return row.local_id; });
+    });
+  }
   function stepAuditLog() {
     return step('ss_audit_log', function () {
       var auRows = (d.auditLog || []).map(function (a) { return sbMapAudit(a, schoolId); });
@@ -1864,7 +1882,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
     // PATCH stays last, after the tables. Per-table error handling is
     // unchanged: step() still records a failure per table and the
     // chain continues with the rest.
-    return Promise.all([stepFeeStructure(), stepStudents(), stepTeachers(), stepStaff(), stepExams(), stepNotices(), stepAuditLog(), stepActivities()]);
+    return Promise.all([stepFeeStructure(), stepStudents(), stepTeachers(), stepStaff(), stepExams(), stepNotices(), stepHolidays(), stepAuditLog(), stepActivities()]);
   }).then(function () {
     return Promise.all([stepFeeRecords(), stepAttendance(), stepReceipts(), stepMarks(), stepHomework()]);
   }).then(function () {
@@ -2428,6 +2446,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     return { id: row.local_id || ('srv-' + row.id), cls: row.cls || '', subject: row.subject || '', title: row.title || '', due: row.due || '', doneBy: (row.done_by || []).map(function (id) { return stuMap[id]; }).filter(function (x) { return !!x; }) };
   });
   d.notices = mergeById('ss_notices', d.notices || [], byTable.ss_notices || [], function (row) { return { id: row.local_id || ('srv-' + row.id), title: row.title || '', date: row.notice_date || '', body: row.body || '' }; });
+  d.holidays = mergeById('ss_holidays', d.holidays || [], byTable.ss_holidays || [], function (row) { return { id: row.local_id || ('srv-' + row.id), date: row.holiday_date || '', cls: row.cls || '', reason: row.reason || '' }; });
   if (byTable.ss_admission_requests) {
     d.admissionRequests = mergeById('ss_admission_requests', d.admissionRequests || [], byTable.ss_admission_requests, function (row) { return sbRowToAdmissionRequest(row, stuMap); });
   }
@@ -2746,6 +2765,7 @@ function sbSyncMapRow(table, row, schoolId, maps, d) {
   if (table === 'ss_fee_records') return sbMapFeeRecord(row, schoolId, maps.stu);
   if (table === 'ss_homework') return sbMapHomework(row, schoolId, maps.stu);
   if (table === 'ss_notices') return sbMapNotice(row, schoolId);
+  if (table === 'ss_holidays') return sbMapHoliday(row, schoolId);
   if (table === 'ss_admission_requests') return sbMapAdmissionRequest(row, schoolId, maps.stu);
   if (table === 'ss_receipts') {
     var byId = {};
@@ -2772,6 +2792,7 @@ var SB_SYNC_TABLES = {
   ss_staff: { local: 'staff', key: 'id' }, // v90 (Phase 4): staff members sync to ss_staff like teachers do
   ss_exams: { local: 'exams', key: 'id' }, ss_fee_records: { local: 'feeRecords', key: 'id' },
   ss_homework: { local: 'homework', key: 'id' }, ss_notices: { local: 'notices', key: 'id' },
+  ss_holidays: { local: 'holidays', key: 'id' },
   ss_admission_requests: { local: 'admissionRequests', key: 'id' }, ss_receipts: { local: 'receipts', key: 'receiptNo' }
 };
 var SB_SYNC_DELETABLE = ['ss_fee_records', 'ss_fee_structure', 'ss_attendance', 'ss_marks'];
@@ -3424,7 +3445,7 @@ function sbSyncGuardHit(d, byTable) {
     // never be on the server and must not trip the migration guard.
     ['ss_receipts', rc45.receipts],
     ['ss_marks', rc45.marks], ['ss_homework', rc45.homework],
-    ['ss_notices', rc45.notices], ['ss_admission_requests', (d.admissionRequests || []).length]
+    ['ss_notices', rc45.notices], ['ss_holidays', rc45.holidays], ['ss_admission_requests', (d.admissionRequests || []).length]
   ];
   for (var i = 0; i < checks.length; i++) {
     if (checks[i][1] > 0 && !(byTable[checks[i][0]] || []).length) return checks[i][0];
@@ -3447,7 +3468,7 @@ function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
     : sbGetServerSchoolId(sbUid, token).then(function (row) { return row ? row.id : null; });
   return idP.then(function (sid) {
     if (!sid) return { done: false, reason: 'no-server-school' };
-    var tables = ['ss_fee_structure', 'ss_students', 'ss_teachers', 'ss_staff', 'ss_exams', 'ss_fee_records', 'ss_attendance', 'ss_receipts', 'ss_marks', 'ss_homework', 'ss_notices', 'ss_admission_requests']; // v90: ss_staff joins the pull (the staff list mirrors the server)
+    var tables = ['ss_fee_structure', 'ss_students', 'ss_teachers', 'ss_staff', 'ss_exams', 'ss_fee_records', 'ss_attendance', 'ss_receipts', 'ss_marks', 'ss_homework', 'ss_notices', 'ss_holidays', 'ss_admission_requests']; // v90: ss_staff joins the pull (the staff list mirrors the server)
     var gets = [sbRest('GET', 'ss_schools?select=*&id=eq.' + encodeURIComponent(sid), token)];
     tables.forEach(function (t) { gets.push(sbFetchAllPages(t, '*', sid, token)); });
     return Promise.all(gets).then(function (res) {
@@ -4252,6 +4273,7 @@ function emptyDb(profile, schools) {
     marks: [],
     homework: [],
     notices: [],
+    holidays: [],
     activities: [],
     profile: p,
     feeClsAlignedV9: true
@@ -4338,6 +4360,21 @@ function migrateV12(d) {
   });
   if (!Array.isArray(d.admissionRequests)) d.admissionRequests = [];
   if (!Array.isArray(d.staff)) d.staff = []; // v90 (Phase 4): staff members — old DBs have no staff list yet
+  return d;
+}
+function migrateV100(d) {
+  // v100: holidays list — older DBs predate it. Idempotent: only adds
+  // the list when missing, and dedupes by date|cls (a double-mark from
+  // two devices collapses to one row on load).
+  if (!Array.isArray(d.holidays)) d.holidays = [];
+  var seen = {};
+  d.holidays = d.holidays.filter(function (h) {
+    if (!h || !h.date || !h.cls) return false;
+    var k = h.date + '|' + h.cls;
+    if (seen[k]) return false;
+    seen[k] = true;
+    return true;
+  });
   return d;
 }
 function migrateV54(d) {
@@ -4429,7 +4466,7 @@ function loadDB(override) {
     if (raw) {
       var d = null;
       try { d = JSON.parse(raw); } catch (eParse) { d = null; }
-      if (d && d.v === 2) { var m = migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))))); saveDB(m); return m; }
+      if (d && d.v === 2) { var m = migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))))))))); saveDB(m); return m; }
       if (d) {
         // Parsed but unknown version: keep a backup, never wipe silently.
         pendingBak = raw;
@@ -4471,7 +4508,7 @@ function sbLoadBak() {
     if (!raw) return null;
     var d = JSON.parse(raw);
     if (!d || d.v !== 2) return null;
-    var m = migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))))))));
+    var m = migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))))));
     saveDB(m);
     return m;
   } catch (e) { return null; }
@@ -5450,6 +5487,14 @@ function confirmImportRun(rows, numberSource) {
   openImportModal();
 }
 function donutPct(v, total) { return total ? Math.round(v / total * 100) : 0; }
+function holidayFor(date, cls) {
+  // v100: the holiday row for a class-day, or null. One holiday per
+  // class per date (migrateV100 dedupes on load).
+  return (db.holidays || []).find(function (h) { return h.date === date && h.cls === cls; }) || null;
+}
+function isHoliday(date, cls) {
+  return !!holidayFor(date, cls);
+}
 function todayAtt() {
   // Live school-wide attendance for TODAY, computed from the actual
   // per-student attendance records (db.attendance, keyed 'YYYY-MM-DD|Class').
@@ -5464,6 +5509,8 @@ function todayAtt() {
   (db.students || []).forEach(function (s) { if ((s.status || 'Active') === 'Cancelled') cancelled[s.id] = 1; });
   Object.keys(db.attendance || {}).forEach(function (k) {
     if (k.indexOf(t + '|') !== 0) return;
+    var kp100 = k.split('|');
+    if (isHoliday(kp100[0], kp100[1])) return; // v100: a holiday class-day never counts
     var recs = db.attendance[k] || {};
     Object.keys(recs).forEach(function (id) {
       if (cancelled[id]) return;
@@ -5484,6 +5531,8 @@ function studentAttPct(s) {
   // value stays the fallback.
   var total = 0, attended = 0;
   Object.keys(db.attendance || {}).forEach(function (k) {
+    var kp100 = k.split('|');
+    if (isHoliday(kp100[0], kp100[1])) return; // v100: a holiday day never counts
     var recs = db.attendance[k] || {};
     var m = recs[s.id];
     if (!m) return;
@@ -8801,9 +8850,11 @@ function attendancePage() {
   // never appear on the register.
   var roster = db.students.filter(function (s) { return s.cls === cls && isEnrolledStudent(s); });
   var key = state.attDate + '|' + cls;
+  var hol100 = holidayFor(state.attDate, cls); // v100: a holiday day has no register
   var recs = db.attendance[key] || {};
   var rows = roster.map(function (s) {
     var cur = recs[s.id] || 'Present';
+    if (hol100) return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td><span class="badge orange">' + t('holidayWord') + '</span></td><td><span class="muted">—</span></td></tr>';
     // v38: an Absent/Late student can be notified on WhatsApp (manual
     // wa.me chat, parent presses nothing here — the admin presses Send
     // inside WhatsApp). The button appears only for Absent/Late marks.
@@ -8837,12 +8888,25 @@ function attendancePage() {
   });
   var clsOpts = roleClasses().map(function (c) { return '<option ' + (cls === c ? 'selected' : '') + '>' + c + '</option>'; }).join(''); // v35: a teacher's picker is their own classes; v93: a staff member's too
   var ta = todayAtt();
-  return '<div class="page-head"><div><h2>' + t('attendance') + '</h2><p>Class ' + esc(cls) + ' • ' + esc(state.attDate) + ' — ' + counts.Present + ' ' + t('presBtn') + ', ' + counts.Absent + ' ' + t('absBtn') + ', ' + counts.Late + ' ' + t('lateBtn') + (counts.NotMarked ? ', ' + counts.NotMarked + ' ' + t('attNotMarked') : '') + '</p></div>' +
+  // v100: mark-all + holiday tools. A principal sees none of them; a
+  // teacher/staff member gets mark-all only (holidays are a school
+  // decision — a teacher's slice cannot sync them, so only the school
+  // role marks or removes a holiday). On a holiday day the only tool
+  // is Remove Holiday (school only); there is nothing to save.
+  var attTools = '';
+  if (state.role !== 'principal') {
+    if (hol100) { if (state.role === 'school') attTools = '<button class="btn ghost" onclick="removeHoliday()">' + t('removeHoliday') + '</button>'; }
+    else {
+      if (state.role === 'school') attTools = '<button class="btn" onclick="markHoliday()">🎉 ' + t('markHoliday') + '</button>';
+      attTools += '<button class="btn" onclick="markAllAtt(\'Present\')">' + t('markAllPresent') + '</button><button class="btn" onclick="markAllAtt(\'Absent\')">' + t('markAllAbsent') + '</button><button class="btn green" onclick="saveAttendance()">✓ ' + t('saveAttendance') + '</button>';
+    }
+  }
+  return '<div class="page-head"><div><h2>' + t('attendance') + '</h2><p>Class ' + esc(cls) + ' • ' + esc(state.attDate) + ' — ' + (hol100 ? t('holidayWord') : counts.Present + ' ' + t('presBtn') + ', ' + counts.Absent + ' ' + t('absBtn') + ', ' + counts.Late + ' ' + t('lateBtn') + (counts.NotMarked ? ', ' + counts.NotMarked + ' ' + t('attNotMarked') : '')) + '</p></div>' +
     '<div class="toolbar"><select onchange="state.attCls=this.value;renderPage()">' + clsOpts + '</select>' +
     '<input type="date" value="' + esc(state.attDate) + '" max="' + todayIST() + '" onchange="onAttDate(this.value)" style="min-width:160px">' +
-    (state.role === 'principal' ? '' : '<button class="btn green" onclick="saveAttendance()">✓ ' + t('saveAttendance') + '</button>') + '</div></div>' + // v88b: a principal never sees the Save Attendance button
+    attTools + '</div></div>' + // v88b: a principal never sees the Save Attendance button; v100: mark-all + holiday tools live in attTools
     '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thStatus') + '</th><th>' + t('waNotifyCol') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
-    (state.role === 'teacher' ? '' : '<p class="muted" style="margin-top:12px">School-wide today: ' + num(ta.present) + ' Present • ' + num(ta.absent) + ' Absent • ' + num(ta.late) + ' Late (' + donutPct(ta.present, ta.total) + '% attendance).</p>') + '</div>';
+    (state.role === 'teacher' ? '' : '<p class="muted" style="margin-top:12px">School-wide today: ' + num(ta.present) + ' Present • ' + num(ta.absent) + ' Absent • ' + num(ta.late) + ' Late (' + donutPct(ta.present, ta.total) + '% attendance).</p>') + '</div>' + holidaysCard100(cls);
 }
 function onAttDate(v) {
   if (v > todayIST()) { toast(t('tFutureDate')); state.attDate = todayIST(); }
@@ -8928,6 +8992,89 @@ function saveAttendance() {
   addActivity('✅', 'blue', 'Attendance updated', 'Class ' + state.attCls);
   saveDB(db);
   toast('✓ ' + t('tAttSaved') + ' — Class ' + state.attCls + ' (' + state.attDate + ').');
+}
+function markAllAtt(m) {
+  // v100: one tap marks the whole register Present or Absent — a
+  // 40-student class no longer needs 40 taps. Same guards as markAtt:
+  // a principal is read-only; a teacher/staff member only their own
+  // assigned class. Local: one map write + one saveDB. Cloud: one RPC
+  // per student (the existing per-tap RPCs — no bulk RPC yet); a failed
+  // call reverts only that student, the rest stay marked.
+  if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
+  if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
+  if (m !== 'Present' && m !== 'Absent') return;
+  if (holidayFor(state.attDate, state.attCls)) { toast(t('tHolidayExists')); return; }
+  var roster = db.students.filter(function (s) { return s.cls === state.attCls && isEnrolledStudent(s); });
+  if (!roster.length) return;
+  var key = state.attDate + '|' + state.attCls;
+  var attToken100 = state.cloudTeacherToken || state.cloudStaffToken;
+  var attFn100 = state.cloudTeacherToken ? sbTeacherMarkAttendance : sbStaffMarkAttendance;
+  if (attToken100) {
+    if (!db.attendance[key]) db.attendance[key] = {};
+    var prevs = {};
+    roster.forEach(function (s) {
+      prevs[s.id] = db.attendance[key][s.id];
+      if (!s.srvId) return;
+      db.attendance[key][s.id] = m;
+    });
+    renderPage();
+    roster.forEach(function (s) {
+      if (!s.srvId) return;
+      attFn100(attToken100, state.attDate, state.attCls, s.srvId, m).then(function (res) {
+        if (res && res.ok) return;
+        if (prevs[s.id] === undefined) delete db.attendance[key][s.id]; else db.attendance[key][s.id] = prevs[s.id];
+        if (res && res.error === 'bad_token') { toast(t('tCloudSessionExpired')); logout(); return; }
+        toast(t('tNotSaved'));
+        renderPage();
+      });
+    });
+    return;
+  }
+  if (!db.attendance[key]) db.attendance[key] = {};
+  roster.forEach(function (s) { db.attendance[key][s.id] = m; });
+  saveDB(db);
+  renderPage();
+}
+function markHoliday() {
+  // v100: declare the viewed class-day a holiday — the register shows
+  // Holiday, no marking, and the day drops out of every attendance %.
+  // SCHOOL ROLE ONLY: a holiday is a school decision, and a teacher's
+  // cloud slice cannot sync it (no sync cycle on slices — the v98
+  // lesson). One holiday per class per date; a second tap toasts
+  // instead of duplicating. Syncs like a notice (SQL 38).
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
+  var date = state.attDate, cls = state.attCls;
+  if (holidayFor(date, cls)) { toast(t('tHolidayExists')); return; }
+  db.holidays = db.holidays || [];
+  db.holidays.push({ id: uniqueId('hol-'), date: date, cls: cls, reason: '' });
+  logAudit('Holiday marked', 'Class ' + cls + ' • ' + date);
+  saveDB(db);
+  toast('✓ ' + t('tHolidaySet') + ' — Class ' + cls + ' (' + date + ').');
+  renderPage();
+}
+function removeHoliday(holId) {
+  // v100: un-declare a holiday — by id from the holidays card, or the
+  // viewed class-day when called from the toolbar with no id. School
+  // role only, like marking.
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
+  var hol = holId ? (db.holidays || []).find(function (h) { return h.id === holId; }) : holidayFor(state.attDate, state.attCls);
+  if (!hol) return;
+  db.holidays = (db.holidays || []).filter(function (h) { return h.id !== hol.id; });
+  logAudit('Holiday removed', 'Class ' + hol.cls + ' • ' + hol.date);
+  saveDB(db);
+  toast('✓ ' + t('tHolidayRemoved') + ' — Class ' + hol.cls + ' (' + hol.date + ').');
+  renderPage();
+}
+function holidaysCard100(cls) {
+  // v100: the class's holidays, newest first, with a remove button each
+  // (school only). Empty when the class has no holidays.
+  var list = (db.holidays || []).filter(function (h) { return h.cls === cls; }).slice().sort(function (a, b) { return (b.date || '').localeCompare(a.date || ''); });
+  if (!list.length) return '';
+  var rows = list.map(function (h) {
+    return '<div class="hw-item"><div><b>' + esc(h.date) + '</b><span>' + esc(h.reason || t('holidayWord')) + '</span></div>' +
+      (state.role === 'school' ? '<button class="btn ghost sm" style="margin-left:auto" onclick="removeHoliday(\'' + h.id + '\')">' + t('removeHoliday') + '</button>' : '') + '</div>';
+  }).join('');
+  return '<div class="card" style="margin-top:16px"><h3>' + t('holidaysH') + ' — Class ' + esc(cls) + '</h3>' + rows + '</div>';
 }
 function feesPage() {
   if (state.collectStudent) return collectFeePage(state.collectStudent);
@@ -10013,7 +10160,7 @@ function examsPage() {
     (state.role === 'school' ? '<button class="btn danger" onclick="deleteExam(\'' + ex.id + '\')">🗑 ' + t('deleteExam') + '</button>' : '') +
     '<button class="btn green" onclick="saveMarks(\'' + ex.id + '\')">✓ ' + t('saveMarks') + '</button>') + '</div></div>' + // v88: a principal sees the exam picker + marks table only — no Create/Edit/Delete/Save
     '<div class="card"><div class="head-row"><div><h3>' + (state.role === 'principal' ? t('results') : t('enterMarks')) + '</h3><p class="card-sub">' + (n ? t('classAvg') + ': ' + Math.round(avg / n / ex.total * 100) + '% (' + n + ' ' + t('studentsMarked') + ')' : t('tNoMarks')) + '</p></div></div>' + // v88b: for a principal the card is "Results", not "Enter Marks"
-    '<div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thMarks') + '</th><th>' + t('thResult') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>' + deletedExamsSection();
+    '<div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thMarks') + '</th><th>' + t('thResult') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>' + bulkMarksCard100(ex) + deletedExamsSection();
 }
 function deletedExamsSection() {
   // B6: soft-deleted exams, school only, with a Restore button each.
@@ -10122,6 +10269,86 @@ function saveMarks(examId) {
   if (saved) { logAudit('Marks saved', ex.name + ' • ' + ex.cls + ' • ' + saved + ' ' + (saved === 1 ? 'student' : 'students')); addActivity('📝', 'blue', 'Marks saved', ex.name + ' • ' + ex.cls); }
   saveDB(db); renderApp();
   doneToast();
+}
+function fillAllMarks(examId) {
+  // v100: fill every marks input with one value — the teacher still
+  // taps Save Marks, so nothing is written until they confirm.
+  if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
+  var ex = db.exams.find(function (e) { return e.id === examId; });
+  if (!ex || !isActiveExam(ex)) return;
+  var v = parseFloat(($('fillAllMarksInput') || {}).value);
+  if (isNaN(v) || v < 0 || v > ex.total) { toast(t('tCheckMarks')); return; }
+  var n = 0;
+  db.students.filter(function (s) { return s.cls === ex.cls && isEnrolledStudent(s); }).forEach(function (s) {
+    var inp = $('mk-' + s.id);
+    if (!inp) return;
+    inp.value = String(v);
+    n++;
+  });
+  if (n) toast('✓ ' + t('tFillAllDone'));
+}
+function copyMarksFromExam(examId) {
+  // v100: copy the stored marks of another exam in the same class into
+  // this exam's inputs (inputs only — Save Marks still confirms).
+  if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
+  var ex = db.exams.find(function (e) { return e.id === examId; });
+  if (!ex || !isActiveExam(ex)) return;
+  var srcId = ($('copyExamSelect') || {}).value;
+  if (!srcId) { toast(t('tNoPrevExam')); return; }
+  var src = db.exams.find(function (e) { return e.id === srcId; });
+  if (!src) { toast(t('tNoPrevExam')); return; }
+  var byStu = {};
+  (db.marks || []).forEach(function (m) { if (m.examId === srcId) byStu[m.studentId] = m.marks; });
+  var n = 0;
+  db.students.filter(function (s) { return s.cls === ex.cls && isEnrolledStudent(s); }).forEach(function (s) {
+    if (byStu[s.id] === undefined) return;
+    var inp = $('mk-' + s.id);
+    if (!inp) return;
+    inp.value = String(byStu[s.id]);
+    n++;
+  });
+  toast('✓ ' + n + ' ' + t('tCopyDone'));
+}
+function pasteMarks(examId) {
+  // v100: paste tab/comma-separated admission-no + mark pairs (one per
+  // line, copied from a spreadsheet) into the marks inputs. Unmatched
+  // lines are reported, never silently dropped. Inputs only — Save
+  // Marks still confirms.
+  if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
+  var ex = db.exams.find(function (e) { return e.id === examId; });
+  if (!ex || !isActiveExam(ex)) return;
+  var box = $('pasteMarksBox');
+  var text = box ? String(box.value || '') : '';
+  var lines = text.split(/\r?\n/).map(function (l) { return l.trim(); }).filter(function (l) { return !!l; });
+  if (!lines.length) { toast(t('tPasteBad')); return; }
+  var byAdm = {};
+  db.students.filter(function (s) { return s.cls === ex.cls; }).forEach(function (s) { byAdm[String(s.admissionNo || '').trim().toLowerCase()] = s; });
+  var pasted = 0, skipped = 0;
+  lines.forEach(function (line) {
+    var parts = line.split(/[\t,;]+/).map(function (p) { return p.trim(); }).filter(function (p) { return !!p; });
+    if (parts.length < 2) { skipped++; return; }
+    var stu = byAdm[String(parts[0]).toLowerCase()];
+    var v = parseFloat(parts[1]);
+    if (!stu || isNaN(v) || v < 0 || v > ex.total) { skipped++; return; }
+    var inp = $('mk-' + stu.id);
+    if (!inp) { skipped++; return; }
+    inp.value = String(v);
+    pasted++;
+  });
+  toast('✓ ' + pasted + ' ' + t('tPasteDone') + (skipped ? ' ' + skipped + ' ' + t('tPasteSkipped') : ''));
+}
+function bulkMarksCard100(ex) {
+  // v100: fill-all / copy-from-exam / paste-from-spreadsheet — all three
+  // only fill the inputs; Save Marks still writes. A principal never
+  // sees the card (their marks are read-only text).
+  if (state.role === 'principal') return '';
+  var others = db.exams.filter(function (e) { return isActiveExam(e) && e.cls === ex.cls && e.id !== ex.id; });
+  var opts = others.map(function (e) { return '<option value="' + e.id + '">' + esc(e.name) + ' (' + esc(e.date) + ')</option>'; }).join('');
+  return '<div class="card" style="margin-top:16px"><h3>' + t('bulkMarksH') + '</h3>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px"><input type="number" id="fillAllMarksInput" min="0" max="' + ex.total + '" step="0.5" placeholder="—" style="width:90px"><button class="btn" onclick="fillAllMarks(\'' + ex.id + '\')">' + t('fillAllMarks') + '</button>' +
+    (others.length ? '<select id="copyExamSelect">' + opts + '</select><button class="btn" onclick="copyMarksFromExam(\'' + ex.id + '\')">' + t('copyFromExam') + '</button>' : '<span class="muted">' + t('tNoPrevExam') + '</span>') + '</div>' +
+    '<textarea id="pasteMarksBox" rows="4" placeholder="' + t('pasteMarksHint') + '" style="width:100%"></textarea>' +
+    '<div style="margin-top:8px"><button class="btn" onclick="pasteMarks(\'' + ex.id + '\')">' + t('pasteMarks') + '</button></div></div>';
 }
 function examForm(editId) {
   // v37: exam creation (audit item 6). A teacher only ever sees their
@@ -10465,7 +10692,7 @@ function restoreFullBackup(obj) {
   var d = JSON.parse(JSON.stringify(obj.db));
   // Run the same migrations loadDB runs, so a backup from an older
   // build still lands in the current shape (a v37 backup is a no-op).
-  d = migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))))))));
+  d = migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))))));
   var counts = { students: d.students.length, teachers: d.teachers.length, feeRecords: d.feeRecords.length, exams: d.exams.length, marks: d.marks.length, homework: d.homework.length, notices: d.notices.length, receipts: d.receipts.length };
   db = d;
   // Server-linked schools: drop the stale outbox + snapshot so the next
