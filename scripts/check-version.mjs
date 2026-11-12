@@ -47,6 +47,13 @@ console.log(`sw.js ?v= occurrences: ${swVs.length} [${swVs.join(', ')}]`);
 check('sw.js ?v= count>=3', swVs.length >= 3, true); // Phase 2: modules add ?v= assets — count grows, every value must still equal truth
 swVs.forEach((v, i) => check(`sw.js ?v= #${i + 1}`, v, truth));
 
+// 7. H-5: the encryption module must load in index.html BEFORE app.js,
+// and the service worker must precache it (offline PWA).
+const scIdx = html.indexOf('js/modules/storage-crypto.js');
+const appIdx = html.indexOf('app.js?v=');
+check('index.html storage-crypto.js before app.js', scIdx !== -1 && appIdx !== -1 && scIdx < appIdx, true);
+check('sw.js precaches storage-crypto.js', sw.includes('js/modules/storage-crypto.js?v=95'), true);
+
 if (failures.length) {
   console.error(`\nVERSION DRIFT: ${failures.length} check(s) failed — ${failures.join(', ')}`);
   console.error('version.json ka number baaki jagah bhi wahi rakho, phir dobara chalao.');
