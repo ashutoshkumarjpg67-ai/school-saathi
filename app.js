@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 110;
+var APP_VERSION = 111;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -7212,11 +7212,16 @@ function visibleStudents() {
   // another class's students, their fees, or the school totals).
   // Student: only themself (the list view is never opened by a student,
   // but the helper keeps the rule in one place).
+  // Parent: only their own child (v111 — Phase 7 review C2: without this
+  // branch a parent fell through to the whole school).
   if (state.role === 'teacher') {
     var tc = teacherClasses();
     return db.students.filter(function (s) { return tc.indexOf(s.cls) !== -1; });
   }
   if (state.role === 'student') {
+    return db.students.filter(function (s) { return !!state.user && s.id === state.user.studentId; });
+  }
+  if (state.role === 'parent') {
     return db.students.filter(function (s) { return !!state.user && s.id === state.user.studentId; });
   }
   return db.students;

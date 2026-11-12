@@ -7174,6 +7174,28 @@ async function v28run() {
   v28eq(sbServer.ss_marks.filter(function (r) { return r.exam_id === 'srv-ex-110' && r.student_id === srvStu110.id; }).length, 0, 'v110: server mark stays gone after a second cycle');
   v28eq(ctx.sbOutboxLoad('sb-uid-pull@school.in').filter(function (e) { return e.table === 'ss_marks' && e.key === 'ex-110|stu-w1'; }).length, 0, 'v110: no marks delete op is left queued after the second cycle');
 
+  // ---- v111: a parent must see ONLY their own child in visibleStudents() ----
+  // Phase 7 review (C2): visibleStudents() has teacher + student branches
+  // only — a parent falls through to `return db.students` (the whole
+  // school). Not live-reachable today (the parent dashboard never calls
+  // it), but one future parent list view would leak every student. The
+  // fix adds the parent branch, mirroring canViewStudent(). Fixture:
+  // stu-w1, the pull-db student the v102 vectors already use (the async
+  // section runs on the pull account's db, not the seed db).
+  var stu111 = ctx.db.students.find(function (s) { return s.id === 'stu-w1'; });
+  v28ok(!!stu111, 'v111: fixture student stu-w1 exists in the pull db');
+  if (stu111) {
+    ctx.loginAs({ role: 'parent', name: stu111.name, sub: 'Parent \u2022 ' + stu111.name, email: 'parent:u-pull-1:' + stu111.id, uid: 'parent-' + stu111.id, studentId: stu111.id, schoolUid: 'u-pull-1' }, { silent: true }); // schoolUid u-pull-1 = the pull db (dbKeyFor: schoolUid wins for parents; test-school would open the seed db, where stu-w1 does not exist)
+    v28eq(ctx.state.role, 'parent', 'v111: the session has role parent');
+    var vis111 = ctx.visibleStudents();
+    v28eq(vis111.length, 1, 'v111: a parent sees exactly one student in visibleStudents');
+    v28ok(vis111.length === 1 && vis111[0].id === stu111.id, 'v111: the one visible student is the parent own child');
+    ctx.state.stuSearch = ''; ctx.state.stuClass = 'All'; ctx.state.stuSection = 'All'; ctx.state.stuSession = 'All'; ctx.state.stuGender = 'All'; ctx.state.stuFee = 'All'; ctx.state.stuStatus = 'All';
+    v28eq(ctx.stuFiltered().length, 1, 'v111: stuFiltered as a parent returns only the child');
+    ctx.loginAs(pullAcct);
+    v28ok(ctx.visibleStudents().length > 1, 'v111: the school admin still sees the whole school');
+  }
+
   // ---- v103: sync details expose the live sync state (snapshot keys, session, school map) ----
   var det103 = ctx.sbSyncDetailsHtml();
   v28ok(det103.indexOf('Snapshot holidays:') !== -1, 'v103: sync details show the snapshot holidays line');
