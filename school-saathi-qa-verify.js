@@ -4586,6 +4586,16 @@ const test = `
   eq(d113c.feeExtras.admissionFee, 0, 'v113: with NO snapshot entry yet the server admission fee wins even with a pending upsert');
   sbOutboxRemove('sb-uid-113', { table: 'ss_schools', key: 'school' });
   state.sb = null;
+  // ---- v114 (external review fix): Reports page must escape the school name ----
+  // The review found reportsPage() interpolating db.profile.name raw into
+  // HTML - the one unescaped spot in the app (every other page uses esc()).
+  // A school name is admin-set text; without escaping it is stored XSS.
+  var name114 = db.profile.name;
+  db.profile.name = '<img src=x onerror=alert(1)>';
+  var rp114 = reportsPage();
+  ok(rp114.indexOf('<img src=x') === -1, 'v114: Reports page does not render the raw school-name HTML');
+  ok(rp114.indexOf('&lt;img src=x') !== -1, 'v114: Reports page escapes the school name');
+  db.profile.name = name114;
   // ---- v81 (Phase 3): photo heal — a pull must not leave a student photo-less when the server has one ----
   // Live v80: a photo uploaded and synced (server row has photo_url, Storage
   // object exists) still showed the placeholder in every portal. The
@@ -6229,6 +6239,24 @@ console.log(sql35.includes('ss_staff_mark_attendance') && sql35.includes('ss_sta
   ? 'PASS v98: SQL 35 (staff write RPCs) exists in repo + goal backend, enforces role staff + classes, grants anon+authenticated'
   : 'FAIL v98: SQL 35 missing, mismatched, or wrong role checks/grants');
 if (!(sql35.includes('ss_staff_mark_attendance') && sql35.includes('ss_staff_post_homework') && sql35.includes('ss_staff_set_marks') && sql35.includes("role <> 'staff'") && sql35.includes('revoke all on function public.ss_staff_mark_attendance') && sql35.includes('grant execute on function public.ss_staff_set_marks') && sql35goalEq)) process.exitCode = 1;
+// ---- v114 (external review fixes): SQL 40 + SQL 25 + app.js proof-carrying _ok ----
+var sql40 = readRel('supabase/40_parent_pin_and_teacher_payload_fixes.sql');
+var sql40goalEq = goalEq(sql40, '/home/hatch/workspace/goals/school-saathi-school-management-app/backend/40_parent_pin_and_teacher_payload_fixes.sql');
+console.log(sql40.includes('is distinct from p_dob') && sql40.includes('p_dob is null') && sql40.includes('drop function if exists public.ss_parent_pin_ok(uuid, text)') && sql40.includes('p_pin text default null') && sql40.includes('p_dob date default null') && !sql40.includes('jsonb_agg(to_jsonb(s))') && sql40.includes('revoke execute on function public.ss_parent_pin_reset_by_dob') && sql40.includes('revoke execute on function public.ss_parent_pin_ok(uuid, text, text, date)') && sql40.includes('revoke execute on function public.ss_teacher_cloud_login') && sql40goalEq
+  ? 'PASS v114: SQL 40 fixes the NULL-DOB bypass, the proof-less lockout clear, and the whole-row teacher payload, with PUBLIC revoked on all three'
+  : 'FAIL v114: SQL 40 missing a fix or a grant');
+if (!(sql40.includes('is distinct from p_dob') && sql40.includes('p_dob is null') && sql40.includes('drop function if exists public.ss_parent_pin_ok(uuid, text)') && sql40.includes('p_pin text default null') && sql40.includes('p_dob date default null') && !sql40.includes('jsonb_agg(to_jsonb(s))') && sql40.includes('revoke execute on function public.ss_parent_pin_reset_by_dob') && sql40.includes('revoke execute on function public.ss_parent_pin_ok(uuid, text, text, date)') && sql40.includes('revoke execute on function public.ss_teacher_cloud_login') && sql40goalEq)) process.exitCode = 1;
+var sql25 = readRel('supabase/25_platform_settings_no_delete.sql');
+console.log(sql25.includes('create policy ss_settings_admin_select') && sql25.includes('create policy ss_settings_admin_insert') && sql25.includes('create policy ss_settings_admin_update') && !sql25.includes('for select, insert, update to authenticated')
+  ? 'PASS v114: SQL 25 is three valid single-command policies (no multi-command FOR)'
+  : 'FAIL v114: SQL 25 still has the invalid multi-command policy');
+if (!(sql25.includes('create policy ss_settings_admin_select') && sql25.includes('create policy ss_settings_admin_insert') && sql25.includes('create policy ss_settings_admin_update') && !sql25.includes('for select, insert, update to authenticated'))) process.exitCode = 1;
+var repIdx114 = src.indexOf("t('subReports')");
+var repSeg114 = repIdx114 === -1 ? '' : src.slice(repIdx114, repIdx114 + 200);
+console.log(src.includes('function sbParentPinOk(serverId, admNo, pin, dob)') && src.includes('sbParentPinOk(srvId, adm, pin)') && src.includes("sbParentPinOk(srvId, stu.admissionNo || '', null, dob)") && src.includes('sbParentPinOk(serverId, adm, pin)') && repSeg114.includes('esc(db.profile.name)')
+  ? 'PASS v114: app.js passes PIN/DOB proof to the lockout-clear RPC at all three call sites and escapes the school name on the Reports page'
+  : 'FAIL v114: app.js missing a proof-carrying _ok call or the Reports escape');
+if (!(src.includes('function sbParentPinOk(serverId, admNo, pin, dob)') && src.includes('sbParentPinOk(srvId, adm, pin)') && src.includes("sbParentPinOk(srvId, stu.admissionNo || '', null, dob)") && src.includes('sbParentPinOk(serverId, adm, pin)') && repSeg114.includes('esc(db.profile.name)'))) process.exitCode = 1;
 console.log(html.includes('parentForm') && html.includes('tabParent') && html.includes('parentAdmNo')
   ? 'PASS v86: index.html has the Parent tab and parent login form'
   : 'FAIL v86: index.html is missing the Parent tab / parent login form');

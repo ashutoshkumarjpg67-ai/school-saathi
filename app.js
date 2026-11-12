@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 113;
+var APP_VERSION = 114;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -6471,10 +6471,15 @@ function sbParentPinFailed(serverId, admNo) {
     return (r && r.data) || null;
   }).catch(function () { return null; });
 }
-function sbParentPinOk(serverId, admNo) {
+// v114: the lockout-clear RPC now needs proof - the PIN (after a login)
+// or the DOB (after a local PIN reset). The old no-proof call let anyone
+// clear any admission number's lockout.
+function sbParentPinOk(serverId, admNo, pin, dob) {
   var _okBody = {};
   _okBody.p_school_id = serverId;
   _okBody.p_admission_no = admNo;
+  if (pin != null) _okBody.p_pin = pin;
+  if (dob != null) _okBody.p_dob = dob;
   return sbRest('POST', 'rpc/ss_parent_pin_ok', SB_ANON_KEY, _okBody).then(function (r) {
     return (r && r.data) || null;
   }).catch(function () { return null; });
@@ -6640,8 +6645,9 @@ function doParentLocalLogin(schoolUid, srvId, adm, pin, err) {
     return false;
   }
   pinFailClear(schoolUid, stu.id);
-  // v99: a local success clears the server counter too.
-  if (srvId) sbParentPinOk(srvId, adm);
+  // v99: a local success clears the server counter too (v114: with the
+  // PIN just verified as proof).
+  if (srvId) sbParentPinOk(srvId, adm, pin);
   DB_KEY = found.dbKey;
   var acct = { role: 'parent', name: found.student.name, sub: t('parentSub') + ' • ' + found.student.name, email: 'parent:' + schoolUid + ':' + found.student.id, uid: 'parent-' + found.student.id, studentId: found.student.id, schoolUid: schoolUid };
   err.classList.add('hidden');
@@ -6760,7 +6766,8 @@ function doParentPinResetLocal(schoolUid, srvId, found, stu, dob, pin1, err) {
   } catch (e3) {}
   try { writeDbByKey(found.dbKey, found.db); } catch (e4) {}
   pinFailClear(schoolUid, stu.id);
-  if (srvId && sbIsOnline()) sbParentPinOk(srvId, stu.admissionNo || '');
+  // v114: the DOB just verified is the proof for clearing the counter.
+  if (srvId && sbIsOnline()) sbParentPinOk(srvId, stu.admissionNo || '', null, dob);
   toast(t('tPinResetDone'));
   hideParentPinReset();
   return false;
@@ -6782,6 +6789,9 @@ function doParentCloudLogin(serverId, adm, pin, err) {
     var me = slice.students[0];
     var acct = { role: 'parent', name: me.name, sub: t('parentSub') + ' • ' + me.name, email: 'cloud-parent:' + serverId + ':' + me.id, uid: 'cloud-parent-' + me.id, studentId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
     err.classList.add('hidden');
+    // v114: a cloud success clears the server counter too (with the PIN
+    // just verified as proof) - the cloud path never did this before.
+    sbParentPinOk(serverId, adm, pin);
     loginCloudStudent(acct, slice, { role: 'parent' });
   });
 }
@@ -10967,7 +10977,7 @@ function saveNotice(e) {
   return false;
 }
 function reportsPage() {
-  return '<div class="page-head"><div><h2>' + t('reports') + '</h2><p>' + t('subReports') + ' — ' + db.profile.name + '</p></div></div>' +
+  return '<div class="page-head"><div><h2>' + t('reports') + '</h2><p>' + t('subReports') + ' — ' + esc(db.profile.name) + '</p></div></div>' +
   '<div class="grid2e">' +
   '<div class="card"><h3>' + t('studentsReport') + '</h3><p class="card-sub">' + t('repStudentsSub') + '</p><button class="btn" onclick="downloadReportCSV(\'students\')">⬇ ' + t('dlStudents') + '</button></div>' +
   '<div class="card"><h3>' + t('feesReport') + '</h3><p class="card-sub">' + t('repFeesSub') + '</p><button class="btn" onclick="downloadReportCSV(\'fees\')">⬇ ' + t('dlFees') + '</button></div>' +

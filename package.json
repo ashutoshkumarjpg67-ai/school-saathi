@@ -1,8 +1,8 @@
 {
   "name": "school-saathi",
-  "version": "71.0.0",
+  "version": "114.0.0",
   "private": true,
-  "description": "School Saathi — multi-tenant school management app (PWA + Capacitor native shell). Static build, no bundler.",
+  "description": "School Saathi \u2014 multi-tenant school management app (PWA + Capacitor native shell). Static build, no bundler.",
   "scripts": {
     "check-version": "node scripts/check-version.mjs",
     "test": "node tests/run.mjs",
