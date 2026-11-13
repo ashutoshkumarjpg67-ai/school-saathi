@@ -23,6 +23,40 @@ try {
  for(const f of ['44_tenant_reference_guards.sql','45_private_photo_access.sql','46_minimal_login_payloads.sql']) sql(readFileSync(new URL('../supabase/'+f,import.meta.url),'utf8'));
  const probes=sql(readFileSync(new URL('../tests/security/runtime-fixtures.sql',import.meta.url),'utf8'));
  console.log(probes.split('\n').filter(l=>l.includes('PASS')).join('\n'));
+ // Fix 8 detection probe: the mismatch scan must actually catch mismatches.
+ // Temp tables (no FKs) seeded with dangling and cross-school rows; a
+ // single psql invocation because temp tables do not survive across calls.
+ sql(`create temp table probe_students(school_id uuid, id uuid);
+ create temp table probe_exams(school_id uuid, id uuid);
+ create temp table probe_teachers(school_id uuid, id uuid);
+ create temp table probe_staff(school_id uuid, id uuid);
+ create temp table probe_fee(school_id uuid, student_id uuid);
+ create temp table probe_att(school_id uuid, student_id uuid);
+ create temp table probe_rec(school_id uuid, student_id uuid);
+ create temp table probe_adm(school_id uuid, student_id uuid);
+ create temp table probe_marks(school_id uuid, student_id uuid, exam_id uuid);
+ create temp table probe_tch(school_id uuid, teacher_id uuid);
+ create temp table probe_stf(school_id uuid, staff_id uuid);
+ insert into probe_students values ('aaaaaaaa-1111-4111-8111-000000000001','aaaaaaaa-2222-4222-8222-000000000001'),('aaaaaaaa-1111-4111-8111-000000000002','aaaaaaaa-2222-4222-8222-000000000002');
+ insert into probe_exams values ('aaaaaaaa-1111-4111-8111-000000000001','aaaaaaaa-3333-4333-8333-000000000001');
+ insert into probe_teachers values ('aaaaaaaa-1111-4111-8111-000000000001','aaaaaaaa-4444-4444-8444-000000000001');
+ insert into probe_staff values ('aaaaaaaa-1111-4111-8111-000000000001','aaaaaaaa-5555-4555-8555-000000000001');
+ insert into probe_fee values ('aaaaaaaa-1111-4111-8111-000000000001','aaaaaaaa-2222-4222-8222-000000000009'),('aaaaaaaa-1111-4111-8111-000000000001','aaaaaaaa-2222-4222-8222-000000000002');
+ insert into probe_att values ('aaaaaaaa-1111-4111-8111-000000000001','aaaaaaaa-2222-4222-8222-000000000009');
+ insert into probe_rec values ('aaaaaaaa-1111-4111-8111-000000000001','aaaaaaaa-2222-4222-8222-000000000009');
+ insert into probe_adm values ('aaaaaaaa-1111-4111-8111-000000000001','aaaaaaaa-2222-4222-8222-000000000009');
+ insert into probe_marks values ('aaaaaaaa-1111-4111-8111-000000000001','aaaaaaaa-2222-4222-8222-000000000009','aaaaaaaa-3333-4333-8333-000000000001'),('aaaaaaaa-1111-4111-8111-000000000001','aaaaaaaa-2222-4222-8222-000000000001','aaaaaaaa-3333-4333-8333-000000000009');
+ insert into probe_tch values ('aaaaaaaa-1111-4111-8111-000000000001','aaaaaaaa-4444-4444-8444-000000000009');
+ insert into probe_stf values ('aaaaaaaa-1111-4111-8111-000000000001','aaaaaaaa-5555-4555-8555-000000000009');
+ select public.test_assert((select count(*)=2 from probe_fee f where f.student_id is not null and not exists (select 1 from probe_students s where s.school_id=f.school_id and s.id=f.student_id)),'mismatch scan catches dangling + cross-school fee rows');
+ select public.test_assert((select count(*)=1 from probe_att a where not exists (select 1 from probe_students s where s.school_id=a.school_id and s.id=a.student_id)),'mismatch scan catches dangling attendance row');
+ select public.test_assert((select count(*)=1 from probe_rec r where r.student_id is not null and not exists (select 1 from probe_students s where s.school_id=r.school_id and s.id=r.student_id)),'mismatch scan catches dangling receipt row');
+ select public.test_assert((select count(*)=1 from probe_adm ar where ar.student_id is not null and not exists (select 1 from probe_students s where s.school_id=ar.school_id and s.id=ar.student_id)),'mismatch scan catches dangling admission row');
+ select public.test_assert((select count(*)=1 from probe_marks m where not exists (select 1 from probe_students s where s.school_id=m.school_id and s.id=m.student_id)),'mismatch scan catches dangling marks student row');
+ select public.test_assert((select count(*)=1 from probe_marks m where not exists (select 1 from probe_exams e where e.school_id=m.school_id and e.id=m.exam_id)),'mismatch scan catches dangling marks exam row');
+ select public.test_assert((select count(*)=1 from probe_tch t where not exists (select 1 from probe_teachers te where te.school_id=t.school_id and te.id=t.teacher_id)),'mismatch scan catches dangling teacher session row');
+ select public.test_assert((select count(*)=1 from probe_stf st where not exists (select 1 from probe_staff sf where sf.school_id=st.school_id and sf.id=st.staff_id)),'mismatch scan catches dangling staff session row');`);
+ console.log('PASS mismatch scan detects seeded dangling/cross-school rows');
  const snapshot=`select string_agg(tab||':'||n||':'||hash,E'\\n' order by tab) from public.test_fingerprints();`;
  sql(`create function public.test_fingerprints() returns table(tab text,n bigint,hash text) language plpgsql as $$ declare t record;begin
  for t in select schemaname,tablename from pg_tables where schemaname in ('public','auth','storage') order by 1,2 loop

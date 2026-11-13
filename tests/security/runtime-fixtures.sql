@@ -127,3 +127,14 @@ insert into public.ss_fee_records(school_id,student_id,student_name,cls,month,am
 delete from public.ss_students where id='aaaaaaaa-2222-4222-8222-000000000002';
 select public.test_assert(exists(select 1 from public.ss_fee_records where student_name='Synthetic deleted' and student_id is null),'original SET NULL behavior preserved');
 select public.test_assert((select count(*)=2 from public.ss_schools),'two synthetic schools preserved');
+-- SQL 44 pre-flight inventory, clean-data assertion (fix 8): the same
+-- queries as scripts/check-tenant-mismatch.sql must return zero on the
+-- synthetic fixtures. NULL student_id archive rows are legal and excluded.
+select public.test_assert((select count(*)=0 from public.ss_fee_records f where f.student_id is not null and not exists (select 1 from public.ss_students s where s.school_id=f.school_id and s.id=f.student_id)),'preflight fee_records clean');
+select public.test_assert((select count(*)=0 from public.ss_attendance a where not exists (select 1 from public.ss_students s where s.school_id=a.school_id and s.id=a.student_id)),'preflight attendance clean');
+select public.test_assert((select count(*)=0 from public.ss_receipts r where r.student_id is not null and not exists (select 1 from public.ss_students s where s.school_id=r.school_id and s.id=r.student_id)),'preflight receipts clean');
+select public.test_assert((select count(*)=0 from public.ss_admission_requests ar where ar.student_id is not null and not exists (select 1 from public.ss_students s where s.school_id=ar.school_id and s.id=ar.student_id)),'preflight admission_requests clean');
+select public.test_assert((select count(*)=0 from public.ss_marks m where not exists (select 1 from public.ss_students s where s.school_id=m.school_id and s.id=m.student_id)),'preflight marks student clean');
+select public.test_assert((select count(*)=0 from public.ss_marks m where not exists (select 1 from public.ss_exams e where e.school_id=m.school_id and e.id=m.exam_id)),'preflight marks exam clean');
+select public.test_assert((select count(*)=0 from public.ss_teacher_sessions t where not exists (select 1 from public.ss_teachers te where te.school_id=t.school_id and te.id=t.teacher_id)),'preflight teacher_sessions clean');
+select public.test_assert((select count(*)=0 from public.ss_staff_sessions st where not exists (select 1 from public.ss_staff sf where sf.school_id=st.school_id and sf.id=st.staff_id)),'preflight staff_sessions clean');
