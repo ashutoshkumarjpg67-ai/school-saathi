@@ -1,7 +1,7 @@
 // tests/phase7/grant-matrix.test.mjs — Phase 7 (roadmap §6 Phase 7):
 // RLS and grant re-verification after every revoke, plus the security
 // review of all RPCs — computed from the repo SQL files (supabase/*.sql,
-// files 01–42), not from a live database (this agent cannot query it).
+// files 01–43), not from a live database (this agent cannot query it).
 //
 // The parser below replays the repo's grant history the way PostgreSQL
 // would: CREATE FUNCTION grants EXECUTE to PUBLIC by default; GRANT /
@@ -176,7 +176,7 @@ describe('SECURITY DEFINER hygiene (static)', () => {
 
   it('every SECURITY DEFINER function sets search_path (no search_path-hijack hole)', () => {
     const blocks = fnBlocks();
-    assert.equal(blocks.length, 49, 'expected 49 CREATE FUNCTION blocks in SQL 01-41');
+    assert.equal(blocks.length, 51, 'expected 51 CREATE FUNCTION blocks in SQL 01-43'); // v120: SQL 43 redefines the two mark-attendance RPCs (same signatures, Clear branch added)
     for (const { name, head } of blocks) {
       if (/security definer/i.test(head)) {
         assert.match(head, /set search_path/i, `${name}: SECURITY DEFINER without search_path`);
