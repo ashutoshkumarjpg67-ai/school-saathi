@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 121;
+var APP_VERSION = 122;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -5114,7 +5114,7 @@ function sbStorageFreePhotos() {
 var db = loadDB();
 
 /* ================= state ================= */
-var state = { role: null, user: null, view: 'dashboard', lang: 'en', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, sb: null };
+var state = { role: null, user: null, view: 'dashboard', lang: 'en', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, feeEditId: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, sb: null };
 
 /* Phase 2: bulk import + promotion state (in-memory only, never persisted). */
 var importState = { rows: null, fileName: '', result: null };
@@ -9716,7 +9716,7 @@ function feesPage() {
     return '<tr><td><button class="linklike" onclick="return openFeeProfile(\'' + r.studentId + '\', event)">' + esc(r.student) + '</button></td><td>' + esc(enrOf(r.studentId)) + '</td><td>' + esc(r.cls) + '</td><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td>' +
       '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
       '<td>' + receiptCellForRecord(r) + '</td>' +
-      '<td>' + (r.status === 'Pending' ? (state.role === 'principal' ? '<span class="muted">—</span>' : state.role === 'accountant' ? '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, r.studentId) : '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, r.studentId) + ' <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>') : '<span class="muted">—</span>') + '</td></tr>'; // v88: a principal sees the fee list read-only — no Collect/Delete/WhatsApp; v92: an accountant collects + reminds but never deletes (deleteFeeRecord refuses non-school anyway)
+      '<td>' + (r.status === 'Pending' ? (state.role === 'principal' ? '<span class="muted">—</span>' : state.role === 'accountant' ? '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, r.studentId) : '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, r.studentId) + ' <button class="btn ghost sm" onclick="openEditFee(\'' + r.id + '\')">' + t('editBtn') + '</button> <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>') : '<span class="muted">—</span>') + '</td></tr>'; // v88: a principal sees the fee list read-only — no Collect/Delete/WhatsApp; v92: an accountant collects + reminds but never deletes (deleteFeeRecord refuses non-school anyway)
   }).join('');
   return '<div class="page-head"><div><h2>' + t('fees') + '</h2><p>' + t('collectedW') + ' ' + inr(ft.collected) + ' • ' + t('pendingW') + ' ' + inr(ft.pending) + ' (' + feeRangeLabel() + ')</p></div>' +
     '<div class="toolbar"><div class="pill-tabs">' + ['All', 'Pending', 'Collected'].map(function (x) {
@@ -9748,7 +9748,7 @@ function openFeeProfile(sid, e) {
   return false;
 }
 function openAddFeeFor(sid) {
-  state.feeStudent = null; state.feeFormOpen = true; state.feePreselect = sid;
+  state.feeStudent = null; state.feeFormOpen = true; state.feePreselect = sid; state.feeEditId = null;
   renderApp();
 }
 function studentFeeProfile(sid) {
@@ -9821,35 +9821,46 @@ function receiptListCard(sid) {
 }
 
 /* ================= manual fee + fee structure + generate ================= */
-function toggleFeeForm() { state.feeFormOpen = !state.feeFormOpen; if (!state.feeFormOpen) state.feePreselect = null; renderPage(); }
+function toggleFeeForm() { state.feeEditId = null; state.feeFormOpen = !state.feeFormOpen; if (!state.feeFormOpen) state.feePreselect = null; renderPage(); }
 function toggleCustom(selId, wrapId) {
   var s = $(selId), w = $(wrapId);
   if (s && w) w.classList.toggle('hidden', s.value !== '__custom');
 }
-function feeTypeSelectOpts() {
-  return FEE_TYPES.map(function (x) { return '<option value="' + esc(x) + '">' + esc(feeTypeLabel(x)) + '</option>'; }).join('') + '<option value="__custom">' + t('customType') + '</option>';
+function feeTypeSelectOpts(sel) {
+  return FEE_TYPES.map(function (x) { return '<option value="' + esc(x) + '"' + (sel === x ? ' selected' : '') + '>' + esc(feeTypeLabel(x)) + '</option>'; }).join('') + '<option value="__custom"' + (sel === '__custom' ? ' selected' : '') + '>' + t('customType') + '</option>';
 }
 function feeFormCard() {
   var btn = '<button class="btn ghost sm" onclick="toggleFeeForm()">' + (state.feeFormOpen ? '✕ ' + t('closeW') : '+ ' + t('addFee')) + '</button>';
   var body = '';
   if (state.feeFormOpen) {
+    var er122 = state.feeEditId ? db.feeRecords.find(function (x) { return x.id === state.feeEditId; }) : null;
+    var erCustom122 = !!er122 && FEE_TYPES.indexOf(er122.type) === -1;
     var stuOpts = db.students.map(function (s) {
-      return '<option value="' + s.id + '" ' + (state.feePreselect === s.id ? 'selected' : '') + '>' + esc(s.name) + ' — ' + esc(s.cls) + ' (' + esc(s.enr || '') + ')</option>';
+      return '<option value="' + s.id + '" ' + (state.feePreselect === s.id || (er122 && er122.studentId === s.id) ? 'selected' : '') + '>' + esc(s.name) + ' — ' + esc(s.cls) + ' (' + esc(s.enr || '') + ')</option>';
     }).join('');
     var curM = new Date().toLocaleString('en', { month: 'short' });
     if (MONTHS_ACAD.indexOf(curM) === -1) curM = 'Sep';
-    var moOpts = MONTHS_ACAD.map(function (m) { return '<option ' + (m === curM ? 'selected' : '') + '>' + m + '</option>'; }).join('');
+    var moOpts = MONTHS_ACAD.map(function (m) { return '<option ' + (m === (er122 ? er122.month : curM) ? 'selected' : '') + '>' + m + '</option>'; }).join('');
     body = '<form onsubmit="return saveFeeRecord(event)" style="margin-top:14px"><div class="form-grid">' +
-      '<div><label>' + t('fStudent') + '</label><select id="fFeeStudent">' + stuOpts + '</select></div>' +
+      '<div><label>' + t('fStudent') + '</label><select id="fFeeStudent"' + (er122 ? ' disabled' : '') + '>' + stuOpts + '</select></div>' +
       '<div><label>' + t('fMonth') + '</label><select id="fFeeMonth">' + moOpts + '</select></div>' +
-      '<div><label>' + t('fType') + '</label><select id="fFeeType" onchange="toggleCustom(\'fFeeType\',\'fFeeCustomWrap\')">' + feeTypeSelectOpts() + '</select></div>' +
-      '<div><label>' + t('fAmount') + '</label><input id="fFeeAmount" type="number" min="1" step="1" placeholder="e.g. 1500" required></div>' +
-      '<div><label>' + t('fStatus') + '</label><select id="fFeeStatus"><option value="Pending">' + t('pendingW') + '</option><option value="Collected">' + t('collectedW') + '</option></select></div>' +
-      '<div><label>' + t('fDate') + '</label><input id="fFeeDate" type="date" value="' + todayIST() + '"></div>' +
-      '<div class="full hidden" id="fFeeCustomWrap"><label>' + t('customType') + '</label><input id="fFeeCustom" placeholder="' + t('typeCustomPh') + '"></div>' +
+      '<div><label>' + t('fType') + '</label><select id="fFeeType" onchange="toggleCustom(\'fFeeType\',\'fFeeCustomWrap\')">' + feeTypeSelectOpts(er122 ? (erCustom122 ? '__custom' : er122.type) : undefined) + '</select></div>' +
+      '<div><label>' + t('fAmount') + '</label><input id="fFeeAmount" type="number" min="1" step="1" placeholder="e.g. 1500" required value="' + (er122 ? er122.amount : '') + '"></div>' +
+      '<div><label>' + t('fStatus') + '</label><select id="fFeeStatus"><option value="Pending"' + (er122 && er122.status === 'Pending' ? ' selected' : '') + '>' + t('pendingW') + '</option><option value="Collected"' + (er122 && er122.status === 'Collected' ? ' selected' : '') + '>' + t('collectedW') + '</option></select></div>' +
+      '<div><label>' + t('fDate') + '</label><input id="fFeeDate" type="date" value="' + (er122 ? (er122.date || todayIST()) : todayIST()) + '"></div>' +
+      '<div class="full' + (erCustom122 ? '' : ' hidden') + '" id="fFeeCustomWrap"><label>' + t('customType') + '</label><input id="fFeeCustom" placeholder="' + t('typeCustomPh') + '" value="' + (erCustom122 ? esc(er122.type) : '') + '"></div>' +
       '</div><div class="actions" style="justify-content:flex-start"><button class="btn" type="submit">' + t('saveFeeBtn') + '</button></div></form>';
   }
-  return '<div class="card"><div class="head-row"><div><h3>' + t('addFee') + '</h3><p class="card-sub">' + t('addFeeSub') + '</p></div>' + btn + '</div>' + body + '</div>';
+  return '<div class="card"><div class="head-row"><div><h3>' + (state.feeEditId ? t('editFee') : t('addFee')) + '</h3><p class="card-sub">' + (state.feeEditId ? t('editFeeSub') : t('addFeeSub')) + '</p></div>' + btn + '</div>' + body + '</div>';
+}
+function openEditFee(rid) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
+  // Only a Pending record can change — a Collected record is the
+  // payment's evidence (same rule as deleteFeeRecord).
+  var r = db.feeRecords.find(function (x) { return x.id === rid; });
+  if (!r || r.status !== 'Pending') { toast(t('tNotAllowed')); return; }
+  state.feeStudent = null; state.feeEditId = rid; state.feeFormOpen = true; state.feePreselect = r.studentId;
+  renderApp();
 }
 function saveFeeRecord(e) {
   e.preventDefault();
@@ -9864,9 +9875,25 @@ function saveFeeRecord(e) {
     ty = $('fFeeCustom').value.trim();
     if (!ty) { toast(t('tTypeRequired')); return false; }
   }
+  var mo122 = $('fFeeMonth').value, st122 = $('fFeeStatus').value, dt122 = $('fFeeDate').value || todayIST();
+  if (state.feeEditId) {
+    // Edit in place: the record keeps its id, so the server row updates instead of duplicating.
+    var er = db.feeRecords.find(function (x) { return x.id === state.feeEditId; });
+    if (!er || er.status !== 'Pending') { state.feeEditId = null; toast(t('tNotAllowed')); return false; }
+    var oldAmt122 = er.amount;
+    er.studentId = sid; er.student = s.name; er.cls = s.cls;
+    er.month = mo122; er.type = ty; er.amount = amt; er.status = st122; er.date = dt122;
+    refreshStudentFee(sid);
+    logAudit('Fee record updated', s.name + ' • ' + mo122 + ' ' + feeTypeLabel(ty) + ' ' + inr(oldAmt122) + ' → ' + inr(amt));
+    state.feeEditId = null; state.feePreselect = null;
+    saveDB(db); renderApp();
+    toast('✓ ' + t('tFeeUpdated'));
+    return false;
+  }
   db.feeRecords.push({ id: uniqueId('fee'), studentId: sid, student: s.name, cls: s.cls,
-    month: $('fFeeMonth').value, type: ty, amount: amt, status: $('fFeeStatus').value, date: $('fFeeDate').value || todayIST() });
+    month: mo122, type: ty, amount: amt, status: st122, date: dt122 });
   refreshStudentFee(sid);
+  logAudit('Fee added', s.name + ' • ' + mo122 + ' ' + feeTypeLabel(ty) + ' ' + inr(amt));
   state.feePreselect = null;
   saveDB(db); renderApp();
   toast('✓ ' + t('tFeeAdded'));
@@ -9900,29 +9927,42 @@ function feeStructureCard() {
 }
 function saveFeeStructure() {
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
+  var beforeStruct122 = JSON.stringify(db.feeStructure || []) + '|' + JSON.stringify(feeExtras());
   var rows = db.feeStructure || [];
   var exVals = {};
+  var rowVals = {};
   var exKeys = ['admissionFee', 'cautionMoney', 'annualCharges', 'transportFee'];
-  for (var k = 0; k < exKeys.length; k++) {
+  // Validate first, mutate nothing yet: an empty input keeps the stored
+  // amount (same rule as the extras loop already had), an invalid one
+  // aborts the whole save instead of leaving row 0 changed and the rest stale.
+  var k, i;
+  for (k = 0; k < exKeys.length; k++) {
     var exInp = $('fsEx-' + exKeys[k]);
     if (!exInp || exInp.value === '' || exInp.value == null) continue; // empty input: keep the stored amount
     var exV = parseFloat(exInp.value);
     if (isNaN(exV) || exV < 0) { toast(t('tAmtPositive')); return; }
     exVals[exKeys[k]] = exV;
   }
-  for (var i = 0; i < rows.length; i++) {
+  for (i = 0; i < rows.length; i++) {
     var inp = $('fsAmt-' + i);
-    if (!inp) continue;
+    if (!inp || inp.value === '' || inp.value == null) continue; // empty input: keep the stored amount
     var v = parseFloat(inp.value);
     if (isNaN(v) || v < 0) { toast(t('tAmtPositive')); return; }
-    rows[i].amount = v;
+    rowVals[i] = v;
+  }
+  for (i = 0; i < rows.length; i++) {
+    if (rowVals[i] !== undefined) rows[i].amount = rowVals[i];
   }
   var ex = feeExtras();
-  Object.keys(exVals).forEach(function (k) { ex[k] = exVals[k]; });
+  Object.keys(exVals).forEach(function (kk) { ex[kk] = exVals[kk]; });
+  if (JSON.stringify(db.feeStructure || []) + '|' + JSON.stringify(feeExtras()) !== beforeStruct122) {
+    logAudit('Fee structure updated', (db.feeStructure || []).length + ' rows • admission ₹' + ex.admissionFee + ' • caution ₹' + ex.cautionMoney + ' • annual ₹' + ex.annualCharges + ' • transport ₹' + ex.transportFee);
+  }
   saveDB(db); renderPage();
   toast('✓ ' + t('tStructSaved'));
 }
 function addFeeStructureRow() {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   var cls = $('fsNewCls').value;
   var ty = $('fsNewType').value;
   if (ty === '__custom') {
@@ -9933,12 +9973,16 @@ function addFeeStructureRow() {
   if (isNaN(amt) || amt <= 0) { toast(t('tAmtPositive')); return; }
   if (!Array.isArray(db.feeStructure)) db.feeStructure = defaultFeeStructure();
   db.feeStructure.push({ cls: cls, type: ty, amount: amt });
+  logAudit('Fee structure row added', cls + ' • ' + feeTypeLabel(ty) + ' ₹' + amt);
   saveDB(db); renderPage();
   toast('✓ ' + t('tStructAdded'));
 }
 function deleteFeeStructureRow(i) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   if (!Array.isArray(db.feeStructure) || !db.feeStructure[i]) return;
+  var row122 = db.feeStructure[i];
   db.feeStructure.splice(i, 1);
+  logAudit('Fee structure row removed', row122.cls + ' • ' + feeTypeLabel(row122.type) + ' ₹' + row122.amount);
   saveDB(db); renderPage();
   toast(t('tStructRemoved'));
 }
@@ -9995,6 +10039,7 @@ function generateFees() {
       existing[key] = 1; made++;
     });
   });
+  if (made > 0) logAudit('Fees generated', made + ' records • ' + month);
   db.students.forEach(function (s) { s.fee = studentFeeStatus(s.id); });
   saveDB(db); renderApp();
   var msg = '✓ ' + made + ' ' + t('tGenRecords') + ' ' + month + ' • ' + skipped + ' ' + t('tGenSkipped');

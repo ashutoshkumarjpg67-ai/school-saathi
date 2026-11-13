@@ -4999,6 +4999,97 @@ const test = `
   db.auditLog = auditBefore120;
   saveDB(db);
   state.attDate = todayIST(); state.attCls = '6th-A';
+  // ---- v122 (Phase 5, Module 7): fees — audit must cover create/update/delete, and a Pending fee record must be editable ----
+  // Audit (13 Nov 2026): fee collection logs 'Fee collected' and fee deletion logs 'Fee record deleted' — but a manual fee add (saveFeeRecord) writes NO audit row, Generate Fees writes NO audit row, and fee-structure changes write NO audit row. And there is NO edit path at all: a wrong amount/month/type on a Pending record can only be deleted and re-added (a Collected record is receipt evidence and stays uneditable, same rule as delete). Fix: audit on add/generate/structure save+add+remove, and an edit path for Pending records (openEditFee + edit mode in the fee form) with a 'Fee record updated' audit row.
+  loginAs(TEST_ACCOUNTS.school);
+  state.role = 'school'; state.user = TEST_ACCOUNTS.school; state.sb = null;
+  var ev122 = { preventDefault: function () {} };
+  var feeBefore122 = JSON.parse(JSON.stringify(db.feeRecords));
+  var structBefore122 = JSON.parse(JSON.stringify(db.feeStructure || []));
+  var extrasBefore122 = JSON.parse(JSON.stringify(db.feeExtras || {}));
+  var auditBefore122 = db.auditLog.slice();
+  // Throwaway student, so the seed ledger is untouched.
+  var roll122 = nextRoll('6th-A');
+  studentForm('');
+  $('fStName').value = 'Fee Test 122'; $('fStCls').value = '6th'; $('fStSec').value = 'A'; $('fStRoll').value = String(roll122);
+  $('fStG').value = 'Mr. Fee'; $('fStPh').value = '9812345122'; $('fStDob').value = '2014-05-05'; $('fStPin').value = ''; $('fStAadhaar').value = '';
+  $('fStGender').value = 'Boy'; $('fStBlood').value = ''; $('fStCategory').value = ''; $('fStSession').value = '2025–26'; $('fStAdmDate').value = todayIST(); $('fStAdmReq').value = '';
+  saveStudent(ev122, '', '');
+  var stu122 = db.students.filter(function (x) { return x.name === 'Fee Test 122'; })[0];
+  ok(!!stu122, 'v122: the throwaway student is admitted');
+  // (a) Manual add writes a Fee added audit row, and the list offers Edit on the Pending row.
+  state.view = 'fees'; state.feeFormOpen = true; state.feeEditId = null; renderPage();
+  $('fFeeStudent').value = stu122.id; $('fFeeMonth').value = 'Nov'; $('fFeeType').value = 'Tuition';
+  $('fFeeAmount').value = '800'; $('fFeeStatus').value = 'Pending'; $('fFeeDate').value = todayIST();
+  var fees122before = db.feeRecords.length;
+  saveFeeRecord(ev122);
+  var rec122 = db.feeRecords.filter(function (r) { return r.studentId === stu122.id && r.month === 'Nov' && feeTypeOf(r) === 'Tuition'; })[0];
+  ok(!!rec122, 'v122: the manual fee record is saved');
+  eq(rec122 && rec122.amount, 800, 'v122: the manual fee record carries the entered amount');
+  ok(db.auditLog.some(function (a) { return a.action === 'Fee added' && a.details.indexOf('Fee Test 122') !== -1; }), 'v122: manual add writes a Fee added audit row');
+  ok(feesPage().indexOf('openEditFee(') !== -1, 'v122: the fees list has an Edit button on a Pending row');
+  // (b) Edit: the form prefills, the save updates in place (no duplicate), and the audit names the update.
+  if (typeof openEditFee === 'function') {
+    openEditFee(rec122.id);
+    eq(state.feeEditId, rec122.id, 'v122: openEditFee puts the form in edit mode');
+    eq($('fFeeAmount').value, '800', 'v122: the edit form prefills the amount');
+    eq($('fFeeMonth').value, 'Nov', 'v122: the edit form prefills the month');
+    $('fFeeAmount').value = '900'; $('fFeeMonth').value = 'Dec';
+    saveFeeRecord(ev122);
+    eq(db.feeRecords.length, fees122before + 1, 'v122: editing updates in place — no second record');
+    eq(rec122.amount, 900, 'v122: the edit saves the new amount');
+    eq(rec122.month, 'Dec', 'v122: the edit saves the new month');
+    ok(db.auditLog.some(function (a) { return a.action === 'Fee record updated' && a.details.indexOf('Fee Test 122') !== -1; }), 'v122: editing writes a Fee record updated audit row');
+    // A Collected record is receipt evidence: the edit is refused and nothing changes.
+    rec122.status = 'Collected'; saveDB(db);
+    openEditFee(rec122.id);
+    ok(!state.feeEditId, 'v122: a Collected record cannot be opened for editing');
+    eq(rec122.amount, 900, 'v122: the refused edit leaves the amount alone');
+    rec122.status = 'Pending'; saveDB(db);
+    // A principal is read-only: the edit is refused.
+    state.role = 'principal'; state.user = { role: 'principal', name: 'P122', email: 'p122@school.in', schoolUid: 'test-school' };
+    openEditFee(rec122.id);
+    ok(!state.feeEditId, 'v122: a principal cannot open a fee record for editing');
+    loginAs(TEST_ACCOUNTS.school);
+  } else {
+    ok(false, 'v122: openEditFee exists');
+    ok(false, 'v122: editing updates in place — no second record');
+    ok(false, 'v122: editing writes a Fee record updated audit row');
+  }
+  // (c) Generate Fees writes a Fees generated audit row. (The seed ledger covers Apr–Aug only, so Nov always makes records.)
+  state.view = 'fees'; state.feeFormOpen = false; state.feeEditId = null; renderPage();
+  state.feeGenMonth = 'Nov'; $('fGenMonth').value = 'Nov';
+  generateFees();
+  ok(db.auditLog.some(function (a) { return a.action === 'Fees generated' && a.details.indexOf('Nov') !== -1; }), 'v122: Generate Fees writes a Fees generated audit row');
+  // (d) Fee-structure changes are audited: save, add row, remove row.
+  state.view = 'fees'; renderPage();
+  $('fsAmt-0').value = '850';
+  saveFeeStructure();
+  eq(db.feeStructure[0].amount, 850, 'v122: structure amount edit saves');
+  ok(db.auditLog.some(function (a) { return a.action === 'Fee structure updated'; }), 'v122: saving the structure writes a Fee structure updated audit row');
+  $('fsAmt-0').value = '500';
+  saveFeeStructure();
+  eq(db.feeStructure[0].amount, 500, 'v122: structure amount restored to 500 (Nursery default)');
+  $('fsNewCls').value = '6th-A'; $('fsNewType').value = 'Library'; $('fsNewAmt').value = '300';
+  addFeeStructureRow();
+  ok(db.feeStructure.some(function (x) { return x.cls === '6th-A' && x.type === 'Library' && x.amount === 300; }), 'v122: the structure row is added');
+  ok(db.auditLog.some(function (a) { return a.action === 'Fee structure row added' && a.details.indexOf('Library') !== -1; }), 'v122: adding a structure row writes an audit row');
+  var structIdx122 = db.feeStructure.length - 1;
+  deleteFeeStructureRow(structIdx122);
+  ok(!db.feeStructure.some(function (x) { return x.cls === '6th-A' && x.type === 'Library' && x.amount === 300; }), 'v122: the structure row is removed');
+  ok(db.auditLog.some(function (a) { return a.action === 'Fee structure row removed' && a.details.indexOf('Library') !== -1; }), 'v122: removing a structure row writes an audit row');
+  // Cleanup: the throwaway student, the generated + manual records, the structure and the audit list go back.
+  db.students = db.students.filter(function (x) { return x.id !== (stu122 && stu122.id); });
+  db.feeRecords = feeBefore122;
+  db.feeStructure = structBefore122;
+  db.feeExtras = extrasBefore122;
+  db.auditLog = auditBefore122;
+  db.students.forEach(function (s) { s.fee = studentFeeStatus(s.id); });
+  saveDB(db);
+  state.view = 'fees'; state.feeFormOpen = false; state.feeEditId = null; state.feeStudent = null; state.collectStudent = null;
+  state.feeFilter = 'All'; state.feeType = 'All'; state.feeSearch = ''; state.feeLimit = 120;
+  loginAs(TEST_ACCOUNTS.school);
+
   // ---- v81 (Phase 3): photo heal — a pull must not leave a student photo-less when the server has one ----
   // Live v80: a photo uploaded and synced (server row has photo_url, Storage
   // object exists) still showed the placeholder in every portal. The
@@ -9728,6 +9819,7 @@ async function v28run() {
   // (d) the cycle reaches synced with a Last Attempt time
   v28eq(ctx.sbOutboxLoad('sb-uid-vm@school.in').length, 0, 'v47 async: the outbox drains');
   v28eq(ctx.sbLoadStatus().state, 'synced', 'v47 async: the status reaches synced with the stale snapshot');
+
   v28ok(ctx.sbStatusText().indexOf('Backed up to the server.') !== -1, 'v47 async: the status line says Backed up to the server.');
   v28ok(ctx.sbStatusText().indexOf('Last attempt: ') !== -1, 'v47 async: the status line carries a Last Attempt time');
   // (e) an idle cycle makes ZERO ss_next_receipt_no calls and the counter does not move
@@ -9770,6 +9862,7 @@ async function v28run() {
   v28eq(c47g.done, true, 'v47 async: the cycle after the kept attendance mark completes');
   v28eq(sbServer.ss_attendance.length, 2, 'v47 async: the server gains the second attendance row (2 total)');
   v28eq(ctx.sbLoadStatus().state, 'synced', 'v47 async: the status is synced again after the second attendance upload');
+
   // ---- v51 async: the stuck outbox — a keep-forever entry holds the
   // status at 'pending' forever, although every upload succeeds.
   // Live shape (10 Nov 2026, v50 verification 01:39–01:45 IST): the
@@ -10400,6 +10493,138 @@ async function v28run() {
   delete ctx.location.reload;
   delete ctx.navigator.serviceWorker;
 
+
+  // ---- v121 async: the live v120 check, replayed end to end ----
+  // Live shape (13 Nov 2026, v120 browser check 14:17-14:20 IST): the
+  // per-student un-mark works, but a mark saved at 14:19:03 ("Attendance
+  // updated - 1 Present") is GONE from the register minutes later, the
+  // "Clear day" button toasts "Nothing to clear." with no confirm
+  // dialog and no "Attendance cleared" audit row, and the server holds
+  // ZERO attendance rows for Test Kumar although the audit rows DID
+  // sync (08:48:27 + 08:49:03 UTC are on the server). The same 12 Nov
+  // audit row has no stored record either — the mark loss recurs.
+  // Replay the exact live sequence against the mock server, one cycle
+  // after each step: mark -> cycle -> un-mark -> cycle -> mark + save
+  // -> cycle -> Clear day -> cycle. A mark must survive every cycle
+  // and reach the server; the Clear day must confirm, audit and
+  // delete on the server. Also covers the live % bug: a student
+  // DOWNLOADED from the server carries no att field, so the no-record
+  // fallback reads 0% instead of the 100 admission default.
+  Object.keys(sbServer).forEach(function (k) { sbServer[k] = []; });
+  (function () { var keys = []; for (var i = 0; i < ls.length; i++) keys.push(ls.key(i)); keys.forEach(function (k) { ls.removeItem(k); }); })();
+  ctx.sbSyncResetMemory();
+  resetDevice();
+  ctx.sbSyncDebounceMs = 0;
+  vm44SeedTestSchool();
+  ctx.saveAccounts([vmAcct]);
+  ctx.loginAs(vmAcct);
+  ctx.db = ctx.emptyDb({ name: 'Test Sunrise School', city: 'Patna', principal: 'Test Admin', phone: '', email: 'test@sunrise.test', session: '2025–26', address: '' });
+  ctx.state.sb = { uid: 'sb-uid-vm@school.in', email: 'vm@school.in' };
+  ctx.sbStoreSession({ access_token: 'tok-vm', refresh_token: 'ref-vm', expires_in: 3600, user: { id: 'sb-uid-vm@school.in', email: 'vm@school.in' } });
+  ctx.saveDB(ctx.db);
+  var c121dl = await ctx.sbSyncCycle();
+  v28eq(c121dl.done, true, 'v121 async: the download cycle completes');
+  var v121stu = ctx.db.students.filter(function (s) { return s.id === 'stu1794162292000'; })[0];
+  v28ok(!!v121stu, 'v121 async: the download brings Test Kumar down');
+  v28eq(ctx.studentAttPct(v121stu), 100, 'v121 async: a downloaded student with no marks reads 100 percent (admission default), not 0');
+  ctx.state.view = 'attendance'; ctx.state.attDate = '2026-11-13'; ctx.state.attCls = '6th-A';
+  var day121 = '2026-11-13|6th-A';
+  // Step 1: mark Present, then a cycle — the mark must reach the server and stay local.
+  ctx.markAtt('stu1794162292000', 'Present');
+  v28eq(ctx.db.attendance[day121] && ctx.db.attendance[day121]['stu1794162292000'], 'Present', 'v121 async: the mark exists locally after marking');
+  var c121a = await ctx.sbSyncCycle();
+  console.log('v121 after mark+cycle: server attendance=' + sbServer.ss_attendance.length + ' local=' + JSON.stringify(ctx.db.attendance[day121] || {}) + ' outbox=' + ctx.sbOutboxLoad('sb-uid-vm@school.in').length + ' cycle done=' + c121a.done);
+  v28eq(c121a.done, true, 'v121 async: the cycle after marking completes');
+  v28eq(sbServer.ss_attendance.length, 1, 'v121 async: the server gains the mark after the first cycle');
+  v28eq(ctx.db.attendance[day121] && ctx.db.attendance[day121]['stu1794162292000'], 'Present', 'v121 async: the local mark survives the cycle');
+  // Step 2: per-student un-mark, then a cycle — the server row goes too.
+  ctx.clearAttMark('stu1794162292000');
+  v28eq(ctx.db.attendance[day121] && ctx.db.attendance[day121]['stu1794162292000'], undefined, 'v121 async: the un-marked mark is gone locally');
+  v28ok(ctx.db.auditLog.some(function (a) { return a.action === 'Attendance mark removed'; }), 'v121 async: the un-mark writes a remove audit row');
+  var c121b = await ctx.sbSyncCycle();
+  console.log('v121 after un-mark+cycle: server attendance=' + sbServer.ss_attendance.length + ' cycle done=' + c121b.done);
+  v28eq(sbServer.ss_attendance.length, 0, 'v121 async: the server row is deleted after the un-mark cycle');
+  v28ok(ctx.sbTombHas('sb-uid-vm@school.in', 'ss_attendance', '2026-11-13|6th-A|stu1794162292000'), 'v121 async: the delete leaves a tombstone for the mark key');
+  // Step 3: mark again + Save Attendance, then a cycle — the live step that lost the mark.
+  ctx.markAtt('stu1794162292000', 'Present');
+  v28ok(!ctx.sbTombHas('sb-uid-vm@school.in', 'ss_attendance', '2026-11-13|6th-A|stu1794162292000'), 'v121 async: the re-mark clears the tombstone for the key');
+  ctx.saveAttendance();
+  v28ok(ctx.db.auditLog.some(function (a) { return a.action === 'Attendance updated'; }), 'v121 async: the save writes an Attendance updated audit row');
+  v28eq(ctx.db.attendance[day121] && ctx.db.attendance[day121]['stu1794162292000'], 'Present', 'v121 async: the saved mark exists locally before the cycle');
+  var c121c = await ctx.sbSyncCycle();
+  console.log('v121 after save+cycle: server attendance=' + sbServer.ss_attendance.length + ' local=' + JSON.stringify(ctx.db.attendance[day121] || {}) + ' outbox=' + ctx.sbOutboxLoad('sb-uid-vm@school.in').length + ' cycle done=' + c121c.done);
+  v28eq(c121c.done, true, 'v121 async: the cycle after saving completes');
+  v28eq(sbServer.ss_attendance.length, 1, 'v121 async: the server gains the saved mark');
+  v28eq(ctx.db.attendance[day121] && ctx.db.attendance[day121]['stu1794162292000'], 'Present', 'v121 async: the saved mark survives the cycle (live: it vanished here)');
+  // Step 4: Clear day — the dialog must gate the delete; confirming audits and empties the day.
+  ctx.clearAttDay();
+  v28eq(ctx.db.attendance[day121] && ctx.db.attendance[day121]['stu1794162292000'], 'Present', 'v121 async: Clear day without confirming leaves the mark in place');
+  ctx.confirmYes();
+  v28eq(Object.keys(ctx.db.attendance[day121] || {}).length, 0, 'v121 async: confirming Clear day empties the day locally');
+  v28ok(ctx.db.auditLog.some(function (a) { return a.action === 'Attendance cleared'; }), 'v121 async: confirming Clear day writes an Attendance cleared audit row');
+  var c121d = await ctx.sbSyncCycle();
+  v28eq(sbServer.ss_attendance.length, 0, 'v121 async: the server row is deleted after the Clear day cycle');
+  v28eq(ctx.studentAttPct(ctx.db.students.filter(function (s) { return s.id === 'stu1794162292000'; })[0]), 100, 'v121 async: the percentage is back to the 100 admission fallback after the day is cleared');
+
+  // ---- v122 async: a fee entry taken with the net off appears after sync — once, and never lost ----
+  // Phase 5 offline acceptance for fees: the entry is taken while the
+  // fetch fails, a cycle runs (and fails) while offline, then the net
+  // comes back and one cycle must put exactly one row on the server;
+  // a second cycle must not duplicate it. The local record survives
+  // every step (the v46 bypass + outbox merge-keep protect it), and
+  // the Fee added audit row syncs with it.
+  Object.keys(sbServer).forEach(function (k) { sbServer[k] = []; });
+  (function () { var keys = []; for (var i = 0; i < ls.length; i++) keys.push(ls.key(i)); keys.forEach(function (k) { ls.removeItem(k); }); })();
+  ctx.sbSyncResetMemory();
+  resetDevice();
+  ctx.sbSyncDebounceMs = 0;
+  vm44SeedTestSchool();
+  ctx.saveAccounts([vmAcct]);
+  ctx.loginAs(vmAcct);
+  ctx.db = ctx.emptyDb({ name: 'Test Sunrise School', city: 'Patna', principal: 'Test Admin', phone: '', email: 'test@sunrise.test', session: '2025–26', address: '' });
+  ctx.state.sb = { uid: 'sb-uid-vm@school.in', email: 'vm@school.in' };
+  ctx.sbStoreSession({ access_token: 'tok-vm', refresh_token: 'ref-vm', expires_in: 3600, user: { id: 'sb-uid-vm@school.in', email: 'vm@school.in' } });
+  ctx.saveDB(ctx.db);
+  var c122dl = await ctx.sbSyncCycle();
+  v28eq(c122dl.done, true, 'v122 async: the download cycle completes');
+  var v122stu = ctx.db.students.filter(function (s) { return s.id === 'stu1794162292000'; })[0];
+  v28ok(!!v122stu, 'v122 async: the download brings Test Kumar down');
+  // Net off: the fetch rejects, so the device counts as offline.
+  ctx.fetch = function () { return Promise.reject(new Error('v122 net down')); };
+  ctx.state.view = 'fees'; ctx.state.feeFormOpen = true; ctx.state.feeEditId = null; ctx.renderPage();
+  ctx.document.getElementById('fFeeStudent').value = 'stu1794162292000';
+  ctx.document.getElementById('fFeeMonth').value = 'Nov';
+  ctx.document.getElementById('fFeeType').value = 'Tuition';
+  ctx.document.getElementById('fFeeAmount').value = '800';
+  ctx.document.getElementById('fFeeStatus').value = 'Pending';
+  ctx.document.getElementById('fFeeDate').value = '2026-11-13';
+  ctx.saveFeeRecord({ preventDefault: function () {} });
+  var rec122a = ctx.db.feeRecords.filter(function (r) { return r.studentId === 'stu1794162292000' && r.month === 'Nov' && r.type === 'Tuition'; })[0];
+  v28ok(!!rec122a, 'v122 async: the offline fee entry is saved locally');
+  // A cycle while offline must not crash and must not lose the entry.
+  var c122off = null;
+  try { c122off = await ctx.sbSyncCycle(); } catch (e) { c122off = { done: false, error: String(e && e.message) }; }
+  v28ok(true, 'v122 async: the offline cycle does not crash (done=' + (c122off && c122off.done) + ')');
+  v28ok(!!ctx.db.feeRecords.filter(function (r) { return r.studentId === 'stu1794162292000' && r.month === 'Nov'; })[0], 'v122 async: the offline entry survives the failed cycle locally');
+  v28eq(sbServer.ss_fee_records.length, 0, 'v122 async: nothing reaches the server while offline');
+  // Net back on: one cycle puts exactly one row on the server.
+  ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
+  var c122on = await ctx.sbSyncCycle();
+  v28eq(c122on.done, true, 'v122 async: the cycle after the net returns completes');
+  var srv122 = sbServer.ss_fee_records.filter(function (r) { return r.local_id === rec122a.id; });
+  v28eq(srv122.length, 1, 'v122 async: the server gains exactly one fee row after sync');
+  v28eq(Number(srv122[0] && srv122[0].amount), 800, 'v122 async: the server row carries the entered amount');
+  v28ok(!!ctx.db.feeRecords.filter(function (r) { return r.id === rec122a.id; })[0], 'v122 async: the local record is still there after sync');
+  v28ok(sbServer.ss_audit_log.some(function (a) { return a.action === 'Fee added'; }), 'v122 async: the Fee added audit row reaches the server too');
+  // A second cycle must not duplicate it.
+  var c122on2 = await ctx.sbSyncCycle();
+  v28eq(c122on2.done, true, 'v122 async: the second cycle completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === rec122a.id; }).length, 1, 'v122 async: the second cycle adds no duplicate row');
+  // Reset the fee filter state this block set.
+  ctx.state.feeFilter = 'All'; ctx.state.feeType = 'All'; ctx.state.feeSearch = ''; ctx.state.feeLimit = 120;
+  ctx.state.feeFormOpen = false; ctx.state.feeEditId = null; ctx.state.feeStudent = null; ctx.state.collectStudent = null;
+  ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
+
   // ---- Source-level checks ----
   v28ok(src.includes('SB_ANON_KEY') && src.includes('bsjqeeeemwimzldrehpw'), 'v28: app.js has the Supabase URL + anon key constant');
   v28ok(!src.includes('__SB_ANON_KEY__'), 'v28: no unfilled anon-key placeholder remains');
@@ -10435,6 +10660,10 @@ async function v28run() {
   v28ok(src.includes('var hwUpload = schoolRecreated') && src.includes('var nUpload = schoolRecreated') && src.includes('var auUpload = schoolRecreated') && src.includes('var acUpload = schoolRecreated'), 'v47: the homework / notices / audit-log / activities steps use the bypass too');
   v28ok(src.includes('outboxUpsert46.attendance[snapKey]') && src.includes('outboxUpsert46.marks[key]'), 'v47: the pull keeps an attendance mark / mark with a pending outbox upsert — a stale snapshot entry never wipes an unconfirmed upload');
   v28ok(src.includes('outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {}, teachers: {}, staff: {}, classes: {} }'), 'v47: the shared outbox set covers attendance and marks as well as fee records and receipts — and students since v56, exams since v58, teachers and staff since v117, classes since v119');
+  // ---- v122: Module 7 (fees) — audit coverage + the Pending-record edit path ----
+  v28ok(src.includes('function openEditFee') && src.includes("logAudit('Fee record updated'"), 'v122: the fee edit path + update audit exist');
+  v28ok(src.includes("logAudit('Fee added'") && src.includes("logAudit('Fees generated'"), 'v122: manual add + Generate Fees write audit rows');
+  v28ok(src.includes("logAudit('Fee structure updated'") && src.includes("logAudit('Fee structure row added'") && src.includes("logAudit('Fee structure row removed'"), 'v122: fee-structure save/add/remove write audit rows');
   v28ok(src.includes('var serverList = [];') && src.includes("if (r.id && onServer[r.id]) return;"), 'v47: mergeById collapses duplicate server rows by id — the 6-row fee duplication never doubles the local list');
   v28ok(src.includes('function receiptStudent(rc)') && src.includes("name: rc.name || (s && s.name) || ''"), 'v47: receiptStudent resolves the display student from the receipt\'s own stored name first, the local row only for the photo');
   v28ok(src.includes('var s2 = receiptStudent(rc);'), 'v47: the saved-receipt detail renders through receiptStudent, never through a local-student id lookup');
