@@ -53,7 +53,7 @@ function buildGrantMatrix() {
   for (const m of all.matchAll(/drop function if exists\s+(public\.)?([a-z_0-9]+)\s*(\([^)]*\))/gi)) {
     events.push({ i: m.index, kind: 'drop', k: normKey(m[2], m[3]) });
   }
-  for (const m of all.matchAll(/(grant|revoke)\s+(execute|all)\s+on function\s+(public\.)?([a-z_0-9]+)\s*(\([^)]*\))\s+(to|from)\s+([a-z, ]+?);/gi)) {
+  for (const m of all.matchAll(/(grant|revoke)\s+(execute|all)\s+on function\s+(public\.)?([a-z_0-9]+)\s*(\([^)]*\))\s+(to|from)\s+([a-z_, ]+?);/gi)) {
     events.push({ i: m.index, kind: m[1].toLowerCase(), k: normKey(m[4], m[5]), roles: m[7] });
   }
   events.sort((a, b) => a.i - b.i);
@@ -87,8 +87,8 @@ const EXPECTED_PUBLIC = [
 ];
 
 describe('grant matrix (from repo SQL 01-39)', () => {
-  it('33 RPCs exist in the repo (roadmap Appendix C listed 20 at v67)', () => {
-    assert.equal(MATRIX.size, 33, [...MATRIX.keys()].sort().join(', '));
+  it('36 RPCs exist in the repo (roadmap Appendix C listed 20 at v67)', () => {
+    assert.equal(MATRIX.size, 36, [...MATRIX.keys()].sort().join(', '));
   });
 
   it('PUBLIC execute remains only on the trigger function (SQL 39 closed the other 7)', () => {
@@ -141,6 +141,8 @@ describe('grant matrix (from repo SQL 01-39)', () => {
       'ss_staff_revoke_session(uuid)',
       'ss_staff_set_marks(uuid,uuid,jsonb)',
       'ss_student_cloud_login(uuid,text,text)',
+      'ss_student_photo_login(uuid,text,text)',
+      'ss_student_photo_logout(uuid)',
       'ss_teacher_cloud_login(uuid,text,text)',
       'ss_teacher_mark_attendance(uuid,date,text,uuid,text)',
       'ss_teacher_post_homework(uuid,text,text,text,date,text)',
@@ -156,9 +158,13 @@ describe('grant matrix (from repo SQL 01-39)', () => {
     assert.deepEqual(byRoles(['authenticated']), ['is_ss_admin()', 'ss_is_super_admin()', 'ss_next_adm_no(uuid)', 'ss_next_receipt_no(uuid)', 'ss_school_login_ok(text)', 'ss_school_owner(uuid)', 'ss_wipe_school(uuid)']);
   });
 
-  it('no function grants EXECUTE to any other role (only anon / authenticated / public exist)', () => {
+  it('only the photo broker is service-role-only', () => {
+    assert.deepEqual(byRoles(['service_role']), ['ss_private_photo_source(uuid,text,uuid,uuid)']);
+  });
+
+  it('no function grants EXECUTE to an unexpected role', () => {
     for (const [fn, roles] of MATRIX) {
-      for (const r of roles) assert.ok(['anon', 'authenticated', 'public'].includes(r), `${fn} grants to unexpected role '${r}'`);
+      for (const r of roles) assert.ok(['anon', 'authenticated', 'public', 'service_role'].includes(r), `${fn} grants to unexpected role '${r}'`);
     }
   });
 });
@@ -176,7 +182,7 @@ describe('SECURITY DEFINER hygiene (static)', () => {
 
   it('every SECURITY DEFINER function sets search_path (no search_path-hijack hole)', () => {
     const blocks = fnBlocks();
-    assert.equal(blocks.length, 51, 'expected 51 CREATE FUNCTION blocks in SQL 01-43'); // v120: SQL 43 redefines the two mark-attendance RPCs (same signatures, Clear branch added)
+    assert.equal(blocks.length, 57, 'expected 57 CREATE FUNCTION blocks in SQL 01-46'); // v120: SQL 43 redefines the two mark-attendance RPCs (same signatures, Clear branch added)
     for (const { name, head } of blocks) {
       if (/security definer/i.test(head)) {
         assert.match(head, /set search_path/i, `${name}: SECURITY DEFINER without search_path`);
@@ -228,11 +234,11 @@ describe('table grants (static)', () => {
     assert.deepEqual([...crud].sort(), [...loopTables, 'ss_classes', 'ss_holidays', 'ss_staff'].sort());
   });
 
-  it('the 7 RPC-only tables have no table grant at all', () => {
+  it('the 8 RPC-only tables have no table grant at all', () => {
     let sql = sqlFiles.map((f) => readFileSync(join(SQL_DIR, f), 'utf8')).join('\n');
     sql = sql.replace(/--[^\n]*/g, ' ');
     const flat = sql.replace(/\s+/g, ' ');
-    for (const t of ['ss_parent_pin_attempts', 'ss_school_login_attempts', 'ss_staff_login_attempts', 'ss_staff_sessions', 'ss_student_login_attempts', 'ss_teacher_login_attempts', 'ss_teacher_sessions']) {
+    for (const t of ['ss_parent_pin_attempts', 'ss_school_login_attempts', 'ss_staff_login_attempts', 'ss_staff_sessions', 'ss_student_login_attempts', 'ss_student_photo_sessions', 'ss_teacher_login_attempts', 'ss_teacher_sessions']) {
       assert.doesNotMatch(flat, new RegExp(`grant [^;]* on public\\.${t} `, 'i'), `${t} must stay RPC-only — a table grant would bypass the RPCs`);
     }
   });
@@ -240,7 +246,7 @@ describe('table grants (static)', () => {
 
 describe('no secrets in frontend code (static)', () => {
   function frontendWithoutComments() {
-    const files = ['app.js', 'index.html', 'sw.js', 'qrgen.js', 'js/bcrypt.js', 'js/modules/crypto.js', 'js/modules/i18n.js'];
+    const files = ['app.js', 'js/modules/private-photos.js', 'index.html', 'sw.js', 'qrgen.js', 'js/bcrypt.js', 'js/modules/crypto.js', 'js/modules/i18n.js'];
     let out = '';
     for (const f of files) {
       let src = readFileSync(join(ROOT, f), 'utf8');
