@@ -9641,6 +9641,39 @@ async function v28run() {
   var dropRc51 = await ctx.sbSyncPushEntry({ table: 'ss_receipts', key: 'RCP-2026-099', op: 'upsert', at: new Date().toISOString(), row: { receiptNo: 'RCP-2026-099', studentId: 'stu1794162292000', admissionNo: 'ADM-2025-001', name: 'V21 Test Kumar', cls: '6th-A', session: '2025–26', date: '2026-11-09', month: 'Nov', counterNo: 99, lines: [{ key: 'tuition', desc: 'Tuition Fee (Nov)', type: 'Tuition', month: 'Nov', due: 800, con: 0, paid: 800 }], payMode: 'Cash', payDate: '2026-11-09', bank: '', number: '', total: 800, totalWords: '', collector: 'Test Admin' } }, 'tok-vm', 'srv-school-vm33', { stu: { 'stu1794162292000': 'srv-ankit-33' }, exam: {} }, 'sb-uid-vm@school.in');
   v28ok(dropRc51.skipped === true && !dropRc51.keep, 'v51 async: the same receipt entry against a different local receipt (the server row, pulled down) is DROPPED');
 
+  // ---- v118 async: create-then-delete inside one outbox lifetime ----
+  // Live 13 Nov 2026 (v117 verification, Test Sunrise): a teacher was
+  // created 01:36:12 and deleted 01:36:19 — the delete never reached
+  // the server and the next pull restored the teacher. The create
+  // upsert was still queued when the delete re-queued the same
+  // (table, key); sbOutboxAdd kept the EARLIEST at (the create time),
+  // and the server row's updated_at — set by the create's own INSERT
+  // at 01:36:14 — is newer than that, so the flush's last-write-wins
+  // check dropped the delete as a stale conflict. The fix: a re-queue
+  // keeps the earliest at ONLY when the row is unchanged (a pure
+  // re-queue of the same edit); a changed row carries its own, newer
+  // at, so its edit is judged against when it was actually made.
+  var uid118 = 'sb-uid-vm@school.in';
+  var t118a = '2026-11-13T01:36:12.000Z';
+  var t118b = '2026-11-13T01:36:14.000Z';
+  var t118c = '2026-11-13T01:36:19.000Z';
+  sbServer.ss_teachers.push({ id: 'srv-t-118', school_id: 'srv-school-vm33', local_id: 't-118', name: 'Race Teach', subject: 'Maths', cls: '6th-A', classes: ['6th-A'], email: 'race118@school.in', deleted: false, created_at: t118b, updated_at: t118b });
+  var row118a = { id: 't-118', name: 'Race Teach', subject: 'Maths', cls: '6th-A', classes: ['6th-A'], deleted: false };
+  var row118c = { id: 't-118', name: 'Race Teach', subject: 'Maths', cls: '6th-A', classes: ['6th-A'], deleted: true };
+  ctx.sbOutboxAdd(uid118, { table: 'ss_teachers', key: 't-118', op: 'upsert', at: t118a, row: row118a });
+  ctx.sbOutboxAdd(uid118, { table: 'ss_teachers', key: 't-118', op: 'upsert', at: t118c, row: row118c });
+  var ent118 = ctx.sbOutboxLoad(uid118).filter(function (e) { return e.table === 'ss_teachers' && e.key === 't-118'; })[0];
+  v28eq(ent118 && ent118.at, t118c, 'v118 async: a re-queued edit carries its own newer at when the row changed — the delete is judged at 01:36:19, not at the create time');
+  var push118 = await ctx.sbSyncPushEntry(ent118, 'tok-vm', 'srv-school-vm33', { stu: {}, exam: {} }, uid118, { ss_teachers: sbServer.ss_teachers });
+  v28ok(push118.pushed === true && !push118.conflict, 'v118 async: the delete PATCHes — the server row is newer than the create but older than the delete, so it is not a stale conflict');
+  var srv118 = sbServer.ss_teachers.filter(function (r) { return r.local_id === 't-118'; })[0];
+  v28eq(srv118 && srv118.deleted, true, 'v118 async: the server teacher row is deleted=true after the push');
+  ctx.sbOutboxAdd(uid118, { table: 'ss_teachers', key: 't-118', op: 'upsert', at: '2026-11-13T01:36:25.000Z', row: row118c });
+  var ent118b = ctx.sbOutboxLoad(uid118).filter(function (e) { return e.table === 'ss_teachers' && e.key === 't-118'; })[0];
+  v28eq(ent118b && ent118b.at, t118c, 'v118 async: an unchanged row re-queued later keeps the earliest at');
+  ctx.sbOutboxRemove(uid118, { table: 'ss_teachers', key: 't-118' });
+  sbServer.ss_teachers = sbServer.ss_teachers.filter(function (r) { return r.local_id !== 't-118'; });
+
   // ---- v52 async: the legacy cloud profile — the v51 fix did not
   // move the live status, and the dashboard double-counted on first
   // login. Live shape (10 Nov 2026, v51 verification 06:40–06:47

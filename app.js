@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 117;
+var APP_VERSION = 118;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -2796,13 +2796,22 @@ function sbOutboxSave(uid, list) { try { localStorage.setItem(sbOutboxKey(uid), 
 function sbOutboxAdd(uid, entry) {
   // One pending entry per (table, key): a newer change to the same row
   // replaces the older one, so the outbox never replays stale payloads.
-  // The `at` timestamp keeps the EARLIEST queue time, so last-write-wins
-  // is judged against the first local change, not a re-queue.
+  // The `at` timestamp keeps the EARLIEST queue time — but ONLY for an
+  // unchanged re-queue (the same edit re-diffed, e.g. an offline edit
+  // on reconnect: its conflict judgment still uses when the edit was
+  // first made). A CHANGED row is a genuinely newer edit and carries
+  // its own at. Keeping the old at for a changed row made the flush's
+  // last-write-wins check drop it as stale — live 13 Nov (v118): a
+  // teacher created 01:36:12 and deleted 01:36:19 inherited at
+  // 01:36:12, but the server row's updated_at (set by the create's own
+  // INSERT, 01:36:14) is newer, so the delete was dropped as a
+  // conflict and the next pull restored the teacher.
   var list = sbOutboxLoad(uid);
   var done = false;
   for (var i = 0; i < list.length; i++) {
     if (list[i].table === entry.table && list[i].key === entry.key) {
-      if (list[i].at && (!entry.at || list[i].at < entry.at)) entry.at = list[i].at;
+      var sameRow118 = JSON.stringify(list[i].row || null) === JSON.stringify(entry.row || null);
+      if (sameRow118 && list[i].at && (!entry.at || list[i].at < entry.at)) entry.at = list[i].at;
       // v33: a failure reason survives a re-queue — the entry keeps
       // retrying, and the reason says why the last attempt failed.
       if (list[i].failReason && !entry.failReason) entry.failReason = list[i].failReason;
