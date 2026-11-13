@@ -1,5 +1,11 @@
 begin;
 -- Branch-only preparation: current SQL41 login logic, reduced student fields.
+-- NEVER re-apply SQL 40 after this file. SQL 40's ss_teacher_cloud_login
+-- returns the wide pre-46 payload and has no deleted-teacher filter, so
+-- re-applying it would silently re-expand the teacher payload and re-admit
+-- deleted teachers. Apply order is 40, then 41, then 46 — and 40 must never
+-- run again after 46. The release gates doc carries the post-apply check
+-- that proves the 46 payload shape survived the full 40→46 chain.
 create or replace function public.ss_teacher_cloud_login(
   p_school_id uuid,
   p_email text,
@@ -102,7 +108,10 @@ begin
     'ok', true,
     'locked', false,
     'token', v_token,
-    'teacher', (select to_jsonb(t) - 'pw_hash' from public.ss_teachers t where t.id = v_tch.id),
+    'teacher', (select jsonb_build_object(
+        'id', t.id, 'local_id', t.local_id, 'name', t.name,
+        'subject', t.subject, 'cls', t.cls, 'classes', t.classes)
+      from public.ss_teachers t where t.id = v_tch.id),
     'school', (select jsonb_build_object('id', sc.id, 'name', sc.name, 'city', sc.city) from public.ss_schools sc where sc.id = p_school_id),
     'students', (select coalesce(jsonb_agg(jsonb_build_object(
         'id',s.id,'local_id',s.local_id,'name',s.name,'cls',s.cls,'roll',s.roll,
@@ -261,7 +270,9 @@ begin
     'ok', true,
     'locked', false,
     'token', v_token,
-    'staff', (select to_jsonb(st) - 'pw_hash' from public.ss_staff st where st.id = v_stf.id),
+    'staff', (select jsonb_build_object(
+        'id', st.id, 'name', st.name, 'role', st.role, 'classes', st.classes)
+      from public.ss_staff st where st.id = v_stf.id),
     'school', (select jsonb_build_object('id', sc.id, 'name', sc.name, 'city', sc.city) from public.ss_schools sc where sc.id = p_school_id),
     'data', v_payload
   );

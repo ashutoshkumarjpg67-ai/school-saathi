@@ -1,4 +1,4 @@
--- PREPARATION, not a bucket flip. Requires migrations 01-43.
+-- PREPARATION, not a bucket flip. Requires migrations 01-44.
 -- Apply with the matching Edge Function and app in an isolated test project.
 -- No student/photos copied, deleted or made public by this migration.
 begin;
