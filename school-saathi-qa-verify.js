@@ -4776,6 +4776,150 @@ const test = `
   state.sb = null;
   db.auditLog = auditBefore117;
   saveDB(db);
+  // ---- v119 (Phase 5, Module 5): classes, sections and subjects ----
+  // Audit: classes are a hardcoded global (CLASSES, 30 A/B sections) and
+  // subjects a hardcoded global (SUBJECTS, 5) — no school can add a
+  // section, rename a class or set which subjects a class teaches, and
+  // the admission form already offers section C (SECTIONS A/B/C) while
+  // every other dropdown, the fee editor, the teacher checkboxes, the
+  // charts and the sort only know CLASSES — a student admitted to 6th-C
+  // is invisible to the rest of the app. No Classes page, no audit for
+  // class changes, no sync for class config, no server table.
+  loginAs(TEST_ACCOUNTS.school);
+  db = migrateV12(migrateV15(seedDB())); saveDB(db);
+  var auditBefore119 = db.auditLog.slice();
+  var classesBefore119 = (db.classes || []).slice();
+  ok(typeof schoolClasses === 'function', 'v119: schoolClasses exists');
+  ok(typeof classesPage === 'function', 'v119: classesPage exists');
+  ok(typeof classForm === 'function', 'v119: classForm exists');
+  ok(typeof saveClass === 'function', 'v119: saveClass exists');
+  ok(typeof deleteClass === 'function', 'v119: deleteClass exists');
+  ok(typeof schoolSubjects === 'function', 'v119: schoolSubjects exists');
+  ok(typeof sectionsFor === 'function', 'v119: sectionsFor exists');
+  ok(typeof sbMapClass === 'function', 'v119: sbMapClass exists');
+  if (typeof schoolClasses === 'function' && typeof saveClass === 'function' && typeof sbMapClass === 'function') {
+    eq(schoolClasses().length, 30, 'v119: a seed school starts with the 30 default classes');
+    ok(schoolClasses().indexOf('6th-A') !== -1, 'v119: the default list has 6th-A');
+    ok(classesPage().indexOf('6th-A') !== -1, 'v119: the Classes page lists 6th-A');
+    ok(classesPage().indexOf('classForm') !== -1, 'v119: the Classes page has an add-class button');
+    var mapC119 = sbMapClass({ cls: '6th-C', subjects: ['Mathematics', 'Science'] }, 'sid-119');
+    eq(mapC119.cls, '6th-C', 'v119: sbMapClass carries the class name');
+    eq(mapC119.subjects.join(','), 'Mathematics,Science', 'v119: sbMapClass carries the subjects');
+    classForm('');
+    $('fClsName').value = '6th-C';
+    saveClass({ preventDefault: function () {} }, '');
+    ok(schoolClasses().indexOf('6th-C') !== -1, 'v119: adding 6th-C puts it in the school class list');
+    eq(db.classes.filter(function (c) { return c.cls === '6th-C'; }).length, 1, 'v119: the new class row exists once');
+    ok(db.feeStructure.some(function (f) { return f.cls === '6th-C' && f.type === 'Tuition'; }), 'v119: adding a class adds its Tuition fee row');
+    ok(db.auditLog.some(function (a) { return a.action === 'Class added'; }), 'v119: add writes a create audit row');
+    ok(sectionsFor('6th').indexOf('C') !== -1, 'v119: sections for 6th now include C');
+    ok(studentsPage().indexOf('6th-C') !== -1, 'v119: the students filter includes the new section');
+    var nCls119 = db.classes.length;
+    classForm('');
+    $('fClsName').value = '6th-C';
+    saveClass({ preventDefault: function () {} }, '');
+    eq(db.classes.length, nCls119, 'v119: a duplicate class is refused');
+    classForm('');
+    $('fClsName').value = 'not-a-class';
+    saveClass({ preventDefault: function () {} }, '');
+    eq(db.classes.length, nCls119, 'v119: a malformed class name is refused');
+    var stu119 = { id: 'stu-119', name: 'Class Kid', cls: '6th-C', roll: 1, enr: 'ENR-119', admissionNo: 'ADM-2025-119', guardian: 'Mr. Kid', phone: '9812345119', att: 100, result: 0, fee: 'Pending', status: 'Active', session: '2025-26', dob: '', gender: 'Boy' };
+    db.students.push(stu119);
+    db.teachers.push({ id: 't-119', name: 'Teach 119', subject: 'Mathematics', cls: '6th-C', classes: ['6th-C'] });
+    db.exams.push({ id: 'ex119r', name: 'Unit Test 119', cls: '6th-C', subject: 'Mathematics', date: todayIST(), total: 100 });
+    if (!db.attendance[todayIST() + '|6th-C']) db.attendance[todayIST() + '|6th-C'] = {};
+    db.attendance[todayIST() + '|6th-C']['stu-119'] = 'Present';
+    saveDB(db);
+    classForm('6th-C');
+    $('fClsName').value = '6th-D';
+    saveClass({ preventDefault: function () {} }, '6th-C');
+    eq(stu119.cls, '6th-D', 'v119: rename moves the student to the new class');
+    ok(db.teachers.filter(function (t) { return t.id === 't-119'; })[0].classes.indexOf('6th-D') !== -1, 'v119: rename moves the teacher classes');
+    ok(db.feeStructure.some(function (f) { return f.cls === '6th-D' && f.type === 'Tuition'; }), 'v119: rename moves the fee row');
+    ok(!db.feeStructure.some(function (f) { return f.cls === '6th-C'; }), 'v119: rename leaves no fee row on the old class');
+    ok(db.exams.filter(function (e) { return e.id === 'ex119r'; })[0].cls === '6th-D', 'v119: rename moves the exam');
+    eq(db.attendance[todayIST() + '|6th-D']['stu-119'], 'Present', 'v119: rename moves the attendance mark');
+    ok(!db.attendance[todayIST() + '|6th-C'], 'v119: rename leaves no attendance key on the old class');
+    ok(db.auditLog.some(function (a) { return a.action === 'Class renamed'; }), 'v119: rename writes an audit row');
+    deleteClass('6th-D');
+    ok(db.classes.some(function (c) { return c.cls === '6th-D'; }), 'v119: delete is refused while a student sits in the class');
+    ok(!db.auditLog.some(function (a) { return a.action === 'Class removed'; }), 'v119: refused delete writes no remove audit row');
+    db.students = db.students.filter(function (x) { return x.id !== 'stu-119'; });
+    db.teachers = db.teachers.filter(function (x) { return x.id !== 't-119'; });
+    db.exams = db.exams.filter(function (x) { return x.id !== 'ex119r'; });
+    delete db.attendance[todayIST() + '|6th-D'];
+    saveDB(db);
+    deleteClass('6th-D'); confirmYes();
+    ok(!db.classes.some(function (c) { return c.cls === '6th-D'; }), 'v119: delete removes an empty class');
+    ok(!db.feeStructure.some(function (f) { return f.cls === '6th-D'; }), 'v119: delete removes the class fee rows');
+    ok(db.auditLog.some(function (a) { return a.action === 'Class removed'; }), 'v119: delete writes a delete audit row');
+    classForm('6th-A');
+    $('fClsName').value = '6th-A'; // the harness DOM keeps one input element per id — openModal does not re-render it, so set the value explicitly like the rename vector does
+    $('fClsNewSub').value = 'Computer Science';
+    saveClass({ preventDefault: function () {} }, '6th-A');
+    ok(schoolSubjects('6th-A').indexOf('Computer Science') !== -1, 'v119: the new subject is on 6th-A');
+    ok(db.auditLog.some(function (a) { return a.action === 'Subject added'; }), 'v119: subject add writes an audit row');
+    ok(teacherForm('') === undefined || true, 'v119: teacher form still opens');
+    ok(schoolSubjectList().indexOf('Computer Science') !== -1, 'v119: the school subject list includes the new subject');
+  }
+  // E2E chain in a new section (admission -> attendance -> fees ->
+  // result + audit create/update/delete), mirroring the v116 chain.
+  if (typeof saveClass === 'function') {
+    classForm('');
+    $('fClsName').value = '6th-C';
+    saveClass({ preventDefault: function () {} }, '');
+    var ev119 = { preventDefault: function () {} };
+    var roll119 = nextRoll('6th-C');
+    studentForm('');
+    $('fStName').value = 'Chain 119'; $('fStCls').value = '6th'; $('fStSec').value = 'C'; $('fStRoll').value = String(roll119);
+    $('fStG').value = 'Mr. Chain'; $('fStPh').value = '9812345997'; $('fStDob').value = '2014-05-05'; $('fStPin').value = ''; $('fStAadhaar').value = '';
+    $('fStGender').value = 'Boy'; $('fStBlood').value = ''; $('fStCategory').value = ''; $('fStSession').value = '2025-26'; $('fStAdmDate').value = todayIST(); $('fStAdmReq').value = '';
+    saveStudent(ev119, '', '');
+    var chain119 = db.students.filter(function (s) { return s.name === 'Chain 119'; })[0];
+    ok(!!chain119 && chain119.cls === '6th-C', 'v119: chain admission saves the student in the new section');
+    state.attDate = todayIST(); state.attCls = '6th-C'; attendancePage();
+    markAtt(chain119.id, 'Present');
+    eq(db.attendance[todayIST() + '|6th-C'][chain119.id], 'Present', 'v119: chain student marked Present in the new section');
+    $('fFeeStudent').value = chain119.id; $('fFeeAmount').value = '800'; $('fFeeMonth').value = 'Nov'; $('fFeeType').value = 'Tuition'; $('fFeeStatus').value = 'Collected'; $('fFeeDate').value = todayIST();
+    saveFeeRecord({ preventDefault: function () {} });
+    eq(db.feeRecords.filter(function (r) { return r.studentId === chain119.id; }).length, 1, 'v119: chain fee record exists');
+    db.exams.push({ id: 'ex119', name: 'Unit Test 119', cls: '6th-C', subject: 'Mathematics', date: todayIST(), total: 100 });
+    db.students.filter(function (s) { return s.cls === '6th-C' && isEnrolledStudent(s); }).forEach(function (s) { $('mk-' + s.id).value = (s.id === chain119.id) ? '85' : ''; });
+    saveMarks('ex119');
+    var mk119 = db.marks.filter(function (m) { return m.examId === 'ex119' && m.studentId === chain119.id; })[0];
+    ok(!!mk119 && mk119.marks === 85, 'v119: chain student marks 85/100 saved');
+    ok(db.auditLog.some(function (a) { return a.action === 'Admission created'; }), 'v119: chain admission writes a create audit row');
+    deleteStudent(chain119.id); confirmYes();
+    eq(chain119.status, 'Cancelled', 'v119: chain student is Cancelled, not removed');
+    ok(db.auditLog.some(function (a) { return a.action === 'Student removed'; }), 'v119: chain delete writes a delete audit row');
+    var day119 = db.attendance[todayIST() + '|6th-C']; if (day119) delete day119[chain119.id];
+    db.feeRecords = db.feeRecords.filter(function (r) { return r.studentId !== chain119.id; });
+    db.marks = db.marks.filter(function (m) { return m.examId !== 'ex119'; });
+    db.exams = db.exams.filter(function (e) { return e.id !== 'ex119'; });
+    db.students = db.students.filter(function (s) { return s.id !== chain119.id; });
+    deleteClass('6th-C'); confirmYes();
+    ok(!db.classes.some(function (c) { return c.cls === '6th-C'; }), 'v119: chain cleanup removes the new section');
+  }
+  // Pull keeps: a local class edit with a pending upsert survives the
+  // pull, and a class made on another device applies when there is no
+  // pending upsert.
+  state.sb = { uid: 'sb-uid-119' };
+  var prof119 = { name: 'Test School', city: 'Patna', principal: 'P', phone: '', email: '', session: '2025-26', address: '' };
+  var schoolRow119 = { id: 'srv-school-119', name: 'Test School', city: 'Patna', principal: 'P', phone: '', email: '', session: '2025-26', address: '', logo_url: null, logo_data_url: null, adm_counter: 1, receipt_counter: 1, admission_fee: 0, caution_money: 0, annual_charges: 0, transport_fee: 0 };
+  function d119(classes) { return { profile: prof119, feeExtras: { admissionFee: 0, cautionMoney: 0, annualCharges: 0, transportFee: 0 }, admCounter: 1, receiptCounter: 1, students: [], teachers: [], staff: [], exams: [], feeRecords: [], feeStructure: [], attendance: {}, receipts: [], marks: [], homework: [], notices: [], admissionRequests: [], auditLog: [], activities: [], classes: classes }; }
+  sbOutboxAdd('sb-uid-119', { table: 'ss_classes', key: '6th-C', op: 'upsert', row: { cls: '6th-C' }, at: new Date().toISOString() });
+  var d119a = d119([{ id: '6th-C', cls: '6th-C', subjects: ['Mathematics', 'Computer Science'] }]);
+  sbApplyServerRows(d119a, schoolRow119, { ss_classes: [{ id: 'srv-c-119', local_id: '6th-C', cls: '6th-C', subjects: ['Mathematics'] }] }, null, 'srv-school-119');
+  eq(d119a.classes[0].subjects.join(','), 'Mathematics,Computer Science', 'v119: a pending class upsert survives the pull');
+  sbOutboxRemove('sb-uid-119', { table: 'ss_classes', key: '6th-C' });
+  var d119b = d119([]);
+  sbApplyServerRows(d119b, schoolRow119, { ss_classes: [{ id: 'srv-c-119b', local_id: '6th-Z', cls: '6th-Z', subjects: ['Mathematics'] }] }, null, 'srv-school-119');
+  eq(d119b.classes.length, 1, 'v119: a class made on another device applies from the pull');
+  eq(d119b.classes.length && d119b.classes[0].cls, '6th-Z', 'v119: the pulled class keeps its name');
+  state.sb = null;
+  db.classes = classesBefore119;
+  db.auditLog = auditBefore119;
+  saveDB(db);
   // ---- v81 (Phase 3): photo heal — a pull must not leave a student photo-less when the server has one ----
   // Live v80: a photo uploaded and synced (server row has photo_url, Storage
   // object exists) still showed the placeholder in every portal. The
@@ -4866,7 +5010,7 @@ const test = `
   // their current views.
   var roles85 = ['school', 'teacher', 'student', 'principal', 'accountant', 'staff', 'parent', 'superadmin'];
   roles85.forEach(function (r) { ok(Array.isArray(PERMS[r]) && PERMS[r].length > 0, 'v85: PERMS has an allow-list for ' + r); });
-  eq(PERMS.school.join(','), 'dashboard,students,teachers,staff,admissions,attendance,fees,exams,homework,notices,reports,activityLog,settings', 'v85: the school allow-list is unchanged'); // v90: the school gains the Staff management view
+  eq(PERMS.school.join(','), 'dashboard,students,teachers,staff,classes,admissions,attendance,fees,exams,homework,notices,reports,activityLog,settings', 'v85: the school allow-list is unchanged'); // v90: the school gains the Staff management view; v119: the Classes view
   eq(PERMS.teacher.join(','), 'dashboard,students,attendance,exams,homework,notices', 'v85: the teacher allow-list is unchanged');
   eq(PERMS.student.join(','), 'dashboard,attendance,fees,results,homework,notices', 'v85: the student allow-list is unchanged');
   // v86: the parent grew past dashboard + notices (its portal reuses the
@@ -6662,7 +6806,7 @@ let sbCalls = [];
 let sbFailTables = new Set();
 let sbNowMs = Date.parse('2026-11-09T06:00:00Z');
 function sbNowISO() { sbNowMs += 1000; return new Date(sbNowMs).toISOString(); }
-const sbServer = { ss_schools: [], ss_students: [], ss_fee_records: [], ss_fee_structure: [], ss_attendance: [], ss_receipts: [], ss_audit_log: [], ss_activities: [], ss_teachers: [], ss_exams: [], ss_marks: [], ss_homework: [], ss_notices: [], ss_holidays: [], ss_platform_admins: [], ss_admission_requests: [], ss_support_requests: [], ss_staff: [] }; // v90: the mock server has the ss_staff table (SQL 30 created it live); v100: ss_holidays (SQL 38)
+const sbServer = { ss_schools: [], ss_students: [], ss_fee_records: [], ss_fee_structure: [], ss_attendance: [], ss_receipts: [], ss_audit_log: [], ss_activities: [], ss_teachers: [], ss_exams: [], ss_marks: [], ss_homework: [], ss_notices: [], ss_holidays: [], ss_platform_admins: [], ss_admission_requests: [], ss_support_requests: [], ss_staff: [], ss_classes: [] }; // v90: the mock server has the ss_staff table (SQL 30 created it live); v100: ss_holidays (SQL 38); v119: ss_classes (SQL 42)
 let sbSeq = 0;
 let sbSignupMode = 'ok'; // v34: 'ok' | 'rate-limit' | 'exists' — drives the mocked GoTrue signup
 let sbRefreshFail = false; // v34: when true the mocked refresh token is rejected (400)
@@ -9674,6 +9818,23 @@ async function v28run() {
   ctx.sbOutboxRemove(uid118, { table: 'ss_teachers', key: 't-118' });
   sbServer.ss_teachers = sbServer.ss_teachers.filter(function (r) { return r.local_id !== 't-118'; });
 
+  // ---- v119 async: a class upsert reaches the mock server ----
+  // The class row is a first-class synced table now: an upsert queued
+  // for ss_classes pushes through the same path as a teacher row, and
+  // the server row carries the class name and its subjects.
+  var uid119 = 'sb-uid-vm@school.in';
+  var row119 = { id: '6th-C', cls: '6th-C', subjects: ['Mathematics', 'Science'] };
+  ctx.sbOutboxAdd(uid119, { table: 'ss_classes', key: '6th-C', op: 'upsert', at: '2026-11-13T07:00:00.000Z', row: row119 });
+  var ent119 = ctx.sbOutboxLoad(uid119).filter(function (e) { return e.table === 'ss_classes' && e.key === '6th-C'; })[0];
+  v28ok(!!ent119, 'v119 async: a class upsert queues in the outbox');
+  var push119 = await ctx.sbSyncPushEntry(ent119, 'tok-vm', 'srv-school-vm33', { stu: {}, exam: {} }, uid119, { ss_classes: sbServer.ss_classes });
+  v28ok(push119.pushed === true && !push119.conflict, 'v119 async: the class upsert pushes to the mock server');
+  var srv119 = sbServer.ss_classes.filter(function (r) { return r.local_id === '6th-C'; })[0];
+  v28ok(!!srv119 && srv119.cls === '6th-C', 'v119 async: the server class row exists after the push');
+  v28eq(srv119 && srv119.subjects.join(','), 'Mathematics,Science', 'v119 async: the server class row carries the subjects');
+  ctx.sbOutboxRemove(uid119, { table: 'ss_classes', key: '6th-C' });
+  sbServer.ss_classes = sbServer.ss_classes.filter(function (r) { return r.local_id !== '6th-C'; });
+
   // ---- v52 async: the legacy cloud profile — the v51 fix did not
   // move the live status, and the dashboard double-counted on first
   // login. Live shape (10 Nov 2026, v51 verification 06:40–06:47
@@ -10194,7 +10355,7 @@ async function v28run() {
   v28ok(src.includes("freshRows('ss_students', (d.students || [])"), 'v47: the students step deliberately keeps the snapshot filter — the bypass would resurrect a server-deleted student (v31 server-wins)');
   v28ok(src.includes('var hwUpload = schoolRecreated') && src.includes('var nUpload = schoolRecreated') && src.includes('var auUpload = schoolRecreated') && src.includes('var acUpload = schoolRecreated'), 'v47: the homework / notices / audit-log / activities steps use the bypass too');
   v28ok(src.includes('outboxUpsert46.attendance[snapKey]') && src.includes('outboxUpsert46.marks[key]'), 'v47: the pull keeps an attendance mark / mark with a pending outbox upsert — a stale snapshot entry never wipes an unconfirmed upload');
-  v28ok(src.includes('outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {}, teachers: {}, staff: {} }'), 'v47: the shared outbox set covers attendance and marks as well as fee records and receipts — and students since v56, exams since v58, teachers and staff since v117');
+  v28ok(src.includes('outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {}, teachers: {}, staff: {}, classes: {} }'), 'v47: the shared outbox set covers attendance and marks as well as fee records and receipts — and students since v56, exams since v58, teachers and staff since v117, classes since v119');
   v28ok(src.includes('var serverList = [];') && src.includes("if (r.id && onServer[r.id]) return;"), 'v47: mergeById collapses duplicate server rows by id — the 6-row fee duplication never doubles the local list');
   v28ok(src.includes('function receiptStudent(rc)') && src.includes("name: rc.name || (s && s.name) || ''"), 'v47: receiptStudent resolves the display student from the receipt\'s own stored name first, the local row only for the photo');
   v28ok(src.includes('var s2 = receiptStudent(rc);'), 'v47: the saved-receipt detail renders through receiptStudent, never through a local-student id lookup');

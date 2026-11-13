@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 118;
+var APP_VERSION = 119;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -1245,6 +1245,12 @@ function sbMapStaff(st, schoolId) {
   } catch (e) {}
   return row;
 }
+function sbMapClass(c, schoolId) {
+  // v119 (Phase 5, Module 5): the class row for ss_classes. local_id
+  // is the class name itself — it IS the key, so a rename is a delete
+  // of the old key + an upsert of the new one (the diff handles both).
+  return { school_id: schoolId, local_id: c.id || c.cls || '', cls: c.cls || '', subjects: Array.isArray(c.subjects) ? c.subjects.slice() : [] };
+}
 function sbMapExam(e, schoolId) {
   return { school_id: schoolId, local_id: e.id, name: e.name || '', cls: e.cls || '', subject: e.subject || '',
     exam_date: sbNullIfEmpty(e.date), total: e.total || 100, deleted: !!e.deleted }; // v67 (SQL 20): the deleted flag rides the upload, so a soft delete travels
@@ -1843,6 +1849,18 @@ function sbSyncUploadMissing(account, sbUid, token) {
         function (row) { return row.local_id; });
     });
   }
+  function stepClasses() {
+    // v119 (Phase 5, Module 5): class rows upload like teachers — Phase A (no id map needed). local_id is the class name itself.
+    return step('ss_classes', function () {
+      var clRows = (d.classes || []).filter(function (c) { return !sbIsSeedRow('ss_classes', c, d); }).map(function (c) { return sbMapClass(c, schoolId); });
+      var clUpload = schoolRecreated
+        ? freshRows('ss_classes', clRows, function (row) { return row.local_id; })
+        : clRows;
+      return sbUploadMissing(token, schoolId, 'ss_classes', 'local_id',
+        clUpload,
+        function (row) { return row.local_id; });
+    });
+  }
   function stepExams() {
     return step('ss_exams', function () {
       var exRows = (d.exams || []).filter(function (e) { return !sbIsSeedRow('ss_exams', e, d); }).map(function (e) { return sbMapExam(e, schoolId); });
@@ -2033,7 +2051,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
     // PATCH stays last, after the tables. Per-table error handling is
     // unchanged: step() still records a failure per table and the
     // chain continues with the rest.
-    return Promise.all([stepFeeStructure(), stepStudents(), stepTeachers(), stepStaff(), stepExams(), stepNotices(), stepHolidays(), stepAuditLog(), stepActivities()]);
+    return Promise.all([stepFeeStructure(), stepStudents(), stepTeachers(), stepStaff(), stepClasses(), stepExams(), stepNotices(), stepHolidays(), stepAuditLog(), stepActivities()]);
   }).then(function () {
     return Promise.all([stepFeeRecords(), stepAttendance(), stepReceipts(), stepMarks(), stepHomework()]);
   }).then(function () {
@@ -2282,7 +2300,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // v47 extends the same keep to attendance and marks, whose merges
   // used to drop a queued row on snapshot grounds with no outbox
   // check at all.
-  var outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {}, teachers: {}, staff: {} };
+  var outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {}, teachers: {}, staff: {}, classes: {} };
   try {
     var uid46 = (account && account.sbUid) || (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
     if (uid46) {
@@ -2296,6 +2314,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
           if (e.table === 'ss_exams') outboxUpsert46.exams[e.key] = true;
           if (e.table === 'ss_teachers') outboxUpsert46.teachers[e.key] = true;
           if (e.table === 'ss_staff') outboxUpsert46.staff[e.key] = true;
+          if (e.table === 'ss_classes') outboxUpsert46.classes[e.key] = true;
         }
       });
     }
@@ -2518,6 +2537,24 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
         return old;
       }
       return st;
+    });
+  })();
+  // v119 (Phase 5, Module 5): the class list mirrors the server. The
+  // pull never overwrites a local-only class that has not uploaded
+  // yet — mergeById keeps un-synced rows, like it does for teachers.
+  var oldClasses = d.classes || [];
+  d.classes = mergeById('ss_classes', d.classes || [], byTable.ss_classes || [], function (row) { return { id: row.local_id || row.cls || '', cls: row.cls || row.local_id || '', subjects: Array.isArray(row.subjects) ? row.subjects.slice() : [] }; });
+  // v119: merge-keep for a class with a pending upsert — same as teachers (v117).
+  (function () {
+    var oldById119 = {};
+    oldClasses.forEach(function (c) { oldById119[c.cls] = c; });
+    d.classes = d.classes.map(function (c) {
+      var old = oldById119[c.cls];
+      if (old && outboxUpsert46.classes[c.cls] && !sbIsSeedRow('ss_classes', old, d)) {
+        keep('ss_classes', c.cls);
+        return old;
+      }
+      return c;
     });
   })();
   var oldExams = d.exams || [];
@@ -3045,6 +3082,7 @@ function sbSyncMapRow(table, row, schoolId, maps, d) {
   if (table === 'ss_students') return sbMapStudent(row, schoolId);
   if (table === 'ss_teachers') return sbMapTeacher(row, schoolId);
   if (table === 'ss_staff') return sbMapStaff(row, schoolId); // v90 (Phase 4): staff edits ride the outbox like teacher edits do
+  if (table === 'ss_classes') return sbMapClass(row, schoolId); // v119 (Phase 5, Module 5): class rows ride the outbox like teacher rows do
   if (table === 'ss_exams') return sbMapExam(row, schoolId);
   if (table === 'ss_fee_records') return sbMapFeeRecord(row, schoolId, maps.stu);
   if (table === 'ss_homework') return sbMapHomework(row, schoolId, maps.stu);
@@ -3074,12 +3112,13 @@ function sbSyncPayloadReady(table, payload) {
 var SB_SYNC_TABLES = {
   ss_students: { local: 'students', key: 'id' }, ss_teachers: { local: 'teachers', key: 'id' },
   ss_staff: { local: 'staff', key: 'id' }, // v90 (Phase 4): staff members sync to ss_staff like teachers do
+  ss_classes: { local: 'classes', key: 'cls' }, // v119 (Phase 5, Module 5): the school's class list syncs to ss_classes
   ss_exams: { local: 'exams', key: 'id' }, ss_fee_records: { local: 'feeRecords', key: 'id' },
   ss_homework: { local: 'homework', key: 'id' }, ss_notices: { local: 'notices', key: 'id' },
   ss_holidays: { local: 'holidays', key: 'id' },
   ss_admission_requests: { local: 'admissionRequests', key: 'id' }, ss_receipts: { local: 'receipts', key: 'receiptNo' }
 };
-var SB_SYNC_DELETABLE = ['ss_fee_records', 'ss_fee_structure', 'ss_attendance', 'ss_marks', 'ss_holidays'];
+var SB_SYNC_DELETABLE = ['ss_fee_records', 'ss_fee_structure', 'ss_attendance', 'ss_marks', 'ss_holidays', 'ss_classes']; // v119: a deleted class row must leave the server too, or the pull restores it
 function sbSyncTableHashes(d, schoolId, maps) {
   // Canonical hash per row = the exact server payload it would push.
   // Local rows and server-derived rows hash identically when their
@@ -3858,7 +3897,7 @@ function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
     : sbGetServerSchoolId(sbUid, token).then(function (row) { return row ? row.id : null; });
   return idP.then(function (sid) {
     if (!sid) return { done: false, reason: 'no-server-school' };
-    var tables = ['ss_fee_structure', 'ss_students', 'ss_teachers', 'ss_staff', 'ss_exams', 'ss_fee_records', 'ss_attendance', 'ss_receipts', 'ss_marks', 'ss_homework', 'ss_notices', 'ss_holidays', 'ss_admission_requests']; // v90: ss_staff joins the pull (the staff list mirrors the server)
+    var tables = ['ss_fee_structure', 'ss_students', 'ss_teachers', 'ss_staff', 'ss_classes', 'ss_exams', 'ss_fee_records', 'ss_attendance', 'ss_receipts', 'ss_marks', 'ss_homework', 'ss_notices', 'ss_holidays', 'ss_admission_requests']; // v90: ss_staff joins the pull (the staff list mirrors the server); v119: ss_classes joins it too
     var gets = [sbRest('GET', 'ss_schools?select=*&id=eq.' + encodeURIComponent(sid), token)];
     tables.forEach(function (t) { gets.push(sbFetchAllPages(t, '*', sid, token)); });
     return Promise.all(gets).then(function (res) {
@@ -4619,8 +4658,7 @@ function defaultFeeStructure() {
   // Monthly tuition by class part. 6th–10th amounts are unchanged from
   // before v37 (800/900/1000/1200/1500); the new classes get sensible
   // defaults the admin can edit in the Fee Structure editor.
-  var amt = { 'Nursery': 500, 'LKG': 500, 'UKG': 600, '1st': 600, '2nd': 650, '3rd': 700, '4th': 750, '5th': 800, '6th': 800, '7th': 900, '8th': 1000, '9th': 1200, '10th': 1500, '11th': 1800, '12th': 2000 };
-  return CLASSES.map(function (c) { return { cls: c, type: 'Tuition', amount: amt[classPartOf(c)] || 1000 }; });
+  return CLASSES.map(function (c) { return { cls: c, type: 'Tuition', amount: defaultTuitionAmt(classPartOf(c)) }; });
 }
 function monthStartDate(m) { // B7: 1st of the month, in the profile session's academic year
   // (Apr–Dec = session start year, Jan–Mar = start year + 1). Was hardcoded
@@ -4631,6 +4669,43 @@ function monthStartDate(m) { // B7: 1st of the month, in the profile session's a
   return y + '-' + String(n).padStart(2, '0') + '-01';
 }
 var SUBJECTS = ['Mathematics','Science','English','Hindi','Social Science'];
+// v119 (Phase 5, Module 5): classes and subjects are SCHOOL data now,
+// not globals. db.classes is the school's class list — one row per
+// class-section { cls, subjects } — seeded from the old globals, so an
+// existing school keeps exactly the 30 sections it already had. The
+// globals stay as the seed/default only; every dropdown, filter, chart
+// and sort reads schoolClasses() / schoolSubjects() instead.
+function defaultClasses() { return CLASSES.map(function (c) { return { id: c, cls: c, subjects: SUBJECTS.slice() }; }); }
+function schoolClasses() {
+  var list = (typeof db !== 'undefined' && db && Array.isArray(db.classes) && db.classes.length) ? db.classes : null;
+  if (list) return list.map(function (c) { return c.cls; });
+  return CLASSES.slice();
+}
+function classRow(cls) {
+  if (typeof db === 'undefined' || !db || !Array.isArray(db.classes)) return null;
+  return db.classes.filter(function (c) { return c.cls === cls; })[0] || null;
+}
+function schoolSubjects(cls) {
+  var row = classRow(cls);
+  if (row && Array.isArray(row.subjects) && row.subjects.length) return row.subjects.slice();
+  return SUBJECTS.slice();
+}
+function schoolSubjectList() {
+  var out = [];
+  ((typeof db !== 'undefined' && db && Array.isArray(db.classes)) ? db.classes : []).forEach(function (c) {
+    (c.subjects || []).forEach(function (x) { if (out.indexOf(x) === -1) out.push(x); });
+  });
+  return out.length ? out : SUBJECTS.slice();
+}
+function sectionsFor(part) {
+  var out = [];
+  schoolClasses().forEach(function (c) { if (classPartOf(c) === part) { var x = sectionOf(c); if (x && out.indexOf(x) === -1) out.push(x); } });
+  return out.length ? out : SECTIONS.slice();
+}
+function defaultTuitionAmt(part) {
+  var amt = { 'Nursery': 500, 'LKG': 500, 'UKG': 600, '1st': 600, '2nd': 650, '3rd': 700, '4th': 750, '5th': 800, '6th': 800, '7th': 900, '8th': 1000, '9th': 1200, '10th': 1500, '11th': 1800, '12th': 2000 };
+  return amt[part] || 1000;
+}
 
 
 /* ================= empty school DB (v20) =================
@@ -4650,6 +4725,7 @@ function emptyDb(profile, schools) {
     students: [],
     teachers: [],
     staff: [], // v90 (Phase 4): staff members (Principal, Accountant, Staff) — created by the school admin, synced to ss_staff
+    classes: defaultClasses(), // v119 (Phase 5, Module 5): the school's class list, seeded from the old globals
     feeRecords: [],
     feeStructure: defaultFeeStructure(),
     feeExtras: defaultFeeExtras(),
@@ -4814,6 +4890,15 @@ function migrateV16(d) {
   }
   return d;
 }
+function migrateV119(d) {
+  // v119 (Phase 5, Module 5): the school's class list. Older DBs have
+  // no db.classes — seed it from the old hardcoded globals, so the
+  // school keeps exactly the 30 sections it already had. Idempotent;
+  // never changes an existing list, and never invents a section.
+  if (!Array.isArray(d.classes) || !d.classes.length) d.classes = defaultClasses();
+  d.classes.forEach(function (c) { if (!c.id) c.id = c.cls; if (!Array.isArray(c.subjects) || !c.subjects.length) c.subjects = SUBJECTS.slice(); });
+  return d;
+}
 function migrateV15(d) {
   // v35: teacher class assignments. Older teacher rows carry a single
   // cls — the assignment list starts from it. Idempotent; never changes
@@ -4858,7 +4943,7 @@ function loadDB(override) {
     if (raw) {
       var d = null;
       try { d = JSON.parse(raw); } catch (eParse) { d = null; }
-      if (d && d.v === 2) { var m = migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))))))))); saveDB(m); return m; }
+      if (d && d.v === 2) { var m = migrateV119(migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))))))); saveDB(m); return m; }
       if (d) {
         // Parsed but unknown version: keep a backup, never wipe silently.
         pendingBak = raw;
@@ -4900,7 +4985,7 @@ function sbLoadBak() {
     if (!raw) return null;
     var d = JSON.parse(raw);
     if (!d || d.v !== 2) return null;
-    var m = migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))))));
+    var m = migrateV119(migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))))))))));
     saveDB(m);
     return m;
   } catch (e) { return null; }
@@ -5415,7 +5500,7 @@ function isEnrolledStudent(s) { var stt = (s && s.status) || 'Active'; return st
 function isActiveExam(e) { return !!e && !e.deleted; }
 function classParts() {
   var out = [];
-  CLASSES.forEach(function (c) { var p = c.split('-')[0]; if (out.indexOf(p) === -1) out.push(p); });
+  schoolClasses().forEach(function (c) { var p = c.split('-')[0]; if (out.indexOf(p) === -1) out.push(p); });
   return out;
 }
 function classPartOf(cls) { return (cls || '').split('-')[0]; }
@@ -5511,8 +5596,8 @@ function studentStats() {
 }
 function classBarsHTML(byClass) {
   var max = 0;
-  CLASSES.forEach(function (c) { max = Math.max(max, byClass[c] || 0); });
-  return CLASSES.map(function (c) {
+  schoolClasses().forEach(function (c) { max = Math.max(max, byClass[c] || 0); });
+  return schoolClasses().map(function (c) {
     var n = byClass[c] || 0;
     var w = max ? Math.round(n / max * 100) : 0;
     return '<div class="class-bar"><b>' + esc(c) + '</b><span class="bar-track"><span class="bar-fill" style="width:' + w + '%"></span></span><span class="n">' + n + '</span></div>';
@@ -5540,7 +5625,7 @@ function stuSorted(list) {
   arr.sort(function (a, b) {
     var r = 0;
     if (col === 'name') r = a.name.localeCompare(b.name);
-    else if (col === 'class') r = (CLASSES.indexOf(a.cls) - CLASSES.indexOf(b.cls)) || ((a.roll || 0) - (b.roll || 0));
+    else if (col === 'class') r = (schoolClasses().indexOf(a.cls) - schoolClasses().indexOf(b.cls)) || ((a.roll || 0) - (b.roll || 0));
     else if (col === 'admDate') {
       var da = a.admissionDate || '', dbv = b.admissionDate || '';
       r = !da && !dbv ? 0 : !da ? 1 : !dbv ? -1 : (da < dbv ? -1 : da > dbv ? 1 : 0);
@@ -7264,7 +7349,7 @@ function roleClasses() {
   // the whole school.
   if (state.role === 'teacher') return teacherClasses();
   if (state.role === 'staff') return staffClasses();
-  return CLASSES;
+  return schoolClasses();
 }
 function openTeacherClass(cls) {
   // v84: a dashboard tile opens the Students list — a class tile filters
@@ -7626,7 +7711,7 @@ function logoutClear() {
 
 var NAV = {
   school: [
-    ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['teachers', '👩‍🏫', 'teachers'], ['staff', '👔', 'staff'], ['admissions', '📋', 'admissions'], ['attendance', '✅', 'attendance'],
+    ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['teachers', '👩‍🏫', 'teachers'], ['staff', '👔', 'staff'], ['classes', '🏫', 'classes'], ['admissions', '📋', 'admissions'], ['attendance', '✅', 'attendance'],
     ['fees', '💰', 'fees'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'],
     ['notices', '📢', 'notices'], ['reports', '📄', 'reports'], ['activityLog', '📜', 'activityLog'], ['settings', '⚙️', 'settings']
   ],
@@ -7663,7 +7748,7 @@ var NAV = {
 // exactly their current views; the five new roles start with dashboard
 // + notices and grow in their own step.
 var PERMS = {
-  school: ['dashboard', 'students', 'teachers', 'staff', 'admissions', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog', 'settings'], // v90: the school admin manages staff accounts here
+  school: ['dashboard', 'students', 'teachers', 'staff', 'classes', 'admissions', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog', 'settings'], // v90: the school admin manages staff accounts here
   teacher: ['dashboard', 'students', 'attendance', 'exams', 'homework', 'notices'],
   student: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'],
   principal: ['dashboard', 'students', 'teachers', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports'], // v88: the principal oversees the whole school, read-only
@@ -7682,6 +7767,7 @@ var VIEW_TITLES = {
   settings: ['Settings', 'School settings'], reports: ['Reports', 'Download CSV reports'],
   activityLog: ['Activity Log', 'Full audit history'], teachers: ['Teachers', 'Teacher accounts & classes'],
   staff: ['Staff', 'Principal, Accountant & Staff accounts'], // v90 (Phase 4): the school admin creates staff logins here
+  classes: ['Classes', 'Class sections & subjects'], // v119 (Phase 5, Module 5): the school admin manages the class list here
   students: ['Student Management', 'St. Xavier School, Patna'], admissions: ['Admission Requests', 'New applications & approvals'], attendance: ['Attendance', 'Mark & view attendance'],
   fees: ['Fees', 'Fee collection & pending dues'], exams: ['Examinations', 'Exams & marks entry'],
   homework: ['Homework', 'Assign & track homework'], notices: ['Notices', 'Notice board']
@@ -8405,7 +8491,7 @@ function studentsPage() {
   var to = Math.min(list.length, state.stuPage * STU_PAGE_SIZE);
   return '<div class="page-head"><div><h2>' + t('students') + '</h2><p>' + list.length + ' ' + t('ofWord') + ' ' + visibleStudents().length + ' ' + t('studentsW') + '</p></div>' +
     '<div class="toolbar"><input id="stuSearchInput" placeholder="' + t('stuSearchPh') + '" value="' + esc(state.stuSearch) + '" oninput="onStuSearch(this)" style="min-width:200px">' +
-    '<select onchange="state.stuClass=this.value;state.stuPage=1;renderPage()">' + opt(isTeacher ? teacherClasses() : CLASSES, state.stuClass, t('allClasses')) + '</select>' +
+    '<select onchange="state.stuClass=this.value;state.stuPage=1;renderPage()">' + opt(isTeacher ? teacherClasses() : schoolClasses(), state.stuClass, t('allClasses')) + '</select>' +
     '<select onchange="state.stuSection=this.value;state.stuPage=1;renderPage()">' + opt(SECTIONS, state.stuSection, t('allSections')) + '</select>' +
     '<select onchange="state.stuSession=this.value;state.stuPage=1;renderPage()">' + opt(sessionOptions(), state.stuSession, t('allSessions')) + '</select>' +
     '<select onchange="state.stuGender=this.value;state.stuPage=1;renderPage()">' + opt(GENDERS, state.stuGender, t('allGenders')) + '</select>' +
@@ -8447,6 +8533,17 @@ function studentsPage() {
 var admEditingId = null;
 function suggestRoll() {
   if (admEditingId) return;
+  // v119: the section list follows the chosen class part — a part with
+  // only A/B must not leave C selected (that would admit the student
+  // to a class the school does not have).
+  var secSel = $('fStSec');
+  if (secSel) {
+    var secs = sectionsFor($('fStCls') ? $('fStCls').value : '');
+    if (secs.indexOf(secSel.value) === -1) {
+      secSel.innerHTML = secs.map(function (x) { return '<option>' + x + '</option>'; }).join('');
+      secSel.value = secs[0] || 'A';
+    }
+  }
   var cls = ($('fStCls') ? $('fStCls').value : '') + '-' + ($('fStSec') ? $('fStSec').value : 'A');
   if ($('fStRoll')) $('fStRoll').value = nextRoll(cls);
 }
@@ -8462,7 +8559,7 @@ function studentForm(id) {
   var clsPart = s ? classPartOf(s.cls) : '6th';
   var secPart = s ? sectionOf(s.cls) : 'A';
   var clsOpts = classParts().map(function (c) { return '<option ' + (c === clsPart ? 'selected' : '') + '>' + c + '</option>'; }).join('');
-  var secOpts = SECTIONS.map(function (x) { return '<option ' + (x === secPart ? 'selected' : '') + '>' + x + '</option>'; }).join('');
+  var secOpts = sectionsFor(clsPart).map(function (x) { return '<option ' + (x === secPart ? 'selected' : '') + '>' + x + '</option>'; }).join('');
   var sessOpts = SESSIONS.map(function (x) { return '<option ' + ((s ? s.session : db.profile.session) === x ? 'selected' : '') + '>' + x + '</option>'; }).join('');
   var genOpts = [''].concat(GENDERS).map(function (g) { return '<option value="' + g + '" ' + (((s && s.gender === g) || (pf && pf.gender === g)) ? 'selected' : '') + '>' + (g || '—') + '</option>'; }).join('');
   var bloodOpts = [''].concat(BLOOD_GROUPS).map(function (b) { return '<option value="' + b + '" ' + ((s && s.bloodGroup === b) ? 'selected' : '') + '>' + (b || '—') + '</option>'; }).join('');
@@ -8692,7 +8789,7 @@ function transferStudent(id) {
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
-  var clsOpts = CLASSES.map(function (c) { return '<option ' + (c === s.cls ? 'selected' : '') + '>' + c + '</option>'; }).join('');
+  var clsOpts = schoolClasses().map(function (c) { return '<option ' + (c === s.cls ? 'selected' : '') + '>' + c + '</option>'; }).join('');
   openModal('<h3>' + t('transferTitle') + ' — ' + esc(s.name) + '</h3><form onsubmit="return doTransfer(event,\'' + s.id + '\')"><div class="form-grid">' +
     '<div class="full"><label>' + t('transferTo') + '</label><select id="fTrCls" onchange="suggestTransferRoll()">' + clsOpts + '</select></div>' +
     '<div><label>' + t('fRoll') + '</label><input id="fTrRoll" type="number" min="1" value="' + nextRoll(s.cls) + '"></div>' +
@@ -8851,7 +8948,7 @@ function promotionPage() {
     return opts.map(function (s) { return '<option ' + (s === cur ? 'selected' : '') + '>' + s + '</option>'; }).join('');
   };
   var clsOpts = function (cur) {
-    return CLASSES.map(function (c) { return '<option ' + (c === cur ? 'selected' : '') + '>' + c + '</option>'; }).join('');
+    return schoolClasses().map(function (c) { return '<option ' + (c === cur ? 'selected' : '') + '>' + c + '</option>'; }).join('');
   };
   var cpOpts = function (cur) {
     return classParts().map(function (c) { return '<option ' + (c === cur ? 'selected' : '') + '>' + c + '</option>'; }).join('');
@@ -9679,7 +9776,7 @@ function feeStructureCard() {
       '<td><input type="number" min="0" step="50" value="' + row.amount + '" id="fsAmt-' + i + '" style="width:120px"></td>' +
       '<td><button class="btn danger sm" onclick="deleteFeeStructureRow(' + i + ')">' + t('deleteBtn') + '</button></td></tr>';
   }).join('');
-  var clsOpts = CLASSES.map(function (c) { return '<option>' + c + '</option>'; }).join('');
+  var clsOpts = schoolClasses().map(function (c) { return '<option>' + c + '</option>'; }).join('');
   var moOpts = MONTHS_ACAD.map(function (m) { return '<option ' + (m === state.feeGenMonth ? 'selected' : '') + '>' + m + '</option>'; }).join('');
   var ex = feeExtras();
   return '<div class="card"><div class="head-row"><div><h3>' + t('feeStruct') + '</h3><p class="card-sub">' + t('feeStructSub') + '</p></div><button class="btn sm" onclick="saveFeeStructure()">' + t('saveStruct') + '</button></div>' +
@@ -10787,12 +10884,12 @@ function examForm(editId) {
     if (state.role === 'teacher' && teacherClasses().indexOf(editing.cls) === -1) { toast(t('tNotAllowed')); return; }
     state.editExamId = editing.id;
   } else state.editExamId = null;
-  var clsList = state.role === 'teacher' ? teacherClasses() : CLASSES;
+  var clsList = state.role === 'teacher' ? teacherClasses() : schoolClasses();
   if (!clsList.length) { toast(t('tchrNoClassesYet')); return; }
   var clsOpts = editing
     ? '<option selected>' + esc(editing.cls) + '</option>'
     : clsList.map(function (c) { return '<option>' + c + '</option>'; }).join('');
-  var subOpts = SUBJECTS.map(function (s) { return '<option' + (editing && editing.subject === s ? ' selected' : '') + '>' + s + '</option>'; }).join('') + '<option' + (editing && editing.subject === 'All Subjects' ? ' selected' : '') + '>All Subjects</option>';
+  var subOpts = schoolSubjectList().map(function (s) { return '<option' + (editing && editing.subject === s ? ' selected' : '') + '>' + s + '</option>'; }).join('') + '<option' + (editing && editing.subject === 'All Subjects' ? ' selected' : '') + '>All Subjects</option>';
   openModal('<h3>' + (editing ? t('editExam') : t('createExam')) + '</h3><form onsubmit="return saveExam(event)"><div class="form-grid">' +
     '<div class="full"><label>' + t('examName') + ' *</label><input id="fExName" required placeholder="e.g. Unit Test 3" value="' + (editing ? esc(editing.name) : '') + '"></div>' +
     '<div><label>' + t('fClass') + ' *</label><select id="fExCls"' + (editing ? ' disabled' : '') + '>' + clsOpts + '</select></div>' +
@@ -10952,9 +11049,9 @@ function toggleHw(id, done) {
 function homeworkForm() {
   // v35: a teacher assigns homework only to their own classes.
   // v93: a staff member assigns homework only to their own classes too.
-  var clsList35 = (state.role === 'teacher' || state.role === 'staff') ? roleClasses() : CLASSES;
+  var clsList35 = (state.role === 'teacher' || state.role === 'staff') ? roleClasses() : schoolClasses();
   var clsOpts = clsList35.map(function (c) { return '<option>' + c + '</option>'; }).join('');
-  var subOpts = SUBJECTS.map(function (s) { return '<option>' + s + '</option>'; }).join('');
+  var subOpts = schoolSubjectList().map(function (s) { return '<option>' + s + '</option>'; }).join('');
   openModal('<h3>' + t('addHomework') + '</h3><form onsubmit="return saveHomework(event)"><div class="form-grid">' +
     '<div><label>' + t('fClass') + '</label><select id="fHwCls">' + clsOpts + '</select></div>' +
     '<div><label>' + t('fSubject') + '</label><select id="fHwSub">' + subOpts + '</select></div>' +
@@ -11114,7 +11211,7 @@ function restoreFullBackup(obj) {
   var d = JSON.parse(JSON.stringify(obj.db));
   // Run the same migrations loadDB runs, so a backup from an older
   // build still lands in the current shape (a v37 backup is a no-op).
-  d = migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))))));
+  d = migrateV119(migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))))))))));
   var counts = { students: d.students.length, teachers: d.teachers.length, feeRecords: d.feeRecords.length, exams: d.exams.length, marks: d.marks.length, homework: d.homework.length, notices: d.notices.length, receipts: d.receipts.length };
   db = d;
   // Server-linked schools: drop the stale outbox + snapshot so the next
@@ -11235,10 +11332,10 @@ function teacherForm(id) {
   var te = id ? db.teachers.find(function (x) { return x.id === id; }) : null;
   var acct = te ? loadAccounts().find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; }) : null;
   tchrFormClasses = te ? (Array.isArray(te.classes) && te.classes.length ? te.classes.slice() : (te.cls ? [te.cls] : [])) : [];
-  var clsBoxes = CLASSES.map(function (c) {
+  var clsBoxes = schoolClasses().map(function (c) {
     return '<label class="check"><input type="checkbox" ' + (tchrFormClasses.indexOf(c) !== -1 ? 'checked' : '') + ' onchange="toggleTchrClass(\'' + c + '\', this.checked)"> ' + c + '</label>';
   }).join('');
-  var subOpts = SUBJECTS.map(function (s) { return '<option ' + (te && te.subject === s ? 'selected' : '') + '>' + s + '</option>'; }).join('');
+  var subOpts = schoolSubjectList().map(function (s) { return '<option ' + (te && te.subject === s ? 'selected' : '') + '>' + s + '</option>'; }).join('');
   openModal('<h3>' + (te ? t('tchrEdit') : t('tchrAdd')) + '</h3>' +
     '<div id="fTchrErr" class="err hidden"></div>' +
     '<form onsubmit="return saveTeacher(event,\'' + (id || '') + '\')"><div class="form-grid">' +
@@ -11337,7 +11434,7 @@ function staffForm(id) {
   var st = id ? (db.staff || []).find(function (x) { return x.id === id; }) : null;
   var acct = st ? loadAccounts().find(function (a) { return (a.role === 'principal' || a.role === 'accountant' || a.role === 'staff') && a.staffId === st.id; }) : null;
   staffFormClasses = st ? (Array.isArray(st.classes) ? st.classes.slice() : []) : [];
-  var clsBoxes = CLASSES.map(function (c) {
+  var clsBoxes = schoolClasses().map(function (c) {
     return '<label class="check"><input type="checkbox" ' + (staffFormClasses.indexOf(c) !== -1 ? 'checked' : '') + ' onchange="toggleStaffClass(\'' + c + '\', this.checked)"> ' + c + '</label>';
   }).join('');
   var roleOpts = ['principal', 'accountant', 'staff'].map(function (r) { return '<option value="' + r + '" ' + (st && st.role === r ? 'selected' : '') + '>' + staffRoleLabel(r) + '</option>'; }).join('');
@@ -11407,8 +11504,142 @@ function deleteStaff(id) {
     toast(t('staffRemoved'));
   });
 }
+/* ================= Classes view (v119, Phase 5, Module 5) =================
+   The school admin manages the class list here: add a section, rename
+   a class (every reference moves with it), delete an empty class, and
+   set which subjects each class teaches. The list drives every class
+   dropdown in the app (schoolClasses / schoolSubjects); the hardcoded
+   CLASSES / SUBJECTS globals are only the seed. Class rows sync to
+   ss_classes like teacher rows do (sbMapClass); a rename is a delete
+   of the old key + an upsert of the new one, handled by the diff. */
+var clsFormSubjects = []; // in-memory subject selection for the class form
+function toggleClsSubject(sub, on) {
+  var i = clsFormSubjects.indexOf(sub);
+  if (on && i === -1) clsFormSubjects.push(sub);
+  if (!on && i !== -1) clsFormSubjects.splice(i, 1);
+}
+function classesPage() {
+  if (state.role !== 'school') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
+  var rows = schoolClasses().map(function (cls) {
+    var subs = schoolSubjects(cls);
+    return '<tr><td><b>' + esc(cls) + '</b></td><td>' + esc(subs.join(', ') || '—') + '</td><td><button class="btn ghost sm" onclick="classForm(\'' + cls + '\')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteClass(\'' + cls + '\')">' + t('deleteBtn') + '</button></td></tr>';
+  }).join('');
+  return '<div class="page-head"><div><h2>' + t('classes') + '</h2><p>' + t('classesSub') + '</p></div>' +
+    '<div class="toolbar"><button class="btn" onclick="classForm()">+ ' + t('clsAdd') + '</button></div></div>' +
+    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thClass') + '</th><th>' + t('thSubjects') + '</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="3"><div class="empty">' + t('tNoClasses') + '</div></td></tr>') + '</tbody></table></div></div>';
+}
+function classForm(oldCls) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
+  var row = oldCls ? classRow(oldCls) : null;
+  clsFormSubjects = row ? (row.subjects || []).slice() : SUBJECTS.slice();
+  var subBoxes = schoolSubjectList().map(function (s) {
+    return '<label class="check"><input type="checkbox" ' + (clsFormSubjects.indexOf(s) !== -1 ? 'checked' : '') + ' onchange="toggleClsSubject(\'' + s + '\', this.checked)"> ' + esc(s) + '</label>';
+  }).join('');
+  openModal('<h3>' + (row ? t('clsEdit') : t('clsAdd')) + '</h3>' +
+    '<div id="fClsErr" class="err hidden"></div>' +
+    '<form onsubmit="return saveClass(event,\'' + (oldCls || '') + '\')"><div class="form-grid">' +
+    '<div class="full"><label>' + t('clsName') + ' *</label><input id="fClsName" required value="' + esc(oldCls || '') + '" placeholder="e.g. 6th-C"></div>' +
+    '<div class="full"><label>' + t('clsSubjects') + '</label><div class="check-grid">' + subBoxes + '</div></div>' +
+    '<div class="full"><label>' + t('clsNewSub') + '</label><input id="fClsNewSub" placeholder="e.g. Computer Science"></div>' +
+    '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + t('saveBtn') + '</button></div></form>');
+}
+function saveClass(e, oldCls) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
+  e.preventDefault();
+  var errEl = $('fClsErr');
+  var name = ($('fClsName') ? $('fClsName').value : '').trim();
+  if (!/^[A-Za-z0-9]+-[A-Za-z]$/.test(name)) return failInto(errEl, t('clsInvalid'), true);
+  var newSub = ($('fClsNewSub') ? $('fClsNewSub').value : '').trim();
+  var subjects = clsFormSubjects.slice();
+  if (newSub && subjects.indexOf(newSub) === -1) subjects.push(newSub);
+  if (!subjects.length) return failInto(errEl, t('tFillAll'), true);
+  if (!Array.isArray(db.classes)) db.classes = defaultClasses();
+  var row = oldCls ? classRow(oldCls) : null;
+  if (!oldCls) {
+    if (classRow(name)) return failInto(errEl, t('clsDuplicate'), true);
+    db.classes.push({ id: name, cls: name, subjects: subjects });
+    if (!db.feeStructure.some(function (f) { return f.cls === name && f.type === 'Tuition'; })) {
+      db.feeStructure.push({ cls: name, type: 'Tuition', amount: defaultTuitionAmt(classPartOf(name)) });
+    }
+    logAudit('Class added', name + ' • ' + subjects.join(', '));
+    saveDB(db); closeModal(); renderApp();
+    toast(t('clsAdded'));
+    return false;
+  }
+  if (!row) return failInto(errEl, t('tNotAllowed'), true);
+  if (name !== oldCls && classRow(name)) return failInto(errEl, t('clsDuplicate'), true);
+  // A subject dropped from the class must not be in use by an exam of it.
+  var removed = (row.subjects || []).filter(function (x) { return subjects.indexOf(x) === -1; });
+  var blocked = null;
+  removed.forEach(function (x) {
+    if (!blocked && (db.exams || []).some(function (ex) { return ex.cls === oldCls && ex.subject === x && isActiveExam(ex); })) blocked = x;
+  });
+  if (blocked) return failInto(errEl, t('clsSubjectInUse') + ' — ' + blocked, true);
+  var added = subjects.filter(function (x) { return (row.subjects || []).indexOf(x) === -1; });
+  if (name !== oldCls) renameClassRefs(oldCls, name);
+  row.cls = name; row.id = name; row.subjects = subjects;
+  if (name !== oldCls) logAudit('Class renamed', oldCls + ' → ' + name);
+  added.forEach(function (x) { logAudit('Subject added', name + ' • ' + x); });
+  removed.forEach(function (x) { logAudit('Subject removed', name + ' • ' + x); });
+  saveDB(db); closeModal(); renderApp();
+  toast(t('clsSaved'));
+  return false;
+}
+function renameClassRefs(oldCls, newCls) {
+  // v119: a class rename moves every reference — students, teacher and
+  // staff class lists, fee rows, exams, homework, attendance keys and
+  // holidays. Nothing is left pointing at the old name.
+  (db.students || []).forEach(function (s) { if (s.cls === oldCls) s.cls = newCls; });
+  (db.teachers || []).forEach(function (te) { if (Array.isArray(te.classes)) te.classes = te.classes.map(function (c) { return c === oldCls ? newCls : c; }); if (te.cls === oldCls) te.cls = newCls; });
+  (db.staff || []).forEach(function (st) { if (Array.isArray(st.classes)) st.classes = st.classes.map(function (c) { return c === oldCls ? newCls : c; }); });
+  (db.feeStructure || []).forEach(function (f) { if (f.cls === oldCls) f.cls = newCls; });
+  (db.exams || []).forEach(function (ex) { if (ex.cls === oldCls) ex.cls = newCls; });
+  (db.homework || []).forEach(function (h) { if (h.cls === oldCls) h.cls = newCls; });
+  (db.holidays || []).forEach(function (h) { if (h.cls === oldCls) h.cls = newCls; });
+  Object.keys(db.attendance || {}).forEach(function (k) {
+    var parts = k.split('|');
+    if (parts[1] === oldCls) {
+      db.attendance[parts[0] + '|' + newCls] = db.attendance[k];
+      delete db.attendance[k];
+    }
+  });
+}
+function classInUse(cls) {
+  // v119: a class is deletable only when nothing references it. The
+  // first blocker is named so the admin knows what to move first.
+  var st = (db.students || []).filter(function (s) { return s.cls === cls; })[0];
+  if (st) return t('students') + ': ' + st.name;
+  var te = (db.teachers || []).filter(function (x) { return (x.classes || []).indexOf(cls) !== -1 || x.cls === cls; })[0];
+  if (te) return t('teachers') + ': ' + te.name;
+  var sf = (db.staff || []).filter(function (x) { return (x.classes || []).indexOf(cls) !== -1; })[0];
+  if (sf) return t('staff') + ': ' + sf.name;
+  var ex = (db.exams || []).filter(function (x) { return x.cls === cls && isActiveExam(x); })[0];
+  if (ex) return t('exams') + ': ' + ex.name;
+  var hw = (db.homework || []).filter(function (x) { return x.cls === cls; })[0];
+  if (hw) return t('homework') + ': ' + (hw.title || '');
+  var att = Object.keys(db.attendance || {}).some(function (k) { return k.split('|')[1] === cls && Object.keys(db.attendance[k] || {}).length; });
+  if (att) return t('attendance');
+  var hol = (db.holidays || []).filter(function (x) { return x.cls === cls; })[0];
+  if (hol) return 'Holiday';
+  return null;
+}
+function deleteClass(cls) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
+  var row = classRow(cls);
+  if (!row) return;
+  var blocker = classInUse(cls);
+  if (blocker) { toast(t('clsInUse') + ' — ' + blocker); return; }
+  confirmModal(t('clsDelMsg') + ' — ' + cls + '?', function () {
+    db.classes = (db.classes || []).filter(function (c) { return c.cls !== cls; });
+    db.feeStructure = (db.feeStructure || []).filter(function (f) { return f.cls !== cls; });
+    logAudit('Class removed', cls);
+    saveDB(db); renderApp();
+    toast(t('clsRemoved'));
+  });
+}
+
 PAGE_SCHOOL.exams = examsPage; PAGE_SCHOOL.homework = homeworkPage; PAGE_SCHOOL.notices = noticesPage;
-PAGE_SCHOOL.teachers = teachersPage; PAGE_SCHOOL.staff = staffPage; PAGE_SCHOOL.reports = function () { return reportsPage(); }; PAGE_SCHOOL.settings = settingsPage; PAGE_SCHOOL.admissions = admissionRequestsPage; PAGE_SCHOOL.activityLog = activityLogPage;
+PAGE_SCHOOL.teachers = teachersPage; PAGE_SCHOOL.staff = staffPage; PAGE_SCHOOL.classes = classesPage; PAGE_SCHOOL.reports = function () { return reportsPage(); }; PAGE_SCHOOL.settings = settingsPage; PAGE_SCHOOL.admissions = admissionRequestsPage; PAGE_SCHOOL.activityLog = activityLogPage;
 
 /* ================= STUDENT view ================= */
 function studentDashboard() {
