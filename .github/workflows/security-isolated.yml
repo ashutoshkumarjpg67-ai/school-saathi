@@ -8,12 +8,17 @@ permissions:
   contents: read
 jobs:
   synthetic-only:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:15
         env:
-          POSTGRES_PASSWORD: synthetic-ci-only
+          # No password: this DB is synthetic, ephemeral and localhost-only,
+          # and a literal password in this file is printed verbatim in the
+          # runner's "Initialize containers" log (docker create --env).
+          # Trust auth replaces it; the test script refuses non-local hosts.
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: school_saathi_security_test
         ports: ['5432:5432']
         options: >-
@@ -23,12 +28,32 @@ jobs:
       PGHOST: 127.0.0.1
       PGPORT: 5432
       PGUSER: postgres
-      PGPASSWORD: synthetic-ci-only
       PGDATABASE: school_saathi_security_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Install PostgreSQL 15 client tools (PGDG)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates gnupg lsb-release
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSLo /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          sudo gpg --dearmor -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-15
+          # PGDG binaries live in /usr/lib/postgresql/15/bin, NOT on PATH.
+          # Symlink into /usr/local/bin (ahead of /usr/bin in runner PATH)
+          # so the 15 tools shadow the runner's newer ones; appending the
+          # bindir via $GITHUB_PATH alone does NOT guarantee precedence.
+          # The runner's newer pg_dump (17) writes SET transaction_timeout
+          # into every dump, which postgres:15 rejects — pg_dump MUST be 15.
+          sudo ln -sf /usr/lib/postgresql/15/bin/psql /usr/lib/postgresql/15/bin/pg_dump /usr/lib/postgresql/15/bin/pg_restore /usr/local/bin/
+          pg_dump --version   # must print 15.x — fail fast if it does not
+          pg_restore --version
+          psql --version
       - run: npm test
       - run: node scripts/test-security-sql.mjs
