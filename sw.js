@@ -12,6 +12,7 @@ var APP_SHELL = [
   'index.html',
   'styles.css?v=124',
   'app.js?v=124',
+  'js/modules/private-photos.js?v=124',
   'js/modules/crypto.js?v=124',
   'js/modules/i18n.js?v=124',
   'js/bcrypt.js?v=124',
