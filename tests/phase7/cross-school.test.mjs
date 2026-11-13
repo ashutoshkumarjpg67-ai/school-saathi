@@ -52,6 +52,7 @@ const RPC_ONLY_TABLES = [
   'ss_staff_login_attempts',
   'ss_staff_sessions',
   'ss_student_login_attempts',
+  'ss_student_photo_sessions',
   'ss_teacher_login_attempts',
   'ss_teacher_sessions',
 ];
@@ -66,9 +67,9 @@ function policyTables() {
 }
 
 describe('RLS shape (static, from repo SQL files)', () => {
-  it('RLS is enabled on every table (27 tables, files 01-42)', () => {
+  it('RLS is enabled on every table (28 tables, files 01-46)', () => {
     const tables = allTables();
-    assert.equal(tables.length, 27, `expected 27 ss_ tables, got ${tables.length}: ${tables.join(', ')}`);
+    assert.equal(tables.length, 28, `expected 28 ss_ tables, got ${tables.length}: ${tables.join(', ')}`);
     const enabled = [...new Set([...sqlCode.matchAll(/alter table public\.(ss_[a-z_0-9]+)\s+enable row level security/gi)].map((m) => m[1]))].sort();
     for (const t of tables) assert.ok(enabled.includes(t), `${t}: RLS not enabled`);
   });
@@ -93,7 +94,7 @@ describe('RLS shape (static, from repo SQL files)', () => {
     }
   });
 
-  it('the RPC-only set is exactly the 7 login-attempt/session tables', () => {
+  it('the RPC-only set is exactly the 8 login-attempt/session tables', () => {
     const tables = allTables();
     const withPolicy = policyTables();
     assert.deepEqual(tables.filter((t) => !withPolicy.includes(t)).sort(), [...RPC_ONLY_TABLES].sort());
