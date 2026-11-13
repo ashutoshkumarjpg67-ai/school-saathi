@@ -4,7 +4,7 @@
 // Two layers, both offline — the harness has no network and this agent
 // cannot query the live database:
 //
-//  1. STATIC: parse the repo SQL files (supabase/*.sql, files 01–38)
+//  1. STATIC: parse the repo SQL files (supabase/*.sql, files 01–42)
 //     and prove the RLS shape: RLS enabled on every table, every tenant
 //     table carries an owner-only policy (ss_school_owner(school_id) =
 //     auth.uid() or an admin check), and the only tables with NO policy
@@ -66,9 +66,9 @@ function policyTables() {
 }
 
 describe('RLS shape (static, from repo SQL files)', () => {
-  it('RLS is enabled on every table (26 tables, files 01-38)', () => {
+  it('RLS is enabled on every table (27 tables, files 01-42)', () => {
     const tables = allTables();
-    assert.equal(tables.length, 26, `expected 26 ss_ tables, got ${tables.length}: ${tables.join(', ')}`);
+    assert.equal(tables.length, 27, `expected 27 ss_ tables, got ${tables.length}: ${tables.join(', ')}`);
     const enabled = [...new Set([...sqlCode.matchAll(/alter table public\.(ss_[a-z_0-9]+)\s+enable row level security/gi)].map((m) => m[1]))].sort();
     for (const t of tables) assert.ok(enabled.includes(t), `${t}: RLS not enabled`);
   });
@@ -103,8 +103,8 @@ describe('RLS shape (static, from repo SQL files)', () => {
     // DO-loop template (02_rls.sql) — one policy per table, same rule.
     assert.match(sqlCode, /ss_school_owner\(school_id\) = auth\.uid\(\) or public\.is_ss_admin\(\)/,
       'owner-only policy template missing from 02_rls.sql');
-    // The named owner policies (admission/support/staff/holidays/schools).
-    for (const t of ['ss_admission_requests', 'ss_support_requests', 'ss_staff', 'ss_holidays']) {
+    // The named owner policies (admission/support/staff/holidays/schools/classes).
+    for (const t of ['ss_admission_requests', 'ss_support_requests', 'ss_staff', 'ss_holidays', 'ss_classes']) {
       const re = new RegExp(`create policy\\s+\\S+\\s+on public\\.${t}[\\s\\S]{0,400}?ss_school_owner\\(school_id\\) = auth\\.uid\\(\\)`, 'i');
       assert.match(sqlCode, re, `${t}: no owner-only policy found`);
     }
