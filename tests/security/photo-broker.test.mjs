@@ -84,3 +84,21 @@ test('late photo reply after logout cannot repopulate cache',async()=>{
  app.run('sbClearPhotoMemory();photoFinish({ok:true,json:function(){return Promise.resolve({url:SB_URL+"/storage/v1/object/sign/student-photos/a/b.jpg?token=test"});}});');
  assert.equal(await pending,null);assert.equal(app.run('Object.keys(sbPhotoCache).length'),0);
 });
+test('broker 401 triggers session-expired logout, other failures stay silent',async()=>{
+ const app=createAppContext();
+ app.run("state.role='teacher';state.user={cloud:true};state.cloudTeacherToken='test-token';sbFetchWithTimeout=function(){return Promise.resolve({status:401,ok:false});};");
+ assert.equal(await app.run('sbResolvePhoto('+JSON.stringify(id)+')'),null);
+ assert.equal(app.run('state.user'),null);
+});
+test('teacher photo RPC wrapper rejects raw bytes/URLs, passes ss-photo refs',async()=>{
+ const app=createAppContext();
+ const ref='ss-photo:'+id;
+ app.run("sbRest=function(){return Promise.resolve({ok:true,data:{ok:true,photo_data_url:'data:image/png;base64,YQ=='}});};");
+ assert.equal(await app.run('sbTeacherStudentPhoto("tok",'+JSON.stringify(id)+')'),null);
+ app.run("sbRest=function(){return Promise.resolve({ok:true,data:{ok:true,photo_url:'https://project.example/storage/v1/object/public/student-photos/a/b.jpg'}});};");
+ assert.equal(await app.run('sbTeacherStudentPhoto("tok",'+JSON.stringify(id)+')'),null);
+ app.run("sbRest=function(){return Promise.resolve({ok:true,data:{ok:true,photo_url:'"+ref+"'}});};");
+ assert.equal(await app.run('sbTeacherStudentPhoto("tok",'+JSON.stringify(id)+')'),ref);
+ app.run("sbRest=function(){return Promise.resolve({ok:true,data:{ok:true,photo_url:'ss-photo:99999999-9999-4999-8999-999999999999'}});};");
+ assert.equal(await app.run('sbTeacherStudentPhoto("tok",'+JSON.stringify(id)+')'),null);
+});

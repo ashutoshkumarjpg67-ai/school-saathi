@@ -38,6 +38,12 @@ function sbResolvePhoto(id) {
     var headers = { apikey:SB_ANON_KEY,'Content-Type':'application/json' };
     if (token) headers.Authorization = 'Bearer ' + token;
     return sbFetchWithTimeout(SB_URL+'/functions/v1/student-photo',{method:'POST',headers:headers,body:JSON.stringify(body)}).then(function(res) {
+      // Fix 6: a 401 means the broker rejected the token (expired/revoked).
+      // Reuse the existing cloud session-expired UX (toast + logout), the
+      // same idiom as the six bad_token sites in app.js. 404/503 stay
+      // silent null; never retry here — for owner kind the token was
+      // already refreshed, and RPC tokens are never refreshed.
+      if (res.status === 401) { toast(t('tCloudSessionExpired')); logout(); return null; }
       return res.ok ? res.json() : null;
     });
   }).then(function(result) {
@@ -76,6 +82,26 @@ function sbPhotoNormalizeRows() {
     }
   });
 }
+// Fix 5: the teacher-photo RPC must only ever yield an opaque broker ref.
+// Raw photo bytes (SQL29 photo_data_url) and raw Storage URLs bypass the
+// broker: sbPhotoImage renders data: URLs directly and the value is
+// persisted into the teacher session snapshot. Reject anything else.
+// maybeLoadCloudStudentPhoto already treats null as "no photo".
+// Accept ONLY 'ss-photo:<uuid>': a broker-signed URL stored as cur.photo is
+// unusable anyway (sbPhotoStudentId does not recognise /object/sign/ URLs).
+// HARD GATE: do not ship this wrapper until the live deployed
+// ss_teacher_student_photo is proven to be the SQL45 version (returns only
+// 'ss-photo:' ids); if live is still SQL29, this wrapper would silently
+// blank teacher photos for legacy data-URL students.
+var sbPhotoOldTeacherStudentPhoto = sbTeacherStudentPhoto;
+sbTeacherStudentPhoto = function (token, studentServerId) {
+  return sbPhotoOldTeacherStudentPhoto(token, studentServerId).then(function (url) {
+    if (typeof url !== 'string') return null;
+    if (!/^ss-photo:[0-9a-f-]{36}$/i.test(url)) return null;
+    if (url.slice(9).toLowerCase() !== String(studentServerId || '').toLowerCase()) return null;
+    return url;
+  }).catch(function () { return null; });
+};
 var sbPhotoOldAvatar=avatarHTML;
 avatarHTML=function(photo,name,cls) {
   var c=cls || 'avatar';

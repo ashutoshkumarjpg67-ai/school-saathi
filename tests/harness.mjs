@@ -49,6 +49,7 @@ function elementStub() {
     innerHTML: '',
     value: '',
     click() {},
+    focus() {},
   };
 }
 
@@ -78,7 +79,7 @@ export function createAppContext() {
     clearInterval,
     localStorage,
     document: documentStub,
-    window: { addEventListener() {}, removeEventListener() {} },
+    window: { addEventListener() {}, removeEventListener() {}, scrollTo() {} },
     navigator: {},
     location: { href: 'http://localhost/', reload() {} },
     // No network in the harness: any fetch rejects, so a test can
