@@ -4920,6 +4920,85 @@ const test = `
   db.classes = classesBefore119;
   db.auditLog = auditBefore119;
   saveDB(db);
+  // ---- v120 (Phase 5, Module 6): attendance correction — un-mark one student, clear a whole day ----
+  // Audit: attendance had mark (create) + re-mark/save (update + 'Attendance updated' audit) but NO delete anywhere — a wrongly-marked student could never go back to "Not marked", and a wrongly-marked day could never be cleared. The sync delete path exists and is proven (v102/v110) — the app just never deletes a mark.
+  loginAs(TEST_ACCOUNTS.school);
+  state.view = 'attendance'; state.attDate = todayIST(); state.attCls = '6th-A';
+  var day120 = todayIST() + '|6th-A';
+  var attBefore120 = JSON.parse(JSON.stringify(db.attendance[day120] || {}));
+  var auditBefore120 = db.auditLog.slice();
+  var roster120 = db.students.filter(function (x) { return x.cls === '6th-A' && isEnrolledStudent(x); });
+  var sA120 = roster120[0], sB120 = roster120[1];
+  ok(typeof clearAttMark === 'function', 'v120: clearAttMark exists');
+  ok(typeof clearAttDay === 'function', 'v120: clearAttDay exists');
+  ok(attendancePage().indexOf('clearAttDay(') !== -1, 'v120: the register has a Clear day button');
+  // (a) One student un-marked: the mark goes, the other stays, the audit names the removal.
+  markAtt(sA120.id, 'Present'); markAtt(sB120.id, 'Absent');
+  ok(attendancePage().indexOf('clearAttMark(') !== -1, 'v120: the register has a per-student Clear button');
+  eq(db.attendance[day120][sA120.id], 'Present', 'v120: setup mark 1 exists');
+  eq(db.attendance[day120][sB120.id], 'Absent', 'v120: setup mark 2 exists');
+  clearAttMark(sA120.id);
+  eq(db.attendance[day120][sA120.id], undefined, 'v120: the cleared mark is gone');
+  eq(db.attendance[day120][sB120.id], 'Absent', 'v120: the other mark stays');
+  ok(db.auditLog.some(function (a) { return a.action === 'Attendance mark removed'; }), 'v120: un-marking writes a remove audit row');
+  // (b) A fresh student: 100 percent after marking, 0 after an Absent day, back to the 100 admission fallback after clearing.
+  var roll120 = nextRoll('6th-A');
+  var ev120 = { preventDefault: function () {} };
+  state.sb = null;
+  $('fStName').value = 'Clear Test'; $('fStCls').value = '6th'; $('fStSec').value = 'A'; $('fStRoll').value = String(roll120);
+  $('fStG').value = 'Mr. Clear'; $('fStPh').value = '9812345996'; $('fStDob').value = '2014-05-05'; $('fStPin').value = ''; $('fStAadhaar').value = '';
+  $('fStGender').value = 'Boy'; $('fStBlood').value = ''; $('fStCategory').value = ''; $('fStSession').value = '2025–26'; $('fStAdmDate').value = todayIST(); $('fStAdmReq').value = '';
+  saveStudent(ev120, '', '');
+  var clr120 = db.students.filter(function (x) { return x.name === 'Clear Test'; })[0];
+  ok(!!clr120, 'v120: the fresh student is admitted');
+  markAtt(clr120.id, 'Present');
+  eq(studentAttPct(clr120), 100, 'v120: the fresh student is 100 percent after marking');
+  markAtt(clr120.id, 'Absent');
+  eq(studentAttPct(clr120), 0, 'v120: the fresh student is 0 percent after an Absent day');
+  clearAttMark(clr120.id);
+  eq(studentAttPct(clr120), 100, 'v120: the fresh student is back to the 100 admission fallback after clearing');
+  // (c) A principal is read-only: the clear is refused and the mark stays.
+  markAtt(sB120.id, 'Absent');
+  state.role = 'principal'; state.user = { role: 'principal', name: 'P120', email: 'p120@school.in', schoolUid: 'test-school' };
+  clearAttMark(sB120.id);
+  eq(db.attendance[day120][sB120.id], 'Absent', 'v120: a principal cannot clear a mark');
+  loginAs(TEST_ACCOUNTS.school);
+  // (d) Clear the whole day: every mark on the day goes, with one audit row; a second clear is a no-op.
+  markAtt(sA120.id, 'Present'); markAtt(sB120.id, 'Absent');
+  clearAttDay(); confirmYes();
+  eq(Object.keys(db.attendance[day120] || {}).length, 0, 'v120: the whole day is cleared');
+  ok(db.auditLog.some(function (a) { return a.action === 'Attendance cleared'; }), 'v120: clearing the day writes a clear audit row');
+  var clearCount120 = db.auditLog.filter(function (a) { return a.action === 'Attendance cleared'; }).length;
+  clearAttDay();
+  eq(db.auditLog.filter(function (a) { return a.action === 'Attendance cleared'; }).length, clearCount120, 'v120: clearing an empty day writes no second audit row');
+  // (e) A cloud teacher clear posts Clear to the mark RPC (SQL 43).
+  var rpcCalls120 = [];
+  var fetchRec120 = function (url, opts) {
+    rpcCalls120.push({ url: String(url), body: (opts && opts.body) ? String(opts.body) : '' });
+    return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: true }); } });
+  };
+  fetch = fetchRec120;
+  loginCloudTeacher(cloudAcct62, cloudSlice62, '00000000-0000-0000-0000-000000000062');
+  state.view = 'attendance'; state.attCls = '6th-A'; state.attDate = '2026-11-10';
+  markAtt('stu-cloud-62a', 'Present');
+  await new Promise(function (r) { setTimeout(r, 0); });
+  await new Promise(function (r) { setTimeout(r, 0); });
+  var rpcBefore120 = rpcCalls120.length;
+  clearAttMark('stu-cloud-62a');
+  await new Promise(function (r) { setTimeout(r, 0); });
+  await new Promise(function (r) { setTimeout(r, 0); });
+  ok(rpcCalls120.slice(rpcBefore120).some(function (c) { return c.url.indexOf('ss_teacher_mark_attendance') !== -1 && c.body.indexOf('Clear') !== -1; }), 'v120: the cloud clear posts Clear to the mark RPC');
+  eq(cloudSlice62.attendance['2026-11-10|6th-A']['stu-cloud-62a'], undefined, 'v120: the cloud slice mark is gone after clearing');
+  // Only logout clears the cloud tokens (loginAs does not) — without it every later block takes the cloud branch.
+  logout(); await waitLogout();
+  eq(state.cloudTeacherToken, null, 'v120: logout drops the cloud teacher token');
+  // Cleanup: back on the school account, the throwaway student, the day key and the audit list go back.
+  loginAs(TEST_ACCOUNTS.school);
+  db.students = db.students.filter(function (x) { return x.id !== (clr120 && clr120.id); });
+  if (Object.keys(attBefore120).length) db.attendance[day120] = attBefore120; else delete db.attendance[day120];
+  db.auditLog = auditBefore120;
+  saveDB(db);
+  state.attDate = todayIST(); state.attCls = '6th-A';
   // ---- v81 (Phase 3): photo heal — a pull must not leave a student photo-less when the server has one ----
   // Live v80: a photo uploaded and synced (server row has photo_url, Storage
   // object exists) still showed the placeholder in every portal. The

@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 119;
+var APP_VERSION = 120;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -9392,7 +9392,7 @@ function attendancePage() {
     return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td><div class="mark-btns">' +
       ['Present', 'Absent', 'Late'].map(function (m) {
         return '<button class="' + m[0].toLowerCase() + (cur === m ? ' on' : '') + '" onclick="markAtt(\'' + s.id + '\',\'' + m + '\')">' + (m === 'Present' ? t('presBtn') : m === 'Absent' ? t('absBtn') : t('lateBtn')) + '</button>';
-      }).join('') + '</div></td><td>' + notifyCell + '</td></tr>';
+      }).join('') + (recs[s.id] ? '<button class="btn ghost sm" title="' + esc(t('attClear')) + '" onclick="clearAttMark(\'' + s.id + '\')">\u2715</button>' : '') + '</div></td><td>' + notifyCell + '</td></tr>';
   }).join('');
   // v34 (P1-9): an unmarked student is "Not marked", not Present — the
   // Present default lives only in the marking buttons above. Counting an
@@ -9417,7 +9417,7 @@ function attendancePage() {
     if (hol100) { if (state.role === 'school') attTools = '<button class="btn ghost" onclick="removeHoliday()">' + t('removeHoliday') + '</button>'; }
     else {
       if (state.role === 'school') attTools = '<button class="btn" onclick="markHoliday()">🎉 ' + t('markHoliday') + '</button>';
-      attTools += '<button class="btn" onclick="markAllAtt(\'Present\')">' + t('markAllPresent') + '</button><button class="btn" onclick="markAllAtt(\'Absent\')">' + t('markAllAbsent') + '</button><button class="btn green" onclick="saveAttendance()">✓ ' + t('saveAttendance') + '</button>';
+      attTools += '<button class="btn" onclick="markAllAtt(\'Present\')">' + t('markAllPresent') + '</button><button class="btn" onclick="markAllAtt(\'Absent\')">' + t('markAllAbsent') + '</button><button class="btn green" onclick="saveAttendance()">✓ ' + t('saveAttendance') + '</button><button class="btn ghost" onclick="clearAttDay()">' + t('attClearDay') + '</button>';
     }
   }
   return '<div class="page-head"><div><h2>' + t('attendance') + '</h2><p>Class ' + esc(cls) + ' • ' + esc(state.attDate) + ' — ' + (hol100 ? t('holidayWord') : counts.Present + ' ' + t('presBtn') + ', ' + counts.Absent + ' ' + t('absBtn') + ', ' + counts.Late + ' ' + t('lateBtn') + (counts.NotMarked ? ', ' + counts.NotMarked + ' ' + t('attNotMarked') : '')) + '</p></div>' +
@@ -9553,6 +9553,91 @@ function markAllAtt(m) {
   roster.forEach(function (s) { db.attendance[key][s.id] = m; });
   saveDB(db);
   renderPage();
+}
+function clearAttMark(id) {
+  // v120: un-mark one student — a wrong tap goes back to "Not marked".
+  // Same guards as markAtt: a principal is read-only; a teacher/staff
+  // member only their own assigned class; the student must be on this
+  // class's roster. Unlike a tap, a removal IS audited at once — it is
+  // a destructive change, like deleteStudent/deleteTeacher (a mark tap
+  // is only audited when the day is saved). Local: delete the mark,
+  // saveDB, audit row. Cloud: optimistic delete + the mark RPC with
+  // status 'Clear' (SQL 43); a failed call reverts the slice, a dead
+  // token logs the teacher out — the markAtt pattern.
+  if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
+  if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
+  var stu = db.students.find(function (x) { return x.id === id; });
+  if (stu && stu.cls !== state.attCls) { toast(t('tNotAllowed')); return; }
+  var key = state.attDate + '|' + state.attCls;
+  if (!db.attendance[key] || db.attendance[key][id] === undefined) { toast(t('attNothingToClear')); return; }
+  var details120 = (stu ? stu.name : id) + ' \u2022 Class ' + state.attCls + ' \u2022 ' + state.attDate;
+  var attToken120 = state.cloudTeacherToken || state.cloudStaffToken;
+  var attFn120 = state.cloudTeacherToken ? sbTeacherMarkAttendance : sbStaffMarkAttendance;
+  if (attToken120) {
+    if (!stu || !stu.srvId) { toast(t('tNotSaved')); return; }
+    var prev120 = db.attendance[key][id];
+    delete db.attendance[key][id];
+    renderPage();
+    attFn120(attToken120, state.attDate, state.attCls, stu.srvId, 'Clear').then(function (res) {
+      if (res && res.ok) { sbLogAuditCloud(attToken120, 'Attendance mark removed', details120, 'Attendance mark removed', 'Class ' + state.attCls, '\u2705', 'blue'); return; }
+      db.attendance[key][id] = prev120;
+      if (res && res.error === 'bad_token') { toast(t('tCloudSessionExpired')); logout(); return; }
+      toast(t('tNotSaved'));
+      renderPage();
+    });
+    return;
+  }
+  delete db.attendance[key][id];
+  logAudit('Attendance mark removed', details120);
+  saveDB(db);
+  renderPage();
+  toast('\u2713 ' + t('attMarkRemoved'));
+}
+function clearAttDay() {
+  // v120: clear the whole class-day register — e.g. the wrong date or
+  // class was marked. School + teacher/staff (own class); a principal
+  // is read-only; a holiday day has no register to clear. A day with no
+  // marks is a no-op (toast, no modal, no audit row). Otherwise a
+  // confirm modal; the callback deletes the day (local) or one 'Clear'
+  // RPC per student (cloud, the markAllAtt pattern — a failed call
+  // keeps only that student marked).
+  if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
+  if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
+  if (holidayFor(state.attDate, state.attCls)) { toast(t('tHolidayExists')); return; }
+  var key = state.attDate + '|' + state.attCls;
+  var recs = db.attendance[key] || {};
+  var ids = Object.keys(recs);
+  if (!ids.length) { toast(t('attNothingToClear')); return; }
+  var n120 = ids.length, cls120 = state.attCls, date120 = state.attDate;
+  confirmModal(t('attClearDayMsg'), function () {
+    var attToken120 = state.cloudTeacherToken || state.cloudStaffToken;
+    var attFn120 = state.cloudTeacherToken ? sbTeacherMarkAttendance : sbStaffMarkAttendance;
+    if (attToken120) {
+      ids.forEach(function (sid) {
+        var stu = db.students.find(function (x) { return x.id === sid; });
+        if (!stu || !stu.srvId) return;
+        var prev = db.attendance[key] && db.attendance[key][sid];
+        if (db.attendance[key]) delete db.attendance[key][sid];
+        attFn120(attToken120, date120, cls120, stu.srvId, 'Clear').then(function (res) {
+          if (res && res.ok) return;
+          if (!db.attendance[key]) db.attendance[key] = {};
+          if (prev !== undefined) db.attendance[key][sid] = prev;
+          if (res && res.error === 'bad_token') { toast(t('tCloudSessionExpired')); logout(); return; }
+          toast(t('tNotSaved'));
+          renderPage();
+        });
+      });
+      sbLogAuditCloud(attToken120, 'Attendance cleared', 'Class ' + cls120 + ' \u2022 ' + date120 + ' \u2022 ' + n120 + ' marks removed', 'Attendance cleared', 'Class ' + cls120, '\u2705', 'blue');
+      renderPage();
+      toast('\u2713 ' + t('attCleared'));
+      return;
+    }
+    delete db.attendance[key];
+    logAudit('Attendance cleared', 'Class ' + cls120 + ' \u2022 ' + date120 + ' \u2022 ' + n120 + ' marks removed');
+    saveDB(db);
+    renderPage();
+    toast('\u2713 ' + t('attCleared'));
+  });
 }
 function markHoliday() {
   // v100: declare the viewed class-day a holiday — the register shows
