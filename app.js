@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 116;
+var APP_VERSION = 117;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -1220,7 +1220,7 @@ function sbMapTeacher(te, schoolId) {
   // skipped (the teacher logs in once on the school device, which
   // upgrades it, and syncs). The hash is never pulled back down: the
   // accounts store stays the source of truth.
-  var row = { school_id: schoolId, local_id: te.id, name: te.name || '', subject: te.subject || '', cls: te.cls || '', classes: Array.isArray(te.classes) ? te.classes.slice() : [] };
+  var row = { school_id: schoolId, local_id: te.id, name: te.name || '', subject: te.subject || '', cls: te.cls || '', classes: Array.isArray(te.classes) ? te.classes.slice() : [], deleted: !!te.deleted };
   try {
     var acc = loadAccounts().filter(function (a) { return a.role === 'teacher' && a.teacherId === te.id; })[0];
     if (acc && acc.email) row.email = String(acc.email).toLowerCase();
@@ -1237,7 +1237,7 @@ function sbMapStaff(st, schoolId) {
   // syncs). The hash is never pulled back down: the accounts store
   // stays the source of truth. The role rides the row (the server
   // checks it on login); classes[] rides for the Staff role only.
-  var row = { school_id: schoolId, local_id: st.id, name: st.name || '', role: st.role || 'staff', classes: Array.isArray(st.classes) ? st.classes.slice() : [] };
+  var row = { school_id: schoolId, local_id: st.id, name: st.name || '', role: st.role || 'staff', classes: Array.isArray(st.classes) ? st.classes.slice() : [], deleted: !!st.deleted };
   try {
     var acc = loadAccounts().filter(function (a) { return (a.role === 'principal' || a.role === 'accountant' || a.role === 'staff') && a.staffId === st.id; })[0];
     if (acc && acc.email) row.email = String(acc.email).toLowerCase();
@@ -2282,7 +2282,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // v47 extends the same keep to attendance and marks, whose merges
   // used to drop a queued row on snapshot grounds with no outbox
   // check at all.
-  var outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {} };
+  var outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {}, teachers: {}, staff: {} };
   try {
     var uid46 = (account && account.sbUid) || (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
     if (uid46) {
@@ -2294,6 +2294,8 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
           if (e.table === 'ss_marks') outboxUpsert46.marks[e.key] = true;
           if (e.table === 'ss_students') outboxUpsert46.students[e.key] = true;
           if (e.table === 'ss_exams') outboxUpsert46.exams[e.key] = true;
+          if (e.table === 'ss_teachers') outboxUpsert46.teachers[e.key] = true;
+          if (e.table === 'ss_staff') outboxUpsert46.staff[e.key] = true;
         }
       });
     }
@@ -2480,12 +2482,44 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
       if (p.photoUrl) s.photoUrl = p.photoUrl;
     });
   })();
-  d.teachers = mergeById('ss_teachers', d.teachers || [], byTable.ss_teachers || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [] }; });
+  var oldTeachers = d.teachers || [];
+  d.teachers = mergeById('ss_teachers', d.teachers || [], byTable.ss_teachers || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [], deleted: !!row.deleted }; });
+  // v117 (Module 4): merge-keep for a removed teacher — a local removal
+  // with a pending upsert must survive the pull (the server still says
+  // deleted=false until the flush lands), exactly like the student
+  // (v56) and exam (v58) keeps. A removal made elsewhere has no
+  // pending upsert, so it still applies from the server row.
+  (function () {
+    var oldById117 = {};
+    oldTeachers.forEach(function (t) { oldById117[t.id] = t; });
+    d.teachers = d.teachers.map(function (t) {
+      var old = oldById117[t.id];
+      if (old && outboxUpsert46.teachers[t.id] && !sbIsSeedRow('ss_teachers', old, d)) {
+        keep('ss_teachers', t.id);
+        return old;
+      }
+      return t;
+    });
+  })();
   // v90 (Phase 4): the staff list mirrors the server. The pull never
   // carries a password hash (the accounts store is the source of truth)
   // and never overwrites a local-only staff row that has not uploaded
   // yet — mergeById keeps un-synced rows, like it does for teachers.
-  d.staff = mergeById('ss_staff', d.staff || [], byTable.ss_staff || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', role: row.role || 'staff', classes: Array.isArray(row.classes) ? row.classes.slice() : [] }; });
+  var oldStaff = d.staff || [];
+  d.staff = mergeById('ss_staff', d.staff || [], byTable.ss_staff || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', role: row.role || 'staff', classes: Array.isArray(row.classes) ? row.classes.slice() : [], deleted: !!row.deleted }; });
+  // v117 (Module 4): merge-keep for removed staff — same as teachers above.
+  (function () {
+    var oldById117s = {};
+    oldStaff.forEach(function (st) { oldById117s[st.id] = st; });
+    d.staff = d.staff.map(function (st) {
+      var old = oldById117s[st.id];
+      if (old && outboxUpsert46.staff[st.id] && !sbIsSeedRow('ss_staff', old, d)) {
+        keep('ss_staff', st.id);
+        return old;
+      }
+      return st;
+    });
+  })();
   var oldExams = d.exams || [];
   d.exams = mergeById('ss_exams', d.exams || [], byTable.ss_exams || [], function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100, deleted: !!row.deleted }; examMap[row.id] = e.id; return e; });
   // v67 (SQL 20): the server row now carries the deleted flag, so the
@@ -7073,7 +7107,7 @@ function mapCloudStaffPayload(p) {
   var d = emptyDb({ name: (p.school && p.school.name) || '', city: (p.school && p.school.city) || '', principal: '', phone: '', email: '', session: '2025–26', address: '' }, []);
   var stuMap = {};
   d.students = (data.students || []).map(function (row) { var s = sbRowToStudent(row); if (row.id) { stuMap[row.id] = s.id; s.srvId = row.id; } return s; });
-  d.teachers = (data.teachers || []).map(function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [] }; });
+  d.teachers = (data.teachers || []).map(function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [], deleted: !!row.deleted }; });
   // v98: the slice carries the signed-in staff member's OWN record, so
   // staffRecord()/staffClasses()/roleClasses() resolve — before v98 the
   // slice had no db.staff row, roleClasses() returned [] and every cloud
@@ -7195,7 +7229,7 @@ function doStaffLogin(e) {
 }
 function teacherRecord() {
   if (state.role !== 'teacher' || !state.user) return null;
-  return db.teachers.find(function (x) { return x.id === state.user.teacherId; }) || null;
+  return db.teachers.find(function (x) { return x.id === state.user.teacherId && !x.deleted; }) || null;
 }
 function teacherClasses() {
   var te = teacherRecord();
@@ -7206,7 +7240,7 @@ function staffRecord() {
   // v93: the staff record for the signed-in staff member (mirrors
   // teacherRecord). The login sets state.user.staffId.
   if (state.role !== 'staff' || !state.user) return null;
-  return (db.staff || []).find(function (x) { return x.id === state.user.staffId; }) || null;
+  return (db.staff || []).find(function (x) { return x.id === state.user.staffId && !x.deleted; }) || null;
 }
 function staffClasses() {
   // v93: the classes a staff member is assigned to (mirrors
@@ -7291,7 +7325,7 @@ function principalDashboard() {
     '<p class="card-sub">Read-only overview — you can view the whole school, but nothing can be changed from this login.</p></div>' +
     '<div class="tile-grid">' +
     '<div class="tile blue" style="cursor:pointer" onclick="go(\'students\')"><div class="n">' + db.students.length + '</div><div class="l">' + t('totalStudents') + '</div></div>' +
-    '<div class="tile green" style="cursor:pointer" onclick="go(\'teachers\')"><div class="n">' + db.teachers.length + '</div><div class="l">' + t('totalTeachers') + '</div></div>' +
+    '<div class="tile green" style="cursor:pointer" onclick="go(\'teachers\')"><div class="n">' + db.teachers.filter(function (t) { return !t.deleted; }).length + '</div><div class="l">' + t('totalTeachers') + '</div></div>' +
     '<div class="tile orange"><div class="n">₹' + ft.collected + '</div><div class="l">' + t('feeCollected') + '</div></div>' +
     '<div class="tile red"><div class="n">₹' + ft.pending + '</div><div class="l">' + t('pendingFee') + '</div></div>' +
     '</div>' +
@@ -8289,7 +8323,7 @@ function schoolDashboard() {
     '<div class="toolbar"><button class="btn sm" onclick="downloadReportCSV(\'fees\')">⬇ ' + t('downloadReport') + '</button></div></div>' +
   '<div class="stats">' +
     statCard('🎒', 'blue', t('totalStudents'), db.students.length, '', 'up') +
-    statCard('👩‍🏫', 'green', t('totalTeachers'), db.teachers.length, '', 'up') +
+    statCard('👩‍🏫', 'green', t('totalTeachers'), db.teachers.filter(function (t) { return !t.deleted; }).length, '', 'up') +
     statCard('💰', 'orange', t('feeCollected'), ft.collected, '', 'up', { prefix: '₹' }) +
     statCard('⏰', 'red', t('pendingFee'), ft.pending, '', 'down', { prefix: '₹' }) +
   '</div>' +
@@ -11178,10 +11212,10 @@ function teachersPage() {
   // button, no Edit button. Other non-school roles still see nothing.
   if (state.role !== 'school' && state.role !== 'principal') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
   var isPrincipal = state.role === 'principal';
-  var rows = (db.teachers || []).map(function (te) {
+  var rows = (db.teachers || []).filter(function (te) { return !te.deleted; }).map(function (te) {
     var acct = loadAccounts().find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; });
     var clsList = Array.isArray(te.classes) && te.classes.length ? te.classes : (te.cls ? [te.cls] : []);
-    return '<tr><td><b>' + esc(te.name) + '</b></td><td>' + esc(te.subject || '—') + '</td><td>' + esc(clsList.join(', ') || '—') + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('tchrNoLogin') + '</span>') + '</td><td>' + (isPrincipal ? '' : '<button class="btn ghost sm" onclick="teacherForm(\'' + te.id + '\')">' + t('editBtn') + '</button>') + '</td></tr>';
+    return '<tr><td><b>' + esc(te.name) + '</b></td><td>' + esc(te.subject || '—') + '</td><td>' + esc(clsList.join(', ') || '—') + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('tchrNoLogin') + '</span>') + '</td><td>' + (isPrincipal ? '' : '<button class="btn ghost sm" onclick="teacherForm(\'' + te.id + '\')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteTeacher(\'' + te.id + '\')">' + t('deleteBtn') + '</button>') + '</td></tr>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('teachers') + '</h2><p>' + t('teachersSub') + '</p></div>' +
     (isPrincipal ? '' : '<div class="toolbar"><button class="btn" onclick="teacherForm()">+ ' + t('tchrAdd') + '</button></div>') + '</div>' +
@@ -11243,6 +11277,24 @@ function saveTeacher(e, id) {
   toast(t('tchrSaved'));
   return false;
 }
+function deleteTeacher(id) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
+  var te = db.teachers.find(function (x) { return x.id === id; });
+  if (!te) return;
+  // Soft delete only: the record and ALL of its history (attendance,
+  // marks, homework the teacher posted) are kept. The linked login
+  // account is revoked at the same time, so a removed teacher cannot
+  // log in again — locally or from the cloud (SQL 41 refuses deleted
+  // rows in the login + token-owner functions).
+  confirmModal(t('tchrDelMsg') + ' — ' + te.name + '?', function () {
+    te.deleted = true;
+    var list = loadAccounts().filter(function (a) { return !(a.role === 'teacher' && a.teacherId === te.id); });
+    saveAccounts(list);
+    logAudit('Teacher removed', te.name + ' • ' + (te.classes || []).join(', ') + ' (soft delete — record kept)');
+    saveDB(db); renderApp();
+    toast(t('tchrRemoved'));
+  });
+}
 /* ================= STAFF view (v90, Phase 4) =================
    The school admin creates staff login accounts here: name, role
    (Principal / Accountant / Staff), classes for the Staff role, email +
@@ -11262,10 +11314,10 @@ function staffRoleLabel(role) {
 }
 function staffPage() {
   if (state.role !== 'school') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
-  var rows = (db.staff || []).map(function (st) {
+  var rows = (db.staff || []).filter(function (st) { return !st.deleted; }).map(function (st) {
     var acct = loadAccounts().find(function (a) { return (a.role === 'principal' || a.role === 'accountant' || a.role === 'staff') && a.staffId === st.id; });
     var clsList = Array.isArray(st.classes) && st.classes.length ? st.classes.join(', ') : (st.role === 'staff' ? '—' : t('allClasses'));
-    return '<tr><td><b>' + esc(st.name) + '</b></td><td>' + esc(staffRoleLabel(st.role)) + '</td><td>' + esc(clsList) + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('staffNoLogin') + '</span>') + '</td><td><button class="btn ghost sm" onclick="staffForm(\'' + st.id + '\')">' + t('editBtn') + '</button></td></tr>';
+    return '<tr><td><b>' + esc(st.name) + '</b></td><td>' + esc(staffRoleLabel(st.role)) + '</td><td>' + esc(clsList) + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('staffNoLogin') + '</span>') + '</td><td><button class="btn ghost sm" onclick="staffForm(\'' + st.id + '\')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteStaff(\'' + st.id + '\')">' + t('deleteBtn') + '</button></td></tr>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('staffPage') + '</h2><p>' + t('staffPageSub') + '</p></div>' +
     '<div class="toolbar"><button class="btn" onclick="staffForm()">+ ' + t('staffAdd') + '</button></div></div>' +
@@ -11328,6 +11380,23 @@ function saveStaff(e, id) {
   saveDB(db); closeModal(); renderApp();
   toast(t('staffSaved'));
   return false;
+}
+function deleteStaff(id) {
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
+  var st = (db.staff || []).find(function (x) { return x.id === id; });
+  if (!st) return;
+  // Soft delete only: the record is kept. The linked login account is
+  // revoked at the same time, so a removed staff member cannot log in
+  // again — locally or from the cloud (SQL 41 refuses deleted rows in
+  // the login + token-owner functions).
+  confirmModal(t('staffDelMsg') + ' — ' + st.name + '?', function () {
+    st.deleted = true;
+    var list = loadAccounts().filter(function (a) { return !((a.role === 'principal' || a.role === 'accountant' || a.role === 'staff') && a.staffId === st.id); });
+    saveAccounts(list);
+    logAudit('Staff removed', st.name + ' • ' + staffRoleLabel(st.role) + ' (soft delete — record kept)');
+    saveDB(db); renderApp();
+    toast(t('staffRemoved'));
+  });
 }
 PAGE_SCHOOL.exams = examsPage; PAGE_SCHOOL.homework = homeworkPage; PAGE_SCHOOL.notices = noticesPage;
 PAGE_SCHOOL.teachers = teachersPage; PAGE_SCHOOL.staff = staffPage; PAGE_SCHOOL.reports = function () { return reportsPage(); }; PAGE_SCHOOL.settings = settingsPage; PAGE_SCHOOL.admissions = admissionRequestsPage; PAGE_SCHOOL.activityLog = activityLogPage;

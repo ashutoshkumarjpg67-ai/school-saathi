@@ -4681,6 +4681,101 @@ const test = `
   db.admCounter = admBefore116;
   db.auditLog = auditBefore116;
   saveDB(db);
+  // ---- v117 (Phase 5, Module 4): teacher/staff removal ----
+  // Audit: teachers and staff have create + update (saveTeacher and
+  // saveStaff log both) but NO delete anywhere — no delete function, no
+  // Delete button, no delete audit row — and no deleted flag in the sync
+  // path (sbMapTeacher, sbMapStaff and the pull mappings carry no deleted
+  // field, unlike exams since v67), so a local removal would also be
+  // resurrected by the next pull. A removed teacher also keeps their
+  // login: the linked local account is never revoked.
+  loginAs(TEST_ACCOUNTS.school);
+  db = migrateV12(migrateV15(seedDB())); saveDB(db);
+  var auditBefore117 = db.auditLog.slice();
+  var tchrCount117 = db.teachers.length;
+  ok(typeof deleteTeacher === 'function', 'v117: deleteTeacher exists');
+  ok(typeof deleteStaff === 'function', 'v117: deleteStaff exists');
+  ok(teachersPage().indexOf('deleteTeacher(') !== -1, 'v117: teachers page has a Delete button');
+  var mapT117 = sbMapTeacher({ id: 't-del-117', name: 'Del', subject: 'Maths', cls: '6th-A', classes: ['6th-A'], deleted: true }, 'sid-117');
+  eq(mapT117.deleted, true, 'v117: sbMapTeacher carries the deleted flag');
+  var mapS117 = sbMapStaff({ id: 'st-del-117', name: 'Del', role: 'staff', classes: ['6th-A'], deleted: true }, 'sid-117');
+  eq(mapS117.deleted, true, 'v117: sbMapStaff carries the deleted flag');
+  if (typeof deleteTeacher === 'function') {
+    teacherForm('');
+    $('fTchrName').value = 'Delete Me Teach'; $('fTchrSub').value = 'Mathematics';
+    $('fTchrEmail').value = 'deleteme117@school.in'; $('fTchrPw').value = 'teach123';
+    tchrFormClasses = ['6th-A'];
+    saveTeacher({ preventDefault: function () {} }, '');
+    eq(db.teachers.length, tchrCount117 + 1, 'v117: saving the teacher form adds a teacher');
+    var delT117 = db.teachers[db.teachers.length - 1];
+    ok(!!loadAccounts().find(function (a) { return a.email === 'deleteme117@school.in'; }), 'v117: the teacher login account is stored');
+    ok(db.auditLog.some(function (a) { return a.action === 'Teacher added'; }), 'v117: add writes a create audit row');
+    teacherForm(delT117.id);
+    $('fTchrSub').value = 'Science';
+    saveTeacher({ preventDefault: function () {} }, delT117.id);
+    eq(delT117.subject, 'Science', 'v117: teacher edit saves the new subject');
+    ok(db.auditLog.some(function (a) { return a.action === 'Teacher updated'; }), 'v117: edit writes an update audit row');
+    deleteTeacher(delT117.id); confirmYes();
+    eq(delT117.deleted, true, 'v117: delete sets the deleted flag, it does not drop the record');
+    ok(!!db.teachers.find(function (x) { return x.id === delT117.id; }), 'v117: soft-deleted teacher record is kept');
+    ok(teachersPage().indexOf('Delete Me Teach') === -1, 'v117: teachers page drops the removed teacher');
+    ok(!loadAccounts().find(function (a) { return a.email === 'deleteme117@school.in'; }), 'v117: the teacher login account is revoked on delete');
+    ok(db.auditLog.some(function (a) { return a.action === 'Teacher removed'; }), 'v117: delete writes a delete audit row');
+    eq(db.teachers.filter(function (t) { return !t.deleted; }).length, tchrCount117, 'v117: active teacher count is back to the seed count');
+    ok(schoolDashboard().indexOf('<div class="lbl">' + t('totalTeachers') + '</div><div class="val">' + tchrCount117 + '</div>') !== -1, 'v117: dashboard teacher count drops the removed teacher');
+    state.user = { role: 'teacher', teacherId: delT117.id }; state.role = 'teacher';
+    ok(teacherRecord() === null, 'v117: teacherRecord is null for a removed teacher');
+    eq(teacherClasses().length, 0, 'v117: a removed teacher has no classes');
+    loginAs(TEST_ACCOUNTS.school);
+    logout(); await waitLogout();
+    if ($('teacherSchool')) $('teacherSchool').value = '';
+    $('teacherEmail').value = 'deleteme117@school.in'; $('teacherPw').value = 'teach123';
+    doTeacherLogin({ preventDefault: function () {} });
+    eq(state.role, null, 'v117: a removed teacher login is refused');
+    loginAs(TEST_ACCOUNTS.school);
+    db.teachers = db.teachers.filter(function (x) { return x.id !== delT117.id; });
+  }
+  if (typeof deleteStaff === 'function') {
+    db = migrateV12(migrateV15(seedDB())); saveDB(db);
+    staffForm('');
+    $('fStaffName').value = 'Delete Me Staff'; $('fStaffEmail').value = 'deleteme117-staff@school.in';
+    $('fStaffPw').value = 'staff123'; $('fStaffRole').value = 'staff';
+    staffFormClasses = ['6th-A'];
+    saveStaff({ preventDefault: function () {} }, '');
+    eq(db.staff.length, 1, 'v117: saving the staff form adds a staff member');
+    ok(staffPage().indexOf('deleteStaff(') !== -1, 'v117: staff page has a Delete button');
+    var delS117 = db.staff[0];
+    deleteStaff(delS117.id); confirmYes();
+    eq(delS117.deleted, true, 'v117: delete sets the deleted flag on staff, it does not drop the record');
+    ok(!!db.staff.find(function (x) { return x.id === delS117.id; }), 'v117: soft-deleted staff record is kept');
+    ok(staffPage().indexOf('Delete Me Staff') === -1, 'v117: staff page drops the removed staff member');
+    ok(!loadAccounts().find(function (a) { return a.email === 'deleteme117-staff@school.in'; }), 'v117: the staff login account is revoked on delete');
+    ok(db.auditLog.some(function (a) { return a.action === 'Staff removed'; }), 'v117: staff delete writes a delete audit row');
+    db.staff = db.staff.filter(function (x) { return x.id !== delS117.id; });
+  }
+  // Pull keeps: a local removal with a pending upsert survives the pull
+  // (the server still says deleted=false until the flush lands), and a
+  // removal made on another device applies when there is no pending upsert.
+  state.sb = { uid: 'sb-uid-117' };
+  var prof117 = { name: 'Test School', city: 'Patna', principal: 'P', phone: '', email: '', session: '2025-26', address: '' };
+  var schoolRow117 = { id: 'srv-school-117', name: 'Test School', city: 'Patna', principal: 'P', phone: '', email: '', session: '2025-26', address: '', logo_url: null, logo_data_url: null, adm_counter: 1, receipt_counter: 1, admission_fee: 0, caution_money: 0, annual_charges: 0, transport_fee: 0 };
+  function d117(teachers, staff) { return { profile: prof117, feeExtras: { admissionFee: 0, cautionMoney: 0, annualCharges: 0, transportFee: 0 }, admCounter: 1, receiptCounter: 1, students: [], teachers: teachers, staff: staff, exams: [], feeRecords: [], feeStructure: [], attendance: {}, receipts: [], marks: [], homework: [], notices: [], admissionRequests: [], auditLog: [], activities: [] }; }
+  sbOutboxAdd('sb-uid-117', { table: 'ss_teachers', key: 't-keep-117', op: 'upsert', row: { id: 't-keep-117' }, at: new Date().toISOString() });
+  var d117a = d117([{ id: 't-keep-117', name: 'Keep Teach', subject: 'Maths', cls: '6th-A', classes: ['6th-A'], deleted: true }], []);
+  sbApplyServerRows(d117a, schoolRow117, { ss_teachers: [{ id: 'srv-t-117', local_id: 't-keep-117', name: 'Keep Teach', subject: 'Maths', cls: '6th-A', classes: ['6th-A'], deleted: false }] }, null, 'srv-school-117');
+  eq(d117a.teachers[0].deleted, true, 'v117: a pending removal upsert survives the pull');
+  sbOutboxRemove('sb-uid-117', { table: 'ss_teachers', key: 't-keep-117' });
+  var d117b = d117([{ id: 't-srv-117', name: 'Srv Teach', subject: 'Maths', cls: '6th-A', classes: ['6th-A'] }], []);
+  sbApplyServerRows(d117b, schoolRow117, { ss_teachers: [{ id: 'srv-t-117b', local_id: 't-srv-117', name: 'Srv Teach', subject: 'Maths', cls: '6th-A', classes: ['6th-A'], deleted: true }] }, null, 'srv-school-117');
+  eq(d117b.teachers[0].deleted, true, 'v117: a removal made on another device applies from the pull');
+  sbOutboxAdd('sb-uid-117', { table: 'ss_staff', key: 'st-keep-117', op: 'upsert', row: { id: 'st-keep-117' }, at: new Date().toISOString() });
+  var d117c = d117([], [{ id: 'st-keep-117', name: 'Keep Staff', role: 'staff', classes: ['6th-A'], deleted: true }]);
+  sbApplyServerRows(d117c, schoolRow117, { ss_staff: [{ id: 'srv-st-117', local_id: 'st-keep-117', name: 'Keep Staff', role: 'staff', classes: ['6th-A'], deleted: false }] }, null, 'srv-school-117');
+  eq(d117c.staff[0].deleted, true, 'v117: a pending staff removal upsert survives the pull');
+  sbOutboxRemove('sb-uid-117', { table: 'ss_staff', key: 'st-keep-117' });
+  state.sb = null;
+  db.auditLog = auditBefore117;
+  saveDB(db);
   // ---- v81 (Phase 3): photo heal — a pull must not leave a student photo-less when the server has one ----
   // Live v80: a photo uploaded and synced (server row has photo_url, Storage
   // object exists) still showed the placeholder in every portal. The
@@ -10066,7 +10161,7 @@ async function v28run() {
   v28ok(src.includes("freshRows('ss_students', (d.students || [])"), 'v47: the students step deliberately keeps the snapshot filter — the bypass would resurrect a server-deleted student (v31 server-wins)');
   v28ok(src.includes('var hwUpload = schoolRecreated') && src.includes('var nUpload = schoolRecreated') && src.includes('var auUpload = schoolRecreated') && src.includes('var acUpload = schoolRecreated'), 'v47: the homework / notices / audit-log / activities steps use the bypass too');
   v28ok(src.includes('outboxUpsert46.attendance[snapKey]') && src.includes('outboxUpsert46.marks[key]'), 'v47: the pull keeps an attendance mark / mark with a pending outbox upsert — a stale snapshot entry never wipes an unconfirmed upload');
-  v28ok(src.includes('outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {} }'), 'v47: the shared outbox set covers attendance and marks as well as fee records and receipts — and students since v56, exams since v58');
+  v28ok(src.includes('outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {}, teachers: {}, staff: {} }'), 'v47: the shared outbox set covers attendance and marks as well as fee records and receipts — and students since v56, exams since v58, teachers and staff since v117');
   v28ok(src.includes('var serverList = [];') && src.includes("if (r.id && onServer[r.id]) return;"), 'v47: mergeById collapses duplicate server rows by id — the 6-row fee duplication never doubles the local list');
   v28ok(src.includes('function receiptStudent(rc)') && src.includes("name: rc.name || (s && s.name) || ''"), 'v47: receiptStudent resolves the display student from the receipt\'s own stored name first, the local row only for the photo');
   v28ok(src.includes('var s2 = receiptStudent(rc);'), 'v47: the saved-receipt detail renders through receiptStudent, never through a local-student id lookup');
