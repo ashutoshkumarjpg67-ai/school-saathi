@@ -4,7 +4,7 @@
 // roleClasses / PAGE_* maps) in the Phase 1 harness. Fixtures only —
 // seedDB() demo data, never a real school.
 //
-// The matrix below is pinned EXACTLY as it stands in app.js at v111.
+// The matrix below is pinned EXACTLY as it stands in app.js at v119.
 // Any future PERMS change (a new view, a role gaining/losing a page)
 // must update this table in the same commit — that is the point: a
 // silent permission widening fails CI instead of shipping.
@@ -20,7 +20,7 @@ import { createAppContext } from '../harness.mjs';
 // Expected PERMS at v108, copied from app.js (var PERMS, ~line 7545).
 // school = School Admin. Order matches app.js.
 const EXPECTED_PERMS = {
-  school: ['dashboard', 'students', 'teachers', 'staff', 'admissions', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog', 'settings'],
+  school: ['dashboard', 'students', 'teachers', 'staff', 'classes', 'admissions', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog', 'settings'],
   teacher: ['dashboard', 'students', 'attendance', 'exams', 'homework', 'notices'],
   student: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'],
   principal: ['dashboard', 'students', 'teachers', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports'],
