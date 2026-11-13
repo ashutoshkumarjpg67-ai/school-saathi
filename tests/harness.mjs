@@ -32,6 +32,7 @@ const LOAD_ORDER = [
   'js/modules/crypto.js',
   'js/modules/i18n.js',
   'app.js',
+  'js/modules/private-photos.js',
   'scripts/seed-fixtures.js',
 ];
 
@@ -110,4 +111,4 @@ export function createAppContext() {
     /** The in-memory localStorage, for assertions on what was saved. */
     storage: localStorage,
   };
-}
+    }
