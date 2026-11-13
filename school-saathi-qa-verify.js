@@ -5090,6 +5090,77 @@ const test = `
   state.feeFilter = 'All'; state.feeType = 'All'; state.feeSearch = ''; state.feeLimit = 120;
   loginAs(TEST_ACCOUNTS.school);
 
+  // ---- v123 (Phase 5 Module 8): a cleared mark is a removal — it gets its own audit row ----
+  // Before this version saveMarks counted every cleared input as a
+  // "saved" mark: clearing 3 marks logged "Marks saved ... 3
+  // students" and nothing anywhere said a mark was removed. A removal
+  // is a destructive delete (the v120 attendance precedent), so it
+  // now logs "Marks removed" naming the students, and "Marks saved"
+  // counts only values actually entered or changed.
+  state.role = 'school'; state.user = TEST_ACCOUNTS.school; state.sb = null;
+  state.editExamId = null;
+  var audit123 = db.auditLog.slice();
+  var marks123 = db.marks.slice();
+  var exams123 = db.exams.slice();
+  var acts123 = db.activities.slice();
+  var ev123 = { preventDefault: function () {} };
+  $('fExName').value = 'V123 Removal Test';
+  $('fExCls').value = '10th-A';
+  $('fExSub').value = 'Mathematics';
+  $('fExDate').value = '2026-11-13';
+  $('fExTotal').value = '100';
+  saveExam(ev123);
+  var ex123 = db.exams[db.exams.length - 1];
+  ok(!!ex123 && ex123.name === 'V123 Removal Test', 'v123: a fresh exam is created for the removal test');
+  var roster123 = db.students.filter(function (s) { return s.cls === '10th-A' && isEnrolledStudent(s); });
+  var dom123 = {};
+  roster123.forEach(function (s) { dom123[s.id] = $('mk-' + s.id).value; });
+  var stu34name123 = (db.students.filter(function (s) { return s.id === 'stu34'; })[0] || {}).name || 'stu34';
+  var setMarks123 = function (v33, v34) {
+    roster123.forEach(function (s) {
+      var v = s.id === 'stu33' ? v33 : (s.id === 'stu34' ? v34 : '');
+      $('mk-' + s.id).value = v;
+    });
+  };
+  // (a) two marks in: stu33 80, stu34 70.
+  setMarks123('80', '70');
+  saveMarks(ex123.id);
+  var mk33a123 = db.marks.filter(function (m) { return m.examId === ex123.id && m.studentId === 'stu33'; })[0];
+  var mk34a123 = db.marks.filter(function (m) { return m.examId === ex123.id && m.studentId === 'stu34'; })[0];
+  eq(mk33a123 && mk33a123.marks, 80, 'v123: the first save stores stu33 80');
+  eq(mk34a123 && mk34a123.marks, 70, 'v123: the first save stores stu34 70');
+  ok(db.auditLog[0] && db.auditLog[0].action === 'Marks saved' && db.auditLog[0].details.indexOf('2 students') !== -1, 'v123: two entered marks log one Marks saved row with 2 students');
+  // (b) clear stu34 only; stu33 is re-saved unchanged.
+  setMarks123('80', '');
+  saveMarks(ex123.id);
+  ok(!db.marks.some(function (m) { return m.examId === ex123.id && m.studentId === 'stu34'; }), 'v123: clearing the input removes the stu34 mark');
+  var mk33b123 = db.marks.filter(function (m) { return m.examId === ex123.id && m.studentId === 'stu33'; })[0];
+  eq(mk33b123 && mk33b123.marks, 80, 'v123: the stu33 mark survives the partial clear');
+  ok(db.auditLog[0] && db.auditLog[0].action === 'Marks removed' && db.auditLog[0].details.indexOf(stu34name123) !== -1, 'v123: the removal logs a Marks removed row naming the student');
+  ok(db.auditLog[1] && db.auditLog[1].action === 'Marks saved' && db.auditLog[1].details.indexOf('1 student') !== -1, 'v123: the same save still logs Marks saved for the 1 re-saved student');
+  ok($('toast').textContent.indexOf('1 student') !== -1, 'v123: the mixed save toasts 1 student saved');
+  // (c) re-enter stu34, stu33 unchanged: two saved, none removed.
+  setMarks123('80', '70');
+  saveMarks(ex123.id);
+  eq(db.marks.filter(function (m) { return m.examId === ex123.id; }).length, 2, 'v123: re-entering the cleared mark brings the exam back to 2 marks');
+  ok(db.auditLog[0] && db.auditLog[0].action === 'Marks saved' && db.auditLog[0].details.indexOf('2 students') !== -1, 'v123: re-entering logs Marks saved with 2 students and no removal row');
+  // (d) clear everything: only a removal row, no new Marks saved row.
+  var savedCount123 = db.auditLog.filter(function (a) { return a.action === 'Marks saved'; }).length;
+  setMarks123('', '');
+  saveMarks(ex123.id);
+  ok(!db.marks.some(function (m) { return m.examId === ex123.id; }), 'v123: clearing all inputs removes every mark on the exam');
+  eq(db.auditLog.filter(function (a) { return a.action === 'Marks saved'; }).length, savedCount123, 'v123: a removal-only save writes no new Marks saved row');
+  ok(db.auditLog[0] && db.auditLog[0].action === 'Marks removed' && db.auditLog[0].details.indexOf('2 students') !== -1, 'v123: clearing all marks logs Marks removed with 2 students');
+  ok($('toast').textContent.indexOf('Marks removed') !== -1, 'v123: a removal-only save toasts Marks removed');
+  // Cleanup: the fixture exam, its marks and the audit/activity rows go.
+  // The mk-* inputs are restored too — the block left them all empty,
+  // and the next saveMarks on ex1 (v97) would read the stale blanks
+  // and silently clear stu35's mark.
+  db.auditLog = audit123; db.marks = marks123; db.exams = exams123; db.activities = acts123;
+  roster123.forEach(function (s) { $('mk-' + s.id).value = dom123[s.id]; });
+  saveDB(db);
+  state.examId = null; state.editExamId = null;
+
   // ---- v81 (Phase 3): photo heal — a pull must not leave a student photo-less when the server has one ----
   // Live v80: a photo uploaded and synced (server row has photo_url, Storage
   // object exists) still showed the placeholder in every portal. The
@@ -5864,6 +5935,15 @@ const test = `
   // Before v97 a marks save wrote neither — the Activity Log showed the
   // exam being created, never the marks going in.
   state.role = 'school'; state.user = TEST_ACCOUNTS.school; state.view = 'exams'; state.examId = 'ex1';
+  // v123: set every roster input explicitly first — a stale blank input
+  // would silently clear that student's mark (and since v123 that logs
+  // a Marks removed row on top, so auditLog[0] would no longer be the
+  // Marks saved row this vector checks). Each input keeps its current
+  // mark, so the save below is a pure update of stu33/stu36.
+  db.students.filter(function (s) { return s.cls === '10th-A' && isEnrolledStudent(s); }).forEach(function (s) {
+    var m97 = db.marks.filter(function (x) { return x.examId === 'ex1' && x.studentId === s.id; })[0];
+    $('mk-' + s.id).value = m97 ? String(m97.marks) : '';
+  });
   $('mk-stu33').value = '91';
   $('mk-stu36').value = '61';
   saveMarks('ex1');
@@ -10625,6 +10705,69 @@ async function v28run() {
   ctx.state.feeFormOpen = false; ctx.state.feeEditId = null; ctx.state.feeStudent = null; ctx.state.collectStudent = null;
   ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
 
+  // ---- v123 async: a mark taken with the net off appears after sync — once, and never lost ----
+  // Module 8 offline proof for marks (the v122 pattern for fees): the
+  // mark is entered while the fetch fails, a cycle runs (and fails)
+  // while offline, then the net comes back and one cycle must put
+  // exactly one row on the server; a second cycle must not duplicate
+  // it. The local mark survives every step, and the Marks saved audit
+  // row syncs with it.
+  Object.keys(sbServer).forEach(function (k) { sbServer[k] = []; });
+  (function () { var keys = []; for (var i = 0; i < ls.length; i++) keys.push(ls.key(i)); keys.forEach(function (k) { ls.removeItem(k); }); })();
+  ctx.sbSyncResetMemory();
+  resetDevice();
+  ctx.sbSyncDebounceMs = 0;
+  vm44SeedTestSchool();
+  ctx.saveAccounts([vmAcct]);
+  ctx.loginAs(vmAcct);
+  ctx.db = ctx.emptyDb({ name: 'Test Sunrise School', city: 'Patna', principal: 'Test Admin', phone: '', email: 'test@sunrise.test', session: '2025–26', address: '' });
+  ctx.state.sb = { uid: 'sb-uid-vm@school.in', email: 'vm@school.in' };
+  ctx.sbStoreSession({ access_token: 'vm-token-123', refresh_token: 'vm-refresh-123', user_id: 'sb-uid-vm@school.in', expires_at: 9999999999 });
+  ctx.saveDB(ctx.db);
+  var c123dl = await ctx.sbSyncCycle();
+  v28eq(c123dl.done, true, 'v123 async: the download cycle completes');
+  var v123stu = ctx.db.students.filter(function (s) { return s.id === 'stu1794162292000'; })[0];
+  v28ok(!!v123stu, 'v123 async: the download brings Test Kumar down');
+  // The exam must exist on the server first, or the mark has nothing to map to.
+  ctx.db.exams.push({ id: 'ex123', name: 'V123 Offline Test', cls: '6th-A', subject: 'Mathematics', date: '2026-11-13', total: 100 });
+  ctx.saveDB(ctx.db);
+  var c123ex = await ctx.sbSyncCycle();
+  v28eq(c123ex.done, true, 'v123 async: the exam upload cycle completes');
+  var srvEx123 = sbServer.ss_exams.filter(function (r) { return r.local_id === 'ex123'; })[0];
+  v28ok(!!srvEx123, 'v123 async: the exam is on the server before the mark');
+  // Net off: the fetch rejects, so the device counts as offline.
+  ctx.fetch = function () { return Promise.reject(new Error('v123 net down')); };
+  ctx.state.view = 'exams'; ctx.state.examId = 'ex123'; ctx.renderPage();
+  ctx.document.getElementById('mk-stu1794162292000').value = '85';
+  ctx.saveMarks('ex123');
+  var mk123a = ctx.db.marks.filter(function (m) { return m.examId === 'ex123' && m.studentId === 'stu1794162292000'; })[0];
+  v28ok(!!mk123a && mk123a.marks === 85, 'v123 async: the offline mark is saved locally');
+  // A cycle while offline must not crash and must not lose the entry.
+  var c123off = null;
+  try { c123off = await ctx.sbSyncCycle(); } catch (e) { c123off = { done: false, error: String(e && e.message) }; }
+  v28ok(true, 'v123 async: the offline cycle does not crash (done=' + (c123off && c123off.done) + ')');
+  v28ok(!!ctx.db.marks.filter(function (m) { return m.examId === 'ex123' && m.studentId === 'stu1794162292000'; })[0], 'v123 async: the offline mark survives the failed cycle locally');
+  v28eq(sbServer.ss_marks.length, 0, 'v123 async: nothing reaches the server while offline');
+  // Net back on: one cycle puts exactly one row on the server.
+  ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
+  var c123on = await ctx.sbSyncCycle();
+  v28eq(c123on.done, true, 'v123 async: the cycle after the net returns completes');
+  var srvStu123 = sbServer.ss_students.filter(function (r) { return r.local_id === 'stu1794162292000'; })[0];
+  var srvMk123 = sbServer.ss_marks.filter(function (r) { return r.exam_id === (srvEx123 && srvEx123.id) && r.student_id === (srvStu123 && srvStu123.id); });
+  v28eq(srvMk123.length, 1, 'v123 async: the server gains exactly one mark row after sync');
+  v28eq(Number(srvMk123[0] && srvMk123[0].marks), 85, 'v123 async: the server row carries the entered mark');
+  v28ok(!!ctx.db.marks.filter(function (m) { return m.examId === 'ex123' && m.studentId === 'stu1794162292000'; })[0], 'v123 async: the local mark is still there after sync');
+  v28ok(sbServer.ss_audit_log.some(function (a) { return a.action === 'Marks saved'; }), 'v123 async: the Marks saved audit row reaches the server too');
+  // A second cycle must not duplicate it.
+  var c123on2 = await ctx.sbSyncCycle();
+  v28eq(c123on2.done, true, 'v123 async: the second cycle completes');
+  v28eq(sbServer.ss_marks.filter(function (r) { return r.exam_id === (srvEx123 && srvEx123.id) && r.student_id === (srvStu123 && srvStu123.id); }).length, 1, 'v123 async: the second cycle adds no duplicate row');
+  // Cleanup: the fixture exam + mark leave the local db.
+  ctx.db.marks = ctx.db.marks.filter(function (m) { return m.examId !== 'ex123'; });
+  ctx.db.exams = ctx.db.exams.filter(function (e) { return e.id !== 'ex123'; });
+  ctx.saveDB(ctx.db);
+  ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
+
   // ---- Source-level checks ----
   v28ok(src.includes('SB_ANON_KEY') && src.includes('bsjqeeeemwimzldrehpw'), 'v28: app.js has the Supabase URL + anon key constant');
   v28ok(!src.includes('__SB_ANON_KEY__'), 'v28: no unfilled anon-key placeholder remains');
@@ -10663,6 +10806,8 @@ async function v28run() {
   // ---- v122: Module 7 (fees) — audit coverage + the Pending-record edit path ----
   v28ok(src.includes('function openEditFee') && src.includes("logAudit('Fee record updated'"), 'v122: the fee edit path + update audit exist');
   v28ok(src.includes("logAudit('Fee added'") && src.includes("logAudit('Fees generated'"), 'v122: manual add + Generate Fees write audit rows');
+  v28ok(src.includes("logAudit('Marks removed'") && src.includes("sbLogAuditCloud(mkToken98, 'Marks removed'"), 'v123: a cleared mark logs a Marks removed audit row locally and on the cloud path');
+  v28ok(src.includes("t('tMarksRemoved')"), 'v123: the removal toast uses the i18n key');
   v28ok(src.includes("logAudit('Fee structure updated'") && src.includes("logAudit('Fee structure row added'") && src.includes("logAudit('Fee structure row removed'"), 'v122: fee-structure save/add/remove write audit rows');
   v28ok(src.includes('var serverList = [];') && src.includes("if (r.id && onServer[r.id]) return;"), 'v47: mergeById collapses duplicate server rows by id — the 6-row fee duplication never doubles the local list');
   v28ok(src.includes('function receiptStudent(rc)') && src.includes("name: rc.name || (s && s.name) || ''"), 'v47: receiptStudent resolves the display student from the receipt\'s own stored name first, the local row only for the photo');

@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 122;
+var APP_VERSION = 123;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -10848,7 +10848,7 @@ function saveMarks(examId) {
   if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
   // v35: a teacher enters marks only for their own assigned class.
   if (state.role === 'teacher' && teacherClasses().indexOf(ex.cls) === -1) { toast(t('tNotAllowed')); return; }
-  var saved = 0, bad = [];
+  var saved = 0, removed = 0, removedNames = [], bad = [];
   var changes = []; // v62: {studentId, marks} — marks null clears an existing mark. Computed first, applied after the write lands.
   // A9 (M-25): one pass over db.marks into a Map (was a full scan per roster
   // student): key examId|studentId -> index, last match wins, matching
@@ -10866,7 +10866,7 @@ function saveMarks(examId) {
     var key = examId + '|' + s.id;
     var mkIdx = marksByKey.has(key) ? marksByKey.get(key) : -1;
     if (inp.value === '') {
-      if (mkIdx !== -1) { changes.push({ studentId: s.id, marks: null }); saved++; } // empty = remove marks
+      if (mkIdx !== -1) { changes.push({ studentId: s.id, marks: null }); removed++; removedNames.push(s.name); } // v123: empty = remove marks — a removal, never a save
       return;
     }
     if (!isEnrolledStudent(s)) return; // Cancelled/Draft: no new marks
@@ -10899,6 +10899,7 @@ function saveMarks(examId) {
   var doneToast = function () {
     if (bad.length) toast(t('tNotSaved') + ': ' + bad.join(', ') + ' — ' + t('tCheckMarks') + ' (max ' + ex.total + ').');
     else if (saved) toast('✓ ' + t('tMarksSaved') + ' ' + saved + ' ' + t(saved === 1 ? 'tStudentWord' : 'tStudentsWord') + '.');
+    else if (removed) toast('✓ ' + t('tMarksRemoved') + ' ' + removed + ' ' + t(removed === 1 ? 'tStudentWord' : 'tStudentsWord') + '.');
     else toast(t('tNoChanges'));
   };
   // v62: a cloud teacher writes through the server RPC (one call for the
@@ -10923,6 +10924,7 @@ function saveMarks(examId) {
       }
       applyChanges(changes);
       if (saved) sbLogAuditCloud(mkToken98, 'Marks saved', ex.name + ' • ' + ex.cls + ' • ' + saved + ' ' + (saved === 1 ? 'student' : 'students'), 'Marks saved', ex.name + ' • ' + ex.cls, '📝', 'blue');
+      if (removed) sbLogAuditCloud(mkToken98, 'Marks removed', ex.name + ' • ' + ex.cls + ' • ' + removed + ' ' + (removed === 1 ? 'student' : 'students') + ' — ' + removedNames.join(', '), 'Marks removed', ex.name + ' • ' + ex.cls, '📝', 'blue');
       renderApp();
       doneToast();
     });
@@ -10933,6 +10935,7 @@ function saveMarks(examId) {
   // Activity Log showed the exam being created, never the marks going
   // in. One save = one entry in each list, like attendance.
   if (saved) { logAudit('Marks saved', ex.name + ' • ' + ex.cls + ' • ' + saved + ' ' + (saved === 1 ? 'student' : 'students')); addActivity('📝', 'blue', 'Marks saved', ex.name + ' • ' + ex.cls); }
+  if (removed) { logAudit('Marks removed', ex.name + ' • ' + ex.cls + ' • ' + removed + ' ' + (removed === 1 ? 'student' : 'students') + ' — ' + removedNames.join(', ')); addActivity('📝', 'blue', 'Marks removed', ex.name + ' • ' + ex.cls); }
   saveDB(db); renderApp();
   doneToast();
 }

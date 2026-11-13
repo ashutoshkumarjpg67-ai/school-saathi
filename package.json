@@ -1,6 +1,6 @@
 {
   "name": "school-saathi",
-  "version": "122.0.0",
+  "version": "123.0.0",
   "private": true,
   "description": "School Saathi \u2014 multi-tenant school management app (PWA + Capacitor native shell). Static build, no bundler.",
   "scripts": {
