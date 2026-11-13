@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 120;
+var APP_VERSION = 121;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -2161,7 +2161,11 @@ function sbRetryMigration(btn) {
 // "Back Up Now". Also fetches the school row itself (profile, fee extras,
 // counters) and the fee structure, which the content tables do not carry.
 function sbRowToStudent(row) {
-  return { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', roll: row.roll || 0,
+  // v121: a downloaded student carries the same admission default as a
+  // locally-admitted one (saveStudent mints att: 100). Without it the
+  // no-record fallback reads 0% (live v120: Test Kumar showed 0% with
+  // no marks, although a locally-admitted student reads 100%).
+  return { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', roll: row.roll || 0, att: 100,
     enr: row.enr || '', guardian: row.guardian || '', phone: row.phone || '', mobile2: row.mobile2 || '',
     parentEmail: row.parent_email || '', fatherName: row.father_name || '', motherName: row.mother_name || '',
     occupation: row.occupation || '', dob: row.dob || '',
@@ -2883,6 +2887,7 @@ function sbTombLoad(uid) { try { var r = localStorage.getItem(SB_TOMB_KEY + ':' 
 function sbTombSave(uid, map) { try { localStorage.setItem(SB_TOMB_KEY + ':' + uid, JSON.stringify(map)); } catch (e) {} }
 function sbTombPrune(map) { var now = Date.now(), out = {}, t, k; for (t in map) { if (!map[t] || typeof map[t] !== 'object') continue; out[t] = {}; for (k in map[t]) { if (map[t][k] && (now - map[t][k] < SB_TOMB_TTL_MS)) out[t][k] = map[t][k]; } if (!Object.keys(out[t]).length) delete out[t]; } return out; }
 function sbTombAdd(uid, table, key) { if (!uid || !table || !key) return; try { var m = sbTombPrune(sbTombLoad(uid)); if (!m[table]) m[table] = {}; m[table][key] = Date.now(); sbTombSave(uid, m); } catch (e) {} }
+function sbTombRemove(uid, table, key) { if (!uid || !table || !key) return; try { var m = sbTombPrune(sbTombLoad(uid)); if (m[table] && m[table][key]) { delete m[table][key]; if (!Object.keys(m[table]).length) delete m[table]; sbTombSave(uid, m); } } catch (e) {} }
 function sbTombHas(uid, table, key) { if (!uid || !table || !key) return false; try { var m = sbTombPrune(sbTombLoad(uid)); return !!(m[table] && m[table][key]); } catch (e) { return false; } }
 function sbSrvIdsLoad(uid) {
   try { var r = localStorage.getItem(SB_SRVID_KEY + ':' + uid); var o = r ? JSON.parse(r) : {}; return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; }
@@ -9442,6 +9447,14 @@ function markAtt(id, m) {
   var stu = db.students.find(function (x) { return x.id === id; });
   if (stu && stu.cls !== state.attCls) { toast(t('tNotAllowed')); return; }
   var key = state.attDate + '|' + state.attCls;
+  // v121: a (re-)mark supersedes any prior delete of the same student-day.
+  // The delete's tombstone would otherwise make the next pull treat the
+  // re-created server row as a zombie (skip it + re-queue its delete),
+  // and the flush then marks the key synced — so the pull drops the local
+  // mark too (live v120: a mark saved at 14:19:03 IST vanished by the
+  // next cycle, and the server row was deleted by the re-queued delete).
+  var tombUid121 = (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
+  if (tombUid121) sbTombRemove(tombUid121, 'ss_attendance', state.attDate + '|' + state.attCls + '|' + id);
   // v62: a cloud teacher writes through the server RPC, not the local
   // DB. Optimistic: the slice updates at once, and a failed call reverts
   // it. A dead token logs the teacher out (re-login mints a new one).
@@ -9526,6 +9539,10 @@ function markAllAtt(m) {
   var roster = db.students.filter(function (s) { return s.cls === state.attCls && isEnrolledStudent(s); });
   if (!roster.length) return;
   var key = state.attDate + '|' + state.attCls;
+  // v121: same tombstone clear as markAtt, for the whole roster at once —
+  // a re-marked day supersedes any prior delete of those keys.
+  var tombUid121b = (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
+  if (tombUid121b) roster.forEach(function (s) { sbTombRemove(tombUid121b, 'ss_attendance', state.attDate + '|' + state.attCls + '|' + s.id); });
   var attToken100 = state.cloudTeacherToken || state.cloudStaffToken;
   var attFn100 = state.cloudTeacherToken ? sbTeacherMarkAttendance : sbStaffMarkAttendance;
   if (attToken100) {
