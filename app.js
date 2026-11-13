@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 123;
+var APP_VERSION = 124;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -3123,7 +3123,7 @@ var SB_SYNC_TABLES = {
   ss_holidays: { local: 'holidays', key: 'id' },
   ss_admission_requests: { local: 'admissionRequests', key: 'id' }, ss_receipts: { local: 'receipts', key: 'receiptNo' }
 };
-var SB_SYNC_DELETABLE = ['ss_fee_records', 'ss_fee_structure', 'ss_attendance', 'ss_marks', 'ss_holidays', 'ss_classes']; // v119: a deleted class row must leave the server too, or the pull restores it
+var SB_SYNC_DELETABLE = ['ss_fee_records', 'ss_fee_structure', 'ss_attendance', 'ss_marks', 'ss_holidays', 'ss_classes', 'ss_homework']; // v119: a deleted class row must leave the server too, or the pull restores it // v124: a deleted homework row must leave the server too
 function sbSyncTableHashes(d, schoolId, maps) {
   // Canonical hash per row = the exact server payload it would push.
   // Local rows and server-derived rows hash identically when their
@@ -11171,11 +11171,15 @@ function homeworkPage() {
   var list = db.homework.filter(function (h) { return (isStudent || isParent) ? h.cls === myCls : (isTeacher || isStaff) ? roleClasses().indexOf(h.cls) !== -1 : true; });
   var items = list.map(function (h) {
     var done = me ? h.doneBy.indexOf(me.id) !== -1 : false;
+    // v124: Edit/Delete buttons — school + own-class teacher/staff only;
+    // a student, parent or principal never gets them.
+    var canEdit124 = !isStudent && !isParent && state.role !== 'principal' && ((isTeacher || isStaff) ? roleClasses().indexOf(h.cls) !== -1 : true);
+    var btns124 = canEdit124 ? '<button class="btn" onclick="editHomework(\'' + h.id + '\')">✎ ' + t('editHomework') + '</button><button class="btn danger" onclick="deleteHomework(\'' + h.id + '\')">🗑 ' + t('deleteHomework') + '</button>' : '';
     var box = isStudent
       ? '<input type="checkbox" ' + (done ? 'checked' : '') + ' onchange="toggleHw(\'' + h.id + '\', this.checked)" aria-label="Mark done">'
       : '';
     return '<div class="hw-item ' + (done ? 'done' : '') + '">' + box +
-      '<div><b>' + esc(h.title) + '</b><span>' + esc(h.subject) + ' • Class ' + esc(h.cls) + ' • Due ' + esc(h.due) + (isStudent ? '' : ' • ' + h.doneBy.length + ' ' + t('doneSuffix')) + '</span></div></div>';
+      '<div><b>' + esc(h.title) + '</b><span>' + esc(h.subject) + ' • Class ' + esc(h.cls) + ' • Due ' + esc(h.due) + (isStudent ? '' : ' • ' + h.doneBy.length + ' ' + t('doneSuffix')) + '</span></div>' + btns124 + '</div>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('homework') + '</h2><p>' + (isStudent ? 'Class ' + esc(myCls) + ' — ' + t('tapDone') : t('subHomework')) + '</p></div>' +
     ((isStudent || isParent || state.role === 'principal') ? '' : '<div class="toolbar"><button class="btn" onclick="homeworkForm()">+ ' + t('addHomework') + '</button></div>') + '</div>' + // v88: a principal never gets the Add button either
@@ -11191,26 +11195,59 @@ function toggleHw(id, done) {
   var me = meStudent();
   if (!me) return;
   var i = h.doneBy.indexOf(me.id);
-  if (done && i === -1) h.doneBy.push(me);
+  // v124: push the student ID, not the student object — pushing the
+  // object meant indexOf(me.id) never found it again, so the checkbox
+  // unchecked itself on re-render, the mark could never be undone, and
+  // the sync mapper filtered the object out (the done state never
+  // reached the server).
+  var changed124 = (done && i === -1) || (!done && i !== -1);
+  if (done && i === -1) h.doneBy.push(me.id);
   if (!done && i !== -1) h.doneBy.splice(i, 1);
+  if (changed124) logAudit(done ? 'Homework done' : 'Homework not done', me.name + ' • ' + h.title + ' • Class ' + h.cls);
   saveDB(db); renderPage();
   toast(done ? '✓ ' + t('tHwDone') : t('tHwNotDone'));
 }
-function homeworkForm() {
+function homeworkForm(editId) {
   // v35: a teacher assigns homework only to their own classes.
   // v93: a staff member assigns homework only to their own classes too.
-  var clsList35 = (state.role === 'teacher' || state.role === 'staff') ? roleClasses() : schoolClasses();
+  // v124: edit mode — the class is locked (the done list belongs to
+  // that class's roster), subject/title/due are editable. The due-date
+  // minimum is dropped in edit mode so an old homework (past due) can
+  // still be fixed; the create form's default due is today (the old
+  // hard-coded 2026-11-12 was already in the past).
+  var hw124 = editId ? db.homework.find(function (x) { return x.id === editId; }) : null;
+  var clsList35 = hw124 ? [hw124.cls] : ((state.role === 'teacher' || state.role === 'staff') ? roleClasses() : schoolClasses());
   var clsOpts = clsList35.map(function (c) { return '<option>' + c + '</option>'; }).join('');
-  var subOpts = schoolSubjectList().map(function (s) { return '<option>' + s + '</option>'; }).join('');
-  openModal('<h3>' + t('addHomework') + '</h3><form onsubmit="return saveHomework(event)"><div class="form-grid">' +
-    '<div><label>' + t('fClass') + '</label><select id="fHwCls">' + clsOpts + '</select></div>' +
+  var subOpts = schoolSubjectList().map(function (x) { return '<option' + (hw124 && hw124.subject === x ? ' selected' : '') + '>' + x + '</option>'; }).join('');
+  openModal('<h3>' + (hw124 ? t('editHomework') : t('addHomework')) + '</h3><form onsubmit="return saveHomework(event' + (hw124 ? ', \'' + hw124.id + '\'' : '') + ')"><div class="form-grid">' +
+    '<div><label>' + t('fClass') + '</label><select id="fHwCls"' + (hw124 ? ' disabled' : '') + '>' + clsOpts + '</select>' + (hw124 ? '<div class="hint">' + t('hwClsLocked') + '</div>' : '') + '</div>' +
     '<div><label>' + t('fSubject') + '</label><select id="fHwSub">' + subOpts + '</select></div>' +
-    '<div class="full"><label>' + t('fTitle') + '</label><input id="fHwTitle" required placeholder="e.g. Ex 5.2 — Q1 to Q10"></div>' +
-    '<div><label>' + t('fDue') + '</label><input id="fHwDue" type="date" min="' + todayIST() + '" value="2026-11-12" required></div>' +
-    '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + t('assignHw') + '</button></div></form>');
+    '<div class="full"><label>' + t('fTitle') + '</label><input id="fHwTitle" required placeholder="e.g. Ex 5.2 — Q1 to Q10" value="' + (hw124 ? esc(hw124.title) : '') + '"></div>' +
+    '<div><label>' + t('fDue') + '</label><input id="fHwDue" type="date"' + (hw124 ? '' : ' min="' + todayIST() + '"') + ' value="' + (hw124 ? hw124.due : todayIST()) + '" required></div>' +
+    '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + (hw124 ? t('saveBtn') : t('assignHw')) + '</button></div></form>');
 }
-function saveHomework(e) {
+function saveHomework(e, editId) {
   e.preventDefault();
+  // v124: edit mode — update subject/title/due on the existing row
+  // (class locked). A cloud teacher/staff member has no edit path to
+  // the server, so only the school admin (or a local teacher/staff
+  // member, whose change rides the school's sync) may edit. A past due
+  // date is refused only when it CHANGES — an old homework keeps its
+  // due unless the teacher moves it.
+  if (editId) {
+    var hw124 = db.homework.find(function (x) { return x.id === editId; });
+    if (!hw124) return false;
+    if (state.cloudTeacherToken || state.cloudStaffToken) { toast(t('tHwCloudReadOnly')); return false; }
+    if (state.role === 'principal') { toast(t('tNotAllowed')); return false; }
+    if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(hw124.cls) === -1) { toast(t('tNotAllowed')); return false; }
+    var newDue124 = $('fHwDue').value;
+    if (newDue124 < todayIST() && newDue124 !== hw124.due) { toast(t('tDueFuture')); return false; }
+    hw124.subject = $('fHwSub').value; hw124.title = $('fHwTitle').value.trim(); hw124.due = newDue124;
+    logAudit('Homework updated', hw124.title + ' • Class ' + hw124.cls + ' • due ' + hw124.due);
+    saveDB(db); closeModal(); renderApp();
+    toast(t('tHwUpdated'));
+    return false;
+  }
   if ($('fHwDue').value < todayIST()) { toast(t('tDueFuture')); return false; }
   // v88: a principal is read-only — they never post homework.
   if (state.role === 'principal') { toast(t('tNotAllowed')); return false; }
@@ -11245,6 +11282,27 @@ function saveHomework(e) {
   saveDB(db); closeModal(); renderApp();
   toast(t('tHwAssigned'));
   return false;
+}
+function editHomework(id) {
+  var h = db.homework.find(function (x) { return x.id === id; });
+  if (!h) return;
+  if (state.role === 'principal' || state.role === 'student' || state.role === 'parent') { toast(t('tNotAllowed')); return; }
+  if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(h.cls) === -1) { toast(t('tNotAllowed')); return; }
+  if (state.cloudTeacherToken || state.cloudStaffToken) { toast(t('tHwCloudReadOnly')); return; }
+  homeworkForm(id);
+}
+function deleteHomework(id) {
+  var h = db.homework.find(function (x) { return x.id === id; });
+  if (!h) return;
+  if (state.role === 'principal' || state.role === 'student' || state.role === 'parent') { toast(t('tNotAllowed')); return; }
+  if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(h.cls) === -1) { toast(t('tNotAllowed')); return; }
+  if (state.cloudTeacherToken || state.cloudStaffToken) { toast(t('tHwCloudReadOnly')); return; }
+  confirmModal(t('delHwMsg') + ' — ' + h.title + ' • Class ' + h.cls + '?', function () {
+    db.homework = db.homework.filter(function (x) { return x.id !== id; });
+    logAudit('Homework deleted', h.title + ' • Class ' + h.cls + ' • ' + h.subject + ' • due ' + h.due);
+    saveDB(db); renderApp();
+    toast(t('tHwDeleted'));
+  });
 }
 function noticesPage() {
   var items = db.notices.map(function (n) {

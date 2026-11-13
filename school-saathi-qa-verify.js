@@ -5161,6 +5161,77 @@ const test = `
   saveDB(db);
   state.examId = null; state.editExamId = null;
 
+  // ---- v124 (Phase 5 Module 9): homework edit/delete + the done-toggle id bug ----
+  // (a) toggleHw pushed the whole student OBJECT into doneBy instead of
+  // the id — indexOf(me.id) never found it again, so the checkbox
+  // unchecked itself on re-render, un-marking did nothing, and the sync
+  // mapper filtered the object out (done never reached the server).
+  // (b) There was no way to edit or delete a homework at all — a typo or
+  // a wrong assignment could never be fixed or removed, and nothing
+  // audited it.
+  var hw124a = { id: 'hw-124a', cls: '6th-A', subject: 'Mathematics', title: 'V124 Edit Test', due: '2026-11-20', doneBy: ['stu33'] };
+  var hw124b = { id: 'hw-124b', cls: '9th-A', subject: 'English', title: 'V124 Guard Test', due: '2026-11-20', doneBy: [] };
+  var hw124c = { id: 'hw-124c', cls: '10th-A', subject: 'Science', title: 'V124 Toggle Test', due: '2026-11-20', doneBy: [] };
+  var hwSnap124 = db.homework.slice();
+  var hwAud124 = db.auditLog.slice();
+  db.homework.push(hw124a, hw124b, hw124c);
+  saveDB(db);
+  // Edit: the form prefills, the class is locked, the save updates.
+  homeworkForm('hw-124a');
+  ok($('modalRoot').innerHTML.indexOf('value="V124 Edit Test"') !== -1, 'v124: the edit form prefills the title');
+  ok($('modalRoot').innerHTML.indexOf('6th-A') !== -1, 'v124: the edit form shows the locked class');
+  ok($('modalRoot').innerHTML.indexOf('disabled') !== -1, 'v124: the class select is disabled in edit mode');
+  $('fHwTitle').value = 'V124 Edited Title'; $('fHwSub').value = 'Science'; $('fHwDue').value = '2026-11-25';
+  var sub124 = $('fHwSub').value;
+  saveHomework({ preventDefault: function () {} }, 'hw-124a');
+  var hwA124 = db.homework.filter(function (h) { return h.id === 'hw-124a'; })[0];
+  eq(hwA124 && hwA124.title, 'V124 Edited Title', 'v124: the edit saves the new title');
+  eq(hwA124 && hwA124.subject, sub124, 'v124: the edit saves the new subject');
+  eq(hwA124 && hwA124.due, '2026-11-25', 'v124: the edit saves the new due date');
+  eq(hwA124 && hwA124.cls, '6th-A', 'v124: the edit keeps the class');
+  eq((hwA124 && hwA124.doneBy || []).join(','), 'stu33', 'v124: the edit preserves the done list');
+  ok(db.auditLog[0] && db.auditLog[0].action === 'Homework updated' && db.auditLog[0].details.indexOf('V124 Edited Title') !== -1, 'v124: the edit logs a Homework updated row');
+  // Edit refused: moving the due date into the past.
+  homeworkForm('hw-124a');
+  $('fHwDue').value = '2026-01-01';
+  saveHomework({ preventDefault: function () {} }, 'hw-124a');
+  eq(db.homework.filter(function (h) { return h.id === 'hw-124a'; })[0].due, '2026-11-25', 'v124: a past due date is refused on edit');
+  eq(db.auditLog.filter(function (a) { return a.action === 'Homework updated'; }).length, 1, 'v124: the refused edit writes no new Homework updated row');
+  // Delete: confirm + audit. Guarded — deleteHomework is new in v124.
+  ok(typeof deleteHomework === 'function', 'v124: deleteHomework exists');
+  if (typeof deleteHomework === 'function') {
+    deleteHomework('hw-124a'); confirmYes();
+    ok(!db.homework.some(function (h) { return h.id === 'hw-124a'; }), 'v124: the confirmed delete removes the row');
+    ok(db.auditLog[0] && db.auditLog[0].action === 'Homework deleted' && db.auditLog[0].details.indexOf('V124 Edited Title') !== -1, 'v124: the delete logs a Homework deleted row');
+    // Guards: a principal may not delete; a teacher may not delete another class.
+    var role124 = state.role;
+    state.role = 'principal';
+    deleteHomework('hw-124b');
+    ok(db.homework.some(function (h) { return h.id === 'hw-124b'; }), 'v124: a principal cannot delete homework');
+    state.role = role124;
+    db.teachers.push({ id: 'te-124', name: 'Guard Teacher', subject: 'Maths', classes: ['10th-A'], email: 'guard124@test.in' });
+    state.role = 'teacher'; state.user = { role: 'teacher', name: 'Guard Teacher', email: 'guard124@test.in', teacherId: 'te-124', schoolUid: 'test-school' };
+    deleteHomework('hw-124b');
+    ok(db.homework.some(function (h) { return h.id === 'hw-124b'; }), 'v124: a teacher cannot delete another class homework');
+    state.role = 'school'; state.user = TEST_ACCOUNTS.school;
+    db.teachers = db.teachers.filter(function (x) { return x.id !== 'te-124'; });
+  }
+  // Toggle as a student (Riya, stu33, 10th-A): the id — not the object — lands in doneBy.
+  loginAs({ role: 'student', name: 'Riya Kumari', sub: t('stuSub') + ' • Riya Kumari', email: 'student:test-school:stu33', uid: 'student-stu33', studentId: 'stu33', schoolUid: 'test-school' }, { silent: true });
+  toggleHw('hw-124c', true);
+  var hwC124 = db.homework.filter(function (h) { return h.id === 'hw-124c'; })[0];
+  eq((hwC124.doneBy || []).join(','), 'stu33', 'v124: marking done stores the student id in doneBy');
+  ok(db.auditLog[0] && db.auditLog[0].action === 'Homework done' && db.auditLog[0].details.indexOf('Riya Kumari') !== -1, 'v124: marking done logs a Homework done row naming the student');
+  var audCount124 = db.auditLog.length;
+  toggleHw('hw-124c', true);
+  eq(db.auditLog.length, audCount124, 'v124: marking an already-done homework done again writes no new audit row');
+  toggleHw('hw-124c', false);
+  eq((hwC124.doneBy || []).join(','), '', 'v124: un-marking removes the student id again');
+  ok(db.auditLog[0] && db.auditLog[0].action === 'Homework not done', 'v124: un-marking logs a Homework not done row');
+  loginAs(TEST_ACCOUNTS.school);
+  // Restore.
+  db.homework = hwSnap124; db.auditLog = hwAud124; saveDB(db);
+
   // ---- v81 (Phase 3): photo heal — a pull must not leave a student photo-less when the server has one ----
   // Live v80: a photo uploaded and synced (server row has photo_url, Storage
   // object exists) still showed the placeholder in every portal. The
@@ -7859,6 +7930,26 @@ async function v28run() {
   var cy110m2 = await ctx.sbSyncStart(pullAcct, 'sb-uid-pull@school.in', 'tok-pull');
   v28eq(sbServer.ss_marks.filter(function (r) { return r.exam_id === 'srv-ex-110' && r.student_id === srvStu110.id; }).length, 0, 'v110: server mark stays gone after a second cycle');
   v28eq(ctx.sbOutboxLoad('sb-uid-pull@school.in').filter(function (e) { return e.table === 'ss_marks' && e.key === 'ex-110|stu-w1'; }).length, 0, 'v110: no marks delete op is left queued after the second cycle');
+
+  // ---- v124: a homework delete must reach the server too ----
+  // ss_homework joins SB_SYNC_DELETABLE: removing the row locally
+  // queues a delete op, the full cycle removes the server row, and a
+  // second cycle does not resurrect it.
+  ctx.db.homework.push({ id: 'hw-124', cls: '6th-A', subject: 'Maths', title: 'V124 Delete Test', due: '2026-11-20', doneBy: [] });
+  ctx.saveDB(ctx.db);
+  v28eq(ctx.sbOutboxLoad('sb-uid-pull@school.in').filter(function (e) { return e.table === 'ss_homework' && e.key === 'hw-124' && e.op === 'upsert'; }).length, 1, 'v124: posting homework queues one upsert');
+  var fl124 = await ctx.sbSyncFlushNow();
+  v28eq(fl124.done, true, 'v124: homework flush completes');
+  var srvHw124 = sbServer.ss_homework.filter(function (r) { return r.local_id === 'hw-124'; })[0];
+  v28ok(!!srvHw124, 'v124: fixture homework hw-124 is on the mock server');
+  ctx.db.homework = ctx.db.homework.filter(function (h) { return h.id !== 'hw-124'; });
+  ctx.saveDB(ctx.db);
+  v28eq(ctx.sbOutboxLoad('sb-uid-pull@school.in').filter(function (e) { return e.table === 'ss_homework' && e.key === 'hw-124' && e.op === 'delete'; }).length, 1, 'v124: removing the homework queues one delete op');
+  var cy124a = await ctx.sbSyncStart(pullAcct, 'sb-uid-pull@school.in', 'tok-pull');
+  v28eq(sbServer.ss_homework.filter(function (r) { return r.local_id === 'hw-124'; }).length, 0, 'v124: server homework is gone after the full cycle');
+  v28ok(!ctx.db.homework.some(function (h) { return h.id === 'hw-124'; }), 'v124: local homework stays gone after the full cycle');
+  var cy124b = await ctx.sbSyncStart(pullAcct, 'sb-uid-pull@school.in', 'tok-pull');
+  v28eq(sbServer.ss_homework.filter(function (r) { return r.local_id === 'hw-124'; }).length, 0, 'v124: server homework stays gone after a second cycle');
 
   // ---- v111: a parent must see ONLY their own child in visibleStudents() ----
   // Phase 7 review (C2): visibleStudents() has teacher + student branches
@@ -10768,6 +10859,73 @@ async function v28run() {
   ctx.saveDB(ctx.db);
   ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
 
+  // Module 9 offline proof for homework (the v123 pattern for marks):
+  // assigned while the net is down, then marked done by the student
+  // while still offline; one cycle must put exactly one row on the
+  // server with the student in done_by; a second cycle must not
+  // duplicate it. The Homework assigned + Homework done audit rows
+  // sync with it.
+  Object.keys(sbServer).forEach(function (k) { sbServer[k] = []; });
+  (function () { var keys = []; for (var i = 0; i < ls.length; i++) keys.push(ls.key(i)); keys.forEach(function (k) { ls.removeItem(k); }); })();
+  ctx.sbSyncResetMemory();
+  resetDevice();
+  ctx.sbSyncDebounceMs = 0;
+  vm44SeedTestSchool();
+  ctx.saveAccounts([vmAcct]);
+  ctx.loginAs(vmAcct);
+  ctx.db = ctx.emptyDb({ name: 'Test Sunrise School', city: 'Patna', principal: 'Test Admin', phone: '', email: 'test@sunrise.test', session: '2025–26', address: '' });
+  ctx.state.sb = { uid: 'sb-uid-vm@school.in', email: 'vm@school.in' };
+  ctx.sbStoreSession({ access_token: 'tok-vm124', refresh_token: 'ref-vm124', expires_in: 3600, user: { id: 'sb-uid-vm@school.in', email: 'vm@school.in' } });
+  ctx.saveDB(ctx.db);
+  var c124dl = await ctx.sbSyncCycle();
+  v28eq(c124dl.done, true, 'v124 async: the download cycle completes');
+  var v124stu = ctx.db.students.filter(function (s) { return s.id === 'stu1794162292000'; })[0];
+  v28ok(!!v124stu, 'v124 async: the download brings Test Kumar down');
+  // Net off: the fetch rejects, so the device counts as offline.
+  ctx.fetch = function () { return Promise.reject(new Error('v124 net down')); };
+  ctx.state.view = 'homework'; ctx.renderPage();
+  ctx.homeworkForm();
+  ctx.document.getElementById('fHwCls').value = '6th-A';
+  ctx.document.getElementById('fHwSub').value = 'Mathematics';
+  ctx.document.getElementById('fHwTitle').value = 'V124 Offline HW';
+  ctx.document.getElementById('fHwDue').value = '2026-11-20';
+  ctx.saveHomework({ preventDefault: function () {} });
+  var hw124off = ctx.db.homework.filter(function (h) { return h.title === 'V124 Offline HW'; })[0];
+  v28ok(!!hw124off, 'v124 async: the offline homework is saved locally');
+  // A cycle while offline must not crash and must not lose the entry.
+  var c124off = null;
+  try { c124off = await ctx.sbSyncCycle(); } catch (e) { c124off = { done: false, error: String(e && e.message) }; }
+  v28ok(true, 'v124 async: the offline cycle does not crash (done=' + (c124off && c124off.done) + ')');
+  v28ok(!!ctx.db.homework.filter(function (h) { return h.title === 'V124 Offline HW'; })[0], 'v124 async: the offline homework survives the failed cycle locally');
+  v28eq(sbServer.ss_homework.length, 0, 'v124 async: nothing reaches the server while offline');
+  // Still offline, the student marks it done — the id (not the object) must land in doneBy.
+  ctx.state.role = 'student';
+  ctx.state.user = { role: 'student', name: 'Test Kumar', studentId: 'stu1794162292000', uid: 'student-test-kumar', schoolUid: 'sb-uid-vm@school.in' };
+  ctx.state.cloudDb = null;
+  ctx.toggleHw(hw124off.id, true);
+  v28eq((ctx.db.homework.filter(function (h) { return h.id === hw124off.id; })[0].doneBy || []).join(','), 'stu1794162292000', 'v124 async: the offline toggle stores the student id in doneBy');
+  // Back to the school login before syncing — the sync session only runs
+  // for the school-admin role, and the toggle left the role as student.
+  ctx.loginAs(vmAcct);
+  // Net back on: one cycle puts exactly one row on the server.
+  ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
+  var c124on = await ctx.sbSyncCycle();
+  v28eq(c124on.done, true, 'v124 async: the cycle after the net returns completes');
+  var srvStu124 = sbServer.ss_students.filter(function (r) { return r.local_id === 'stu1794162292000'; })[0];
+  var srvHw124b = sbServer.ss_homework.filter(function (r) { return r.local_id === hw124off.id; });
+  v28eq(srvHw124b.length, 1, 'v124 async: the server gains exactly one homework row after sync');
+  v28ok(srvHw124b[0] && (srvHw124b[0].done_by || []).indexOf(srvStu124 && srvStu124.id) !== -1, 'v124 async: the server row carries the student in done_by');
+  v28ok(sbServer.ss_audit_log.some(function (a) { return a.action === 'Homework assigned'; }), 'v124 async: the Homework assigned audit row reaches the server too');
+  v28ok(sbServer.ss_audit_log.some(function (a) { return a.action === 'Homework done'; }), 'v124 async: the Homework done audit row reaches the server too');
+  // A second cycle must not duplicate it.
+  var c124on2 = await ctx.sbSyncCycle();
+  v28eq(c124on2.done, true, 'v124 async: the second cycle completes');
+  v28eq(sbServer.ss_homework.filter(function (r) { return r.local_id === hw124off.id; }).length, 1, 'v124 async: the second cycle adds no duplicate row');
+  // Cleanup: the fixture homework leaves the local db.
+  ctx.db.homework = ctx.db.homework.filter(function (h) { return h.id !== hw124off.id; });
+  ctx.saveDB(ctx.db);
+  ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
+
   // ---- Source-level checks ----
   v28ok(src.includes('SB_ANON_KEY') && src.includes('bsjqeeeemwimzldrehpw'), 'v28: app.js has the Supabase URL + anon key constant');
   v28ok(!src.includes('__SB_ANON_KEY__'), 'v28: no unfilled anon-key placeholder remains');
@@ -10808,6 +10966,11 @@ async function v28run() {
   v28ok(src.includes("logAudit('Fee added'") && src.includes("logAudit('Fees generated'"), 'v122: manual add + Generate Fees write audit rows');
   v28ok(src.includes("logAudit('Marks removed'") && src.includes("sbLogAuditCloud(mkToken98, 'Marks removed'"), 'v123: a cleared mark logs a Marks removed audit row locally and on the cloud path');
   v28ok(src.includes("t('tMarksRemoved')"), 'v123: the removal toast uses the i18n key');
+  v28ok(src.includes("logAudit('Homework updated'") && src.includes("logAudit('Homework deleted'") && src.includes("'Homework done'") && src.includes("'Homework not done'"), 'v124: homework edit/delete/done audit rows exist');
+  v28ok(src.includes('function deleteHomework') && src.includes('function editHomework'), 'v124: homework edit/delete functions exist');
+  v28ok(src.includes('h.doneBy.push(me.id)'), 'v124: the done toggle stores the student id, not the object');
+  var delLine124 = src.split('\n').filter(function (l) { return l.indexOf('SB_SYNC_DELETABLE') !== -1; })[0] || '';
+  v28ok(delLine124.indexOf('ss_homework') !== -1, 'v124: ss_homework is in SB_SYNC_DELETABLE so a homework delete reaches the server');
   v28ok(src.includes("logAudit('Fee structure updated'") && src.includes("logAudit('Fee structure row added'") && src.includes("logAudit('Fee structure row removed'"), 'v122: fee-structure save/add/remove write audit rows');
   v28ok(src.includes('var serverList = [];') && src.includes("if (r.id && onServer[r.id]) return;"), 'v47: mergeById collapses duplicate server rows by id — the 6-row fee duplication never doubles the local list');
   v28ok(src.includes('function receiptStudent(rc)') && src.includes("name: rc.name || (s && s.name) || ''"), 'v47: receiptStudent resolves the display student from the receipt\'s own stored name first, the local row only for the photo');
