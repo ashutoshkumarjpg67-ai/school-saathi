@@ -11080,6 +11080,125 @@ async function v28run() {
   ctx.saveDB(ctx.db);
   ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
 
+
+  // ---- v127 (Phase 5 Module 12 follow-up): the 14 Nov live check caught
+  // two things the v126 vectors never exercised — (A) a notice edited by
+  // the school reverted to its old title after a sync round-trip, and
+  // (B) the Dec fee record + attendance rows vanished from the server
+  // during the role-login sequence. Repro first: the same sequence
+  // against the mock server, then the fix.
+  Object.keys(sbServer).forEach(function (k) { sbServer[k] = []; });
+  (function () { var keys = []; for (var i = 0; i < ls.length; i++) keys.push(ls.key(i)); keys.forEach(function (k) { ls.removeItem(k); }); })();
+  ctx.sbSyncResetMemory();
+  resetDevice();
+  ctx.sbSyncDebounceMs = 0;
+  vm44SeedTestSchool();
+  ctx.saveAccounts([vmAcct]);
+  ctx.loginAs(vmAcct);
+  ctx.db = ctx.emptyDb({ name: 'Test Sunrise School', city: 'Patna', principal: 'Test Admin', phone: '', email: 'test@sunrise.test', session: '2025–26', address: '' });
+  ctx.state.sb = { uid: 'sb-uid-vm@school.in', email: 'vm@school.in' };
+ctx.sbStoreSession({ access_token: 'tok-vm127', refresh_token: 'ref-vm127', expires_in: 3600, user: { id: 'sb-uid-vm@school.in', email: 'vm@school.in' } });
+  ctx.saveDB(ctx.db);
+  var c127dl = await ctx.sbSyncCycle();
+  v28eq(c127dl.done, true, 'v127 async: the download cycle completes');
+  var stu127 = ctx.db.students.filter(function (s) { return s.id === 'stu1794162292000'; })[0];
+  v28ok(!!stu127, 'v127 async: the download brings Test Kumar down');
+  // Baseline: one Dec fee record (Collected) + two attendance days, synced.
+  ctx.db.feeRecords.push({ id: 'feemwfw8iex-1-2f8a52', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Dec', type: 'Tuition', amount: 800, status: 'Collected', date: '2026-11-14' });
+  ctx.db.attendance['2026-11-09|6th-A'] = { 'stu1794162292000': 'Present' };
+  ctx.db.attendance['2026-11-11|6th-A'] = { 'stu1794162292000': 'Absent' };
+  ctx.saveDB(ctx.db);
+  var c127base = await ctx.sbSyncCycle();
+  v28eq(c127base.done, true, 'v127 async: the baseline cycle completes');
+  v28eq(sbServer.ss_fee_records.length, 1, 'v127 async: the Dec fee record reaches the server');
+  v28eq(sbServer.ss_attendance.length, 2, 'v127 async: the two attendance rows reach the server');
+  // (A) Publish a notice, sync it, edit it, sync twice: the edited title
+  // must land on the server after the first cycle and come back locally
+  // after the second — never revert to the old title.
+  ctx.noticeForm();
+  ctx.document.getElementById('fNtTitle').value = 'V127 Live Test';
+  ctx.document.getElementById('fNtBody').value = 'Module 12 round-trip check';
+  ctx.saveNotice({ preventDefault: function () {} });
+  var nt127 = ctx.db.notices[0];
+  v28ok(!!nt127 && nt127.title === 'V127 Live Test', 'v127 async: the notice is published locally');
+  var c127pub = await ctx.sbSyncCycle();
+  v28eq(c127pub.done, true, 'v127 async: the publish cycle completes');
+  var srvNt127 = sbServer.ss_notices.filter(function (r) { return r.local_id === nt127.id; })[0];
+  v28ok(!!srvNt127 && srvNt127.title === 'V127 Live Test', 'v127 async: the published notice reaches the server');
+  ctx.editNotice(nt127.id);
+  ctx.document.getElementById('fNtTitle').value = 'V127 Live Test Edited';
+  ctx.document.getElementById('fNtBody').value = 'Module 12 round-trip check edited';
+  ctx.saveNotice({ preventDefault: function () {} }, nt127.id);
+  v28eq(ctx.db.notices.filter(function (n) { return n.id === nt127.id; })[0].title, 'V127 Live Test Edited', 'v127 async: the edit saves the new title locally');
+  var c127ed1 = await ctx.sbSyncCycle();
+  v28eq(c127ed1.done, true, 'v127 async: the edit cycle completes');
+  var srvNt127e = sbServer.ss_notices.filter(function (r) { return r.local_id === nt127.id; })[0];
+  v28ok(!!srvNt127e && srvNt127e.title === 'V127 Live Test Edited', 'v127 async: the edited title lands on the server after one cycle');
+  var c127ed2 = await ctx.sbSyncCycle();
+  v28eq(c127ed2.done, true, 'v127 async: the second edit cycle completes');
+  v28eq(ctx.db.notices.filter(function (n) { return n.id === nt127.id; })[0].title, 'V127 Live Test Edited', 'v127 async: the edited title survives the second cycle locally');
+  v28ok(!!sbServer.ss_notices.filter(function (r) { return r.local_id === nt127.id; })[0] && sbServer.ss_notices.filter(function (r) { return r.local_id === nt127.id; })[0].title === 'V127 Live Test Edited', 'v127 async: the edited title stays on the server after the second cycle');
+
+  // (A2) The same round-trip for a homework edit — the flush fix (2b)
+  // protects every table, not just notices: an edited homework title
+  // must land on the server and survive the next cycle too.
+  ctx.homeworkForm();
+  ctx.document.getElementById('fHwCls').value = '6th-A';
+  ctx.document.getElementById('fHwSub').value = 'Mathematics';
+  ctx.document.getElementById('fHwTitle').value = 'V127 HW';
+  ctx.document.getElementById('fHwDue').value = '2026-11-25';
+  ctx.saveHomework({ preventDefault: function () {} });
+  var hw127 = ctx.db.homework.filter(function (h) { return h.title === 'V127 HW'; })[0];
+  v28ok(!!hw127, 'v127 async: the homework is created locally');
+  var c127hw = await ctx.sbSyncCycle();
+  v28eq(c127hw.done, true, 'v127 async: the homework cycle completes');
+  v28eq(sbServer.ss_homework.filter(function (r) { return r.local_id === hw127.id; }).length, 1, 'v127 async: the homework reaches the server');
+  ctx.homeworkForm(hw127.id);
+  ctx.document.getElementById('fHwTitle').value = 'V127 HW Edited';
+  ctx.saveHomework({ preventDefault: function () {} }, hw127.id);
+  v28eq(ctx.db.homework.filter(function (h) { return h.id === hw127.id; })[0].title, 'V127 HW Edited', 'v127 async: the homework edit saves the new title locally');
+  var c127hw1 = await ctx.sbSyncCycle();
+  v28eq(c127hw1.done, true, 'v127 async: the homework edit cycle completes');
+  var srvHw127 = sbServer.ss_homework.filter(function (r) { return r.local_id === hw127.id; })[0];
+  v28ok(!!srvHw127 && srvHw127.title === 'V127 HW Edited', 'v127 async: the edited homework title lands on the server after one cycle');
+  var c127hw2 = await ctx.sbSyncCycle();
+  v28eq(c127hw2.done, true, 'v127 async: the second homework edit cycle completes');
+  v28eq(ctx.db.homework.filter(function (h) { return h.id === hw127.id; })[0].title, 'V127 HW Edited', 'v127 async: the edited homework title survives the second cycle locally');
+  // (B) The role-login sequence from the live check: local teacher, then
+  // cloud principal (payload carries fee_records + attendance, like the
+  // real SQL-30 RPC), then school again. Nothing may vanish from the
+  // server — the fee record and both attendance rows must still be there.
+  ctx.logout(); await waitLogoutCtx();
+  var teach127 = { uid: 'u-te-127', name: 'Test Teacher', email: 'teacher127@test.in', pwHash: ctx.hashPw('test1234'), role: 'teacher', schoolUid: 'u-vm-1', classes: ['6th-A'] };
+  ctx.saveAccounts([vmAcct, teach127]);
+  ctx.loginAs(teach127);
+  v28eq(ctx.state.role, 'teacher', 'v127 async: the teacher login signs in as teacher');
+  ctx.logout(); await waitLogoutCtx();
+  var pay127 = { staff: { id: 'st-principal-127', role: 'principal', name: 'Test Principal', classes: [], email: 'principal@test.in' }, school: { name: 'Test Sunrise School', city: 'Patna' }, data: { students: sbServer.ss_students, teachers: sbServer.ss_teachers, attendance: sbServer.ss_attendance, homework: sbServer.ss_homework, notices: sbServer.ss_notices, exams: sbServer.ss_exams, marks: sbServer.ss_marks, fee_records: sbServer.ss_fee_records, fee_structure: sbServer.ss_fee_structure, receipts: sbServer.ss_receipts } };
+  var slice127 = ctx.mapCloudStaffPayload(pay127);
+  var acct127 = { role: 'principal', name: 'Test Principal', sub: 'Principal • Test Principal', email: 'cloud-staff:sb-uid-vm@school.in:st-principal-127', uid: 'cloud-staff-st-principal-127', staffId: 'st-principal-127', schoolUid: 'sb-uid-vm@school.in', cloud: true, schoolServerId: 'sb-uid-vm@school.in' };
+  ctx.loginCloudStaff(acct127, slice127, 'tok-127');
+  v28eq(ctx.state.role, 'principal', 'v127 async: the cloud principal login signs in as principal');
+  v28eq(ctx.DB_KEY, 'schoolSaathiCloudDB', 'v127 async: the cloud principal login uses the dedicated cloud db key');
+  ctx.logout(); await waitLogoutCtx();
+  ctx.loginAs(vmAcct);
+  ctx.state.sb = { uid: 'sb-uid-vm@school.in', email: 'vm@school.in' };
+ctx.sbStoreSession({ access_token: 'tok-vm127b', refresh_token: 'ref-vm127b', expires_in: 3600, user: { id: 'sb-uid-vm@school.in', email: 'vm@school.in' } });
+  var c127back = await ctx.sbSyncCycle();
+  v28eq(c127back.done, true, 'v127 async: the return cycle completes');
+  v28eq(sbServer.ss_fee_records.length, 1, 'v127 async: the Dec fee record is still on the server after the role logins');
+  v28eq(sbServer.ss_attendance.length, 2, 'v127 async: both attendance rows are still on the server after the role logins');
+  v28ok(!!ctx.db.feeRecords.filter(function (f) { return f.id === 'feemwfw8iex-1-2f8a52'; })[0], 'v127 async: the Dec fee record is still local after the role logins');
+  v28eq(ctx.db.attendance['2026-11-09|6th-A'] && ctx.db.attendance['2026-11-09|6th-A']['stu1794162292000'], 'Present', 'v127 async: the 9 Nov Present mark is still local after the role logins');
+  // Cleanup: the fixture notice + fee record + attendance leave the local db.
+  ctx.db.homework = ctx.db.homework.filter(function (h) { return h.id !== hw127.id; });
+  ctx.db.notices = ctx.db.notices.filter(function (n) { return n.id !== nt127.id; });
+  ctx.db.feeRecords = ctx.db.feeRecords.filter(function (f) { return f.id !== 'feemwfw8iex-1-2f8a52'; });
+  delete ctx.db.attendance['2026-11-09|6th-A'];
+  delete ctx.db.attendance['2026-11-11|6th-A'];
+  ctx.saveDB(ctx.db);
+  ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
+
   // ---- Source-level checks ----
   v28ok(src.includes('SB_ANON_KEY') && src.includes('bsjqeeeemwimzldrehpw'), 'v28: app.js has the Supabase URL + anon key constant');
   v28ok(!src.includes('__SB_ANON_KEY__'), 'v28: no unfilled anon-key placeholder remains');
@@ -11114,7 +11233,7 @@ async function v28run() {
   v28ok(src.includes("freshRows('ss_students', (d.students || [])"), 'v47: the students step deliberately keeps the snapshot filter — the bypass would resurrect a server-deleted student (v31 server-wins)');
   v28ok(src.includes('var hwUpload = schoolRecreated') && src.includes('var nUpload = schoolRecreated') && src.includes('var auUpload = schoolRecreated') && src.includes('var acUpload = schoolRecreated'), 'v47: the homework / notices / audit-log / activities steps use the bypass too');
   v28ok(src.includes('outboxUpsert46.attendance[snapKey]') && src.includes('outboxUpsert46.marks[key]'), 'v47: the pull keeps an attendance mark / mark with a pending outbox upsert — a stale snapshot entry never wipes an unconfirmed upload');
-  v28ok(src.includes('outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {}, teachers: {}, staff: {}, classes: {} }'), 'v47: the shared outbox set covers attendance and marks as well as fee records and receipts — and students since v56, exams since v58, teachers and staff since v117, classes since v119');
+  v28ok(src.includes('outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {}, teachers: {}, staff: {}, classes: {}, notices: {} }'), 'v47: the shared outbox set covers attendance and marks as well as fee records and receipts — and students since v56, exams since v58, teachers and staff since v117, classes since v119, notices since v127');
   // ---- v122: Module 7 (fees) — audit coverage + the Pending-record edit path ----
   v28ok(src.includes('function openEditFee') && src.includes("logAudit('Fee record updated'"), 'v122: the fee edit path + update audit exist');
   v28ok(src.includes("logAudit('Fee added'") && src.includes("logAudit('Fees generated'"), 'v122: manual add + Generate Fees write audit rows');

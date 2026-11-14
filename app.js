@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 126;
+var APP_VERSION = 127;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -2304,7 +2304,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // v47 extends the same keep to attendance and marks, whose merges
   // used to drop a queued row on snapshot grounds with no outbox
   // check at all.
-  var outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {}, teachers: {}, staff: {}, classes: {} };
+  var outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {}, teachers: {}, staff: {}, classes: {}, notices: {} }; // v127: notices join the merge-keep — a locally edited notice must survive the pull like a fee record does
   try {
     var uid46 = (account && account.sbUid) || (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
     if (uid46) {
@@ -2319,6 +2319,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
           if (e.table === 'ss_teachers') outboxUpsert46.teachers[e.key] = true;
           if (e.table === 'ss_staff') outboxUpsert46.staff[e.key] = true;
           if (e.table === 'ss_classes') outboxUpsert46.classes[e.key] = true;
+          if (e.table === 'ss_notices') outboxUpsert46.notices[e.key] = true;
         }
       });
     }
@@ -2399,7 +2400,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
         // pending outbox upsert) is KEPT, never dropped on snapshot
         // grounds — the snapshot entry is stale, not proof of a delete
         // elsewhere.
-        if (table === 'ss_fee_records' && outboxUpsert46.feeRecords[r.id]) { merged.push(r); keep(table, r.id); }
+        if ((table === 'ss_fee_records' && outboxUpsert46.feeRecords[r.id]) || (table === 'ss_notices' && outboxUpsert46.notices[r.id])) { merged.push(r); keep(table, r.id); } // v127: a notice with a pending upsert is kept like a fee record — the pull must not overwrite the edit the flush is about to push
         return;
       }
       // v45: a local demo-seed row the server no longer has is dropped,
@@ -3674,7 +3675,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
       if (batchRow53 && sbSyncRowSameAsServer(payload2, batchRow53)) {
         sbSrvIdSet(uid, table, entry.key, batchRow53.id);
         if (batchRow53._adoptedByNaturalKey && batchRow53.local_id) sbSrvIdSet(uid, table, batchRow53.local_id, batchRow53.id);
-        return { pushed: true, hash: JSON.stringify(payload2) };
+        return { pushed: true, hash: JSON.stringify(payload2), serverRow: batchRow53 }; // v127: the flush needs the server row to guard the local-row sync
       }
       // v44: a student found by admission_no/enr (not by local_id) is
       // THIS student under a stale local id — PATCH it, but never send
@@ -3688,11 +3689,18 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
         patchPayload = Object.assign({}, payload2);
         delete patchPayload.local_id;
       }
+      // v127: snapshot the pre-push server row BEFORE the PATCH — the
+      // row object may be a live reference to the store (the harness mock
+      // mutates it in place on PATCH), so returning it directly would hand
+      // the flush a post-push row and the guard below would compare the
+      // stale local row against the already-edited server row and skip
+      // the sync every time. A deep copy is a true pre-push snapshot.
+      var preRow53 = row ? JSON.parse(JSON.stringify(row)) : null;
       return sbRest('PATCH', table + '?id=eq.' + encodeURIComponent(row.id), token, patchPayload, 'return=minimal').then(function (r) {
         if (!r.ok) throw new Error('patch-' + table + '-' + (r.status || 'fail'));
         sbSrvIdSet(uid, table, entry.key, row.id);
         if (row._adoptedByNaturalKey && row.local_id) sbSrvIdSet(uid, table, row.local_id, row.id);
-        return { pushed: true, hash: JSON.stringify(payload2) };
+        return { pushed: true, hash: JSON.stringify(payload2), serverRow: preRow53 }; // v127: the flush needs the PRE-push server row to guard the local-row sync
       });
     }
     return sbRest('POST', table, token, payload2, 'return=representation').then(function (r) {
@@ -3780,6 +3788,24 @@ function sbSyncFlushWithToken(act, tok) {
               if (r.pushed) {
                 pushedThisPass++; pushedTotal++;
                 if (r.hash) sbSyncSnapSet(act.account.uid, entry.table, entry.key, r.hash);
+                // v127: the push just put entry.row on the server, so the
+                // local mirror must become entry.row too — but ONLY when
+                // the local row is still the old server version the pull
+                // overwrote it with. A newer local edit (made mid-pass)
+                // differs from the old server row, so the guard skips
+                // the overwrite and the end-of-pass re-diff re-queues
+                // it. Without this, the re-diff sees local (server
+                // version) != snapshot (pushed version) and re-queues
+                // the server version, so pass 2 PATCHes it right back
+                // over the server (live 14 Nov: a notice edit reverted;
+                // the v108 Keep-mine fix did this for conflicts only).
+                if (entry.op === 'upsert' && entry.row && r.serverRow) {
+                  var cur127 = sbSyncLocalRow(entry);
+                  if (cur127) {
+                    var curPayload127 = sbSyncMapRow(entry.table, cur127, schoolId, maps, db);
+                    if (curPayload127 && sbSyncRowSameAsServer(curPayload127, r.serverRow)) sbSyncSetLocalRow(entry.table, entry.key, entry.row);
+                  }
+                }
                 if (entry.op === 'delete') { sbSyncSnapDelete(act.account.uid, entry.table, entry.key); sbTombAdd(act.uid, entry.table, entry.key); } // v105: the delete leaves the outbox here — the tombstone is what stops another tab re-uploading it
                 sbOutboxRemove(act.uid, entry);
                 maps = sbSyncBuildMaps(db, act.uid); // fresh ids for the next chunk
