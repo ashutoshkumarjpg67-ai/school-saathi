@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 124;
+var APP_VERSION = 125;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -9267,10 +9267,21 @@ function waLogOpen(kind, s) {
 }
 function waCanUse(studentId) {
   // Shared role guard for every WhatsApp action (v35 roles): a student
-  // can never open one; a teacher only for students in the classes
-  // they teach; the school admin can use them all.
+  // can never open one; a parent neither — the button would open wa.me
+  // to the child's own phone number (the parent messaging themself).
+  // A teacher / staff member only for students in the classes they
+  // work with; the accountant reminds too (v92: collects + reminds);
+  // the principal is read-only and never messages. The school admin
+  // can use them all.
   if (state.role === 'student') return false;
+  if (state.role === 'parent') return false;
   if (state.role === 'teacher') return canViewStudent(studentId);
+  if (state.role === 'staff') {
+    var st = db.students.find(function (x) { return x.id === studentId; });
+    if (!st) return false;
+    return roleClasses().indexOf(st.cls) !== -1;
+  }
+  if (state.role === 'accountant') return true;
   return state.role === 'school';
 }
 function waFeeReminder(recordId) {
@@ -9337,24 +9348,26 @@ function waProfileChat(studentId) {
   return true;
 }
 function waReminderBtn(recordId, studentId) {
-  // The fee-reminder button for one pending due row. A student never
-  // sees it; a teacher only for their own classes. When the parent
-  // number is missing or invalid the button is disabled (the reason
-  // is the title) — the action itself toasts the same reason.
+  // The fee-reminder button for one pending due row. v125: it renders
+  // only when the action can work (waCanUse) — a parent or principal
+  // used to see a button whose click only toasted 'Not allowed', and
+  // the accountant's button was dead too (waCanUse never allowed the
+  // role). A missing parent number still shows an honest DISABLED
+  // button with the reason in its title, not a dead control.
   var s = db.students.find(function (x) { return x.id === studentId; });
   if (!s) return '';
-  if (state.role === 'student') return '';
-  if (state.role === 'teacher' && !canViewStudent(studentId)) return '';
+  if (!waCanUse(studentId)) return '';
   if (!waNormalizePhone(s.phone)) return '<button class="btn ghost sm" disabled title="' + esc(t('waNoNumber')) + '">💬 ' + t('waReminderBtn') + '</button>';
   return '<button class="btn ghost sm" onclick="waFeeReminder(\'' + recordId + '\')">💬 ' + t('waReminderBtn') + '</button>';
 }
 function waChatBtn(studentId) {
-  // The profile WhatsApp button. Same visibility rules as the reminder
-  // button; disabled with the reason when the parent number is unusable.
+  // The profile WhatsApp button. v125: same rule as waReminderBtn —
+  // render only when waCanUse allows it, so a parent or principal
+  // never sees a button whose click only toasts 'Not allowed'.
+  // Disabled with the reason when the parent number is unusable.
   var s = db.students.find(function (x) { return x.id === studentId; });
   if (!s) return '';
-  if (state.role === 'student') return '';
-  if (state.role === 'teacher' && !canViewStudent(studentId)) return '';
+  if (!waCanUse(studentId)) return '';
   if (!waNormalizePhone(s.phone)) return '<button class="btn ghost" disabled title="' + esc(t('waNoNumber')) + '">💬 ' + t('waChatBtn') + '</button>';
   return '<button class="btn ghost" onclick="waProfileChat(\'' + studentId + '\')">💬 ' + t('waChatBtn') + '</button>';
 }
@@ -11903,9 +11916,26 @@ function studentAttendancePage() {
 function studentFeesPage() {
   var me = meStudent();
   if (!me) return '<div class="phone"><div class="card"><div class="empty">' + t('tNoStudentData') + '</div></div></div>';
-  var body = profileTabBody(me, 'fees');
-  body = body.replace(/<button class="linklike" onclick="openSavedReceipt\('([^']+)'\)">([^<]*)<\/button>/g, '<span>$2</span>');
-  return '<div class="page-head"><div><h2>' + t('fees') + '</h2><p>' + t('myFeesSub') + '</p></div></div>' + body;
+  // v125: a parent/student can finally OPEN a receipt. The receipt
+  // number used to be a dead end — openSavedReceipt landed on this
+  // same list (the detail lived only in the school feesPage), and the
+  // v65 regex only stripped the button here, not in the profile tab.
+  // The detail is read-only (Back + Print); the receipt must belong
+  // to this child, or the id is cleared and the list renders instead.
+  if (state.savedReceiptId) {
+    var rc125 = (db.receipts || []).find(function (r) { return r.receiptNo === state.savedReceiptId; });
+    if (rc125 && rc125.studentId === me.id) {
+      var s2125 = receiptStudent(rc125);
+      return '<div class="page-head"><div><h2>' + t('rcptTitle') + '</h2><p>' + esc(s2125.name) + ' • ' + esc(s2125.cls) + ' • ' + esc(s2125.admissionNo || '') + '</p></div>' +
+        '<div class="toolbar"><button class="btn ghost" onclick="backFromReceipt()">\u2190 ' + t('backFees') + '</button></div></div>' +
+        receiptHTML(rc125, s2125, false) +
+        '<div class="actions"><button class="btn" onclick="printReceipt(\'' + esc(rc125.receiptNo) + '\')">\u1f5a8 ' + t('rcptPrint') + '</button></div>';
+    }
+    state.savedReceiptId = null;
+  }
+  // v125: the v65 plain-text strip is gone — the receipt number is a
+  // link now, and it opens the receipt view above.
+  return '<div class="page-head"><div><h2>' + t('fees') + '</h2><p>' + t('myFeesSub') + '</p></div></div>' + profileTabBody(me, 'fees');
 }
 function studentResultsPage() {
   var me = meStudent();

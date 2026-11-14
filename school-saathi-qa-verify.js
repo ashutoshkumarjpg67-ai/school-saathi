@@ -2411,15 +2411,16 @@ const test = `
   state.view = 'results'; renderPage();
   ok($('page').innerHTML.indexOf('Unit Test 2') !== -1, 'v65: renderPage serves the student results page');
   state.view = 'dashboard';
-  // (f) The fees page never offers the school receipt view: with a
-  // receipt on file, the shared tab body renders the button, but the
-  // student page shows the number as plain text.
+  // (f) The fees page links the receipt number: with a receipt on
+  // file, the shared tab body renders the button, and the student
+  // page keeps it — v125: it opens the receipt view now (Back + Print
+  // only), so the v65 plain-text strip is gone.
   db.receipts = [{ receiptNo: 'RCP-2026-001', studentId: 'stu-cloud-65', month: 'Oct 2026', date: '2026-10-05', lines: [{ type: 'Tuition', amount: 800 }] }];
   var rawFees65 = profileTabBody(meStudent(), 'fees');
   ok(rawFees65.indexOf('openSavedReceipt') !== -1, 'v65: the shared fees tab renders a receipt button for the school view');
   var stuFees65 = studentFeesPage();
   ok(stuFees65.indexOf('RCP-2026-001') !== -1, 'v65: the student fees page still shows the receipt number');
-  ok(stuFees65.indexOf('openSavedReceipt') === -1, 'v65: the student fees page has no receipt button (it would jump to the school fees page)');
+  ok(stuFees65.indexOf('openSavedReceipt') !== -1, 'v125: the student fees page links the receipt button now (v65 dead-end fixed — it opens the receipt view)');
   // (g) Another student's data stays closed.
   var savedUser65 = state.user;
   state.user = { studentId: 'not-me-65' };
@@ -5231,6 +5232,94 @@ const test = `
   loginAs(TEST_ACCOUNTS.school);
   // Restore.
   db.homework = hwSnap124; db.auditLog = hwAud124; saveDB(db);
+
+
+  // ---- v125 (Phase 5 Module 11): the parent portal — WhatsApp buttons that cannot work + a receipt a parent can actually open ----
+  // Audit: (1) waReminderBtn/waChatBtn RENDERED for a parent, but waCanUse refuses every parent action — the click only toasts 'Not allowed', and the button would open wa.me to the child's own phone number (the parent messaging themself). Same dead buttons for the principal (read-only). (2) The accountant's Remind button was dead too — v92 said 'collects + reminds' but waCanUse never allowed the accountant; same for staff — the Absent-notify button renders in the register for staff who mark attendance, but waCanUse refused staff. (3) The receipt number was a dead end for a parent/student — openSavedReceipt lands on their own fees list (the receipt detail lives only in the school feesPage); the v65 regex only stripped the button in the fees page, not the profile tab.
+  loginAs(TEST_ACCOUNTS.school);
+  var stuSnap125 = db.students.slice(); var teaSnap125 = db.teachers.slice(); var stfSnap125 = db.staff.slice(); var feeSnap125 = db.feeRecords.slice(); var rcpSnap125 = (db.receipts || []).slice();
+  var stu125 = { id: 'stu125', name: 'Parent Test', cls: '6th-A', roll: 25, admissionNo: 'ADM-2025-125', enr: 'ENR-125', admissionDate: '2026-11-09', session: '2025–26', status: 'Active', phone: '9812345125', guardian: 'Parent Test Sr', fatherName: 'Parent Test Sr', motherName: '', parentPinHash: hashPin('2108'), att: 100 };
+  var stu125b = { id: 'stu125b', name: 'Other Class', cls: '9th-A', roll: 26, admissionNo: 'ADM-2025-126', enr: 'ENR-126', admissionDate: '2026-11-09', session: '2025–26', status: 'Active', phone: '9812345126', guardian: 'Other Sr', fatherName: 'Other Sr', motherName: '', parentPinHash: hashPin('2108'), att: 100 };
+  db.students.push(stu125, stu125b);
+  db.teachers.push({ id: 'te-125', name: 'Teacher 125', subject: 'Mathematics', classes: ['6th-A'], email: 'te125@school.in', pwHash: '', createdAt: '2026-11-14' });
+  db.staff.push({ id: 'stf-125', name: 'Staff 125', role: 'staff', classes: ['6th-A'], email: 'stf125@school.in', pwHash: '', createdAt: '2026-11-14' });
+  db.feeRecords.push({ id: 'fr-125p', studentId: 'stu125', month: 'Nov 2026', type: 'Tuition', amount: 800, date: '2026-11-01', status: 'Pending' });
+  db.feeRecords.push({ id: 'fr-125c', studentId: 'stu125', month: 'Oct 2026', type: 'Tuition', amount: 800, date: '2026-10-05', status: 'Collected' });
+  db.feeRecords.push({ id: 'fr-125b', studentId: 'stu125b', month: 'Oct 2026', type: 'Tuition', amount: 800, date: '2026-10-05', status: 'Collected' });
+  db.receipts = (db.receipts || []).concat([{ receiptNo: 'RCP-2026-125', studentId: 'stu125', name: 'Parent Test', cls: '6th-A', admissionNo: 'ADM-2025-125', month: 'Oct 2026', date: '2026-10-05', total: 800, payMode: 'Cash', lines: [{ type: 'Tuition', amount: 800 }] }, { receiptNo: 'RCP-2026-126', studentId: 'stu125b', name: 'Other Class', cls: '9th-A', admissionNo: 'ADM-2025-126', month: 'Oct 2026', date: '2026-10-05', total: 800, payMode: 'Cash', lines: [{ type: 'Tuition', amount: 800 }] }]);
+  saveDB(db);
+  var par125 = { role: 'parent', name: 'Parent Test', sub: 'Parent • Parent Test', email: 'parent:test-school:stu125', uid: 'parent-stu125', studentId: 'stu125', schoolUid: 'test-school' };
+  var stuAc125 = { role: 'student', name: 'Parent Test', sub: 'Student • Parent Test', email: 'student:test-school:stu125', uid: 'student-stu125', studentId: 'stu125', schoolUid: 'test-school' };
+  var tea125 = { role: 'teacher', name: 'Teacher 125', sub: 'Teacher • Teacher 125', email: 'te125@school.in', uid: 'teacher-te-125', teacherId: 'te-125', schoolUid: 'test-school' };
+  var stf125 = { role: 'staff', name: 'Staff 125', sub: 'Staff • Staff 125', email: 'stf125@school.in', uid: 'staff-stf-125', staffId: 'stf-125', schoolUid: 'test-school' };
+  var acc125 = { role: 'accountant', name: 'Accountant', sub: 'Accountant • Test', email: 'accountant@test.in', uid: 'accountant-125', schoolUid: 'test-school' };
+  var pri125 = { role: 'principal', name: 'Principal', sub: 'Principal • Test', email: 'principal@test.in', uid: 'principal-125', schoolUid: 'test-school' };
+  // (a) waCanUse — render == action: a button renders only for a role whose click can work.
+  loginAs(TEST_ACCOUNTS.school);
+  eq(waCanUse('stu125'), true, 'v125: waCanUse allows the school admin');
+  loginAs(tea125, { silent: true });
+  eq(waCanUse('stu125'), true, 'v125: waCanUse allows a teacher for their own class');
+  eq(waCanUse('stu125b'), false, 'v125: waCanUse refuses a teacher outside their classes');
+  loginAs(stf125, { silent: true });
+  eq(waCanUse('stu125'), true, 'v125: waCanUse allows a staff member for their own class');
+  eq(waCanUse('stu125b'), false, 'v125: waCanUse refuses a staff member outside their classes');
+  loginAs(acc125, { silent: true });
+  eq(waCanUse('stu125'), true, 'v125: waCanUse allows the accountant (v92: collects + reminds)');
+  loginAs(par125, { silent: true });
+  eq(waCanUse('stu125'), false, 'v125: waCanUse refuses a parent (the button would message their own number)');
+  loginAs(pri125, { silent: true });
+  eq(waCanUse('stu125'), false, 'v125: waCanUse refuses the principal (read-only)');
+  loginAs(stuAc125, { silent: true });
+  eq(waCanUse('stu125'), false, 'v125: waCanUse refuses a student');
+  // (b) The pending-dues card: a parent still sees what they owe — just never the Remind button.
+  loginAs(TEST_ACCOUNTS.school);
+  state.profileTab = 'overview';
+  var ov125 = profileTabBody(stu125, 'overview');
+  ok(ov125.indexOf('Nov 2026') !== -1 && ov125.indexOf('800') !== -1, 'v125: the overview shows the pending due (month + amount)');
+  ok(ov125.indexOf('waFeeReminder') !== -1, 'v125: the overview shows the Remind button for the school admin');
+  loginAs(par125, { silent: true });
+  var ovPar125 = profileTabBody(stu125, 'overview');
+  ok(ovPar125.indexOf('Nov 2026') !== -1, 'v125: a parent still sees the pending due row');
+  ok(ovPar125.indexOf('waFeeReminder') === -1, 'v125: a parent never sees the Remind button (it would message their own number)');
+  loginAs(pri125, { silent: true });
+  ok(profileTabBody(stu125, 'overview').indexOf('waFeeReminder') === -1, 'v125: the principal never sees the Remind button (read-only)');
+  loginAs(acc125, { silent: true });
+  ok(profileTabBody(stu125, 'overview').indexOf('waFeeReminder') !== -1, 'v125: the accountant sees the Remind button (v92: collects + reminds)');
+  // (c) The profile toolbar: a parent never gets the WhatsApp Chat button; the school does.
+  loginAs(TEST_ACCOUNTS.school);
+  state.profileTab = 'overview';
+  ok(studentProfilePage('stu125').indexOf('waProfileChat') !== -1, 'v125: the profile toolbar offers the WhatsApp chat for the school admin');
+  loginAs(par125, { silent: true });
+  ok(studentProfilePage('stu125').indexOf('waProfileChat') === -1, 'v125: the profile toolbar never offers the WhatsApp chat to a parent');
+  // (d) A parent can finally open a receipt: the number leads to the receipt itself (Back + Print only — no share, no collect-again).
+  loginAs(par125, { silent: true });
+  state.savedReceiptId = 'RCP-2026-125';
+  var rcPar125 = studentFeesPage();
+  ok(rcPar125.indexOf('RCP-2026-125') !== -1, 'v125: the parent receipt view shows the receipt number');
+  ok(rcPar125.indexOf(t('rcptPrint')) !== -1, 'v125: the parent receipt view offers Print');
+  ok(rcPar125.indexOf(t('backFees')) !== -1, 'v125: the parent receipt view offers Back');
+  ok(rcPar125.indexOf('waReceiptShare') === -1, 'v125: the parent receipt view never offers the WhatsApp share');
+  ok(rcPar125.indexOf('rcptCollectAgain') === -1, 'v125: the parent receipt view never offers Collect again');
+  ok(rcPar125.indexOf('openCollectFee') === -1, 'v125: the parent receipt view never offers the collect screen');
+  // Ownership: another child receipt never opens — the view falls through to the parent own fee list.
+  state.savedReceiptId = 'RCP-2026-126';
+  var rcOther125 = studentFeesPage();
+  ok(rcOther125.indexOf('RCP-2026-126') === -1, 'v125: another child receipt never renders for a parent');
+  eq(state.savedReceiptId, null, 'v125: the foreign receipt id is cleared, not kept');
+  ok(rcOther125.indexOf('RCP-2026-125') !== -1, 'v125: the fall-through list still shows the parent own receipt number');
+  // The student sees the same receipt view.
+  loginAs(stuAc125, { silent: true });
+  state.savedReceiptId = 'RCP-2026-125';
+  ok(studentFeesPage().indexOf('RCP-2026-125') !== -1, 'v125: the student receipt view shows the receipt number');
+  ok(studentFeesPage().indexOf('waReceiptShare') === -1, 'v125: the student receipt view never offers the WhatsApp share');
+  // And the plain fees list now links the receipt number (the v65 dead-end is gone).
+  state.savedReceiptId = null;
+  loginAs(par125, { silent: true });
+  ok(studentFeesPage().indexOf("openSavedReceipt('RCP-2026-125')") !== -1, 'v125: the parent fees list links the receipt number (it opens the receipt view now)');
+  loginAs(TEST_ACCOUNTS.school);
+  state.savedReceiptId = null;
+  // Restore.
+  db.students = stuSnap125; db.teachers = teaSnap125; db.staff = stfSnap125; db.feeRecords = feeSnap125; db.receipts = rcpSnap125; saveDB(db);
 
   // ---- v81 (Phase 3): photo heal — a pull must not leave a student photo-less when the server has one ----
   // Live v80: a photo uploaded and synced (server row has photo_url, Storage
@@ -10971,6 +11060,17 @@ async function v28run() {
   v28ok(src.includes('h.doneBy.push(me.id)'), 'v124: the done toggle stores the student id, not the object');
   var delLine124 = src.split('\n').filter(function (l) { return l.indexOf('SB_SYNC_DELETABLE') !== -1; })[0] || '';
   v28ok(delLine124.indexOf('ss_homework') !== -1, 'v124: ss_homework is in SB_SYNC_DELETABLE so a homework delete reaches the server');
+  // ---- v125 (Phase 5 Module 11): the parent portal ----
+  var waRem125 = src.split('function waReminderBtn')[1].split('function waChatBtn')[0];
+  var waChat125 = src.split('function waChatBtn')[1].split('function attendancePage')[0];
+  var waCan125 = src.split('function waCanUse')[1].split('function waFeeReminder')[0];
+  v28ok(waRem125.indexOf('waCanUse(') !== -1, 'v125: waReminderBtn renders only when waCanUse allows it');
+  v28ok(waChat125.indexOf('waCanUse(') !== -1, 'v125: waChatBtn renders only when waCanUse allows it');
+  v28ok(waCan125.indexOf("state.role === 'accountant'") !== -1, 'v125: waCanUse allows the accountant (v92: collects + reminds)');
+  v28ok(waCan125.indexOf("state.role === 'staff'") !== -1, 'v125: waCanUse covers staff (own classes, like a teacher)');
+  var stuFees125 = src.split('function studentFeesPage')[1].split('function studentResultsPage')[0];
+  v28ok(stuFees125.indexOf('savedReceiptId') !== -1, 'v125: the student/parent fees page has a receipt-detail branch');
+  v28ok(stuFees125.indexOf('.replace(') === -1, 'v125: the v65 plain-text strip is gone from the student fees page');
   v28ok(src.includes("logAudit('Fee structure updated'") && src.includes("logAudit('Fee structure row added'") && src.includes("logAudit('Fee structure row removed'"), 'v122: fee-structure save/add/remove write audit rows');
   v28ok(src.includes('var serverList = [];') && src.includes("if (r.id && onServer[r.id]) return;"), 'v47: mergeById collapses duplicate server rows by id — the 6-row fee duplication never doubles the local list');
   v28ok(src.includes('function receiptStudent(rc)') && src.includes("name: rc.name || (s && s.name) || ''"), 'v47: receiptStudent resolves the display student from the receipt\'s own stored name first, the local row only for the photo');
