@@ -5321,6 +5321,71 @@ const test = `
   // Restore.
   db.students = stuSnap125; db.teachers = teaSnap125; db.staff = stfSnap125; db.feeRecords = feeSnap125; db.receipts = rcpSnap125; saveDB(db);
 
+  // ---- v126 (Phase 5 Module 12): notices - no edit, no delete, no audit ----
+  // Audit: (1) a published notice could never be fixed - one typo stayed
+  // forever; there was no edit path at all. (2) A wrong notice could
+  // never be removed - no delete path, and ss_notices was not in
+  // SB_SYNC_DELETABLE, so even a local removal would be restored by the
+  // next pull. (3) Publishing wrote only the activity feed, never the
+  // audit log - unlike fees/homework/marks, a notice left no audit row.
+  loginAs(TEST_ACCOUNTS.school);
+  var ntSnap126 = db.notices.slice(); var ntAud126 = db.auditLog.slice();
+  var nt126a = { id: 'nt-126a', title: 'V126 Notice A', date: '2026-11-14', body: 'Body A - sports day' };
+  var nt126b = { id: 'nt-126b', title: 'V126 Notice B', date: '2026-11-14', body: 'Body B - fee reminder' };
+  db.notices.push(nt126a, nt126b);
+  saveDB(db);
+  // Create: publishing logs a Notice published audit row.
+  noticeForm();
+  $('fNtTitle').value = 'V126 Notice C'; $('fNtBody').value = 'Body C - exam schedule';
+  saveNotice({ preventDefault: function () {} });
+  var ntC126 = db.notices[0];
+  eq(ntC126 && ntC126.title, 'V126 Notice C', 'v126: publishing adds the notice on top');
+  ok(db.auditLog[0] && db.auditLog[0].action === 'Notice published' && db.auditLog[0].details.indexOf('V126 Notice C') !== -1, 'v126: publishing logs a Notice published row');
+  // Edit: the form prefills, the save updates title+body, the date stays.
+  ok(typeof editNotice === 'function', 'v126: editNotice exists');
+  if (typeof editNotice === 'function') {
+    editNotice('nt-126a');
+    ok($('modalRoot').innerHTML.indexOf('value="V126 Notice A"') !== -1, 'v126: the edit form prefills the title');
+    ok($('modalRoot').innerHTML.indexOf('Body A - sports day') !== -1, 'v126: the edit form prefills the body');
+    $('fNtTitle').value = 'V126 Notice A Edited'; $('fNtBody').value = 'Body A edited';
+    saveNotice({ preventDefault: function () {} }, 'nt-126a');
+    var ntA126 = db.notices.filter(function (n) { return n.id === 'nt-126a'; })[0];
+    eq(ntA126 && ntA126.title, 'V126 Notice A Edited', 'v126: the edit saves the new title');
+    eq(ntA126 && ntA126.body, 'Body A edited', 'v126: the edit saves the new body');
+    eq(ntA126 && ntA126.date, '2026-11-14', 'v126: the edit keeps the publish date');
+    ok(db.auditLog[0] && db.auditLog[0].action === 'Notice updated' && db.auditLog[0].details.indexOf('V126 Notice A Edited') !== -1, 'v126: the edit logs a Notice updated row');
+    // No-change edit: nothing happens, no audit row.
+    var audLen126 = db.auditLog.length;
+    editNotice('nt-126a');
+    $('fNtTitle').value = 'V126 Notice A Edited'; $('fNtBody').value = 'Body A edited';
+    saveNotice({ preventDefault: function () {} }, 'nt-126a');
+    eq(db.auditLog.length, audLen126, 'v126: an unchanged edit writes no new audit row');
+  }
+  // Delete: confirm + audit + the row stays gone.
+  ok(typeof deleteNotice === 'function', 'v126: deleteNotice exists');
+  if (typeof deleteNotice === 'function') {
+    deleteNotice('nt-126a'); confirmYes();
+    ok(!db.notices.some(function (n) { return n.id === 'nt-126a'; }), 'v126: the confirmed delete removes the row');
+    ok(db.auditLog[0] && db.auditLog[0].action === 'Notice deleted' && db.auditLog[0].details.indexOf('V126 Notice A Edited') !== -1, 'v126: the delete logs a Notice deleted row');
+    // Guards: a teacher sees no buttons and cannot delete; a principal cannot delete either.
+    db.teachers.push({ id: 'te-126', name: 'Guard Teacher', subject: 'Maths', classes: ['6th-A'], email: 'guard126@test.in' });
+    state.role = 'teacher'; state.user = { role: 'teacher', name: 'Guard Teacher', email: 'guard126@test.in', teacherId: 'te-126', schoolUid: 'test-school' };
+    var pg126 = noticesPage();
+    ok(pg126.indexOf('editNotice(') === -1 && pg126.indexOf('deleteNotice(') === -1, 'v126: a teacher sees no Edit/Delete buttons on notices');
+    deleteNotice('nt-126b');
+    ok(db.notices.some(function (n) { return n.id === 'nt-126b'; }), 'v126: a teacher cannot delete a notice');
+    state.role = 'principal';
+    deleteNotice('nt-126b');
+    ok(db.notices.some(function (n) { return n.id === 'nt-126b'; }), 'v126: a principal cannot delete a notice');
+    state.role = 'school'; state.user = TEST_ACCOUNTS.school;
+    db.teachers = db.teachers.filter(function (x) { return x.id !== 'te-126'; });
+    // School sees the buttons.
+    var pgS126 = noticesPage();
+    ok(pgS126.indexOf('editNotice(') !== -1 && pgS126.indexOf('deleteNotice(') !== -1, 'v126: the school sees Edit/Delete buttons on notices');
+  }
+  // Restore.
+  db.notices = ntSnap126; db.auditLog = ntAud126; saveDB(db);
+
   // ---- v81 (Phase 3): photo heal — a pull must not leave a student photo-less when the server has one ----
   // Live v80: a photo uploaded and synced (server row has photo_url, Storage
   // object exists) still showed the placeholder in every portal. The
@@ -11071,6 +11136,17 @@ async function v28run() {
   var stuFees125 = src.split('function studentFeesPage')[1].split('function studentResultsPage')[0];
   v28ok(stuFees125.indexOf('savedReceiptId') !== -1, 'v125: the student/parent fees page has a receipt-detail branch');
   v28ok(stuFees125.indexOf('.replace(') === -1, 'v125: the v65 plain-text strip is gone from the student fees page');
+  // ---- v126 (Phase 5 Module 12): notices - edit/delete/audit ----
+  var del126 = src.split('var SB_SYNC_DELETABLE')[1].split(';')[0];
+  v28ok(del126.indexOf("'ss_notices'") !== -1, 'v126: ss_notices joins SB_SYNC_DELETABLE so a deleted notice leaves the server too');
+  var ntPage126 = src.split('function noticesPage')[1].split('function noticeForm')[0];
+  v28ok(ntPage126.indexOf('editNotice(') !== -1 && ntPage126.indexOf('deleteNotice(') !== -1, 'v126: noticesPage renders Edit/Delete buttons');
+  v28ok(ntPage126.indexOf("state.role === 'school'") !== -1, 'v126: the notice buttons render for the school only');
+  var ntSave126 = src.split('function saveNotice')[1].split('function reportsPage')[0];
+  v28ok(ntSave126.indexOf("logAudit('Notice published'") !== -1, 'v126: publishing a notice logs a Notice published audit row');
+  v28ok(ntSave126.indexOf("logAudit('Notice updated'") !== -1, 'v126: editing a notice logs a Notice updated audit row');
+  v28ok(ntSave126.indexOf("logAudit('Notice deleted'") !== -1, 'v126: deleting a notice logs a Notice deleted audit row');
+  v28ok(ntSave126.indexOf('function editNotice') !== -1 && ntSave126.indexOf('function deleteNotice') !== -1, 'v126: editNotice/deleteNotice exist');
   v28ok(src.includes("logAudit('Fee structure updated'") && src.includes("logAudit('Fee structure row added'") && src.includes("logAudit('Fee structure row removed'"), 'v122: fee-structure save/add/remove write audit rows');
   v28ok(src.includes('var serverList = [];') && src.includes("if (r.id && onServer[r.id]) return;"), 'v47: mergeById collapses duplicate server rows by id — the 6-row fee duplication never doubles the local list');
   v28ok(src.includes('function receiptStudent(rc)') && src.includes("name: rc.name || (s && s.name) || ''"), 'v47: receiptStudent resolves the display student from the receipt\'s own stored name first, the local row only for the photo');

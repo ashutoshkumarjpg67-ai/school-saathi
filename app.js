@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 125;
+var APP_VERSION = 126;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -3123,7 +3123,7 @@ var SB_SYNC_TABLES = {
   ss_holidays: { local: 'holidays', key: 'id' },
   ss_admission_requests: { local: 'admissionRequests', key: 'id' }, ss_receipts: { local: 'receipts', key: 'receiptNo' }
 };
-var SB_SYNC_DELETABLE = ['ss_fee_records', 'ss_fee_structure', 'ss_attendance', 'ss_marks', 'ss_holidays', 'ss_classes', 'ss_homework']; // v119: a deleted class row must leave the server too, or the pull restores it // v124: a deleted homework row must leave the server too
+var SB_SYNC_DELETABLE = ['ss_fee_records', 'ss_fee_structure', 'ss_attendance', 'ss_marks', 'ss_holidays', 'ss_classes', 'ss_homework', 'ss_notices']; // v119: a deleted class row must leave the server too, or the pull restores it // v124: a deleted homework row must leave the server too // v126: a deleted notice must leave the server too
 function sbSyncTableHashes(d, schoolId, maps) {
   // Canonical hash per row = the exact server payload it would push.
   // Local rows and server-derived rows hash identically when their
@@ -11318,8 +11318,12 @@ function deleteHomework(id) {
   });
 }
 function noticesPage() {
+  // v126: the school can fix or remove a notice — every other role sees
+  // the plain list (teachers view notices only, v35).
+  var canEdit126 = state.role === 'school';
   var items = db.notices.map(function (n) {
-    return '<div class="notice"><b>' + esc(n.title) + '</b><span>' + esc(n.date) + '</span><p>' + esc(n.body) + '</p></div>';
+    return '<div class="notice"><b>' + esc(n.title) + '</b><span>' + esc(n.date) + '</span><p>' + esc(n.body) + '</p>' +
+      (canEdit126 ? '<button class="btn" onclick="editNotice(\'' + n.id + '\')">✎ ' + t('editNotice') + '</button><button class="btn danger" onclick="deleteNotice(\'' + n.id + '\')">🗑 ' + t('deleteNotice') + '</button>' : '') + '</div>';
   }).join('');
   // v96 (cons fix): an empty notices list showed a blank card with no
   // message — now it says so, so a school admin never wonders whether
@@ -11330,20 +11334,58 @@ function noticesPage() {
     (canPost ? '<div class="toolbar"><button class="btn" onclick="noticeForm()">+ ' + t('publishNotice') + '</button></div>' : '') + '</div>' +
     '<div class="card">' + items + '</div>';
 }
-function noticeForm() {
-  openModal('<h3>' + t('publishNotice') + '</h3><form onsubmit="return saveNotice(event)"><div class="form-grid">' +
-    '<div class="full"><label>' + t('fTitle') + '</label><input id="fNtTitle" required placeholder="e.g. Annual Sports Day"></div>' +
-    '<div class="full"><label>' + t('fMessage') + '</label><textarea id="fNtBody" rows="3" required placeholder="Notice details…"></textarea></div>' +
-    '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + t('publishBtn') + '</button></div></form>');
+function noticeForm(editId) {
+  // v126: edit mode — title/body are editable, the publish date stays
+  // (it is the record of when the notice went out).
+  var nt126 = editId ? db.notices.find(function (x) { return x.id === editId; }) : null;
+  openModal('<h3>' + (nt126 ? t('editNotice') : t('publishNotice')) + '</h3><form onsubmit="return saveNotice(event' + (nt126 ? ', \'' + nt126.id + '\'' : '') + ')"><div class="form-grid">' +
+    '<div class="full"><label>' + t('fTitle') + '</label><input id="fNtTitle" required placeholder="e.g. Annual Sports Day" value="' + (nt126 ? esc(nt126.title) : '') + '"></div>' +
+    '<div class="full"><label>' + t('fMessage') + '</label><textarea id="fNtBody" rows="3" required placeholder="Notice details…">' + (nt126 ? esc(nt126.body) : '') + '</textarea></div>' +
+    '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + (nt126 ? t('saveBtn') : t('publishBtn')) + '</button></div></form>');
 }
-function saveNotice(e) {
+function saveNotice(e, editId) {
   e.preventDefault();
   if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
-  db.notices.unshift({ id: uniqueId('n'), title: $('fNtTitle').value.trim(), date: todayIST(), body: $('fNtBody').value.trim() });
-  addActivity('📢', 'orange', 'New notice published', $('fNtTitle').value.trim());
+  // v126: edit mode — title/body editable, the publish date stays.
+  if (editId) {
+    var nt126 = db.notices.find(function (x) { return x.id === editId; });
+    if (!nt126) return false;
+    var newTitle126 = $('fNtTitle').value.trim();
+    var newBody126 = $('fNtBody').value.trim();
+    if (nt126.title === newTitle126 && nt126.body === newBody126) { toast(t('tNoChanges')); return false; }
+    nt126.title = newTitle126; nt126.body = newBody126;
+    logAudit('Notice updated', nt126.title + ' • ' + nt126.date);
+    saveDB(db); closeModal(); renderApp();
+    toast(t('tNtUpdated'));
+    return false;
+  }
+  var ntTitle126 = $('fNtTitle').value.trim();
+  var ntBody126 = $('fNtBody').value.trim();
+  var ntDate126 = todayIST();
+  db.notices.unshift({ id: uniqueId('n'), title: ntTitle126, date: ntDate126, body: ntBody126 });
+  // v126: publishing wrote the activity feed but never the audit log.
+  logAudit('Notice published', ntTitle126 + ' • ' + ntDate126);
+  addActivity('📢', 'orange', 'New notice published', ntTitle126);
   saveDB(db); closeModal(); renderApp();
   toast(t('tNoticePub'));
   return false;
+}
+function editNotice(id) {
+  var n = db.notices.find(function (x) { return x.id === id; });
+  if (!n) return;
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
+  noticeForm(id);
+}
+function deleteNotice(id) {
+  var n = db.notices.find(function (x) { return x.id === id; });
+  if (!n) return;
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
+  confirmModal(t('delNtMsg') + ' — ' + n.title + '?', function () {
+    db.notices = db.notices.filter(function (x) { return x.id !== id; });
+    logAudit('Notice deleted', n.title + ' • ' + n.date);
+    saveDB(db); renderApp();
+    toast(t('tNtDeleted'));
+  });
 }
 function reportsPage() {
   return '<div class="page-head"><div><h2>' + t('reports') + '</h2><p>' + t('subReports') + ' — ' + esc(db.profile.name) + '</p></div></div>' +
