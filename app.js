@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 132;
+var APP_VERSION = 133;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -3559,6 +3559,41 @@ function sbSyncFindStudentByNumber(entry, token, schoolId) {
     });
   });
 }
+// v133: an attendance delete fires only for a deliberate clear. The sync
+// diff infers a delete whenever the local row is missing while the snapshot
+// still holds the key — but a mark can be locally missing for non-deliberate
+// reasons (a previous pull dropped it on snapshot grounds, a stale tab's
+// in-memory db, a login that loaded a db from before the mark was saved),
+// and the flush then deletes the live server row (live 15 Nov 2026: both
+// v131 marks vanished from the server, repeatedly, although nobody cleared
+// them). The only paths that deliberately delete a local mark write a
+// matching audit row synchronously before saveDB (clearAttMark /
+// clearAttDay / class rename), so the flush requires one before it will
+// DELETE an ss_attendance row. A blocked delete is drained as a no-op (the
+// v128 shape) so the stale entry and its queue-time tombstone are cleared
+// and the next pull restores the mark. Failure mode is safe: if the audit
+// row was pruned (logAudit caps at 200 rows) the clear simply does not
+// stick and the mark comes back — the user clears it again.
+function sbSyncAttendanceDeleteAllowed(key) {
+  var parts = String(key || '').split('|');
+  if (parts.length !== 3) return false;
+  var date133 = parts[0], cls133 = parts[1], sid133 = parts[2];
+  var stu133 = null;
+  (db.students || []).some(function (s) { if (s.id === sid133) { stu133 = s; return true; } return false; });
+  var name133 = stu133 ? stu133.name : null;
+  var rows133 = db.auditLog || [];
+  for (var i133 = 0; i133 < rows133.length; i133++) {
+    var a133 = rows133[i133] || {};
+    var det133 = String(a133.details || '');
+    if (a133.action === 'Attendance mark removed') {
+      if (name133 && det133 === name133 + ' \u2022 Class ' + cls133 + ' \u2022 ' + date133) return true;
+      if (!name133 && det133.indexOf(' \u2022 Class ' + cls133 + ' \u2022 ' + date133) !== -1) return true;
+    }
+    if (a133.action === 'Attendance cleared' && det133.indexOf('Class ' + cls133 + ' \u2022 ' + date133) !== -1) return true;
+    if (a133.action === 'Class renamed' && det133.indexOf(cls133 + ' \u2192 ') === 0) return true;
+  }
+  return false;
+}
 function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
   // Pushes ONE outbox entry. Returns {pushed, conflict, skipped, keep, hash}.
   // conflict: the server copy is newer — the entry is dropped and the
@@ -3623,6 +3658,12 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
       // find path (findCols105 = id,updated_at) has no created_at, so the
       // guard is skipped there. Same v128 no-op shape.
       if (row.created_at && entry.at) { var created131 = Date.parse(row.created_at); var queued131 = Date.parse(entry.at); if (!isNaN(created131) && !isNaN(queued131) && created131 > queued131) return { pushed: true, noOpDelete128: true }; }
+      // v133: an attendance delete fires only for a deliberate clear
+      // (sbSyncAttendanceDeleteAllowed) — a mark that is locally missing
+      // for any other reason must not delete the live server row. Same
+      // v128 no-op shape (clears the snapshot key + removes the
+      // queue-time tombstone) so the next pull restores the mark.
+      if (table === 'ss_attendance' && !sbSyncAttendanceDeleteAllowed(entry.key)) return { pushed: true, noOpDelete128: true };
       return sbRest('DELETE', table + '?id=eq.' + encodeURIComponent(row.id), token, undefined, 'return=minimal').then(function (r) {
         if (!r.ok) throw new Error('delete-' + table + '-' + (r.status || 'fail'));
         return { pushed: true };
