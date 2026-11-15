@@ -11292,7 +11292,7 @@ ctx.sbStoreSession({ access_token: 'tok-vm127b', refresh_token: 'ref-vm127b', ex
   // knowing (the live loss), remove it locally, and flush the queued delete.
   // The delete must succeed as a no-op: snapshot key gone, NO tombstone, and
   // the diff must not re-queue it.
-  ctx.db.feeRecords.push({ id: 'fee-128a', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Dec', type: 'Tuition', amount: 800, status: 'Collected', date: '2026-11-14' });
+  ctx.db.feeRecords.push({ id: 'fee-128a', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Dec', type: 'Tuition', amount: 800, status: 'Pending', date: '2026-11-14' }); // v132: PENDING — the (B) real-delete below must be able to delete it (a Collected fee is never legitimately sync-deleted)
   ctx.saveDB(ctx.db);
   var c128a = await ctx.sbSyncCycle();
   v28eq(c128a.done, true, 'v128 async: the fee sync cycle completes');
@@ -11310,7 +11310,7 @@ ctx.sbStoreSession({ access_token: 'tok-vm127b', refresh_token: 'ref-vm127b', ex
   var c128a2 = await ctx.sbSyncCycle();
   v28eq(c128a2.done, true, 'v128 async: the cycle after the no-op delete completes');
   v28eq(ctx.sbOutboxLoad('sb-uid-vm@school.in').filter(function (e) { return e.table === 'ss_fee_records' && e.key === 'fee-128a' && e.op === 'delete'; }).length, 0, 'v128 async: the diff does not re-queue the delete');
-  sbServer.ss_fee_records.push({ id: 'srv-fee-128a', school_id: sch128, local_id: 'fee-128a', student_id: srvStu128.id, student_name: 'Test Kumar', cls: '6th-A', month: 'Dec', fee_type: 'Tuition', amount: 800, status: 'Collected', record_date: '2026-11-14', created_at: sbNowISO(), updated_at: sbNowISO() });
+  sbServer.ss_fee_records.push({ id: 'srv-fee-128a', school_id: sch128, local_id: 'fee-128a', student_id: srvStu128.id, student_name: 'Test Kumar', cls: '6th-A', month: 'Dec', fee_type: 'Tuition', amount: 800, status: 'Pending', record_date: '2026-11-14', created_at: sbNowISO(), updated_at: sbNowISO() }); // v132: PENDING, matching the local fixture above
   var c128a3 = await ctx.sbSyncCycle();
   v28eq(c128a3.done, true, 'v128 async: the re-created row cycle completes');
   v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-128a'; }).length, 1, 'v128 async: the re-created fee record survives the cycle (not re-deleted)');
@@ -11554,7 +11554,7 @@ ctx.sbStoreSession({ access_token: 'tok-vm127b', refresh_token: 'ref-vm127b', ex
   // (A1) Fee record, pull guard: delete it for real (tombstone written),
   // then re-create the SAME id locally AND on the server. The pull must
   // clear the tombstone and keep the row — not re-queue its delete.
-  ctx.db.feeRecords.push({ id: 'fee-131a', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Dec', type: 'Tuition', amount: 800, status: 'Collected', date: '2026-11-14' });
+  ctx.db.feeRecords.push({ id: 'fee-131a', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Dec', type: 'Tuition', amount: 800, status: 'Pending', date: '2026-11-14' }); // v132: PENDING — the UI only ever deletes PENDING records, so the real-delete fixture must be one (a Collected fee is never legitimately sync-deleted)
   ctx.saveDB(ctx.db);
   var c131a = await ctx.sbSyncCycle();
   v28eq(c131a.done, true, 'v131 async: the fee sync cycle completes');
@@ -11638,7 +11638,7 @@ ctx.sbStoreSession({ access_token: 'tok-vm127b', refresh_token: 'ref-vm127b', ex
   // (D) Regression guard: a LEGITIMATE delete still removes the server
   // row. The row is old (created before the delete was queued) and the
   // local db does not have it, so neither guard fires.
-  ctx.db.feeRecords.push({ id: 'fee-131e', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Sep', type: 'Tuition', amount: 800, status: 'Collected', date: '2026-11-14' });
+  ctx.db.feeRecords.push({ id: 'fee-131e', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Sep', type: 'Tuition', amount: 800, status: 'Pending', date: '2026-11-14' }); // v132: PENDING — the legitimate-delete regression must use the only status the UI allows deleting (a Collected fee is protected by the v132 flush guard, so a Collected fixture here would no longer delete)
   ctx.saveDB(ctx.db);
   var c131e = await ctx.sbSyncCycle();
   v28eq(c131e.done, true, 'v131 async: the legit-delete fee sync cycle completes');
@@ -11656,6 +11656,121 @@ ctx.sbStoreSession({ access_token: 'tok-vm127b', refresh_token: 'ref-vm127b', ex
   ctx.saveDB(ctx.db);
   sbServer.ss_fee_records = sbServer.ss_fee_records.filter(function (r) { return r.local_id !== 'fee-131a' && r.local_id !== 'fee-131c' && r.local_id !== 'fee-131d'; });
   sbServer.ss_attendance = sbServer.ss_attendance.filter(function (r) { return r.att_date !== '2026-11-09'; });
+  ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
+
+  // ---- v132 (live 15 Nov): the Dec fee STILL vanishes after v131, but the
+  // attendance survives — the fee-loss mechanism is DIFFERENT ----
+  // Live 15 Nov 19:54-20:04 IST (v131): the Dec fee (fresh id, RCP-2026-007)
+  // was added + collected, the receipt landed on the server at 14:25:11 UTC,
+  // but the fee record vanished within ~1 minute (server ss_fee_records 0)
+  // while both attendance rows survived. The v131 guards protect a fee only
+  // while it exists locally at pull/flush time (guards A/B) or was created
+  // after the delete was queued (guard C). They do NOT protect a fee whose
+  // upsert was already pushed and drained (snapshot set) and whose server
+  // row is then missing at the next pull: mergeById's local loop DROPS a
+  // local fee that is in the snapshot but absent on the server with no
+  // pending upsert ("deleted elsewhere") — the v46 keep only fires while an
+  // upsert is still pending. A stale delete from another tab/device leaves
+  // exactly this state, and the pull then drops the local fee; the next
+  // diff queues a delete for it and the flush deletes any server row.
+  // The app's own invariant (deleteFeeRecord): only a PENDING record can be
+  // deleted — a Collected record is tied to a receipt and is the payment's
+  // evidence, so it must stay. The UI enforces this; the sync paths did
+  // not. Fix: (1) the flush never sync-deletes a Collected fee record from
+  // the server (server row status check, batch path); (2) the pull never
+  // drops a Collected fee record on snapshot grounds — it is kept and its
+  // upsert re-queued, so the flush re-POSTs it. Both are scoped to
+  // Collected only: a PENDING fee deleted elsewhere still drops, and a
+  // PENDING fee is still sync-deletable (the v131 A1/D fixtures are PENDING
+  // for exactly that reason).
+  Object.keys(sbServer).forEach(function (k) { sbServer[k] = []; });
+  (function () { var keys = []; for (var i = 0; i < ls.length; i++) keys.push(ls.key(i)); keys.forEach(function (k) { ls.removeItem(k); }); })();
+  ctx.sbSyncResetMemory();
+  resetDevice();
+  ctx.sbSyncDebounceMs = 0;
+  vm44SeedTestSchool();
+  ctx.saveAccounts([vmAcct]);
+  ctx.loginAs(vmAcct);
+  ctx.db = ctx.emptyDb({ name: 'Test Sunrise School', city: 'Patna', principal: 'Test Admin', phone: '', email: 'test@sunrise.test', session: '2025–26', address: '' });
+  ctx.state.sb = { uid: 'sb-uid-vm@school.in', email: 'vm@school.in' };
+  ctx.sbStoreSession({ access_token: 'tok-132', refresh_token: 'ref-132', expires_in: 3600, user: { id: 'sb-uid-vm@school.in', email: 'vm@school.in' } });
+  ctx.saveDB(ctx.db);
+  var c132dl = await ctx.sbSyncCycle();
+  v28eq(c132dl.done, true, 'v132 async: the download cycle completes');
+  var stu132 = ctx.db.students.filter(function (s) { return s.id === 'stu1794162292000'; })[0];
+  v28ok(!!stu132, 'v132 async: the download brings Test Kumar down');
+  var srvStu132 = sbServer.ss_students.filter(function (r) { return r.local_id === 'stu1794162292000'; })[0] || {};
+  var sch132 = srvStu132.school_id;
+  // (E) Flush guard: a stale delete entry for a COLLECTED fee must not
+  // delete the server row. The row is old (created before the delete was
+  // queued, so the v131 timestamp guard does not fire) and the local db
+  // does not have it (so the v131 local-row guard does not fire) — only
+  // the v132 Collected guard saves it.
+  ctx.db.feeRecords.push({ id: 'fee-132e', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Dec', type: 'Tuition', amount: 800, status: 'Collected', date: '2026-11-14' });
+  ctx.saveDB(ctx.db);
+  var c132e = await ctx.sbSyncCycle();
+  v28eq(c132e.done, true, 'v132 async: the guard-fee sync cycle completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-132e'; }).length, 1, 'v132 async: the guard fee record reaches the server');
+  var srvFeeId132e = (sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-132e'; })[0] || {}).id;
+  var srv132e = sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-132e'; })[0];
+  if (srv132e) { srv132e.created_at = '2026-11-01T00:00:00.000Z'; srv132e.updated_at = '2026-11-01T00:00:00.000Z'; }
+  ctx.db.feeRecords = ctx.db.feeRecords.filter(function (f) { return f.id !== 'fee-132e'; });
+  ctx.sbOutboxAdd('sb-uid-vm@school.in', { table: 'ss_fee_records', key: 'fee-132e', op: 'delete', at: sbNowISO() });
+  var fl132e = await ctx.sbSyncFlushNow();
+  v28eq(fl132e.done, true, 'v132 async: the stale-delete flush completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-132e'; }).length, 1, 'v132 async: the flush Collected guard keeps the server row when a stale delete entry is flushed');
+  v28eq((sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-132e'; })[0] || {}).id, srvFeeId132e, 'v132 async: the flush Collected guard keeps the SAME server row (not deleted + re-created)');
+  v28eq(ctx.sbOutboxLoad('sb-uid-vm@school.in').filter(function (e) { return e.table === 'ss_fee_records' && e.key === 'fee-132e'; }).length, 0, 'v132 async: the stale delete entry leaves the outbox');
+  v28ok(!(ctx.sbSnapLoad('sb-uid-vm@school.in').ss_fee_records && ctx.sbSnapLoad('sb-uid-vm@school.in').ss_fee_records['fee-132e']), 'v132 async: the no-op delete clears the snapshot key for the protected fee');
+  // (F) Pull keep / recovery: a COLLECTED fee whose server row was deleted
+  // elsewhere (a stale delete that already executed) must be KEPT locally
+  // by the pull — not dropped on snapshot grounds — and re-uploaded on the
+  // next cycle. The local row stays (no saveDB removal here); only the server
+  // row is removed directly. NOTE: in the full-cycle flow this passes on
+  // unfixed code too, via the v46 bypass (sbUploadMissing dedupes against
+  // the server's actual rows, so a fee the server lacks is re-POSTed even
+  // with a stale snapshot entry) — it is a recovery guard, not a repro
+  // signal. Part 2 (the pull keep) is the safety net for when the
+  // upload-missing cannot re-POST (e.g. an unresolvable student_id); a
+  // bogus-student isolation was tried and abandoned — it breaks the upload
+  // phase itself (cycle done:false), so the pull is never reached.
+  ctx.db.feeRecords.push({ id: 'fee-132f', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Nov', type: 'Tuition', amount: 800, status: 'Collected', date: '2026-11-14' });
+  ctx.saveDB(ctx.db);
+  var c132f = await ctx.sbSyncCycle();
+  v28eq(c132f.done, true, 'v132 async: the keep-fee sync cycle completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-132f'; }).length, 1, 'v132 async: the keep fee record reaches the server');
+  sbServer.ss_fee_records = sbServer.ss_fee_records.filter(function (r) { return r.local_id !== 'fee-132f'; });
+  var c132f2 = await ctx.sbSyncCycle();
+  v28eq(c132f2.done, true, 'v132 async: the cycle after the server row vanished completes');
+  v28ok(!!ctx.db.feeRecords.filter(function (f) { return f.id === 'fee-132f'; })[0], 'v132 async: the pull keeps a Collected fee locally when its server row is gone (not dropped on snapshot grounds)');
+  var c132f3 = await ctx.sbSyncCycle();
+  v28eq(c132f3.done, true, 'v132 async: the re-upload cycle completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-132f'; }).length, 1, 'v132 async: the kept Collected fee is re-uploaded to the server on the next cycle');
+  // (H) PENDING recovery: a PENDING fee whose server row was deleted
+  // elsewhere is ALSO recovered in the full-cycle flow (kept locally and
+  // re-uploaded via the v46 bypass) — it does not drop, because the
+  // upload-missing re-POSTs any local fee the server lacks. This pins that
+  // Part 2 does not break the v46 recovery for PENDING fees. (The pull-level
+  // scoping — a PENDING fee drops on snapshot grounds when the
+  // upload-missing cannot re-POST it — is enforced by the
+  // r.status === 'Collected' condition in mergeById; the flush-level
+  // scoping is pinned by (E) above and v131 (D).)
+  ctx.db.feeRecords.push({ id: 'fee-132h', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Oct', type: 'Tuition', amount: 800, status: 'Pending', date: '2026-11-14' });
+  ctx.saveDB(ctx.db);
+  var c132h = await ctx.sbSyncCycle();
+  v28eq(c132h.done, true, 'v132 async: the pending-fee sync cycle completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-132h'; }).length, 1, 'v132 async: the pending fee record reaches the server');
+  sbServer.ss_fee_records = sbServer.ss_fee_records.filter(function (r) { return r.local_id !== 'fee-132h'; });
+  var c132h2 = await ctx.sbSyncCycle();
+  v28eq(c132h2.done, true, 'v132 async: the cycle after the pending server row vanished completes');
+  v28ok(!!ctx.db.feeRecords.filter(function (f) { return f.id === 'fee-132h'; })[0], 'v132 async: a PENDING fee is also kept locally when its server row is gone (v46 bypass recovery)');
+  var c132h3 = await ctx.sbSyncCycle();
+  v28eq(c132h3.done, true, 'v132 async: the pending re-upload cycle completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-132h'; }).length, 1, 'v132 async: the kept PENDING fee is re-uploaded to the server on the next cycle');
+  // Cleanup: remove the fixtures (local + server) so later blocks start clean.
+  ctx.db.feeRecords = ctx.db.feeRecords.filter(function (f) { return f.id !== 'fee-132e' && f.id !== 'fee-132f' && f.id !== 'fee-132h'; });
+  ctx.saveDB(ctx.db);
+  sbServer.ss_fee_records = sbServer.ss_fee_records.filter(function (r) { return r.local_id !== 'fee-132e' && r.local_id !== 'fee-132f' && r.local_id !== 'fee-132h'; });
   ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
 
   // ---- Source-level checks ----
@@ -11762,7 +11877,7 @@ ctx.sbStoreSession({ access_token: 'tok-vm127b', refresh_token: 'ref-vm127b', ex
 let v28Done = false;
 const v28Guard = setTimeout(function () {
   if (!v28Done) { console.log('FAIL v34 async tests did not finish in time'); process.exitCode = 1; }
-}, 360000); // v53: raised from 30s — the latency block alone adds ~1 min of real time on v52 code; raised again to 360s in Phase 1 — the code has grown since v52 and the run now needs ~5 min with the latency block on
+}, 600000); // v53: raised from 30s — the latency block alone adds ~1 min of real time on v52 code; raised again to 360s in Phase 1 — the code has grown since v52 and the run now needs ~5 min with the latency block on; v132: raised to 600s — the run now needs ~9 min in UTC on a slow VM (IST ~4.5 min, UTC ~9.5 min; the gap is timezone-sensitive date work, not a hang), and the guard is a hang-catch, not a performance budget — a genuinely hung run never completes, so 600s still catches it
 // CR-1/H-1 (PR #17): the sync test IIFE is async now (it awaits
 // restoreSession), so the async section must wait for it — its fixtures
 // are built by the sync section. If the sync run crashed, fail fast

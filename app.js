@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 131;
+var APP_VERSION = 132;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -2399,8 +2399,13 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
         // v46: a fee record whose upload is still unconfirmed (a
         // pending outbox upsert) is KEPT, never dropped on snapshot
         // grounds — the snapshot entry is stale, not proof of a delete
-        // elsewhere.
-        if ((table === 'ss_fee_records' && outboxUpsert46.feeRecords[r.id]) || (table === 'ss_notices' && outboxUpsert46.notices[r.id])) { merged.push(r); keep(table, r.id); } // v127: a notice with a pending upsert is kept like a fee record — the pull must not overwrite the edit the flush is about to push
+        // elsewhere. v132: a Collected fee record is kept the same way
+        // even with no pending upsert — a Collected record is the
+        // payment's evidence and is never legitimately deleted (the UI
+        // only deletes PENDING records), so a missing server row for it
+        // is an unconfirmed upload or a stale delete elsewhere, never a
+        // deliberate delete; a PENDING fee still drops here.
+        if ((table === 'ss_fee_records' && outboxUpsert46.feeRecords[r.id]) || (table === 'ss_notices' && outboxUpsert46.notices[r.id]) || (table === 'ss_fee_records' && r.status === 'Collected')) { merged.push(r); keep(table, r.id); } // v127: a notice with a pending upsert is kept like a fee record — the pull must not overwrite the edit the flush is about to push; v132: a Collected fee record is never dropped on snapshot grounds — it is the payment's evidence, and the snapshot only proves this device pushed it once, not that the server still has it (a stale delete elsewhere leaves exactly this state); keep() excludes it from the snapshot refresh, so the next diff re-queues its upsert and the flush re-POSTs it
         return;
       }
       // v45: a local demo-seed row the server no longer has is dropped,
@@ -3598,6 +3603,17 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
     var delP = delRow ? Promise.resolve(delRow) : sbSyncFindServerRow(table, entry, token, schoolId, maps, uid);
     return delP.then(function (row) {
       if (!row) return delResolvable128 ? { pushed: true, noOpDelete128: true } : { pushed: false, skipped: true };
+      // v132: a Collected fee record is the payment's evidence (tied to a
+      // receipt) — the UI (deleteFeeRecord) only ever deletes PENDING
+      // records, so a sync delete entry for a Collected fee is necessarily
+      // stale/spurious (a stale tab's diff, or a pull that dropped the
+      // local row). Never delete it from the server; same v128 no-op
+      // shape (clears the snapshot key + removes the queue-time
+      // tombstone). Only when the status is available (the batch path,
+      // select=*); the non-batch find (findCols105 = id,updated_at) has
+      // no status, so the guard is skipped there — same limitation as
+      // the v131 created_at guard.
+      if (table === 'ss_fee_records' && row.status === 'Collected') return { pushed: true, noOpDelete128: true };
       // v131: a delete is stale when the server row was created AFTER the
       // delete entry was queued (row.created_at > entry.at, STRICT — no
       // tolerance: a stale tab's re-POST sits seconds before the re-queued
