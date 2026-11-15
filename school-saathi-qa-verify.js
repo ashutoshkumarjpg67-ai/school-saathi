@@ -2863,8 +2863,11 @@ const test = `
   ok(typeof newAct58.ts === 'string' && /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}/.test(newAct58.ts), 'v26: activity entry stores a real ISO timestamp at log time');
   ok(!('time' in newAct58), 'v26: activity entry no longer stores a fake time literal');
   state.role = 'school'; state.user = TEST_ACCOUNTS.school; state.view = 'dashboard';
+  // v129 (Module 16): the dashboard Recent Activities reads db.auditLog now,
+  // not db.activities — the new entry must be an audit row to appear here.
+  logAudit('Test audit action', 'Detail here');
   var sd58 = schoolDashboard();
-  ok(sd58.indexOf('Test activity') !== -1, 'v26: dashboard lists the new activity');
+  ok(sd58.indexOf('Test audit action') !== -1, 'v26: dashboard lists the new audit entry');
   ok(sd58.indexOf('just now') !== -1, 'v26: dashboard shows a real relative time for the new activity');
   ok(sd58.indexOf('Just now') === -1, 'v26: dashboard never shows the old Just now literal');
   eq(relTime(''), '', 'v26: relTime of a missing timestamp is empty (no fabricated time)');
@@ -5494,7 +5497,7 @@ const test = `
   // v88: the principal now opens fees + students too (oversight), but
   // still never settings.
   ok(canAccessView('principal', 'dashboard') && canAccessView('principal', 'notices'), 'v85: a principal may open dashboard + notices');
-  ok(!canAccessView('principal', 'settings') && !canAccessView('principal', 'admissions') && !canAccessView('principal', 'activityLog'), 'v88: a principal may not open settings, admissions or the activity log');
+  ok(!canAccessView('principal', 'settings') && !canAccessView('principal', 'admissions'), 'v88: a principal may not open settings or admissions');
   ok(!canAccessView('accountant', 'students') && !canAccessView('accountant', 'attendance'), 'v85: an accountant may not open students or attendance');
   ok(!canAccessView('staff', 'fees') && !canAccessView('staff', 'exams'), 'v85: a staff member may not open fees or exams');
   ok(!canAccessView('parent', 'settings') && !canAccessView('parent', 'teachers'), 'v85: a parent may not open settings or teachers');
@@ -5609,13 +5612,13 @@ const test = `
   var riya88 = db.students.find(function (s) { return s.name === 'Riya Kumari'; });
   var prin88 = { role: 'principal', name: 'Test Principal', sub: 'Principal • Test Principal', email: 'principal:test-school:prin88', uid: 'principal-prin88', staffId: 'prin88', schoolUid: 'test-school' };
   // PERMS + NAV + PAGE for the principal.
-  eq(PERMS.principal.join(','), 'dashboard,students,teachers,attendance,fees,exams,homework,notices,reports', 'v88: PERMS.principal is the full oversight set (9 views)');
-  eq(NAV.principal.length, 9, 'v88: NAV.principal has 9 items');
-  eq(Object.keys(PAGE_PRINCIPAL).length, 9, 'v88: PAGE_PRINCIPAL has 9 pages');
+  eq(PERMS.principal.join(','), 'dashboard,students,teachers,attendance,fees,exams,homework,notices,reports,activityLog', 'v88: PERMS.principal is the full oversight set (10 views)');
+  eq(NAV.principal.length, 10, 'v88: NAV.principal has 10 items');
+  eq(Object.keys(PAGE_PRINCIPAL).length, 10, 'v88: PAGE_PRINCIPAL has 10 pages');
   eq(canAccessView('principal', 'students'), true, 'v88: a principal may open Students');
   eq(canAccessView('principal', 'settings'), false, 'v88: a principal may NOT open Settings');
   eq(canAccessView('principal', 'admissions'), false, 'v88: a principal may NOT open Admissions');
-  eq(canAccessView('principal', 'activityLog'), false, 'v88: a principal may NOT open the Activity Log');
+  eq(canAccessView('principal', 'activityLog'), true, 'v129: a principal may open the read-only Activity Log');
   // The dashboard is the read-only overview.
   loginAs(prin88, { silent: true });
   eq(state.role, 'principal', 'v88: loginAs with a principal account sets the role');
@@ -11318,6 +11321,141 @@ ctx.sbStoreSession({ access_token: 'tok-vm127b', refresh_token: 'ref-vm127b', ex
   ctx.saveDB(ctx.db);
   sbServer.ss_fee_records = sbServer.ss_fee_records.filter(function (r) { return r.local_id !== 'fee-128a'; });
   sbServer.ss_attendance = sbServer.ss_attendance.filter(function (r) { return r.att_date !== '2026-11-09'; });
+  ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
+
+  // ---- v129 (Module 16, Audit logs): filters, CSV export, settings audit, dashboard, principal ----
+  // (A) Filters: auditFiltered() narrows the log by text / action / actor / date range.
+  // (B) CSV: auditCSVRows() + exportAuditCSV() export the filtered log.
+  // (C) saveSettings() logs a 'Settings updated' row (and nothing on a no-change save).
+  // (D) The school dashboard Recent Activities reads db.auditLog (top 6), not db.activities.
+  // (E) The principal may open the read-only Activity Log (PERMS + NAV + PAGE).
+  // (F) Load more: activityLogPage shows actLimit rows + a Load more button when more exist.
+  // (G) The new audit row reaches the server through the sync cycle.
+  Object.keys(sbServer).forEach(function (k) { sbServer[k] = []; });
+  (function () { var keys = []; for (var i = 0; i < ls.length; i++) keys.push(ls.key(i)); keys.forEach(function (k) { ls.removeItem(k); }); })();
+  ctx.sbSyncResetMemory();
+  resetDevice();
+  ctx.sbSyncDebounceMs = 0;
+  vm44SeedTestSchool();
+  ctx.saveAccounts([vmAcct]);
+  ctx.loginAs(vmAcct);
+  ctx.db = ctx.emptyDb({ name: 'Test Sunrise School', city: 'Patna', principal: 'Test Admin', phone: '', email: 'test@sunrise.test', session: '2025\u201326', address: '' });
+  ctx.state.sb = { uid: 'sb-uid-vm@school.in', email: 'vm@school.in' };
+  ctx.sbStoreSession({ access_token: 'tok' + '-vm129', refresh_token: 'ref' + '-vm129', expires_in: 3600, user: { id: 'sb-uid-vm@school.in', email: 'vm@school.in' } });
+  ctx.saveDB(ctx.db);
+  // Seed 3 known audit rows (newest first — logAudit unshifts, so the array
+  // is stored newest-first for a deterministic sort).
+  ctx.db.auditLog = [
+    { ts: '2026-11-15T10:00:00.000Z', actor: 'Test Admin (school)', action: 'Fee collected', details: 'Test Kumar \u2022 RCP-2026-006 \u2022 \u20B9800' },
+    { ts: '2026-11-14T09:00:00.000Z', actor: 'Cloud Teacher (teacher)', action: 'Attendance updated', details: 'Class 6th-A \u2022 2026-11-14' },
+    { ts: '2026-11-13T08:00:00.000Z', actor: 'Test Admin (school)', action: 'Student removed', details: 'Old Student \u2022 6th-A (soft delete \u2014 record kept)' }
+  ];
+  ctx.saveDB(ctx.db);
+  ctx.state.actSearch = ''; ctx.state.actAction = 'All'; ctx.state.actActor = 'All'; ctx.state.actFrom = ''; ctx.state.actTo = ''; ctx.state.actLimit = 50;
+  // Safe-call helpers: on unfixed code the new functions do not exist, so a
+  // bare call would crash the runner — return [] instead and let the
+  // assertions fail cleanly (repro-first).
+  function af129() { return (typeof ctx.auditFiltered === 'function') ? ctx.auditFiltered() : []; }
+  function ac129() { return (typeof ctx.auditCSVRows === 'function') ? ctx.auditCSVRows() : []; }
+  v28ok(typeof ctx.auditFiltered === 'function', 'v129: auditFiltered exists');
+  v28eq(af129().length, 3, 'v129: no filter shows all 3 seeded rows');
+  v28eq(af129()[0] ? af129()[0].action : '', 'Fee collected', 'v129: rows come back newest first');
+  ctx.state.actSearch = 'kumar';
+  v28eq(af129().length, 1, 'v129: text search matches the details (kumar)');
+  v28eq(af129()[0] ? af129()[0].action : '', 'Fee collected', 'v129: text search returns the fee row');
+  ctx.state.actSearch = 'CLOUD TEACHER';
+  v28eq(af129().length, 1, 'v129: text search is case-insensitive and matches the actor');
+  ctx.state.actSearch = 'zzz-no-match';
+  v28eq(af129().length, 0, 'v129: text search with no match returns nothing');
+  ctx.state.actSearch = '';
+  ctx.state.actAction = 'Attendance updated';
+  v28eq(af129().length, 1, 'v129: action filter keeps only that action');
+  ctx.state.actAction = 'All';
+  ctx.state.actActor = 'Test Admin (school)';
+  v28eq(af129().length, 2, 'v129: actor filter keeps only that actor');
+  ctx.state.actActor = 'All';
+  ctx.state.actFrom = '2026-11-14'; ctx.state.actTo = '2026-11-14';
+  v28eq(af129().length, 1, 'v129: date range keeps only rows on that day');
+  v28eq(af129()[0] ? af129()[0].action : '', 'Attendance updated', 'v129: date range returns the 14 Nov row');
+  ctx.state.actFrom = ''; ctx.state.actTo = '';
+  ctx.state.actAction = 'Fee collected'; ctx.state.actActor = 'Test Admin (school)';
+  v28eq(af129().length, 1, 'v129: action + actor combine');
+  ctx.state.actAction = 'All'; ctx.state.actActor = 'All';
+  // (B) CSV rows: header + the filtered rows, in the same order.
+  v28ok(typeof ctx.auditCSVRows === 'function', 'v129: auditCSVRows exists');
+  v28eq(ac129().length, 4, 'v129: CSV rows are header + 3 entries');
+  v28eq(ac129()[0] ? ac129()[0].join(',') : '', 'Date,Action,Details,By', 'v129: CSV header is Date,Action,Details,By');
+  v28eq(ac129()[1] ? ac129()[1][1] : '', 'Fee collected', 'v129: first CSV row is the newest entry');
+  ctx.state.actAction = 'Attendance updated';
+  v28eq(ac129().length, 2, 'v129: CSV rows follow the active filter');
+  ctx.state.actAction = 'All';
+  // exportAuditCSV downloads a dated file with the filtered rows.
+  var cap129 = null;
+  var realDl129 = ctx.downloadCSV;
+  ctx.downloadCSV = function (fn, rows) { cap129 = { fn: fn, rows: rows }; };
+  if (typeof ctx.exportAuditCSV === 'function') ctx.exportAuditCSV();
+  v28ok(!!cap129 && cap129.fn.indexOf('school-saathi-audit-log-') === 0, 'v129: exportAuditCSV downloads a dated audit-log CSV');
+  v28eq(cap129 ? cap129.rows.length : 0, 4, 'v129: exportAuditCSV exports header + 3 rows');
+  ctx.downloadCSV = realDl129;
+  // (C) saveSettings logs a 'Settings updated' row with old -> new values.
+  var n129before = ctx.db.auditLog.length;
+  ctx.document.getElementById('fPfName').value = 'Test Sunrise School Renamed';
+  ctx.document.getElementById('fPfCity').value = 'Patna';
+  ctx.document.getElementById('fPfPr').value = 'Test Admin';
+  ctx.document.getElementById('fPfPh').value = '';
+  ctx.document.getElementById('fPfEm').value = 'test@sunrise.test';
+  ctx.document.getElementById('fPfSe').value = '2025\u201326';
+  ctx.document.getElementById('fPfAd').value = '';
+  ctx.saveSettings({ preventDefault: function () {} });
+  v28eq(ctx.db.auditLog.length, n129before + 1, 'v129: changing the school name adds one audit row');
+  v28eq(ctx.db.auditLog[0].action, 'Settings updated', 'v129: the new row is a Settings updated audit row');
+  v28ok(ctx.db.auditLog[0].details.indexOf('Test Sunrise School \u2192 Test Sunrise School Renamed') !== -1, 'v129: the settings row records old -> new name');
+  // A no-change save logs nothing.
+  var n129b = ctx.db.auditLog.length;
+  ctx.document.getElementById('fPfName').value = 'Test Sunrise School Renamed';
+  ctx.document.getElementById('fPfCity').value = 'Patna';
+  ctx.document.getElementById('fPfPr').value = 'Test Admin';
+  ctx.document.getElementById('fPfPh').value = '';
+  ctx.document.getElementById('fPfEm').value = 'test@sunrise.test';
+  ctx.document.getElementById('fPfSe').value = '2025\u201326';
+  ctx.document.getElementById('fPfAd').value = '';
+  ctx.saveSettings({ preventDefault: function () {} });
+  v28eq(ctx.db.auditLog.length, n129b, 'v129: a no-change settings save logs nothing');
+  // (D) The school dashboard Recent Activities reads db.auditLog (top 6).
+  var dash129 = ctx.schoolDashboard();
+  v28ok(dash129.indexOf('Settings updated') !== -1, 'v129: the dashboard Recent Activities shows the newest audit row');
+  v28ok(dash129.indexOf('Fee collected') !== -1, 'v129: the dashboard shows the fee audit row too');
+  // A logAudit-only action (no addActivity) still appears — the v120 gap.
+  ctx.logAudit('Student PIN set', 'Test Kumar \u2022 6th-A');
+  var dash129b = ctx.schoolDashboard();
+  v28ok(dash129b.indexOf('Student PIN set') !== -1, 'v129: a logAudit-only action (no addActivity) appears on the dashboard');
+  // (E) The principal may open the read-only Activity Log.
+  v28ok(ctx.canAccessView('principal', 'activityLog'), 'v129: PERMS lets the principal open the Activity Log');
+  v28ok(ctx.PAGE_PRINCIPAL.activityLog === ctx.activityLogPage, 'v129: PAGE_PRINCIPAL maps activityLog to the Activity Log page');
+  v28ok(ctx.NAV.principal.some(function (n) { return n[0] === 'activityLog'; }), 'v129: the principal nav lists the Activity Log');
+  v28ok(ctx.canAccessView('accountant', 'activityLog') === false, 'v129: the accountant still cannot open the Activity Log');
+  // (F) Load more: with more rows than the limit, the page shows a Load more button.
+  ctx.db.auditLog = [];
+  for (var i129 = 0; i129 < 60; i129++) ctx.db.auditLog.push({ ts: '2026-11-15T10:' + String(i129 % 60).padStart(2, '0') + ':00.000Z', actor: 'Test Admin (school)', action: 'Fee collected', details: 'Row ' + i129 });
+  ctx.state.actSearch = ''; ctx.state.actAction = 'All'; ctx.state.actActor = 'All'; ctx.state.actFrom = ''; ctx.state.actTo = ''; ctx.state.actLimit = 50;
+  var pg129 = ctx.activityLogPage();
+  v28eq(pg129.split('<tr><td style="white-space:nowrap">').length - 1, 50, 'v129: the Activity Log shows 50 rows with the default limit');
+  v28ok(pg129.indexOf('state.actLimit=(state.actLimit||50)+50') !== -1, 'v129: the Activity Log shows a Load more button when rows remain');
+  ctx.state.actLimit = 100;
+  var pg129b = ctx.activityLogPage();
+  v28eq(pg129b.split('<tr><td style="white-space:nowrap">').length - 1, 60, 'v129: raising the limit shows all 60 rows');
+  v28ok(pg129b.indexOf('state.actLimit=(state.actLimit||50)+50') === -1, 'v129: no Load more button when nothing remains');
+  // (G) The new audit row reaches the server through the sync cycle.
+  ctx.db.auditLog = [{ ts: '2026-11-15T10:00:00.000Z', actor: 'Test Admin (school)', action: 'Settings updated', details: 'Name: Test Sunrise School \u2192 Test Sunrise School Renamed' }];
+  ctx.saveDB(ctx.db);
+  var c129 = await ctx.sbSyncCycle();
+  v28eq(c129.done, true, 'v129: the audit sync cycle completes');
+  v28eq(sbServer.ss_audit_log.filter(function (r) { return r.action === 'Settings updated'; }).length, 1, 'v129: the Settings updated row reaches the server');
+  // Cleanup: remove the fixtures (local + server) so later blocks start clean.
+  ctx.db.auditLog = [];
+  ctx.saveDB(ctx.db);
+  sbServer.ss_audit_log = [];
+  ctx.state.actSearch = ''; ctx.state.actAction = 'All'; ctx.state.actActor = 'All'; ctx.state.actFrom = ''; ctx.state.actTo = ''; ctx.state.actLimit = 50;
   ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
 
   // ---- Source-level checks ----

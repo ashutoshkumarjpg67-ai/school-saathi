@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 128;
+var APP_VERSION = 129;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -5162,7 +5162,7 @@ function sbStorageFreePhotos() {
 var db = loadDB();
 
 /* ================= state ================= */
-var state = { role: null, user: null, view: 'dashboard', lang: 'en', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, feeEditId: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, sb: null };
+var state = { role: null, user: null, view: 'dashboard', lang: 'en', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, feeEditId: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, actSearch: '', actAction: 'All', actActor: 'All', actFrom: '', actTo: '', actLimit: 50, sb: null };
 
 /* Phase 2: bulk import + promotion state (in-memory only, never persisted). */
 var importState = { rows: null, fileName: '', result: null };
@@ -7780,7 +7780,7 @@ var NAV = {
   // NAV is the visible menu; PERMS below is the enforcement.
   principal: [
     ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['teachers', '👩‍🏫', 'teachers'], ['attendance', '✅', 'attendance'],
-    ['fees', '💰', 'fees'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices'], ['reports', '📄', 'reports']
+    ['fees', '💰', 'fees'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices'], ['reports', '📄', 'reports'], ['activityLog', '📜', 'activityLog']
   ],
   accountant: [
     ['dashboard', '🏠', 'dashboard'], ['fees', '💰', 'fees'], ['reports', '📄', 'reports'], ['notices', '📢', 'notices'] // v92: fees-focused nav — no students, no settings
@@ -7804,7 +7804,7 @@ var PERMS = {
   school: ['dashboard', 'students', 'teachers', 'staff', 'classes', 'admissions', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog', 'settings'], // v90: the school admin manages staff accounts here
   teacher: ['dashboard', 'students', 'attendance', 'exams', 'homework', 'notices'],
   student: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'],
-  principal: ['dashboard', 'students', 'teachers', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports'], // v88: the principal oversees the whole school, read-only
+  principal: ['dashboard', 'students', 'teachers', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog'], // v88: the principal oversees the whole school, read-only; v129: the Activity Log is read-only, so the principal may open it too
   accountant: ['dashboard', 'fees', 'reports', 'notices'], // v92: the accountant works fees + reports (receipts ride the fees page)
   staff: ['dashboard', 'attendance', 'homework', 'notices'], // v93: a staff member works attendance + homework for their own classes
   parent: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'], // v86: the parent portal reuses the student views, view-only
@@ -8459,12 +8459,15 @@ function submitSupportRequest(e) {
 /* ================= SCHOOL ADMIN pages ================= */
 function schoolDashboard() {
   var ft = feeTotals(), ta = todayAtt();
-  var acts = db.activities.map(function (a) {
-    // v26: real relative time from the entry's timestamp. Entries that
-    // predate timestamps (seed + old stored entries) show no time at
-    // all rather than a fabricated one.
+  // v129 (Module 16): Recent Activities reads the real audit trail (db.auditLog,
+  // top 6 newest) instead of db.activities — the old feed only held actions
+  // that also called addActivity, so fee deletions, PIN changes and class
+  // changes never appeared here (the v120 cosmetic gap). Teacher/staff cloud
+  // rows reach db.auditLog through the pull, so they show up too.
+  var acts = (db.auditLog || []).slice().sort(function (a, b) { return a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0; }).slice(0, 6).map(function (a) {
+    var ic = auditIconFor(a.action || '');
     var when = relTime(a.ts);
-    return '<div class="act"><div class="ic" style="background:var(--' + (a.bg === 'green' ? 'green' : a.bg === 'blue' ? 'blue' : 'orange') + '-soft)">' + a.icon + '</div><div><b>' + esc(a.title) + '</b><span>' + esc(a.sub) + (when ? ' • ' + esc(when) : '') + '</span></div></div>';
+    return '<div class="act"><div class="ic" style="background:var(--' + ic.bg + '-soft)">' + ic.icon + '</div><div><b>' + esc(a.action) + '</b><span>' + esc(a.details || '') + ' • ' + esc(a.actor || '') + (when ? ' • ' + esc(when) : '') + '</span></div></div>';
   }).join('');
   var logoHtml = db.profile.logo ? '<img class="dash-logo" src="' + esc(db.profile.logo) + '" alt="">' : '';
   return '<div class="page-head"><div class="prof-head">' + logoHtml + '<div><h2>' + t('schoolDashboard') + '</h2><p>' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div></div>' +
@@ -8490,24 +8493,101 @@ function schoolDashboard() {
     '<div class="qa" onclick="go(\'reports\')"><div class="ic">📄</div><b>' + t('qaGenReport') + '</b><span>' + t('qaGenReportD') + '</span></div>' +
   '</div></div></div>';
 }
-/* ================= Activity / Audit Log (v24) =================
-   The dashboard "Recent Activities" card only shows the last few
-   db.activities entries (collections, attendance saves, notices) — and
-   its "View All" link was dead. The real audit trail lives in
-   db.auditLog (logAudit: fee collections, fee deletions, admissions,
-   transfers, promotions, PIN changes...), newest first. This page
-   lists every audit entry so nothing — including a fee deletion —
-   is invisible. */
-function activityLogPage() {
+/* ================= Activity / Audit Log (v24, v129) =================
+   The dashboard "Recent Activities" card reads the real audit trail
+   (db.auditLog, top 6 newest) since v129 — before that it showed the
+   smaller db.activities feed, so fee deletions and PIN changes never
+   appeared there. This page lists every audit entry (newest first) so
+   nothing — including a fee deletion — is invisible, with text /
+   action / actor / date filters, a CSV export and Load more (v129). */
+function auditFiltered() {
+  // v129 (Module 16): the Activity Log filters — text + action + actor + date range.
+  // Returns the rows newest-first. Pure (no DOM), so the harness can call it directly.
   var rows = (db.auditLog || []).slice().sort(function (a, b) { return a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0; });
-  var trs = rows.map(function (a) {
+  var q = (state.actSearch || '').trim().toLowerCase();
+  var act = state.actAction || 'All';
+  var who = state.actActor || 'All';
+  var from = state.actFrom || '';
+  var to = state.actTo || '';
+  return rows.filter(function (a) {
+    if (act !== 'All' && a.action !== act) return false;
+    if (who !== 'All' && a.actor !== who) return false;
+    if (from && (a.ts || '').slice(0, 10) < from) return false;
+    if (to && (a.ts || '').slice(0, 10) > to) return false;
+    if (q) {
+      var hay = ((a.action || '') + ' ' + (a.details || '') + ' ' + (a.actor || '')).toLowerCase();
+      if (hay.indexOf(q) === -1) return false;
+    }
+    return true;
+  });
+}
+function auditCSVRows() {
+  // v129: the CSV rows for the (filtered) audit log — header + one row per entry.
+  var head = ['Date', 'Action', 'Details', 'By'];
+  return [head].concat(auditFiltered().map(function (a) {
+    return [(a.ts || '').replace('T', ' ').slice(0, 19), a.action || '', a.details || '', a.actor || ''];
+  }));
+}
+function exportAuditCSV() {
+  downloadCSV('school-saathi-audit-log-' + todayIST() + '.csv', auditCSVRows());
+  toast('✓ ' + t('tAuditCsv'));
+}
+function onActSearch(el) {
+  state.actSearch = el.value;
+  state.actLimit = 50;
+  renderPage();
+  var inp = $('actSearchInput');
+  if (inp && inp.focus) { inp.focus(); if (inp.setSelectionRange) { try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch (e) {} } }
+}
+function auditIconFor(action) {
+  // v129 (Module 16): the dashboard Recent Activities reads db.auditLog now,
+  // so each audit row needs an icon. Derived from the action text.
+  var a = String(action || '');
+  if (a.indexOf('Fee') !== -1) return { icon: '\uD83D\uDCB0', bg: 'green' };
+  if (a.indexOf('Attendance') !== -1) return { icon: '\u2705', bg: 'blue' };
+  if (a.indexOf('Student') !== -1 || a.indexOf('Admission') !== -1) return { icon: '\uD83C\uDF92', bg: 'blue' };
+  if (a.indexOf('Marks') !== -1 || a.indexOf('Exam') !== -1) return { icon: '\uD83D\uDCDD', bg: 'orange' };
+  if (a.indexOf('Homework') !== -1) return { icon: '\uD83D\uDCDA', bg: 'orange' };
+  if (a.indexOf('Notice') !== -1) return { icon: '\uD83D\uDCE2', bg: 'blue' };
+  if (a.indexOf('Teacher') !== -1 || a.indexOf('Staff') !== -1) return { icon: '\uD83D\uDC69\u200D\uD83C\uDFEB', bg: 'blue' };
+  if (a.indexOf('Class') !== -1) return { icon: '\uD83C\uDFEB', bg: 'blue' };
+  if (a.indexOf('Settings') !== -1) return { icon: '\u2699\uFE0F', bg: 'blue' };
+  if (a.indexOf('deleted') !== -1 || a.indexOf('removed') !== -1) return { icon: '\uD83D\uDDD1\uFE0F', bg: 'orange' };
+  return { icon: '\uD83D\uDCD3', bg: 'blue' };
+}
+function activityLogPage() {
+  var rows = auditFiltered();
+  var actions = [];
+  (db.auditLog || []).forEach(function (a) { if (a.action && actions.indexOf(a.action) === -1) actions.push(a.action); });
+  var actors = [];
+  (db.auditLog || []).forEach(function (a) { if (a.actor && actors.indexOf(a.actor) === -1) actors.push(a.actor); });
+  var opt = function (vals, cur, allLabel) {
+    return ['All'].concat(vals).map(function (v) {
+      return '<option value="' + esc(v) + '" ' + (cur === v ? 'selected' : '') + '>' + (v === 'All' ? allLabel : esc(v)) + '</option>';
+    }).join('');
+  };
+  var limit = state.actLimit || 50;
+  var shown = rows.slice(0, limit);
+  var trs = shown.map(function (a) {
     var when = (a.ts || '').replace('T', ' ').slice(0, 19);
     return '<tr><td style="white-space:nowrap">' + esc(when) + '</td><td><b>' + esc(a.action) + '</b></td><td>' + esc(a.details || '') + '</td><td>' + esc(a.actor || '') + '</td></tr>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('activityLog') + '</h2><p>' + t('actLogSub') + '</p></div>' +
-    '<div class="toolbar"><button class="btn ghost" onclick="go(\'dashboard\')">← ' + t('dashboard') + '</button></div></div>' +
-    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thDate') + '</th><th>' + t('thAction') + '</th><th>' + t('thDetails') + '</th><th>' + t('actBy') + '</th></tr></thead><tbody>' +
-    (trs || '<tr><td colspan="4"><div class="empty">' + t('noActivity') + '</div></td></tr>') + '</tbody></table></div></div>';
+    '<div class="toolbar"><button class="btn ghost" onclick="go(\'dashboard\')">\u2190 ' + t('dashboard') + '</button></div></div>' +
+    '<div class="card"><div class="toolbar" style="flex-wrap:wrap">' +
+    '<input id="actSearchInput" placeholder="' + t('actSearchPh') + '" value="' + esc(state.actSearch || '') + '" oninput="onActSearch(this)" style="min-width:200px">' +
+    '<select onchange="state.actAction=this.value;state.actLimit=50;renderPage()">' + opt(actions, state.actAction || 'All', t('allActions')) + '</select>' +
+    '<select onchange="state.actActor=this.value;state.actLimit=50;renderPage()">' + opt(actors, state.actActor || 'All', t('allActors')) + '</select>' +
+    '<label class="muted">' + t('actFrom') + ' <input type="date" value="' + esc(state.actFrom || '') + '" onchange="state.actFrom=this.value;state.actLimit=50;renderPage()"></label>' +
+    '<label class="muted">' + t('actTo') + ' <input type="date" value="' + esc(state.actTo || '') + '" onchange="state.actTo=this.value;state.actLimit=50;renderPage()"></label>' +
+    '<button class="btn ghost" onclick="state.actSearch=\'\';state.actAction=\'All\';state.actActor=\'All\';state.actFrom=\'\';state.actTo=\'\';state.actLimit=50;renderPage()">' + t('actClear') + '</button>' +
+    '<button class="btn ghost" onclick="exportAuditCSV()">\u2B07 ' + t('exportCsv') + '</button>' +
+    '</div>' +
+    '<p class="muted">' + t('showingRec') + ' ' + shown.length + ' ' + t('ofRec') + ' ' + rows.length + ' ' + t('recordsWord') + '</p>' +
+    '<div class="tbl-wrap"><table><thead><tr><th>' + t('thDate') + '</th><th>' + t('thAction') + '</th><th>' + t('thDetails') + '</th><th>' + t('actBy') + '</th></tr></thead><tbody>' +
+    (trs || '<tr><td colspan="4"><div class="empty">' + t('noActivity') + '</div></td></tr>') + '</tbody></table></div>' +
+    (rows.length > limit ? '<div style="margin-top:12px"><button class="btn ghost" onclick="state.actLimit=(state.actLimit||50)+50;renderPage()">' + t('loadMore') + '</button></div>' : '') +
+    '</div>';
 }
 function studentsPage() {
   if (state.profileStudent) return studentProfilePage(state.profileStudent);
@@ -11599,6 +11679,10 @@ function saveSettings(e) {
   e.preventDefault();
   if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
   var p = db.profile;
+  // v129 (Module 16): settings changes are significant admin actions — audit
+  // them with the old → new values, so a renamed school or a changed session
+  // is visible in the Activity Log. A save with no changes logs nothing.
+  var oldName = p.name, oldCity = p.city, oldPr = p.principal, oldSession = p.session, oldLogo = !!p.logo;
   p.name = $('fPfName').value.trim(); p.city = $('fPfCity').value.trim();
   p.principal = $('fPfPr').value.trim(); p.phone = $('fPfPh').value.trim(); p.email = $('fPfEm').value.trim();
   p.session = $('fPfSe').value; p.address = $('fPfAd').value.trim();
@@ -11607,6 +11691,13 @@ function saveSettings(e) {
     else { delete p.logo; delete p.logoUrl; }
     pendingLogo = null;
   }
+  var changes = [];
+  if (p.name !== oldName) changes.push('Name: ' + (oldName || '—') + ' → ' + (p.name || '—'));
+  if (p.city !== oldCity) changes.push('City: ' + (oldCity || '—') + ' → ' + (p.city || '—'));
+  if (p.principal !== oldPr) changes.push('Principal: ' + (oldPr || '—') + ' → ' + (p.principal || '—'));
+  if (p.session !== oldSession) changes.push('Session: ' + (oldSession || '—') + ' → ' + (p.session || '—'));
+  if (!!p.logo !== oldLogo) changes.push(oldLogo ? 'Logo removed' : 'Logo updated');
+  if (changes.length) logAudit('Settings updated', changes.join(' • '));
   saveDB(db); renderApp();
   toast('✓ ' + t('tSettingsSaved'));
   return false;
@@ -12042,7 +12133,7 @@ var PAGE_TEACHER = { dashboard: teacherDashboard, students: studentsPage, attend
 // their edit controls hidden for a principal (see the isPrincipal
 // gating in each page). Notices and reports are read-only by
 // construction (canPost is school-only; reports only download).
-var PAGE_PRINCIPAL = { dashboard: principalDashboard, students: studentsPage, teachers: teachersPage, attendance: attendancePage, fees: feesPage, exams: examsPage, homework: homeworkPage, notices: noticesPage, reports: reportsPage };
+var PAGE_PRINCIPAL = { dashboard: principalDashboard, students: studentsPage, teachers: teachersPage, attendance: attendancePage, fees: feesPage, exams: examsPage, homework: homeworkPage, notices: noticesPage, reports: reportsPage, activityLog: activityLogPage }; // v129: the principal may open the read-only Activity Log
 var PAGE_ACCOUNTANT = { dashboard: roleDashboard, fees: feesPage, reports: reportsPage, notices: noticesPage }; // v92: the accountant opens the fees + reports pages (the principal's read-only fees stay untouched)
 var PAGE_STAFF = { dashboard: roleDashboard, attendance: attendancePage, homework: homeworkPage, notices: noticesPage }; // v93: a staff member opens attendance + homework (scoped to their classes) + notices
 // v86 (Phase 4): the Parent role reuses the student portal's read-only
