@@ -4,7 +4,7 @@
 // roleClasses / PAGE_* maps) in the Phase 1 harness. Fixtures only —
 // seedDB() demo data, never a real school.
 //
-// The matrix below is pinned EXACTLY as it stands in app.js at v119.
+// The matrix below is pinned EXACTLY as it stands in app.js at v129.
 // Any future PERMS change (a new view, a role gaining/losing a page)
 // must update this table in the same commit — that is the point: a
 // silent permission widening fails CI instead of shipping.
@@ -17,13 +17,13 @@ import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createAppContext } from '../harness.mjs';
 
-// Expected PERMS at v108, copied from app.js (var PERMS, ~line 7545).
+// Expected PERMS at v129, copied from app.js (var PERMS, ~line 7800).
 // school = School Admin. Order matches app.js.
 const EXPECTED_PERMS = {
   school: ['dashboard', 'students', 'teachers', 'staff', 'classes', 'admissions', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog', 'settings'],
   teacher: ['dashboard', 'students', 'attendance', 'exams', 'homework', 'notices'],
   student: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'],
-  principal: ['dashboard', 'students', 'teachers', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports'],
+  principal: ['dashboard', 'students', 'teachers', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog'], // v129: the principal may open the read-only Activity Log
   accountant: ['dashboard', 'fees', 'reports', 'notices'],
   staff: ['dashboard', 'attendance', 'homework', 'notices'],
   parent: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'],
@@ -122,13 +122,19 @@ describe('permission matrix (8 roles)', () => {
 
   it('write paths stay closed to read-only roles (principal / student / parent)', () => {
     // The principal is read-only (v88) and student/parent are view-only
-    // (v86): none of them may open settings, staff management, admissions
-    // or the audit log — the four write/admin views.
+    // (v86): none of them may open settings, staff management or
+    // admissions — the three write/admin views. The Activity Log page is
+    // read-only, so the principal (oversight) may open it (v129);
+    // student/parent still may not.
     for (const role of ['principal', 'student', 'parent']) {
-      for (const view of ['settings', 'staff', 'admissions', 'activityLog']) {
+      for (const view of ['settings', 'staff', 'admissions']) {
         assert.equal(app.run(`canAccessView('${role}', '${view}')`), false, `${role} must not open ${view}`);
       }
     }
+    for (const role of ['student', 'parent']) {
+      assert.equal(app.run(`canAccessView('${role}', 'activityLog')`), false, `${role} must not open activityLog`);
+    }
+    assert.equal(app.run(`canAccessView('principal', 'activityLog')`), true, 'principal may open the read-only activityLog');
     // The accountant touches money but never manages people or settings.
     for (const view of ['students', 'teachers', 'staff', 'attendance', 'exams', 'homework', 'settings', 'admissions', 'activityLog']) {
       assert.equal(app.run(`canAccessView('accountant', '${view}')`), false, `accountant must not open ${view}`);
