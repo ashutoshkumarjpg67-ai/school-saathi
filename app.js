@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 129;
+var APP_VERSION = 130;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -6333,6 +6333,27 @@ function restoreSession() {
       } catch (e3) {}
       return Promise.resolve(false);
     }
+    if ((sv.role === 'principal' || sv.role === 'accountant' || sv.role === 'staff') && typeof sv.email === 'string' && sv.email.indexOf('cloud-staff:') === 0) {
+      // v130: a cloud staff session restores from its stored snapshot
+      // (the school's data was never on this device). Before v130 there
+      // was NO cloud-staff branch — a reload signed the staff member out
+      // (the v129 live check reproduced this for the principal, 15 Nov).
+      // No password is stored; the token rides with the snapshot and is
+      // re-checked by the server on every write, so a missing snapshot
+      // means a fresh login.
+      try {
+        var rawCloudS = sessGet(CLOUD_STAFF_KEY);
+        var cloudS = rawCloudS ? JSON.parse(rawCloudS) : null;
+        if (cloudS && cloudS.acct && cloudS.slice && cloudS.token && cloudS.slice.staff && cloudS.slice.staff[0] && cloudS.slice.staff[0].id === cloudS.acct.staffId) {
+          state.role = cloudS.acct.role; state.user = cloudS.acct; state.cloudDb = cloudS.slice; state.cloudStaffToken = cloudS.token; state.view = 'dashboard'; state.profileStudent = null;
+          db = cloudS.slice; DB_KEY = 'schoolSaathiCloudDB';
+          showView('app'); renderApp();
+          persistSession();
+          return Promise.resolve(true);
+        }
+      } catch (e3) {}
+      return Promise.resolve(false);
+    }
     if (sv.role === 'student' && typeof sv.email === 'string' && sv.email.indexOf('student:') === 0) {
       // Student sessions are not in schoolSaathiAccounts: the session
       // email carries schoolUid + studentId (student:<uid>:<id>).
@@ -7255,6 +7276,11 @@ function mapCloudStaffPayload(p) {
   var stuMap = {};
   d.students = (data.students || []).map(function (row) { var s = sbRowToStudent(row); if (row.id) { stuMap[row.id] = s.id; s.srvId = row.id; } return s; });
   d.teachers = (data.teachers || []).map(function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [], deleted: !!row.deleted }; });
+  // v130: the cloud slice carries the school's audit log (SQL 44 adds the
+  // 'audit_log' key to the principal payload) — before v130 a cloud principal
+  // saw an empty Activity Log ("Showing 0 of 0 records") even though the
+  // school has audit rows. Rows are already {ts, actor, action, details}.
+  d.auditLog = (data.audit_log || []).map(function (row) { return { ts: row.ts || '', actor: row.actor || 'system', action: row.action || '', details: row.details || '' }; });
   // v98: the slice carries the signed-in staff member's OWN record, so
   // staffRecord()/staffClasses()/roleClasses() resolve — before v98 the
   // slice had no db.staff row, roleClasses() returned [] and every cloud

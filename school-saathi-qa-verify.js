@@ -5714,6 +5714,61 @@ const test = `
   eq(accSlice88.homework.length, 0, 'v88: an accountant payload maps no homework');
   eq(accSlice88.marks.length, 0, 'v88: an accountant payload maps no marks');
   eq(accSlice88.feeRecords.length, 1, 'v88: an accountant payload still maps the fee records');
+  // ---- v130: a cloud principal sees the school's audit log + restores after reload ----
+  // Live 15 Nov: the principal's Activity Log was EMPTY ("Showing 0 of 0 records" /
+  // "No activity recorded yet") and a reload signed the principal out. Root cause:
+  // (1) the SQL 30 cloud payload had no audit key and mapCloudStaffPayload never
+  // set d.auditLog, so the slice's auditLog stayed [] from emptyDb; (2) restoreSession
+  // had no cloud-staff: branch, so a reload found no local account and signed out.
+  // SQL 44 adds the audit_log key to the principal payload; the mapper and the
+  // restore branch are fixed here. Repro: on the unfixed code the slice carries no
+  // audit rows (auditLog.length 0) and restoreSession() is false.
+  var staffPayload130 = {
+    ok: true, staff: { id: 'srv-prin130', name: 'Test Principal', role: 'principal', classes: [] },
+    school: { id: 'srv-school130', name: 'Test School', city: 'Patna' },
+    data: {
+      students: staffPayload88.data.students,
+      teachers: staffPayload88.data.teachers,
+      attendance: staffPayload88.data.attendance,
+      homework: staffPayload88.data.homework,
+      notices: staffPayload88.data.notices,
+      exams: staffPayload88.data.exams,
+      marks: staffPayload88.data.marks,
+      fee_records: staffPayload88.data.fee_records,
+      fee_structure: staffPayload88.data.fee_structure,
+      receipts: staffPayload88.data.receipts,
+      audit_log: [
+        { ts: '2026-11-15T12:00:00.000Z', actor: 'Test Admin', action: 'Fee collected', details: 'RCP-130-001' },
+        { ts: '2026-11-15T11:00:00.000Z', actor: 'Test Admin', action: 'Student admitted', details: 'Map Kid' }
+      ]
+    }
+  };
+  var slice130 = mapCloudStaffPayload(staffPayload130);
+  eq(slice130.auditLog.length, 2, 'v130: the principal payload maps the audit log');
+  var au130 = slice130.auditLog[0] || {};
+  eq(au130.action, 'Fee collected', 'v130: the mapped audit row keeps its action');
+  eq(au130.actor, 'Test Admin', 'v130: the mapped audit row keeps its actor');
+  eq(au130.details, 'RCP-130-001', 'v130: the mapped audit row keeps its details');
+  // An accountant payload has NO audit_log key (SQL 44 adds it to the principal only).
+  eq(accSlice88.auditLog.length, 0, 'v130: an accountant payload maps no audit log');
+  // End-to-end: the cloud principal opens the Activity Log and sees the rows.
+  state.actSearch = ''; state.actAction = 'All'; state.actActor = 'All'; state.actFrom = ''; state.actTo = ''; state.actLimit = 50;
+  var acct130 = { role: 'principal', name: 'Test Principal', sub: 'Principal \u2022 Test Principal', email: 'cloud-staff:srv-school130:srv-prin130', uid: 'cloud-staff-srv-prin130', staffId: 'srv-prin130', schoolUid: 'srv-school130', cloud: true, schoolServerId: 'srv-school130' };
+  loginCloudStaff(acct130, slice130, '00000000-0000-0000-0000-000000000130');
+  eq(state.role, 'principal', 'v130: the cloud principal login signs in as principal');
+  eq(auditFiltered().length, 2, 'v130: the cloud principal Activity Log lists the audit rows');
+  var actHtml130 = activityLogPage();
+  ok(actHtml130.indexOf('Fee collected') !== -1, 'v130: the cloud principal Activity Log page shows the audit rows');
+  ok(actHtml130.indexOf(t('noActivity')) === -1, 'v130: the cloud principal Activity Log page is not empty');
+  // A reload restores the cloud staff session (before v130 the principal was signed out).
+  state.role = null; state.user = null; state.view = 'dashboard';
+  eq(await restoreSession(), true, 'v130: the cloud staff session restores after a reload');
+  eq(state.role, 'principal', 'v130: the restored cloud staff session keeps the principal role');
+  eq(db.auditLog.length, 2, 'v130: the restored cloud staff session keeps the audit log');
+  var fetchBefore130 = fetch;
+  fetch = function (url, opts) { return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: true }); } }); };
+  logout(); await waitLogout();
+  fetch = fetchBefore130;
   // dbKeyFor covers the staff roles (a staff member opens the school's DB).
   eq(dbKeyFor({ role: 'principal', schoolUid: 'test-school' }), 'schoolSaathiDB_test-school', 'v88: dbKeyFor covers principal');
   eq(dbKeyFor({ role: 'accountant', schoolUid: 'test-school' }), 'schoolSaathiDB_test-school', 'v88: dbKeyFor covers accountant');
