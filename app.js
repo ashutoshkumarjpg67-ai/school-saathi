@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 127;
+var APP_VERSION = 128;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -3294,6 +3294,13 @@ function sbSyncQueueDiff() {
       if (snapTable[key] !== cur[key].hash) {
         var rowCopy = table === 'ss_schools' ? cur[key].row : JSON.parse(JSON.stringify(cur[key].row));
         sbOutboxAdd(uid, { table: table, key: key, op: 'upsert', row: rowCopy, at: new Date().toISOString() });
+        // v128: the diff must NOT clear a tombstone here — a stale copy of a
+        // deleted row sitting in this tab's local db looks identical to a
+        // deliberate re-creation, and clearing on any upsert resurrects it
+        // (v105 regression, green run 14 Nov 19:5x IST: the tombstoned holiday
+        // came back). Deliberate re-creations clear the tombstone at the UI
+        // level instead: markAtt/markAllAtt clear it for attendance (v121),
+        // and a re-added fee uses a fresh id (no tombstone for that key).
         queued++;
       }
     });
@@ -3566,10 +3573,25 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
   var table = entry.table;
   if (sbIsSeedEntry(table, entry)) return Promise.resolve({ pushed: false, skipped: true });
   if (entry.op === 'delete') {
+    // v128: a delete whose server row is already gone IS a success, not a skip.
+    // The old `skipped` return removed the outbox entry but left the queue-time
+    // tombstone in place (added when the delete was queued, v105 guard) — so any
+    // row that later appeared under the same key was re-deleted via tombRequeue106
+    // (live 14 Nov: the restored Dec fee record and both attendance rows were
+    // deleted within ~75s of being re-created, while a fresh Nov fee record
+    // survived; the harness repro proved the tombstone, not the snapshot key,
+    // is the killer). Returning pushed:true runs the flush's SnapDelete cleanup
+    // and, via the noOpDelete128 flag, removes the queue-time tombstone: a phantom
+    // delete must not block a later legitimate re-creation under the same key.
+    // Only when the find cannot even run (attendance/marks with an unmapped parent
+    // id) is it still a skip — the row may still exist, so the snapshot key must stay.
+    var delResolvable128 = true;
+    if (table === 'ss_attendance') { var ak128 = String(entry.key || '').split('|'); if (!ak128[0] || !ak128[2] || !maps.stu[ak128[2]]) delResolvable128 = false; }
+    if (table === 'ss_marks') { var mk128 = String(entry.key || '').split('|'); if (!mk128[0] || !maps.exam[mk128[0]] || !mk128[1] || !maps.stu[mk128[1]]) delResolvable128 = false; }
     var delRow = batch ? sbSyncFindFromBatch(batch, table, entry, schoolId, maps, uid) : null;
     var delP = delRow ? Promise.resolve(delRow) : sbSyncFindServerRow(table, entry, token, schoolId, maps, uid);
     return delP.then(function (row) {
-      if (!row) return { pushed: false, skipped: true };
+      if (!row) return delResolvable128 ? { pushed: true, noOpDelete128: true } : { pushed: false, skipped: true };
       return sbRest('DELETE', table + '?id=eq.' + encodeURIComponent(row.id), token, undefined, 'return=minimal').then(function (r) {
         if (!r.ok) throw new Error('delete-' + table + '-' + (r.status || 'fail'));
         return { pushed: true };
@@ -3806,7 +3828,7 @@ function sbSyncFlushWithToken(act, tok) {
                     if (curPayload127 && sbSyncRowSameAsServer(curPayload127, r.serverRow)) sbSyncSetLocalRow(entry.table, entry.key, entry.row);
                   }
                 }
-                if (entry.op === 'delete') { sbSyncSnapDelete(act.account.uid, entry.table, entry.key); sbTombAdd(act.uid, entry.table, entry.key); } // v105: the delete leaves the outbox here — the tombstone is what stops another tab re-uploading it
+                if (entry.op === 'delete') { sbSyncSnapDelete(act.account.uid, entry.table, entry.key); if (r.noOpDelete128) sbTombRemove(act.uid, entry.table, entry.key); else sbTombAdd(act.uid, entry.table, entry.key); } // v105: the delete leaves the outbox here — the tombstone is what stops another tab re-uploading it; v128: a no-op delete (the row was already gone) clears the snapshot key and REMOVES the queue-time tombstone (added when the delete was queued) — a phantom delete must not block a later legitimate re-creation under the same key
                 sbOutboxRemove(act.uid, entry);
                 maps = sbSyncBuildMaps(db, act.uid); // fresh ids for the next chunk
               } else if (r.conflict) {

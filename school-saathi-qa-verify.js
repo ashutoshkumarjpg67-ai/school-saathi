@@ -11199,6 +11199,127 @@ ctx.sbStoreSession({ access_token: 'tok-vm127b', refresh_token: 'ref-vm127b', ex
   ctx.saveDB(ctx.db);
   ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
 
+  // ---- v128 (live 14 Nov): a stale delete re-fires forever and kills re-created rows ----
+  // Live 14 Nov: the restored Dec fee record + both attendance rows were deleted from
+  // the server within ~75s of being re-created (twice), while a fresh Nov fee record
+  // survived. Root cause: a delete entry whose server row is already gone returned
+  // `skipped`, which removed the outbox entry but LEFT the queue-time tombstone in
+  // place (added when the delete was queued, v105 guard) — so any row that later
+  // appeared under the same key was re-deleted via tombRequeue106. The harness
+  // repro proved the tombstone, not the snapshot key, is the killer (the pull
+  // clears the snapshot key; the tombstone is what survives). The fix: (A) a delete
+  // whose find can run and finds nothing returns pushed:true + noOpDelete128 (the
+  // flush clears the snapshot key AND removes the queue-time tombstone);
+  // (B) a deliberate local re-creation clears the tombstone for that key, so a
+  // re-marked attendance is not zombie-killed inside the 24h tombstone window.
+  Object.keys(sbServer).forEach(function (k) { sbServer[k] = []; });
+  (function () { var keys = []; for (var i = 0; i < ls.length; i++) keys.push(ls.key(i)); keys.forEach(function (k) { ls.removeItem(k); }); })();
+  ctx.sbSyncResetMemory();
+  resetDevice();
+  ctx.sbSyncDebounceMs = 0;
+  vm44SeedTestSchool();
+  ctx.saveAccounts([vmAcct]);
+  ctx.loginAs(vmAcct);
+  ctx.db = ctx.emptyDb({ name: 'Test Sunrise School', city: 'Patna', principal: 'Test Admin', phone: '', email: 'test@sunrise.test', session: '2025–26', address: '' });
+  ctx.state.sb = { uid: 'sb-uid-vm@school.in', email: 'vm@school.in' };
+  ctx.sbStoreSession({ access_token: 'tok' + '-vm128', refresh_token: 'ref' + '-vm128', expires_in: 3600, user: { id: 'sb-uid-vm@school.in', email: 'vm@school.in' } });
+  ctx.saveDB(ctx.db);
+  var c128dl = await ctx.sbSyncCycle();
+  v28eq(c128dl.done, true, 'v128 async: the download cycle completes');
+  var stu128 = ctx.db.students.filter(function (s) { return s.id === 'stu1794162292000'; })[0];
+  v28ok(!!stu128, 'v128 async: the download brings Test Kumar down');
+  var srvStu128 = sbServer.ss_students.filter(function (r) { return r.local_id === 'stu1794162292000'; })[0] || {};
+  var sch128 = srvStu128.school_id;
+  // (A1) Fee record: sync it, then make the server row vanish WITHOUT the app
+  // knowing (the live loss), remove it locally, and flush the queued delete.
+  // The delete must succeed as a no-op: snapshot key gone, NO tombstone, and
+  // the diff must not re-queue it.
+  ctx.db.feeRecords.push({ id: 'fee-128a', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Dec', type: 'Tuition', amount: 800, status: 'Collected', date: '2026-11-14' });
+  ctx.saveDB(ctx.db);
+  var c128a = await ctx.sbSyncCycle();
+  v28eq(c128a.done, true, 'v128 async: the fee sync cycle completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-128a'; }).length, 1, 'v128 async: the fee record reaches the server');
+  sbServer.ss_fee_records = sbServer.ss_fee_records.filter(function (r) { return r.local_id !== 'fee-128a'; });
+  ctx.db.feeRecords = ctx.db.feeRecords.filter(function (f) { return f.id !== 'fee-128a'; });
+  ctx.saveDB(ctx.db);
+  v28eq(ctx.sbOutboxLoad('sb-uid-vm@school.in').filter(function (e) { return e.table === 'ss_fee_records' && e.key === 'fee-128a' && e.op === 'delete'; }).length, 1, 'v128 async: removing the fee record queues one delete op');
+  var fl128a = await ctx.sbSyncFlushNow();
+  v28eq(fl128a.done, true, 'v128 async: the no-op delete flush completes');
+  v28eq(ctx.sbOutboxLoad('sb-uid-vm@school.in').filter(function (e) { return e.table === 'ss_fee_records' && e.key === 'fee-128a'; }).length, 0, 'v128 async: the delete entry leaves the outbox');
+  var snap128a = ctx.sbSnapLoad('sb-uid-vm@school.in');
+  v28ok(!(snap128a.ss_fee_records && snap128a.ss_fee_records['fee-128a']), 'v128 async: the no-op delete clears the snapshot key');
+  v28ok(!ctx.sbTombHas('sb-uid-vm@school.in', 'ss_fee_records', 'fee-128a'), 'v128 async: the no-op delete adds NO tombstone');
+  var c128a2 = await ctx.sbSyncCycle();
+  v28eq(c128a2.done, true, 'v128 async: the cycle after the no-op delete completes');
+  v28eq(ctx.sbOutboxLoad('sb-uid-vm@school.in').filter(function (e) { return e.table === 'ss_fee_records' && e.key === 'fee-128a' && e.op === 'delete'; }).length, 0, 'v128 async: the diff does not re-queue the delete');
+  sbServer.ss_fee_records.push({ id: 'srv-fee-128a', school_id: sch128, local_id: 'fee-128a', student_id: srvStu128.id, student_name: 'Test Kumar', cls: '6th-A', month: 'Dec', fee_type: 'Tuition', amount: 800, status: 'Collected', record_date: '2026-11-14', created_at: sbNowISO(), updated_at: sbNowISO() });
+  var c128a3 = await ctx.sbSyncCycle();
+  v28eq(c128a3.done, true, 'v128 async: the re-created row cycle completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-128a'; }).length, 1, 'v128 async: the re-created fee record survives the cycle (not re-deleted)');
+  v28ok(!!ctx.db.feeRecords.filter(function (f) { return f.id === 'fee-128a'; })[0], 'v128 async: the re-created fee record is pulled back locally');
+  // (A2) Attendance: same pattern, via the natural key (date|cls|studentId).
+  ctx.db.attendance['2026-11-09|6th-A'] = { 'stu1794162292000': 'Present' };
+  ctx.saveDB(ctx.db);
+  var c128b = await ctx.sbSyncCycle();
+  v28eq(c128b.done, true, 'v128 async: the attendance sync cycle completes');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-09'; }).length, 1, 'v128 async: the attendance row reaches the server');
+  sbServer.ss_attendance = sbServer.ss_attendance.filter(function (r) { return r.att_date !== '2026-11-09'; });
+  delete ctx.db.attendance['2026-11-09|6th-A'];
+  ctx.saveDB(ctx.db);
+  v28eq(ctx.sbOutboxLoad('sb-uid-vm@school.in').filter(function (e) { return e.table === 'ss_attendance' && e.key === '2026-11-09|6th-A|stu1794162292000' && e.op === 'delete'; }).length, 1, 'v128 async: removing the mark queues one attendance delete');
+  var fl128b = await ctx.sbSyncFlushNow();
+  v28eq(fl128b.done, true, 'v128 async: the attendance no-op delete flush completes');
+  var snap128b = ctx.sbSnapLoad('sb-uid-vm@school.in');
+  v28ok(!(snap128b.ss_attendance && snap128b.ss_attendance['2026-11-09|6th-A|stu1794162292000']), 'v128 async: the attendance no-op delete clears the snapshot key');
+  v28ok(!ctx.sbTombHas('sb-uid-vm@school.in', 'ss_attendance', '2026-11-09|6th-A|stu1794162292000'), 'v128 async: the attendance no-op delete adds NO tombstone');
+  var c128b2 = await ctx.sbSyncCycle();
+  v28eq(c128b2.done, true, 'v128 async: the cycle after the attendance no-op delete completes');
+  v28eq(ctx.sbOutboxLoad('sb-uid-vm@school.in').filter(function (e) { return e.table === 'ss_attendance' && e.key === '2026-11-09|6th-A|stu1794162292000' && e.op === 'delete'; }).length, 0, 'v128 async: the attendance delete is not re-queued');
+  sbServer.ss_attendance.push({ id: 'srv-att-128b', school_id: sch128, att_date: '2026-11-09', cls: '6th-A', student_id: srvStu128.id, status: 'Present', created_at: sbNowISO(), updated_at: sbNowISO() });
+  var c128b3 = await ctx.sbSyncCycle();
+  v28eq(c128b3.done, true, 'v128 async: the re-created attendance cycle completes');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-09'; }).length, 1, 'v128 async: the re-created attendance row survives the cycle');
+  v28eq(ctx.db.attendance['2026-11-09|6th-A'] && ctx.db.attendance['2026-11-09|6th-A']['stu1794162292000'], 'Present', 'v128 async: the re-created mark is pulled back locally');
+  // (A3) Unresolvable delete stays skipped: an attendance delete for a student
+  // with no server id cannot run its find, so the snapshot key must STAY.
+  var snap128c0 = ctx.sbSnapLoad('sb-uid-vm@school.in');
+  if (!snap128c0.ss_attendance) snap128c0.ss_attendance = {};
+  snap128c0.ss_attendance['2026-11-10|6th-A|stu-no-map-128'] = 'hash128';
+  ctx.sbSnapSave('sb-uid-vm@school.in', snap128c0);
+  ctx.sbOutboxAdd('sb-uid-vm@school.in', { table: 'ss_attendance', key: '2026-11-10|6th-A|stu-no-map-128', op: 'delete', at: new Date().toISOString() });
+  var fl128c = await ctx.sbSyncFlushNow();
+  v28eq(fl128c.done, true, 'v128 async: the unresolvable delete flush completes');
+  var snap128c = ctx.sbSnapLoad('sb-uid-vm@school.in');
+  v28ok(!!(snap128c.ss_attendance && snap128c.ss_attendance['2026-11-10|6th-A|stu-no-map-128']), 'v128 async: the unresolvable delete keeps its snapshot key');
+  // (B) Real restore path: after a real delete (tombstone written), a fee
+  // re-added with a FRESH id uploads and survives — that is how the live
+  // restore works ("+ Add Fee" mints a fresh id). The diff must NOT clear a
+  // tombstone on an upsert: a stale copy of a deleted row sitting in this
+  // tab's local db looks identical to a deliberate re-creation, and clearing
+  // on any upsert resurrects it (v105 regression, green run 14 Nov 19:5x IST).
+  ctx.db.feeRecords = ctx.db.feeRecords.filter(function (f) { return f.id !== 'fee-128a'; });
+  ctx.saveDB(ctx.db);
+  var fl128d = await ctx.sbSyncFlushNow();
+  v28eq(fl128d.done, true, 'v128 async: the real delete flush completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-128a'; }).length, 0, 'v128 async: the real delete removes the server row');
+  v28ok(ctx.sbTombHas('sb-uid-vm@school.in', 'ss_fee_records', 'fee-128a'), 'v128 async: the real delete writes a tombstone');
+  ctx.db.feeRecords.push({ id: 'fee-128b', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Dec', type: 'Tuition', amount: 800, status: 'Collected', date: '2026-11-14' });
+  ctx.saveDB(ctx.db);
+  v28ok(ctx.sbTombHas('sb-uid-vm@school.in', 'ss_fee_records', 'fee-128a'), 'v128 async: the fresh-id re-add leaves the old tombstone alone');
+  var c128d = await ctx.sbSyncCycle();
+  v28eq(c128d.done, true, 'v128 async: the re-add cycle completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-128b'; }).length, 1, 'v128 async: the fresh-id re-added row reaches the server');
+  var c128d2 = await ctx.sbSyncCycle();
+  v28eq(c128d2.done, true, 'v128 async: the second re-add cycle completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-128b'; }).length, 1, 'v128 async: the fresh-id re-added row survives a second cycle (not zombie-killed)');
+  // Cleanup: remove the fixtures (local + server) so later blocks start clean.
+  ctx.db.feeRecords = ctx.db.feeRecords.filter(function (f) { return f.id !== 'fee-128a'; });
+  delete ctx.db.attendance['2026-11-09|6th-A'];
+  ctx.saveDB(ctx.db);
+  sbServer.ss_fee_records = sbServer.ss_fee_records.filter(function (r) { return r.local_id !== 'fee-128a'; });
+  sbServer.ss_attendance = sbServer.ss_attendance.filter(function (r) { return r.att_date !== '2026-11-09'; });
+  ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
+
   // ---- Source-level checks ----
   v28ok(src.includes('SB_ANON_KEY') && src.includes('bsjqeeeemwimzldrehpw'), 'v28: app.js has the Supabase URL + anon key constant');
   v28ok(!src.includes('__SB_ANON_KEY__'), 'v28: no unfilled anon-key placeholder remains');
