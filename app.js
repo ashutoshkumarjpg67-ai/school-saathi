@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 130;
+var APP_VERSION = 131;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -2386,7 +2386,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     (serverRows || []).forEach(function (row) {
       var r = mapFn(row);
       if (r.id && outboxDelete102[table] && outboxDelete102[table][r.id]) return; // v102: pending delete wins — do not pull the row back
-      if (r.id && tomb105[table] && tomb105[table][r.id]) { tombRequeue106(table, r.id); return; } // v106: a tombstoned server row is a zombie — skip it and re-queue its delete
+      if (r.id && tomb105[table] && tomb105[table][r.id]) { var upMap131 = { ss_fee_records: outboxUpsert46.feeRecords, ss_receipts: outboxUpsert46.receipts, ss_students: outboxUpsert46.students, ss_exams: outboxUpsert46.exams, ss_teachers: outboxUpsert46.teachers, ss_staff: outboxUpsert46.staff, ss_classes: outboxUpsert46.classes, ss_notices: outboxUpsert46.notices }[table]; var localHas131 = (localArr || []).some(function (lr) { return lr && lr.id === r.id; }) || !!(upMap131 && upMap131[r.id]); if (localHas131) { sbTombRemove(uid105, table, r.id); if (tomb105[table]) delete tomb105[table][r.id]; } else { tombRequeue106(table, r.id); return; } } // v106: a tombstoned server row is a zombie — skip it and re-queue its delete; v131: unless THIS device still has the row locally (or a pending upsert for it) — a deliberate re-creation by this device, not a zombie — then clear the tombstone and keep the row. A timestamp alone cannot tell them apart (a stale tab's re-POST is also created after the tombstone), so local presence is the signal, not created_at.
       if (r.id && onServer[r.id]) return;
       if (r.id) onServer[r.id] = true;
       serverList.push(r);
@@ -2611,7 +2611,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     var localId = stuMap[row.student_id];
     if (!localId) return;
     if (outboxDelete102.ss_attendance && outboxDelete102.ss_attendance[(row.att_date || '') + '|' + (row.cls || '') + '|' + localId]) return; // v102: pending delete wins — do not pull the mark back
-    if (tomb105.ss_attendance && tomb105.ss_attendance[(row.att_date || '') + '|' + (row.cls || '') + '|' + localId]) { tombRequeue106('ss_attendance', (row.att_date || '') + '|' + (row.cls || '') + '|' + localId); return; } // v106: tombstoned — zombie, skip + re-queue its delete
+    if (tomb105.ss_attendance && tomb105.ss_attendance[(row.att_date || '') + '|' + (row.cls || '') + '|' + localId]) { var attKey131 = (row.att_date || '') + '|' + (row.cls || '') + '|' + localId; var attSlot131 = (row.att_date || '') + '|' + (row.cls || ''); var attLocal131 = !!(oldAtt[attSlot131] && oldAtt[attSlot131][localId] !== undefined) || !!outboxUpsert46.attendance[attKey131]; if (attLocal131) { sbTombRemove(uid105, 'ss_attendance', attKey131); delete tomb105.ss_attendance[attKey131]; } else { tombRequeue106('ss_attendance', attKey131); return; } } // v106: tombstoned — zombie, skip + re-queue its delete; v131: unless THIS device still has the mark locally (or a pending upsert for it) — a deliberate re-mark by this device — then clear the tombstone and keep the mark
     var key = (row.att_date || '') + '|' + (row.cls || '');
     if (!d.attendance[key]) d.attendance[key] = {};
     d.attendance[key][localId] = row.status || 'Present';
@@ -3588,10 +3588,25 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
     var delResolvable128 = true;
     if (table === 'ss_attendance') { var ak128 = String(entry.key || '').split('|'); if (!ak128[0] || !ak128[2] || !maps.stu[ak128[2]]) delResolvable128 = false; }
     if (table === 'ss_marks') { var mk128 = String(entry.key || '').split('|'); if (!mk128[0] || !maps.exam[mk128[0]] || !mk128[1] || !maps.stu[mk128[1]]) delResolvable128 = false; }
+    // v131: a delete is stale when the local db still has the row — it was
+    // re-created locally (or never actually deleted) after the entry was
+    // queued. A legitimate delete has no local row, so it still runs.
+    // Return the v128 no-op shape so the flush clears the snapshot key
+    // AND removes the queue-time tombstone.
+    if (sbSyncLocalRow(entry)) return Promise.resolve({ pushed: true, noOpDelete128: true });
     var delRow = batch ? sbSyncFindFromBatch(batch, table, entry, schoolId, maps, uid) : null;
     var delP = delRow ? Promise.resolve(delRow) : sbSyncFindServerRow(table, entry, token, schoolId, maps, uid);
     return delP.then(function (row) {
       if (!row) return delResolvable128 ? { pushed: true, noOpDelete128: true } : { pushed: false, skipped: true };
+      // v131: a delete is stale when the server row was created AFTER the
+      // delete entry was queued (row.created_at > entry.at, STRICT — no
+      // tolerance: a stale tab's re-POST sits seconds before the re-queued
+      // delete's `at`, so any tolerance would spare the v106 zombie) — the
+      // row is a re-creation, not the deleted original. Only when
+      // created_at is available (the batch path, select=*); the non-batch
+      // find path (findCols105 = id,updated_at) has no created_at, so the
+      // guard is skipped there. Same v128 no-op shape.
+      if (row.created_at && entry.at) { var created131 = Date.parse(row.created_at); var queued131 = Date.parse(entry.at); if (!isNaN(created131) && !isNaN(queued131) && created131 > queued131) return { pushed: true, noOpDelete128: true }; }
       return sbRest('DELETE', table + '?id=eq.' + encodeURIComponent(row.id), token, undefined, 'return=minimal').then(function (r) {
         if (!r.ok) throw new Error('delete-' + table + '-' + (r.status || 'fail'));
         return { pushed: true };

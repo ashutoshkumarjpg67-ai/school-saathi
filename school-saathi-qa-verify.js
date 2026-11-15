@@ -11513,6 +11513,151 @@ ctx.sbStoreSession({ access_token: 'tok-vm127b', refresh_token: 'ref-vm127b', ex
   ctx.state.actSearch = ''; ctx.state.actAction = 'All'; ctx.state.actActor = 'All'; ctx.state.actFrom = ''; ctx.state.actTo = ''; ctx.state.actLimit = 50;
   ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
 
+  // ---- v131 (live 15 Nov): the Dec fee + attendance vanished AGAIN — a stale
+  // delete must never kill a row this device re-created ----
+  // Live 15 Nov: the Dec fee (fresh id, RCP-2026-006) + both attendance rows,
+  // restored in v128 and verified on the server at 16:02 IST, were GONE by
+  // ~19:20 IST with NO audit row. Root cause: the ONLY delete path is the
+  // sync flush (sbSyncPushEntry), and the v128 fix only handles a delete
+  // whose server row is ALREADY GONE (no-op → clear tombstone). When the
+  // server row EXISTS, the flush deleted it unconditionally — no check that
+  // this device re-created the row, and no check that the row was created
+  // after the delete was queued. A timestamp alone cannot tell a
+  // re-creation from a zombie (a stale tab's re-POST is also created after
+  // the tombstone — the v106 holiday), so local presence is the signal:
+  // a deliberate re-creation by THIS device exists in this device's local
+  // db (or has a pending upsert); a zombie has neither. The fix: (A) the
+  // pull clears the tombstone and keeps a tombstoned server row that this
+  // device still has locally (or has a pending upsert for); (B) the flush
+  // skips a delete when the local db has the row; (C) the flush skips a
+  // delete when the server row was created AFTER the delete entry was
+  // queued (strict, no tolerance — a stale tab's re-POST sits seconds
+  // before the re-queued delete's `at`).
+  Object.keys(sbServer).forEach(function (k) { sbServer[k] = []; });
+  (function () { var keys = []; for (var i = 0; i < ls.length; i++) keys.push(ls.key(i)); keys.forEach(function (k) { ls.removeItem(k); }); })();
+  ctx.sbSyncResetMemory();
+  resetDevice();
+  ctx.sbSyncDebounceMs = 0;
+  vm44SeedTestSchool();
+  ctx.saveAccounts([vmAcct]);
+  ctx.loginAs(vmAcct);
+  ctx.db = ctx.emptyDb({ name: 'Test Sunrise School', city: 'Patna', principal: 'Test Admin', phone: '', email: 'test@sunrise.test', session: '2025–26', address: '' });
+  ctx.state.sb = { uid: 'sb-uid-vm@school.in', email: 'vm@school.in' };
+  ctx.sbStoreSession({ access_token: 'tok-131', refresh_token: 'ref-131', expires_in: 3600, user: { id: 'sb-uid-vm@school.in', email: 'vm@school.in' } });
+  ctx.saveDB(ctx.db);
+  var c131dl = await ctx.sbSyncCycle();
+  v28eq(c131dl.done, true, 'v131 async: the download cycle completes');
+  var stu131 = ctx.db.students.filter(function (s) { return s.id === 'stu1794162292000'; })[0];
+  v28ok(!!stu131, 'v131 async: the download brings Test Kumar down');
+  var srvStu131 = sbServer.ss_students.filter(function (r) { return r.local_id === 'stu1794162292000'; })[0] || {};
+  var sch131 = srvStu131.school_id;
+  // (A1) Fee record, pull guard: delete it for real (tombstone written),
+  // then re-create the SAME id locally AND on the server. The pull must
+  // clear the tombstone and keep the row — not re-queue its delete.
+  ctx.db.feeRecords.push({ id: 'fee-131a', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Dec', type: 'Tuition', amount: 800, status: 'Collected', date: '2026-11-14' });
+  ctx.saveDB(ctx.db);
+  var c131a = await ctx.sbSyncCycle();
+  v28eq(c131a.done, true, 'v131 async: the fee sync cycle completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-131a'; }).length, 1, 'v131 async: the fee record reaches the server');
+  ctx.db.feeRecords = ctx.db.feeRecords.filter(function (f) { return f.id !== 'fee-131a'; });
+  ctx.saveDB(ctx.db);
+  var fl131a = await ctx.sbSyncFlushNow();
+  v28eq(fl131a.done, true, 'v131 async: the real delete flush completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-131a'; }).length, 0, 'v131 async: the real delete removes the server row');
+  v28ok(ctx.sbTombHas('sb-uid-vm@school.in', 'ss_fee_records', 'fee-131a'), 'v131 async: the real delete writes a tombstone');
+  // Re-create the SAME id locally (this device's deliberate re-creation)
+  // and on the server (it has already reached the server).
+  ctx.db.feeRecords.push({ id: 'fee-131a', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Dec', type: 'Tuition', amount: 800, status: 'Collected', date: '2026-11-14' });
+  ctx.saveDB(ctx.db);
+  sbServer.ss_fee_records.push({ id: 'srv-fee-131a', school_id: sch131, local_id: 'fee-131a', student_id: srvStu131.id, student_name: 'Test Kumar', cls: '6th-A', month: 'Dec', fee_type: 'Tuition', amount: 800, status: 'Collected', record_date: '2026-11-14', created_at: sbNowISO(), updated_at: sbNowISO() });
+  var c131a2 = await ctx.sbSyncCycle();
+  v28eq(c131a2.done, true, 'v131 async: the re-created fee cycle completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-131a'; }).length, 1, 'v131 async: the re-created fee record survives the cycle (pull guard keeps it)');
+  v28ok(!ctx.sbTombHas('sb-uid-vm@school.in', 'ss_fee_records', 'fee-131a'), 'v131 async: the pull guard clears the stale tombstone for the re-created fee');
+  // (A2) Attendance, pull guard: same pattern via the natural key.
+  ctx.db.attendance['2026-11-09|6th-A'] = { 'stu1794162292000': 'Present' };
+  ctx.saveDB(ctx.db);
+  var c131b = await ctx.sbSyncCycle();
+  v28eq(c131b.done, true, 'v131 async: the attendance sync cycle completes');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-09'; }).length, 1, 'v131 async: the attendance row reaches the server');
+  delete ctx.db.attendance['2026-11-09|6th-A'];
+  ctx.saveDB(ctx.db);
+  var fl131b = await ctx.sbSyncFlushNow();
+  v28eq(fl131b.done, true, 'v131 async: the attendance real delete flush completes');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-09'; }).length, 0, 'v131 async: the attendance real delete removes the server row');
+  v28ok(ctx.sbTombHas('sb-uid-vm@school.in', 'ss_attendance', '2026-11-09|6th-A|stu1794162292000'), 'v131 async: the attendance real delete writes a tombstone');
+  ctx.db.attendance['2026-11-09|6th-A'] = { 'stu1794162292000': 'Present' };
+  ctx.saveDB(ctx.db);
+  sbServer.ss_attendance.push({ id: 'srv-att-131b', school_id: sch131, att_date: '2026-11-09', cls: '6th-A', student_id: srvStu131.id, status: 'Present', created_at: sbNowISO(), updated_at: sbNowISO() });
+  var c131b2 = await ctx.sbSyncCycle();
+  v28eq(c131b2.done, true, 'v131 async: the re-created attendance cycle completes');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-09'; }).length, 1, 'v131 async: the re-created attendance row survives the cycle (pull guard keeps it)');
+  // The count alone does not prove the fix: on unfixed code the row is
+  // deleted and then re-created by the flush's end-of-pass re-diff (the
+  // local mark still exists, the snapshot key was cleared), so the count
+  // ends at 1 either way. The server id is the signal — a delete +
+  // re-create mints a new id, while the guard keeps the same row.
+  v28eq((sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-09'; })[0] || {}).id, 'srv-att-131b', 'v131 async: the re-created attendance row keeps its server id (not deleted + re-created)');
+  v28ok(!ctx.sbTombHas('sb-uid-vm@school.in', 'ss_attendance', '2026-11-09|6th-A|stu1794162292000'), 'v131 async: the pull guard clears the stale tombstone for the re-created mark');
+  // (B) Flush local-row guard: a delete entry for a fee record that the
+  // local db STILL has must not delete the server row.
+  ctx.db.feeRecords.push({ id: 'fee-131c', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Nov', type: 'Tuition', amount: 800, status: 'Collected', date: '2026-11-14' });
+  ctx.saveDB(ctx.db);
+  var c131c = await ctx.sbSyncCycle();
+  v28eq(c131c.done, true, 'v131 async: the guard-fee sync cycle completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-131c'; }).length, 1, 'v131 async: the guard fee record reaches the server');
+  var srvFeeId131c = (sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-131c'; })[0] || {}).id;
+  ctx.sbOutboxAdd('sb-uid-vm@school.in', { table: 'ss_fee_records', key: 'fee-131c', op: 'delete', at: new Date().toISOString() });
+  var fl131c = await ctx.sbSyncFlushNow();
+  v28eq(fl131c.done, true, 'v131 async: the stale-delete flush completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-131c'; }).length, 1, 'v131 async: the flush local-row guard keeps the server row when the local db still has it');
+  // Same caveat as (A2): on unfixed code the row is deleted and then
+  // re-created by the end-of-pass re-diff, so the count ends at 1 either
+  // way. The server id is the signal.
+  v28eq((sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-131c'; })[0] || {}).id, srvFeeId131c, 'v131 async: the flush local-row guard keeps the SAME server row (not deleted + re-created)');
+  v28eq(ctx.sbOutboxLoad('sb-uid-vm@school.in').filter(function (e) { return e.table === 'ss_fee_records' && e.key === 'fee-131c'; }).length, 0, 'v131 async: the stale delete entry leaves the outbox');
+  // (C) Flush entry-timestamp guard: a delete entry queued BEFORE the
+  // server row was created must not delete it. The local row is gone here
+  // (so guard B does not fire) — only the timestamp saves it. The local
+  // row is removed WITHOUT saveDB, so the diff does not queue a competing
+  // delete with a fresh `at`.
+  ctx.db.feeRecords.push({ id: 'fee-131d', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Oct', type: 'Tuition', amount: 800, status: 'Collected', date: '2026-11-14' });
+  ctx.saveDB(ctx.db);
+  var c131d = await ctx.sbSyncCycle();
+  v28eq(c131d.done, true, 'v131 async: the timestamp-fee sync cycle completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-131d'; }).length, 1, 'v131 async: the timestamp fee record reaches the server');
+  // The row was created on the server just now (mock clock) — stamp it
+  // newer than the delete entry we are about to queue with an old `at`.
+  var srv131d = sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-131d'; })[0];
+  if (srv131d) { srv131d.created_at = sbNowISO(); srv131d.updated_at = sbNowISO(); }
+  ctx.db.feeRecords = ctx.db.feeRecords.filter(function (f) { return f.id !== 'fee-131d'; });
+  ctx.sbOutboxAdd('sb-uid-vm@school.in', { table: 'ss_fee_records', key: 'fee-131d', op: 'delete', at: '2026-11-01T00:00:00.000Z' });
+  var fl131d = await ctx.sbSyncFlushNow();
+  v28eq(fl131d.done, true, 'v131 async: the timestamp-delete flush completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-131d'; }).length, 1, 'v131 async: the flush entry-timestamp guard keeps a row created after the delete was queued');
+  // (D) Regression guard: a LEGITIMATE delete still removes the server
+  // row. The row is old (created before the delete was queued) and the
+  // local db does not have it, so neither guard fires.
+  ctx.db.feeRecords.push({ id: 'fee-131e', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Sep', type: 'Tuition', amount: 800, status: 'Collected', date: '2026-11-14' });
+  ctx.saveDB(ctx.db);
+  var c131e = await ctx.sbSyncCycle();
+  v28eq(c131e.done, true, 'v131 async: the legit-delete fee sync cycle completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-131e'; }).length, 1, 'v131 async: the legit fee record reaches the server');
+  var srv131e = sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-131e'; })[0];
+  if (srv131e) { srv131e.created_at = '2026-11-01T00:00:00.000Z'; srv131e.updated_at = '2026-11-01T00:00:00.000Z'; }
+  ctx.db.feeRecords = ctx.db.feeRecords.filter(function (f) { return f.id !== 'fee-131e'; });
+  ctx.saveDB(ctx.db);
+  var fl131e = await ctx.sbSyncFlushNow();
+  v28eq(fl131e.done, true, 'v131 async: the legit delete flush completes');
+  v28eq(sbServer.ss_fee_records.filter(function (r) { return r.local_id === 'fee-131e'; }).length, 0, 'v131 async: a legitimate delete still removes the server row');
+  // Cleanup: remove the fixtures (local + server) so later blocks start clean.
+  ctx.db.feeRecords = ctx.db.feeRecords.filter(function (f) { return f.id !== 'fee-131a' && f.id !== 'fee-131c' && f.id !== 'fee-131d'; });
+  delete ctx.db.attendance['2026-11-09|6th-A'];
+  ctx.saveDB(ctx.db);
+  sbServer.ss_fee_records = sbServer.ss_fee_records.filter(function (r) { return r.local_id !== 'fee-131a' && r.local_id !== 'fee-131c' && r.local_id !== 'fee-131d'; });
+  sbServer.ss_attendance = sbServer.ss_attendance.filter(function (r) { return r.att_date !== '2026-11-09'; });
+  ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
+
   // ---- Source-level checks ----
   v28ok(src.includes('SB_ANON_KEY') && src.includes('bsjqeeeemwimzldrehpw'), 'v28: app.js has the Supabase URL + anon key constant');
   v28ok(!src.includes('__SB_ANON_KEY__'), 'v28: no unfilled anon-key placeholder remains');
