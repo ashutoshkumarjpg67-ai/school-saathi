@@ -11978,7 +11978,201 @@ ctx.sbStoreSession({ access_token: 'tok-vm127b', refresh_token: 'ref-vm127b', ex
   delete ctx.db.attendance['2026-11-11|6th-A'];
   ctx.saveDB(ctx.db);
   sbServer.ss_attendance = sbServer.ss_attendance.filter(function (r) { return r.att_date !== '2026-11-09' && r.att_date !== '2026-11-11'; });
+  // ---- v134 (live 15 Nov): a DELIBERATE clear does NOT stick after v133 ----
+  // Live 15 Nov 22:06-22:16 IST (v133 live check): the v133 goal passed —
+  // 2026-11-09 Present + 2026-11-11 Absent survived reload + logout/login
+  // + a second wait (server ss_attendance 2, fee 1, principal log 128).
+  // But clearing 2026-11-11 with its X button did NOT stick: clear 1 +
+  // immediate reload (Absent again), clear 2 + 60s wait (back by itself
+  // in-session), clear 3 + Save Attendance (stayed 30s, back after a
+  // reload) — all three clears logged in the Activity Log, yet the mark
+  // returned, and the server row was re-created (created_at 16:44:29 UTC,
+  // after the 16:44:11 save). Root cause, proven from code: TWO defects.
+  // (a) The v131 created_at guard runs BEFORE the v133 audit gate, and a
+  // delete entry re-queued over an older one inherits the EARLIEST at
+  // (sbOutboxAdd: a row-less delete always looks unchanged) — so a stale
+  // delete entry sitting in a long-lived outbox (live: Pending uploads 4
+  // at login, rising to 7) makes the veto fire on a legitimate clear,
+  // whose entry.at predates the server row created_at. The veto drains
+  // the entry as a no-op AND removes the queue-time tombstone, so the
+  // next pull restores the mark and the re-diff re-queues an upsert.
+  // (b) The v133 gate matched the audit row on the EXACT details string
+  // (name + class + date), so any name drift (a rename, a stale local
+  // copy) vetoes a deliberate clear even when the veto does not fire.
+  // Fix (v134): the delete branch evaluates the v133 audit gate FIRST —
+  // an audit-proven delete skips the v131 veto; the gate matches on
+  // action + class + date, not the exact name. A delete the audit does
+  // NOT prove still gets the v131 veto first, then the v133 block, so
+  // the v133 win (a never-cleared mark is never deleted) is preserved.
+  // (A) The live repro: a legitimate clear whose delete entry carries a
+  // STALE at (pre-seeded, the long-lived-outbox state). Fresh setup.
+  Object.keys(sbServer).forEach(function (k) { sbServer[k] = []; });
+  (function () { var keys = []; for (var i = 0; i < ls.length; i++) keys.push(ls.key(i)); keys.forEach(function (k) { ls.removeItem(k); }); })();
+  ctx.sbSyncResetMemory();
+  resetDevice();
+  ctx.sbSyncDebounceMs = 0;
+  vm44SeedTestSchool();
+  ctx.saveAccounts([vmAcct]);
+  ctx.loginAs(vmAcct);
+  ctx.db = ctx.emptyDb({ name: 'Test Sunrise School', city: 'Patna', principal: 'Test Admin', phone: '', email: 'test@sunrise.test', session: '2025–26', address: '' });
+  ctx.state.sb = { uid: 'sb-uid-vm@school.in', email: 'vm@school.in' };
+  ctx.sbStoreSession({ access_token: 'tok-134a', refresh_token: 'ref-134a', expires_in: 3600, user: { id: 'sb-uid-vm@school.in', email: 'vm@school.in' } });
+  ctx.saveDB(ctx.db);
+  var c134adl = await ctx.sbSyncCycle();
+  v28eq(c134adl.done, true, 'v134 async: the (A) download cycle completes');
+  var stu134a = ctx.db.students.filter(function (s) { return s.id === 'stu1794162292000'; })[0];
+  v28ok(!!stu134a, 'v134 async: the (A) download brings Test Kumar down');
+  var srvStu134a = sbServer.ss_students.filter(function (r) { return r.local_id === 'stu1794162292000'; })[0] || {};
+  var sch134a = srvStu134a.school_id;
+  ctx.db.attendance['2026-11-09|6th-A'] = { 'stu1794162292000': 'Present' };
+  ctx.db.attendance['2026-11-11|6th-A'] = { 'stu1794162292000': 'Absent' };
+  ctx.saveDB(ctx.db);
+  var c134a = await ctx.sbSyncCycle();
+  v28eq(c134a.done, true, 'v134 async: the (A) marks sync cycle completes');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-09'; }).length, 1, 'v134 async: the (A) 09 mark reaches the server');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-11'; }).length, 1, 'v134 async: the (A) 11 mark reaches the server');
+  // The server rows are OLD (the v132 rows, created 16:04 UTC) — stamp
+  // them older than the clear but NEWER than the stale delete entry
+  // below, exactly like live (row created 16:04, stale entry older).
+  sbServer.ss_attendance.forEach(function (r) { r.created_at = '2026-11-14T06:00:00.000Z'; r.updated_at = '2026-11-14T06:00:00.000Z'; });
+  // A stale delete entry for the 11-11 key sits in the outbox from an
+  // earlier session (the live Pending uploads state) — its at predates
+  // the server row created_at.
+  ctx.sbOutboxAdd('sb-uid-vm@school.in', { table: 'ss_attendance', key: '2026-11-11|6th-A|stu1794162292000', op: 'delete', at: '2026-11-08T06:00:00.000Z' });
+  ctx.state.role = 'school';
+  ctx.state.attCls = '6th-A';
+  ctx.state.attDate = '2026-11-11';
+  ctx.clearAttMark('stu1794162292000');
+  // The re-queued delete must inherit the STALE at (the mechanism) —
+  // the diff re-queues over the pre-seeded entry and sbOutboxAdd keeps
+  // the earliest at for a row-less delete.
+  var del134a = ctx.sbOutboxLoad('sb-uid-vm@school.in').filter(function (e) { return e.table === 'ss_attendance' && e.key === '2026-11-11|6th-A|stu1794162292000' && e.op === 'delete'; })[0] || {};
+  v28eq(del134a.at, '2026-11-08T06:00:00.000Z', 'v134 async: the re-queued delete inherits the stale at (sbOutboxAdd earliest-at rule)');
+  var c134a2 = await ctx.sbSyncCycle();
+  v28eq(c134a2.done, true, 'v134 async: the (A) clear cycle completes');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-11'; }).length, 0, 'v134 async: a legitimate clear removes the server row even when its delete entry carries a stale at');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-09'; }).length, 1, 'v134 async: the (A) untouched 09 server row survives the clear');
+  v28ok(!(ctx.db.attendance['2026-11-11|6th-A'] && ctx.db.attendance['2026-11-11|6th-A']['stu1794162292000']), 'v134 async: the (A) cleared mark is gone locally');
+  v28ok(!!(ctx.db.attendance['2026-11-09|6th-A'] && ctx.db.attendance['2026-11-09|6th-A']['stu1794162292000'] === 'Present'), 'v134 async: the (A) untouched 09 mark stays local');
+  // (D) Zombie kill (no-regression): the cleared row re-appears on the
+  // server (a stale tab re-POST) — the tombstone must re-queue its
+  // delete and the flush must remove it again (the clear audit row is
+  // still in the log, so the gate allows it).
+  sbServer.ss_attendance.push({ id: 'srv-att-zombie134', school_id: sch134a, att_date: '2026-11-11', cls: '6th-A', student_id: srvStu134a.id, status: 'Absent', created_at: sbNowISO(), updated_at: sbNowISO() });
+  var c134a3 = await ctx.sbSyncCycle();
+  v28eq(c134a3.done, true, 'v134 async: the (D) zombie cycle completes');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-11'; }).length, 0, 'v134 async: a tombstoned server row re-created by a stale tab is deleted again');
+  v28ok(!(ctx.db.attendance['2026-11-11|6th-A'] && ctx.db.attendance['2026-11-11|6th-A']['stu1794162292000']), 'v134 async: the (D) zombie never comes back locally');
+  // Reload: logout, login again, cycle — the clear must STAY gone (the
+  // live check: clear 3 + save + 30s wait + reload).
+  ctx.logout(); await waitLogoutCtx();
+  ctx.loginAs(vmAcct);
+  ctx.state.sb = { uid: 'sb-uid-vm@school.in', email: 'vm@school.in' };
+  ctx.sbStoreSession({ access_token: 'tok-134a2', refresh_token: 'ref-134a2', expires_in: 3600, user: { id: 'sb-uid-vm@school.in', email: 'vm@school.in' } });
+  var c134a4 = await ctx.sbSyncCycle();
+  v28eq(c134a4.done, true, 'v134 async: the (A) post-reload cycle completes');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-11'; }).length, 0, 'v134 async: the cleared 11 mark stays gone after reload');
+  v28ok(!(ctx.db.attendance['2026-11-11|6th-A'] && ctx.db.attendance['2026-11-11|6th-A']['stu1794162292000']), 'v134 async: the cleared 11 mark stays gone locally after reload');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-09'; }).length, 1, 'v134 async: the untouched 09 server row survives the reload');
+  // (B) v133 preservation: a NON-deliberate loss with the SAME stale
+  // delete entry must still NOT delete the server row. Fresh setup.
+  Object.keys(sbServer).forEach(function (k) { sbServer[k] = []; });
+  (function () { var keys = []; for (var i = 0; i < ls.length; i++) keys.push(ls.key(i)); keys.forEach(function (k) { ls.removeItem(k); }); })();
+  ctx.sbSyncResetMemory();
+  resetDevice();
+  ctx.sbSyncDebounceMs = 0;
+  vm44SeedTestSchool();
+  ctx.saveAccounts([vmAcct]);
+  ctx.loginAs(vmAcct);
+  ctx.db = ctx.emptyDb({ name: 'Test Sunrise School', city: 'Patna', principal: 'Test Admin', phone: '', email: 'test@sunrise.test', session: '2025–26', address: '' });
+  ctx.state.sb = { uid: 'sb-uid-vm@school.in', email: 'vm@school.in' };
+  ctx.sbStoreSession({ access_token: 'tok-134b', refresh_token: 'ref-134b', expires_in: 3600, user: { id: 'sb-uid-vm@school.in', email: 'vm@school.in' } });
+  ctx.saveDB(ctx.db);
+  var c134bdl = await ctx.sbSyncCycle();
+  v28eq(c134bdl.done, true, 'v134 async: the (B) download cycle completes');
+  ctx.db.attendance['2026-11-11|6th-A'] = { 'stu1794162292000': 'Absent' };
+  ctx.saveDB(ctx.db);
+  var c134b = await ctx.sbSyncCycle();
+  v28eq(c134b.done, true, 'v134 async: the (B) mark sync cycle completes');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-11'; }).length, 1, 'v134 async: the (B) mark reaches the server');
+  sbServer.ss_attendance.forEach(function (r) { r.created_at = '2026-11-14T06:00:00.000Z'; r.updated_at = '2026-11-14T06:00:00.000Z'; });
+  ctx.sbOutboxAdd('sb-uid-vm@school.in', { table: 'ss_attendance', key: '2026-11-11|6th-A|stu1794162292000', op: 'delete', at: '2026-11-08T06:00:00.000Z' });
+  // Direct local removal WITHOUT clearAttMark — no audit row, so the
+  // delete is NOT deliberate and must be blocked exactly like v133 (A).
+  delete ctx.db.attendance['2026-11-11|6th-A'];
+  ctx.saveDB(ctx.db);
+  var c134b2 = await ctx.sbSyncCycle();
+  v28eq(c134b2.done, true, 'v134 async: the (B) cycle after the local loss completes');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-11'; }).length, 1, 'v134 async: a never-cleared mark still survives a delete with a stale at (v133 win preserved)');
+  v28ok(!!(ctx.db.attendance['2026-11-11|6th-A'] && ctx.db.attendance['2026-11-11|6th-A']['stu1794162292000'] === 'Absent'), 'v134 async: the never-cleared mark is back locally after the cycle');
+  // (C) Gate hardening: the student is RENAMED after the clear, so the
+  // audit row carries the OLD name and the exact-name match would fail.
+  // Fresh setup.
+  Object.keys(sbServer).forEach(function (k) { sbServer[k] = []; });
+  (function () { var keys = []; for (var i = 0; i < ls.length; i++) keys.push(ls.key(i)); keys.forEach(function (k) { ls.removeItem(k); }); })();
+  ctx.sbSyncResetMemory();
+  resetDevice();
+  ctx.sbSyncDebounceMs = 0;
+  vm44SeedTestSchool();
+  ctx.saveAccounts([vmAcct]);
+  ctx.loginAs(vmAcct);
+  ctx.db = ctx.emptyDb({ name: 'Test Sunrise School', city: 'Patna', principal: 'Test Admin', phone: '', email: 'test@sunrise.test', session: '2025–26', address: '' });
+  ctx.state.sb = { uid: 'sb-uid-vm@school.in', email: 'vm@school.in' };
+  ctx.sbStoreSession({ access_token: 'tok-134c', refresh_token: 'ref-134c', expires_in: 3600, user: { id: 'sb-uid-vm@school.in', email: 'vm@school.in' } });
+  ctx.saveDB(ctx.db);
+  var c134cdl = await ctx.sbSyncCycle();
+  v28eq(c134cdl.done, true, 'v134 async: the (C) download cycle completes');
+  ctx.db.attendance['2026-11-09|6th-A'] = { 'stu1794162292000': 'Present' };
+  ctx.saveDB(ctx.db);
+  var c134c = await ctx.sbSyncCycle();
+  v28eq(c134c.done, true, 'v134 async: the (C) mark sync cycle completes');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-09'; }).length, 1, 'v134 async: the (C) mark reaches the server');
+  sbServer.ss_attendance.forEach(function (r) { r.created_at = '2026-11-09T06:00:00.000Z'; r.updated_at = '2026-11-09T06:00:00.000Z'; });
+  ctx.state.role = 'school';
+  ctx.state.attCls = '6th-A';
+  ctx.state.attDate = '2026-11-09';
+  ctx.clearAttMark('stu1794162292000');
+  // Rename AFTER the clear — the audit row keeps the old name.
+  var stu134c = ctx.db.students.filter(function (s) { return s.id === 'stu1794162292000'; })[0];
+  stu134c.name = 'Test Kumar Singh';
+  ctx.saveDB(ctx.db);
+  var c134c2 = await ctx.sbSyncCycle();
+  v28eq(c134c2.done, true, 'v134 async: the (C) clear cycle completes');
+  v28eq(sbServer.ss_attendance.filter(function (r) { return r.att_date === '2026-11-09'; }).length, 0, 'v134 async: a legitimate clear still removes the server row when the student name drifted after the clear');
+  v28ok(!(ctx.db.attendance['2026-11-09|6th-A'] && ctx.db.attendance['2026-11-09|6th-A']['stu1794162292000']), 'v134 async: the (C) cleared mark is gone locally');
+  // (E) Receipt fix: several receipts for the same student+month+type
+  // on the same date — the fee row must show the receipt whose lines
+  // name IT (008), not the earliest same-date number (006). Pure local.
+  ctx.db.feeRecords = [
+    { id: 'fee-old-134', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Dec', type: 'Tuition', amount: 800, status: 'Collected', date: '2026-11-15' },
+    { id: 'fee-new-134', studentId: 'stu1794162292000', student: 'Test Kumar', cls: '6th-A', month: 'Dec', type: 'Tuition', amount: 800, status: 'Collected', date: '2026-11-15' }
+  ];
+  ctx.db.receipts = [
+    { receiptNo: 'RCP-2026-006', studentId: 'stu1794162292000', month: 'Dec', date: '2026-11-15', lines: [{ type: 'Tuition', recordId: 'fee-old-134' }], total: 800 },
+    { receiptNo: 'RCP-2026-008', studentId: 'stu1794162292000', month: 'Dec', date: '2026-11-15', lines: [{ type: 'Tuition', recordId: 'fee-new-134' }], total: 800 }
+  ];
+  v28eq((ctx.receiptForFeeRecord(ctx.db.feeRecords[1]) || {}).receiptNo, 'RCP-2026-008', 'v134 async: the Dec fee shows the receipt that names it (008), not the earliest same-date number (006)');
+  v28eq((ctx.receiptForFeeRecord(ctx.db.feeRecords[0]) || {}).receiptNo, 'RCP-2026-006', 'v134 async: the older fee still shows its own receipt (006)');
+  // Fallback: a receipt whose lines carry no recordId still resolves
+  // through the old sort (latest date, earliest number on ties).
+  ctx.db.receipts = [
+    { receiptNo: 'RCP-2026-006', studentId: 'stu1794162292000', month: 'Dec', date: '2026-11-15', lines: [{ type: 'Tuition' }], total: 800 },
+    { receiptNo: 'RCP-2026-008', studentId: 'stu1794162292000', month: 'Dec', date: '2026-11-15', lines: [{ type: 'Tuition' }], total: 800 }
+  ];
+  v28eq((ctx.receiptForFeeRecord(ctx.db.feeRecords[1]) || {}).receiptNo, 'RCP-2026-006', 'v134 async: without recordId lines the old earliest-number tie-break still applies');
+  // Cleanup: remove the fixtures (local + server) so later blocks start clean.
+  ctx.db.feeRecords = [];
+  ctx.db.receipts = [];
+  delete ctx.db.attendance['2026-11-09|6th-A'];
+  delete ctx.db.attendance['2026-11-11|6th-A'];
+  ctx.saveDB(ctx.db);
+  sbServer.ss_attendance = sbServer.ss_attendance.filter(function (r) { return r.att_date !== '2026-11-09' && r.att_date !== '2026-11-11'; });
   ctx.fetch = sbMockFetch; ctx.sbRestNetOk();
+
+  // ---- v134 (source-level) ----
+  v28ok(src.includes('attAllowed134'), 'v134: the delete branch evaluates the v133 audit gate first (attAllowed134) and skips the v131 timestamp veto for audit-proven deletes');
+  v28ok(src.includes('v134: match on action + class + date'), 'v134: the attendance gate matches on action + class + date, not the exact details string');
+  v28ok(src.includes('exact134'), 'v134: receiptForFeeRecord prefers the receipt whose lines name this fee record');
 
   // ---- Source-level checks ----
   v28ok(src.includes('SB_ANON_KEY') && src.includes('bsjqeeeemwimzldrehpw'), 'v28: app.js has the Supabase URL + anon key constant');

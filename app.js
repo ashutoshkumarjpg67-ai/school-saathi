@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 133;
+var APP_VERSION = 134;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -3577,17 +3577,20 @@ function sbSyncFindStudentByNumber(entry, token, schoolId) {
 function sbSyncAttendanceDeleteAllowed(key) {
   var parts = String(key || '').split('|');
   if (parts.length !== 3) return false;
-  var date133 = parts[0], cls133 = parts[1], sid133 = parts[2];
-  var stu133 = null;
-  (db.students || []).some(function (s) { if (s.id === sid133) { stu133 = s; return true; } return false; });
-  var name133 = stu133 ? stu133.name : null;
+  var date133 = parts[0], cls133 = parts[1];
   var rows133 = db.auditLog || [];
   for (var i133 = 0; i133 < rows133.length; i133++) {
     var a133 = rows133[i133] || {};
     var det133 = String(a133.details || '');
     if (a133.action === 'Attendance mark removed') {
-      if (name133 && det133 === name133 + ' \u2022 Class ' + cls133 + ' \u2022 ' + date133) return true;
-      if (!name133 && det133.indexOf(' \u2022 Class ' + cls133 + ' \u2022 ' + date133) !== -1) return true;
+      // v134: match on action + class + date, not the exact details
+      // string — the recorded name can drift from the current student
+      // name (a rename, or a stale local copy), and an exact-name
+      // mismatch must not veto a deliberate clear (live 15 Nov: three
+      // clears were logged yet the mark kept coming back). The
+      // class+date marker is the same strength as the 'Attendance
+      // cleared' whole-day row below.
+      if (det133.indexOf(' \u2022 Class ' + cls133 + ' \u2022 ' + date133) !== -1) return true;
     }
     if (a133.action === 'Attendance cleared' && det133.indexOf('Class ' + cls133 + ' \u2022 ' + date133) !== -1) return true;
     if (a133.action === 'Class renamed' && det133.indexOf(cls133 + ' \u2192 ') === 0) return true;
@@ -3649,6 +3652,18 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
       // no status, so the guard is skipped there — same limitation as
       // the v131 created_at guard.
       if (table === 'ss_fee_records' && row.status === 'Collected') return { pushed: true, noOpDelete128: true };
+      // v134: the v133 audit check runs FIRST — a delete the audit log
+      // proves deliberate (a clearAttMark / clearAttDay / class-rename
+      // row for this class+date) skips the v131 timestamp veto below.
+      // The veto exists for STALE deletes, but a delete entry re-queued
+      // over an older one inherits the EARLIEST `at` (sbOutboxAdd: a
+      // row-less delete always looks "unchanged"), so a stale entry in
+      // a long-lived outbox made the veto fire on a legitimate clear —
+      // live 15 Nov: three logged clears never deleted the server row
+      // and the mark kept coming back. A proven-deliberate delete is
+      // not stale by construction. When the audit does NOT prove it,
+      // the v131 veto still applies first, then the v133 block.
+      var attAllowed134 = (table === 'ss_attendance') && sbSyncAttendanceDeleteAllowed(entry.key);
       // v131: a delete is stale when the server row was created AFTER the
       // delete entry was queued (row.created_at > entry.at, STRICT — no
       // tolerance: a stale tab's re-POST sits seconds before the re-queued
@@ -3656,14 +3671,15 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
       // row is a re-creation, not the deleted original. Only when
       // created_at is available (the batch path, select=*); the non-batch
       // find path (findCols105 = id,updated_at) has no created_at, so the
-      // guard is skipped there. Same v128 no-op shape.
-      if (row.created_at && entry.at) { var created131 = Date.parse(row.created_at); var queued131 = Date.parse(entry.at); if (!isNaN(created131) && !isNaN(queued131) && created131 > queued131) return { pushed: true, noOpDelete128: true }; }
+      // guard is skipped there. Same v128 no-op shape. Skipped for an
+      // audit-proven delete (attAllowed134, v134 above).
+      if (row.created_at && entry.at && !attAllowed134) { var created131 = Date.parse(row.created_at); var queued131 = Date.parse(entry.at); if (!isNaN(created131) && !isNaN(queued131) && created131 > queued131) return { pushed: true, noOpDelete128: true }; }
       // v133: an attendance delete fires only for a deliberate clear
       // (sbSyncAttendanceDeleteAllowed) — a mark that is locally missing
       // for any other reason must not delete the live server row. Same
       // v128 no-op shape (clears the snapshot key + removes the
       // queue-time tombstone) so the next pull restores the mark.
-      if (table === 'ss_attendance' && !sbSyncAttendanceDeleteAllowed(entry.key)) return { pushed: true, noOpDelete128: true };
+      if (table === 'ss_attendance' && !attAllowed134) return { pushed: true, noOpDelete128: true };
       return sbRest('DELETE', table + '?id=eq.' + encodeURIComponent(row.id), token, undefined, 'return=minimal').then(function (r) {
         if (!r.ok) throw new Error('delete-' + table + '-' + (r.status || 'fail'));
         return { pushed: true };
@@ -10036,7 +10052,15 @@ function receiptForFeeRecord(r) {
   // numbers; showing the latest number made the column change on
   // every render).
   pick.sort(function (a, b) { return (a.date < b.date ? 1 : a.date > b.date ? -1 : (a.receiptNo < b.receiptNo ? -1 : 1)); });
-  return pick[0];
+  // v134: a receipt whose lines name THIS fee record (lines.recordId)
+  // is the one that paid it — several restores can leave several
+  // receipts for the same student+month+type on the same date, and the
+  // earliest-number tie-break above then shows a stale number (live
+  // 15 Nov: the Dec fee showed RCP-2026-006 although the collect
+  // minted RCP-2026-008). Fall back to the sorted pick when no line
+  // names this record (receipts that predate recordId lines).
+  var exact134 = pick.filter(function (rc) { return (rc.lines || []).some(function (ln) { return String(ln.recordId || '') === String(r.id); }); });
+  return exact134.length ? exact134[0] : pick[0];
 }
 function receiptCellForRecord(r) {
   // A receipt exists only for money already collected — a Pending
