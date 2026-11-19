@@ -7655,6 +7655,29 @@ function hcallCheck(html, fn, want) {
   return '';
 }
 function v28hcall(html, fn, want, name) { const r = hcallCheck(html, fn, want); v28ok(r === '', r ? name + ' — ' + r : name); }
+
+// v137 (photo privacy): role-verified signed photo URLs via the photo-url
+// edge function. These checks pin the contract: the app exchanges public
+// Storage URLs for signed ones per role, PINs never travel in a query
+// string, paths are server-derived, and the bucket flip (SQL 49) stays a
+// staged manual step.
+(function () {
+  v28ok(src.includes("var SB_PHOTO_FN = SB_URL + '/functions/v1/photo-url';"), 'v137: app calls the photo-url edge function endpoint');
+  v28ok(src.includes('function sbDisplayPhoto(u) { return sbIsSbPhotoUrl(u) ? (sbSignedPhotoFor(u) || u) : u; }'), 'v137: photo display resolves signed URLs with the public-URL fallback');
+  v28ok((src.match(/esc[(]sbDisplayPhoto[(]photo[)][)]/g) || []).length === 2, 'v137: both avatar renderers go through sbDisplayPhoto');
+  v28ok(src.includes("sbPhotoSignRequest({ action: 'student', student_id: studentServerId, teacher_token: token })"), 'v137: teacher photo fetch exchanges for a signed URL with the teacher token');
+  v28ok((src.match(/sbPrefetchCloudPhoto[(]res, serverId, adm, pin[)]/g) || []).length === 2, 'v137: cloud student AND parent logins prefetch a signed photo URL');
+  v28ok(src.includes('sbRefreshSignedPhotos();') && src.includes("action: 'school'"), 'v137: owner sync re-mints signed URLs in one batch call');
+  const fn = readRel('supabase/functions/photo-url/index.ts');
+  v28ok(fn.includes('createSignedUrl') && fn.includes('SIGN_TTL_SECONDS'), 'v137: edge function mints short-TTL signed URLs');
+  v28ok(fn.includes("schoolId + '/' + studentId + '.jpg'") && !fn.includes('body.path'), 'v137: object paths are server-derived, never caller-supplied');
+  v28ok(fn.includes('ss_parent_pin_precheck') && fn.includes('ss_parent_pin_failed') && fn.includes('ss_parent_pin_ok'), 'v137: parent PIN verification reuses the SQL 36 lockout RPCs');
+  v28ok(fn.includes('ss_teacher_sessions') && fn.includes('expires_at'), 'v137: teacher tokens are checked for expiry and revocation');
+  v28ok(fn.includes("Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')") && !fn.includes('searchParams'), 'v137: service role key is env-only and no credentials come from the query string');
+  v28ok(fn.includes('not_allowed'), 'v137: cross-scope requests are refused (403 not_allowed)');
+  const sql49 = readRel('supabase/49_private_photo_buckets.sql');
+  v28ok(sql49.includes('set public = false') && sql49.includes('DO NOT RUN'), 'v137: SQL 49 flips both buckets private as a staged manual step');
+})();
 const tick = () => new Promise(r => setTimeout(r, 0));
 // B3 (harness fix): logout() is async (flush-then-clear) — a test that
 // proceeds right after ctx.logout() races the clear; the late clear
