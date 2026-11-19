@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 134;
+var APP_VERSION = 135;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -950,6 +950,20 @@ function sbLocalLogin(id, pw, err, offline) {
   }
   return true;
 }
+// v135 (audit fix): is the freshly-authenticated link target a platform
+// admin? Asked of the SERVER (ss_is_super_admin, SQL 31) with the new
+// session's token — the old code hard-coded the Super Admin's personal
+// email in the shipped bundle. Fails CLOSED: 'unknown' (RPC error,
+// offline mid-flight) holds the link instead of allowing it, because a
+// school linked to the Super Admin uid would put tenant data under the
+// platform identity. Ordinary sign-in is never affected by this check.
+function sbLinkTargetVerdict(token) {
+  return sbRest('POST', 'rpc/ss_is_super_admin', token, {}).then(function (r) {
+    if (r.ok && r.data === true) return 'admin';
+    if (r.ok && r.data === false) return 'ok';
+    return 'unknown';
+  }).catch(function () { return 'unknown'; });
+}
 function sbLinkServerAccount(account, pw, linkEmail) {
   // v34 (P0-1): link a local school account to its server account. The
   // v27 signup was best-effort, so a failure (offline, GoTrue 429) left
@@ -970,7 +984,8 @@ function sbLinkServerAccount(account, pw, linkEmail) {
   var localEmail = (account.email || '').trim().toLowerCase();
   var email = (linkEmail || account.email || '').trim().toLowerCase();
   if (!email || !pw) return Promise.resolve({ done: false, reason: 'no-credentials' });
-  if (email === 'ashutoshkumarjpg67@gmail.com') return Promise.resolve({ done: false, reason: 'super-admin' });
+  // v135: no hard-coded Super Admin email here — the server check runs
+  // after auth below (sbLinkTargetVerdict), before anything is saved.
   function saveLinked(uid) {
     account.sbUid = uid;
     if (email !== localEmail) account.sbEmail = email;
@@ -986,22 +1001,33 @@ function sbLinkServerAccount(account, pw, linkEmail) {
       return { done: false, reason: 'rate-limited' };
     }
     if (res.ok && res.data && res.data.user && res.data.user.id) {
-      saveLinked(res.data.user.id);
-      if (res.data.access_token) {
+      // A signup without a session (email confirmation pending) is a
+      // brand-new auth user — it cannot be in ss_platform_admins.
+      if (!res.data.access_token) {
+        saveLinked(res.data.user.id);
+        sbSetStatus('pending');
+        return { done: true, reason: 'signed-up' };
+      }
+      return sbLinkTargetVerdict(res.data.access_token).then(function (v) {
+        if (v === 'admin') return { done: false, reason: 'super-admin' };
+        if (v === 'unknown') { sbSetStatus('not-linked', 'check-failed'); return { done: false, reason: 'check-failed' }; }
+        saveLinked(res.data.user.id);
         sbStoreSession(res.data); state.sb = { uid: res.data.user.id, email: email };
         sbSetStatus('synced');
-      } else {
-        sbSetStatus('pending');
-      }
-      return { done: true, reason: 'signed-up' };
+        return { done: true, reason: 'signed-up' };
+      });
     }
     if (res.status === 422 || res.status === 400) {
       return sbSignIn(email, pw).then(function (r2) {
         if (r2.ok && r2.data && r2.data.access_token && r2.data.user && r2.data.user.id) {
-          saveLinked(r2.data.user.id);
-          sbStoreSession(r2.data); state.sb = { uid: r2.data.user.id, email: email };
-          sbSetStatus('synced');
-          return { done: true, reason: 'signed-in' };
+          return sbLinkTargetVerdict(r2.data.access_token).then(function (v) {
+            if (v === 'admin') return { done: false, reason: 'super-admin' };
+            if (v === 'unknown') { sbSetStatus('not-linked', 'check-failed'); return { done: false, reason: 'check-failed' }; }
+            saveLinked(r2.data.user.id);
+            sbStoreSession(r2.data); state.sb = { uid: r2.data.user.id, email: email };
+            sbSetStatus('synced');
+            return { done: true, reason: 'signed-in' };
+          });
         }
         sbSetStatus('not-linked', 'sign-in-failed');
         return { done: false, reason: 'sign-in-failed' };
@@ -1031,9 +1057,8 @@ function submitLinkServer(e) {
   var linkEmail = ($('linkEmailInput') ? $('linkEmailInput').value : '').trim().toLowerCase();
   var err = $('linkPwErr');
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(linkEmail)) { err.textContent = t('tInvalidEmail'); err.classList.remove('hidden'); return false; }
-  // v69: the Super Admin email can never be a link target — a school
-  // linked to it could never have its own server row.
-  if (linkEmail === 'ashutoshkumarjpg67@gmail.com') { err.textContent = t('sbLinkSuperAdmin'); err.classList.remove('hidden'); return false; }
+  // v135: the Super Admin check moved server-side (sbLinkTargetVerdict,
+  // after auth). No personal email is hard-coded here any more.
   if (!pw) { err.textContent = t('tFillAll'); err.classList.remove('hidden'); return false; }
   // The server account is created with THIS password — it must be the
   // account's own password, not a typo, or the two accounts would diverge.
@@ -1048,6 +1073,7 @@ function submitLinkServer(e) {
     if (r.done) toast(t('sbLinkDone'));
     else if (r.reason === 'rate-limited') toast(t('sbTooMany'));
     else if (r.reason === 'super-admin') toast(t('sbLinkSuperAdmin'));
+    else if (r.reason === 'check-failed') toast(t('sbLinkFailed'));
     else toast(t('sbLinkFailed'));
     renderApp();
   });
@@ -1292,7 +1318,7 @@ function sbMapReceipt(rc, schoolId, stuMap, byId) {
     total: rc.total || 0, total_words: rc.totalWords || '', collector: rc.collector || '' };
 }
 function sbMapAudit(a, schoolId) {
-  return { school_id: schoolId, ts: a.ts || new Date().toISOString(), actor: a.actor || 'system', action: a.action || '', details: a.details || '' };
+  return { school_id: schoolId, ts: a.ts || new Date().toISOString(), actor: a.actor || 'system', action: a.action || '', details: a.details || '', local_id: a.localId || null };
 }
 function sbMapActivity(a, schoolId) {
   // v42: every row in a bulk insert must carry the SAME key set —
@@ -1304,7 +1330,7 @@ function sbMapActivity(a, schoolId) {
   // All object keys must match)"). A missing ts gets a fixed epoch
   // fallback — deterministic, so the snapshot hash stays stable —
   // never a fresh timestamp, which would change the hash on every call.
-  return { school_id: schoolId, icon: a.icon || '', bg: a.bg || '', title: a.title || '', sub: a.sub || '', created_at: a.ts || '1970-01-01T00:00:00.000Z' };
+  return { school_id: schoolId, icon: a.icon || '', bg: a.bg || '', title: a.title || '', sub: a.sub || '', created_at: a.ts || '1970-01-01T00:00:00.000Z', local_id: a.localId || null };
 }
 function sbFlattenAttendance(d) {
   var out = [];
@@ -1335,8 +1361,8 @@ function sbLocalCounts(d) {
     // made the migration verify fail forever ("ss_receipts 0/1") even
     // when every numbered receipt had uploaded.
     receipts: sbCountUnique((d.receipts || []).filter(function (rc) { return !!rc.receiptNo; }), function (rc) { return rc.receiptNo; }),
-    auditLog: sbCountUnique(d.auditLog, function (a) { return sbNormTs(a.ts) + '|' + (a.actor || '') + '|' + (a.action || '') + '|' + (a.details || ''); }),
-    activities: sbCountUnique(d.activities, function (a) { return (a.title || '') + '|' + (a.sub || ''); }),
+    auditLog: sbCountUnique(d.auditLog, sbAuditKey),
+    activities: sbCountUnique(d.activities, sbActivityKey),
     teachers: sbCountUnique(d.teachers, function (t) { return t.id; }),
     exams: sbCountUnique(d.exams, function (e) { return e.id; }),
     marks: sbCountUnique(d.marks, function (m) { return m.examId + '|' + m.studentId; }),
@@ -1358,8 +1384,8 @@ function sbLocalCountsReal(d) {
     // v39: only NUMBERED receipts count — a receipt saved offline has
     // no number yet and can never be on the server.
     receipts: sbCountUnique((d.receipts || []).filter(function (rc) { return !!rc.receiptNo && !sbIsSeedStudentId(rc.studentId, d); }), function (rc) { return rc.receiptNo; }),
-    auditLog: sbCountUnique(d.auditLog, function (a) { return sbNormTs(a.ts) + '|' + (a.actor || '') + '|' + (a.action || '') + '|' + (a.details || ''); }),
-    activities: sbCountUnique(d.activities, function (a) { return (a.title || '') + '|' + (a.sub || ''); }),
+    auditLog: sbCountUnique(d.auditLog, sbAuditKey),
+    activities: sbCountUnique(d.activities, sbActivityKey),
     teachers: real('ss_teachers', d.teachers), exams: real('ss_exams', d.exams),
     marks: sbCountUnique((d.marks || []).filter(function (m) { return !sbIsSeedExamId(m.examId, d) && !sbIsSeedStudentId(m.studentId, d); }), function (m) { return m.examId + '|' + m.studentId; }),
     homework: real('ss_homework', d.homework), notices: real('ss_notices', d.notices), holidays: real('ss_holidays', d.holidays) };
@@ -1397,6 +1423,16 @@ function sbFetchAllPages(table, selectCols, schoolId, token) {
   return nextPage();
 }
 function sbNormTs(v) { return String(v || '').slice(0, 19); }
+// v135 (audit fix): the audit-log dedupe key (ts to the second + actor +
+// action + details) and the activities key (title + sub) collapsed two
+// DISTINCT entries that happened to share them — the second one was
+// deduped away and never reached the server. New entries carry a stable
+// localId (minted once in logAudit/logActivity, stored on the entry, never
+// regenerated per sync) which the key now includes. Legacy entries have no
+// localId: their key keeps an empty suffix, matching the server rows
+// uploaded before this change (local_id NULL), so nothing re-uploads.
+function sbAuditKey(r) { return sbNormTs(r.ts) + '|' + (r.actor || '') + '|' + (r.action || '') + '|' + (r.details || '') + '|' + (r.local_id || r.localId || ''); }
+function sbActivityKey(r) { return (r.title || '') + '|' + (r.sub || '') + '|' + (r.local_id || r.localId || ''); }
 // Upload rows that are not on the server yet. keyFn builds the dedupe key
 // from a row (local or server). onInserted receives ALL rows for the table
 // (existing + inserted) so callers can build id maps. Returns a promise
@@ -2003,11 +2039,11 @@ function sbSyncUploadMissing(account, sbUid, token) {
       var auRows = (d.auditLog || []).map(function (a) { return sbMapAudit(a, schoolId); });
       // v47: the bypass (see the note above step()).
       var auUpload = schoolRecreated
-        ? freshRows('ss_audit_log', auRows, function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; })
+        ? freshRows('ss_audit_log', auRows, sbAuditKey)
         : auRows;
-      return sbUploadMissing(token, schoolId, 'ss_audit_log', 'ts,actor,action,details',
+      return sbUploadMissing(token, schoolId, 'ss_audit_log', 'ts,actor,action,details,local_id',
         auUpload,
-        function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; });
+        sbAuditKey);
     });
   }
   function stepActivities() {
@@ -2015,11 +2051,11 @@ function sbSyncUploadMissing(account, sbUid, token) {
       var acRows = (d.activities || []).map(function (a) { return sbMapActivity(a, schoolId); });
       // v47: the bypass (see the note above step()).
       var acUpload = schoolRecreated
-        ? freshRows('ss_activities', acRows, function (row) { return row.title + '|' + row.sub; })
+        ? freshRows('ss_activities', acRows, sbActivityKey)
         : acRows;
-      return sbUploadMissing(token, schoolId, 'ss_activities', 'title,sub',
+      return sbUploadMissing(token, schoolId, 'ss_activities', 'title,sub,local_id',
         acUpload,
-        function (row) { return row.title + '|' + row.sub; });
+        sbActivityKey);
     });
   }
   sbMigPromise = sbEnsureServerSchool(account, sbUid, token, d).then(function (id) {
@@ -3177,13 +3213,13 @@ function sbSyncTableHashes(d, schoolId, maps) {
   out.ss_marks = mk;
   var au = {};
   (d.auditLog || []).forEach(function (a) {
-    var key = sbNormTs(a.ts) + '|' + (a.actor || '') + '|' + (a.action || '') + '|' + (a.details || '');
+    var key = sbAuditKey(a);
     au[key] = { hash: JSON.stringify(sbMapAudit(a, schoolId)), row: a };
   });
   out.ss_audit_log = au;
   var ac = {};
   (d.activities || []).forEach(function (a) {
-    var key = (a.title || '') + '|' + (a.sub || '');
+    var key = sbActivityKey(a);
     ac[key] = { hash: JSON.stringify(sbMapActivity(a, schoolId)), row: a };
   });
   out.ss_activities = ac;
@@ -3380,10 +3416,10 @@ function sbSyncLocalRow(entry) {
     return (db.marks || []).filter(function (m) { return m.examId === q[0] && m.studentId === q[1]; })[0] || null;
   }
   if (entry.table === 'ss_audit_log') {
-    return (db.auditLog || []).filter(function (x) { return (sbNormTs(x.ts) + '|' + (x.actor || '') + '|' + (x.action || '') + '|' + (x.details || '')) === entry.key; })[0] || null;
+    return (db.auditLog || []).filter(function (x) { return sbAuditKey(x) === entry.key; })[0] || null;
   }
   if (entry.table === 'ss_activities') {
-    return (db.activities || []).filter(function (x) { return ((x.title || '') + '|' + (x.sub || '')) === entry.key; })[0] || null;
+    return (db.activities || []).filter(function (x) { return sbActivityKey(x) === entry.key; })[0] || null;
   }
   var cfg = SB_SYNC_TABLES[entry.table];
   if (!cfg) return null;
@@ -3433,14 +3469,14 @@ function sbSyncSetLocalRow(table, key, row) {
   if (table === 'ss_audit_log') {
     db.auditLog = db.auditLog || [];
     var ai = -1;
-    db.auditLog.forEach(function (x, i) { if ((sbNormTs(x.ts) + '|' + (x.actor || '') + '|' + (x.action || '') + '|' + (x.details || '')) === key) ai = i; });
+    db.auditLog.forEach(function (x, i) { if (sbAuditKey(x) === key) ai = i; });
     if (ai >= 0) db.auditLog[ai] = copy; else db.auditLog.push(copy);
     return true;
   }
   if (table === 'ss_activities') {
     db.activities = db.activities || [];
     var vi = -1;
-    db.activities.forEach(function (x, i) { if (((x.title || '') + '|' + (x.sub || '')) === key) vi = i; });
+    db.activities.forEach(function (x, i) { if (sbActivityKey(x) === key) vi = i; });
     if (vi >= 0) db.activities[vi] = copy; else db.activities.push(copy);
     return true;
   }
@@ -3689,10 +3725,8 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
   // Append-only logs dedupe by their natural key, exactly like migration.
   if (table === 'ss_audit_log' || table === 'ss_activities') {
     var logRow = sbSyncMapRow(table, entry.row, schoolId, maps, db);
-    var cols = table === 'ss_audit_log' ? 'ts,actor,action,details' : 'title,sub';
-    var keyFn = table === 'ss_audit_log'
-      ? function (row) { return sbNormTs(row.ts) + '|' + row.actor + '|' + row.action + '|' + row.details; }
-      : function (row) { return row.title + '|' + row.sub; };
+    var cols = table === 'ss_audit_log' ? 'ts,actor,action,details,local_id' : 'title,sub,local_id';
+    var keyFn = table === 'ss_audit_log' ? sbAuditKey : sbActivityKey;
     // v53: with a batch, dedupe against the already-fetched rows — no
     // GET per log entry — and POST only when the row is missing.
     if (batch) {
@@ -5261,6 +5295,14 @@ var collectDraft = null; // in-memory draft of the receipt being collected (neve
 /* ================= utils ================= */
 function $(id) { return document.getElementById(id); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+// v135 (audit fix): jsAttr — a value for use as a JS string argument INSIDE an
+// HTML handler attribute, e.g. onclick="fn(" + jsAttr(x) + ")". esc() alone is
+// wrong there: the HTML parser decodes &#39; back to a quote BEFORE the JS
+// runs, so an apostrophe in a user-entered class/subject name still broke the
+// handler with a SyntaxError (and was an injection vector). JSON.stringify
+// emits a valid double-quoted JS string; esc() then makes it attribute-safe,
+// and the HTML decode restores exactly that JS literal.
+function jsAttr(s) { return esc(JSON.stringify(String(s == null ? '' : s))); }
 
 /* ================= photos + school logo (v8) ================= */
 function initialsOf(name) { return String(name || '').split(' ').filter(function (w) { return w; }).map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase(); }
@@ -5693,7 +5735,7 @@ function nextRoll(cls) {
 function logAudit(action, details) {
   if (!Array.isArray(db.auditLog)) db.auditLog = [];
   var actor = state.user ? (state.user.name + ' (' + state.role + ')') : 'system';
-  db.auditLog.unshift({ ts: new Date().toISOString(), actor: actor, action: action, details: details || '' });
+  db.auditLog.unshift({ ts: new Date().toISOString(), actor: actor, action: action, details: details || '', localId: uniqueId('al') });
   if (db.auditLog.length > 200) db.auditLog.length = 200;
 }
 function findDupStudent(data, excludeId) {
@@ -6186,7 +6228,7 @@ function relTime(ts) {
 function addActivity(icon, bg, title, sub) {
   // v26: store a real timestamp at log time. The old literal was the
   // same for every entry, however old it was.
-  db.activities.unshift({ icon: icon, bg: bg, title: title, sub: sub, ts: new Date().toISOString() });
+  db.activities.unshift({ icon: icon, bg: bg, title: title, sub: sub, ts: new Date().toISOString(), localId: uniqueId('av') });
   db.activities = db.activities.slice(0, 6);
 }
 function csvCell(c) {
@@ -6496,7 +6538,7 @@ function restoreSession() {
       });
     }
     return Promise.resolve(finishRestore());
-  } catch (e) { return Promise.resolve(false); }
+} catch (e) { return Promise.resolve(false); }
 }
 function switchAuth(tab) {
   var tabs = { login: ['tabLogin', 'loginForm', 'loginErr', 'loginId'], signup: ['tabSignup', 'signupForm', 'signupErr', 'suSchool'], student: ['tabStudent', 'studentForm', 'studentErr', 'studentAdmNo'], teacher: ['tabTeacher', 'teacherForm', 'teacherErr', 'teacherEmail'], parent: ['tabParent', 'parentForm', 'parentErr', 'parentAdmNo'], staff: ['tabStaff', 'staffForm', 'staffErr', 'staffEmail'] };
@@ -7630,7 +7672,7 @@ function teacherDashboard() {
   }).join('');
   var classTiles = myClasses.map(function (c) {
     var n = myStudents.filter(function (s) { return s.cls === c; }).length;
-    return '<div class="tile blue" style="cursor:pointer" onclick="openTeacherClass(\'' + esc(c) + '\')"><div class="n">' + n + '</div><div class="l">' + esc(c) + '</div></div>';
+    return '<div class="tile blue" style="cursor:pointer" onclick="openTeacherClass(' + jsAttr(c) + ')"><div class="n">' + n + '</div><div class="l">' + esc(c) + '</div></div>';
   }).join('');
   return '<div class="phone"><div class="card"><div class="stu-hero">' + avatarHTML(null, te.name, 'avatar') + '</div>' +
     '<h3>' + esc(te.name) + '</h3><p>' + esc(te.subject || '') + ' • ' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div>' +
@@ -10070,15 +10112,15 @@ function receiptCellForRecord(r) {
   if (r.status !== 'Collected') return '<span class="muted">—</span>';
   var rc = receiptForFeeRecord(r);
   if (!rc) return '<span class="muted">—</span>';
-  return '<button class="linklike" onclick="openSavedReceipt(\'' + esc(rc.receiptNo) + '\')">' + esc(rc.receiptNo) + '</button>';
+  return '<button class="linklike" onclick="openSavedReceipt(' + jsAttr(rc.receiptNo) + ')">' + esc(rc.receiptNo) + '</button>';
 }
 function receiptListCard(sid) {
   var rcs = (db.receipts || []).filter(function (r) { return r.studentId === sid; }).slice().reverse();
   var rcRows = rcs.map(function (r) {
     return '<tr><td>' + esc(r.receiptNo) + '</td><td>' + esc(r.date) + '</td><td>' + esc(payModeLabel(r.payMode)) + '</td><td>' + inr(r.total) + '</td>' +
-      '<td><button class="btn sm" onclick="openSavedReceipt(\'' + esc(r.receiptNo) + '\')">' + t('rcptView') + '</button> ' +
-      '<button class="btn ghost sm" onclick="printReceipt(\'' + esc(r.receiptNo) + '\')">🖨 ' + t('rcptPrint') + '</button> ' +
-      '<button class="btn ghost sm" onclick="waReceiptShare(\'' + esc(r.receiptNo) + '\')">💬 ' + t('waShareReceiptBtn') + '</button></td></tr>';
+      '<td><button class="btn sm" onclick="openSavedReceipt(' + jsAttr(r.receiptNo) + ')">' + t('rcptView') + '</button> ' +
+      '<button class="btn ghost sm" onclick="printReceipt(' + jsAttr(r.receiptNo) + ')">🖨 ' + t('rcptPrint') + '</button> ' +
+      '<button class="btn ghost sm" onclick="waReceiptShare(' + jsAttr(r.receiptNo) + ')">💬 ' + t('waShareReceiptBtn') + '</button></td></tr>';
   }).join('');
   return '<div class="card"><h3>' + t('rcptReceipts') + '</h3><p class="card-sub">' + rcs.length + ' ' + t('recordsWord') + '</p><div class="tbl-wrap"><table><thead><tr><th>' + t('rcptReceiptNo') + '</th><th>' + t('rcptDate') + '</th><th>' + t('rcptPayMode') + '</th><th>' + t('rcptTotal') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody>' + (rcRows || '<tr><td colspan="5"><div class="empty">' + t('rcptNoReceipts') + '</div></td></tr>') + '</tbody></table></div></div>';
 }
@@ -10730,8 +10772,8 @@ function collectFeePage(sid) {
       return '<div class="page-head"><div><h2>' + t('rcptTitle') + '</h2><p>' + esc(s2.name) + ' • ' + esc(s2.cls) + ' • ' + esc(s2.admissionNo || '') + '</p></div>' +
         '<div class="toolbar"><button class="btn ghost" onclick="backFromReceipt()">← ' + t('backFees') + '</button></div></div>' +
         receiptHTML(rc, s2, false) +
-        '<div class="actions"><button class="btn" onclick="printReceipt(\'' + esc(rc.receiptNo) + '\')">🖨 ' + t('rcptPrint') + '</button>' +
-        '<button class="btn" onclick="waReceiptShare(\'' + esc(rc.receiptNo) + '\')">💬 ' + t('waShareReceiptBtn') + '</button>' +
+        '<div class="actions"><button class="btn" onclick="printReceipt(' + jsAttr(rc.receiptNo) + ')">🖨 ' + t('rcptPrint') + '</button>' +
+        '<button class="btn" onclick="waReceiptShare(' + jsAttr(rc.receiptNo) + ')">💬 ' + t('waShareReceiptBtn') + '</button>' +
         '<button class="btn green" onclick="openCollectFee(\'' + s2.id + '\')">' + t('rcptCollectAgain') + '</button></div>';
     }
     state.savedReceiptId = null;
@@ -10894,7 +10936,7 @@ function admReqSchoolOptions() {
 function openAdmissionApply() {
   var schools = loadAccounts().filter(function (a) { return a.role === 'school'; }).filter(function (a) { return !!readDbByKey(dbKeyFor(a)); });
   var schOpts = admReqSchoolOptions();
-  var clsOpts = classParts().map(function (c) { return '<option>' + c + '</option>'; }).join('');
+  var clsOpts = classParts().map(function (c) { return '<option>' + esc(c) + '</option>'; }).join('');
   var genOpts = [''].concat(GENDERS).map(function (g) { return '<option value="' + g + '">' + (g || '—') + '</option>'; }).join('');
   openModal('<h3>' + t('admReqFormTitle') + '</h3>' +
     (schools.length ? '' : '<p class="err" id="admReqNoSchoolMsg">' + t('admReqNoSchool') + '</p>') +
@@ -11857,9 +11899,9 @@ function teacherForm(id) {
   var acct = te ? loadAccounts().find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; }) : null;
   tchrFormClasses = te ? (Array.isArray(te.classes) && te.classes.length ? te.classes.slice() : (te.cls ? [te.cls] : [])) : [];
   var clsBoxes = schoolClasses().map(function (c) {
-    return '<label class="check"><input type="checkbox" ' + (tchrFormClasses.indexOf(c) !== -1 ? 'checked' : '') + ' onchange="toggleTchrClass(\'' + c + '\', this.checked)"> ' + c + '</label>';
+    return '<label class="check"><input type="checkbox" ' + (tchrFormClasses.indexOf(c) !== -1 ? 'checked' : '') + ' onchange="toggleTchrClass(' + jsAttr(c) + ', this.checked)"> ' + esc(c) + '</label>';
   }).join('');
-  var subOpts = schoolSubjectList().map(function (s) { return '<option ' + (te && te.subject === s ? 'selected' : '') + '>' + s + '</option>'; }).join('');
+  var subOpts = schoolSubjectList().map(function (s) { return '<option ' + (te && te.subject === s ? 'selected' : '') + '>' + esc(s) + '</option>'; }).join('');
   openModal('<h3>' + (te ? t('tchrEdit') : t('tchrAdd')) + '</h3>' +
     '<div id="fTchrErr" class="err hidden"></div>' +
     '<form onsubmit="return saveTeacher(event,\'' + (id || '') + '\')"><div class="form-grid">' +
@@ -11959,7 +12001,7 @@ function staffForm(id) {
   var acct = st ? loadAccounts().find(function (a) { return (a.role === 'principal' || a.role === 'accountant' || a.role === 'staff') && a.staffId === st.id; }) : null;
   staffFormClasses = st ? (Array.isArray(st.classes) ? st.classes.slice() : []) : [];
   var clsBoxes = schoolClasses().map(function (c) {
-    return '<label class="check"><input type="checkbox" ' + (staffFormClasses.indexOf(c) !== -1 ? 'checked' : '') + ' onchange="toggleStaffClass(\'' + c + '\', this.checked)"> ' + c + '</label>';
+    return '<label class="check"><input type="checkbox" ' + (staffFormClasses.indexOf(c) !== -1 ? 'checked' : '') + ' onchange="toggleStaffClass(' + jsAttr(c) + ', this.checked)"> ' + esc(c) + '</label>';
   }).join('');
   var roleOpts = ['principal', 'accountant', 'staff'].map(function (r) { return '<option value="' + r + '" ' + (st && st.role === r ? 'selected' : '') + '>' + staffRoleLabel(r) + '</option>'; }).join('');
   openModal('<h3>' + (st ? t('staffEdit') : t('staffAdd')) + '</h3>' +
@@ -12046,7 +12088,7 @@ function classesPage() {
   if (state.role !== 'school') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
   var rows = schoolClasses().map(function (cls) {
     var subs = schoolSubjects(cls);
-    return '<tr><td><b>' + esc(cls) + '</b></td><td>' + esc(subs.join(', ') || '—') + '</td><td><button class="btn ghost sm" onclick="classForm(\'' + cls + '\')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteClass(\'' + cls + '\')">' + t('deleteBtn') + '</button></td></tr>';
+    return '<tr><td><b>' + esc(cls) + '</b></td><td>' + esc(subs.join(', ') || '—') + '</td><td><button class="btn ghost sm" onclick="classForm(' + jsAttr(cls) + ')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteClass(' + jsAttr(cls) + ')">' + t('deleteBtn') + '</button></td></tr>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('classes') + '</h2><p>' + t('classesSub') + '</p></div>' +
     '<div class="toolbar"><button class="btn" onclick="classForm()">+ ' + t('clsAdd') + '</button></div></div>' +
@@ -12057,7 +12099,7 @@ function classForm(oldCls) {
   var row = oldCls ? classRow(oldCls) : null;
   clsFormSubjects = row ? (row.subjects || []).slice() : SUBJECTS.slice();
   var subBoxes = schoolSubjectList().map(function (s) {
-    return '<label class="check"><input type="checkbox" ' + (clsFormSubjects.indexOf(s) !== -1 ? 'checked' : '') + ' onchange="toggleClsSubject(\'' + s + '\', this.checked)"> ' + esc(s) + '</label>';
+    return '<label class="check"><input type="checkbox" ' + (clsFormSubjects.indexOf(s) !== -1 ? 'checked' : '') + ' onchange="toggleClsSubject(' + jsAttr(s) + ', this.checked)"> ' + esc(s) + '</label>';
   }).join('');
   openModal('<h3>' + (row ? t('clsEdit') : t('clsAdd')) + '</h3>' +
     '<div id="fClsErr" class="err hidden"></div>' +
@@ -12232,7 +12274,7 @@ function studentFeesPage() {
       return '<div class="page-head"><div><h2>' + t('rcptTitle') + '</h2><p>' + esc(s2125.name) + ' • ' + esc(s2125.cls) + ' • ' + esc(s2125.admissionNo || '') + '</p></div>' +
         '<div class="toolbar"><button class="btn ghost" onclick="backFromReceipt()">\u2190 ' + t('backFees') + '</button></div></div>' +
         receiptHTML(rc125, s2125, false) +
-        '<div class="actions"><button class="btn" onclick="printReceipt(\'' + esc(rc125.receiptNo) + '\')">\u1f5a8 ' + t('rcptPrint') + '</button></div>';
+        '<div class="actions"><button class="btn" onclick="printReceipt(' + jsAttr(rc125.receiptNo) + ')">\u1f5a8 ' + t('rcptPrint') + '</button></div>';
     }
     state.savedReceiptId = null;
   }
