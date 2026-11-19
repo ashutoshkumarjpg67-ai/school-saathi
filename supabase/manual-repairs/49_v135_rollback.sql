@@ -1,0 +1,20 @@
+-- 49_v135_rollback.sql — GENERIC TEMPLATE. Rollback guidance for the v135
+-- live changes (SQL 45-48 + test-school is_demo flips).
+--
+-- The FULL rollback file with live-captured values (function definitions,
+-- policy text, bucket config, affected row ids and flags) is stored
+-- privately outside this public repo — production identifiers and row
+-- values are not published here. It was captured from the live project
+-- via dashboard SQL on 19 Nov 2026 ~23:59-00:01 IST, BEFORE any v135
+-- change. The live definitions matched repo SQL 01/43 at capture time.
+--
+-- Rollback outline (fill identifiers from the private capture):
+--   1. is_demo flips: update ss_schools set is_demo = false for the
+--      flipped test-school ids (values in the private capture).
+--   2. SQL 46: restore ss_list_public_schools from 01_schema.sql
+--      (is_demo-only filter), restore ss_admreq_anon_insert with
+--      ss_is_real_school(school_id), drop ss_is_listable_school(uuid).
+--   3. SQL 47: restore ss_next_receipt_no from 01_schema.sql (UTC year).
+--   4. SQL 48: re-apply 43_clear_attendance.sql verbatim.
+--   5. SQL 45 (only after the app is back on v134): drop the local_id
+--      columns from ss_audit_log and ss_activities.
