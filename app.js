@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 135;
+var APP_VERSION = 136;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -10919,7 +10919,10 @@ var admReqPublicCache = null; // server schools from ss_list_public_schools()
 function admReqSchoolOptions() {
   // Server schools first (from the RPC), then local-only schools that are
   // not on the server yet. Values: 'srv:<uuid>' or 'local:<dbKey>'.
-  var opts = '';
+  // v136: a disabled placeholder forces a deliberate school choice - the
+  // first real school is never pre-selected, so an untouched form cannot
+  // silently route an application to the wrong school.
+  var opts = '<option value="" disabled selected>' + esc(t('admReqPickSchool')) + '</option>';
   var map = sbServerSchoolMap();
   var seenSrv = {};
   (admReqPublicCache || []).forEach(function (s) {
@@ -10960,7 +10963,9 @@ function openAdmissionApply() {
       admReqPublicCache = r.data;
       var sel = $('fArSchool');
       if (!sel) return; // modal closed
+      var prev = sel.value; // keep a choice the parent already made
       sel.innerHTML = admReqSchoolOptions();
+      if (prev) sel.value = prev;
       var msg = $('admReqNoSchoolMsg');
       if (msg) msg.classList.add('hidden');
       var btn = $('admReqSubmitBtn');
@@ -10978,7 +10983,7 @@ function saveAdmissionRequest(e) {
   var errs = validateAdmissionRequest(req);
   if (errs.length) { toast(errs.join(' ')); return false; }
   var sel = $('fArSchool') ? $('fArSchool').value : '';
-  if (!sel) { toast(t('tAdmReqFailed')); return false; }
+  if (!sel) { toast(t('tAdmReqPickSchool')); return false; }
   if (sel.indexOf('srv:') === 0) {
     // A server school (chosen from the public list): the application
     // lives on the server only — there is no local DB for it on this
