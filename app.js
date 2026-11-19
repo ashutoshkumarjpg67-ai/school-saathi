@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 137;
+var APP_VERSION = 138;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -90,6 +90,7 @@ function applySchoolProfile(d, a) { d.profile.name = a.school; d.profile.princip
    Never hard-code an email anywhere in the app. */
 var SB_URL = 'https://bsjqeeeemwimzldrehpw.supabase.co';
 var SB_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJzanFlZWVlbXdpbXpsZHJlaHB3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQxODA0ODIsImV4cCI6MjEwOTc1NjQ4Mn0.KUV5jF6he8suH_lHUrLvXixPVdzIwHVqcPJXHh1jVkM';
+var SB_PUB_KEY = 'sb_publishable_Q83i4Qnt9BwlN1HiFATadQ_02lY-trN'; // v138: publishable key for the functions gateway (public-safe by design); the legacy anon key above stays for PostgREST/Auth until Supabase retires it (2027)
 var SB_SESSION_KEY = 'schoolSaathiSupabaseSession';
 var SB_SCHOOL_MAP_KEY = 'schoolSaathiServerSchools'; // { localAccountUid: serverSchoolUuid }
 var SB_MIGRATED_KEY = 'schoolSaathiMigrated'; // per Supabase uid: { at, schoolId, counts }
@@ -329,7 +330,8 @@ function sbSignedPhotoFor(u) {
 function sbDisplayPhoto(u) { return sbIsSbPhotoUrl(u) ? (sbSignedPhotoFor(u) || u) : u; }
 function sbPhotoSignRequest(body, bearer) {
   if (typeof fetch !== 'function') return Promise.resolve(null);
-  var headers = { 'apikey': SB_ANON_KEY, 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (bearer || SB_ANON_KEY) };
+  // v138: the functions gateway requires the publishable key (the legacy anon JWT is rejected there). Owner calls still send the user's JWT as the bearer; teacher/parent calls use the publishable key.
+  var headers = { 'apikey': SB_PUB_KEY, 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (bearer || SB_PUB_KEY) };
   return sbFetchWithTimeout(SB_PHOTO_FN, { method: 'POST', headers: headers, body: JSON.stringify(body) }).then(function (res) {
     if (!res || !res.ok) return null;
     return res.json().then(function (d) { return (d && d.ok) ? d : null; }).catch(function () { return null; });
