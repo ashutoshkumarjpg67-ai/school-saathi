@@ -6538,7 +6538,7 @@ function restoreSession() {
       });
     }
     return Promise.resolve(finishRestore());
-} catch (e) { return Promise.resolve(false); }
+  } catch (e) { return Promise.resolve(false); }
 }
 function switchAuth(tab) {
   var tabs = { login: ['tabLogin', 'loginForm', 'loginErr', 'loginId'], signup: ['tabSignup', 'signupForm', 'signupErr', 'suSchool'], student: ['tabStudent', 'studentForm', 'studentErr', 'studentAdmNo'], teacher: ['tabTeacher', 'teacherForm', 'teacherErr', 'teacherEmail'], parent: ['tabParent', 'parentForm', 'parentErr', 'parentAdmNo'], staff: ['tabStaff', 'staffForm', 'staffErr', 'staffEmail'] };
