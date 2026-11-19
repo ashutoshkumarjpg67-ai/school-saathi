@@ -115,7 +115,14 @@ describe('RLS shape (static, from repo SQL files)', () => {
 
   it('anon can INSERT admission requests only (Pending + real school) and READ platform settings only', () => {
     const flat = sqlCode.replace(/\s+/g, ' ');
-    const anonPolicies = [...flat.matchAll(/create policy (\S+) on public\.(ss_[a-z_0-9]+) for (\w+) to anon[^;]*?;/gi)];
+    // File order matters: a later migration can DROP + re-CREATE the same
+    // policy (SQL 46 re-creates ss_admreq_anon_insert). Keep the LAST
+    // definition per policy name, the way PostgreSQL applies the files.
+    const policyByName = new Map();
+    for (const m of flat.matchAll(/create policy (\S+) on public\.(ss_[a-z_0-9]+) for (\w+) to anon[^;]*?;/gi)) {
+      policyByName.set(m[1].toLowerCase(), m);
+    }
+    const anonPolicies = [...policyByName.values()];
     assert.deepEqual(
       anonPolicies.map((m) => `${m[2]}:${m[3]}`).sort(),
       ['ss_admission_requests:insert', 'ss_platform_settings:select'],
@@ -123,7 +130,9 @@ describe('RLS shape (static, from repo SQL files)', () => {
     );
     const adm = anonPolicies.find((m) => m[2] === 'ss_admission_requests')[0];
     assert.match(adm, /status = 'Pending'/, 'anon admission insert must force Pending');
-    assert.match(adm, /ss_is_real_school\(school_id\)/, 'anon admission insert must check a real school');
+    // v135: listable = real (non-demo) AND a non-blank name — the blank-name
+    // school row must not receive public applications (audit fix, SQL 46).
+    assert.match(adm, /ss_is_listable_school\(school_id\)/, 'anon admission insert must check a listable school');
     // No anon SELECT/UPDATE/DELETE on tenant rows: the deepEqual above
     // already pins anon to exactly these two policies — insert-only on
     // admission requests, select-only on the public settings fields.
