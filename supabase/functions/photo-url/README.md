@@ -15,7 +15,7 @@ POST body JSON, three caller modes (exactly one per request):
 | --- | --- | --- |
 | owner | `Authorization: Bearer <supabase access token>` | any photo / the logo of the school the JWT owns (`ss_schools.owner_id = jwt.sub`) |
 | teacher | `teacher_token` (ss_teacher_sessions) | photos of students in the teacher's own classes (same scope as `ss_teacher_student_photo`, SQL 24/29); expired or revoked tokens fail |
-| parent | `school_id` + `admission_no` + `pin` | only their own child's photo, with the existing SQL 36 lockout (5 wrong PINs lock 15 minutes — shared with the login RPCs) |
+| parent | `school_id` + `admission_no` + `pin` | only their own child's photo, verified by the live `ss_student_cloud_login` RPC so bcrypt$/s256$/legacy PINs all work, with the same server-side lockout (5 wrong PINs lock 15 minutes) |
 
 Actions: `student` (one `student_id`) for every mode, `school` (logo plus
 all student photos of the school) for owners only.
