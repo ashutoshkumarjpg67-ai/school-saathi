@@ -120,6 +120,32 @@ const test = `
     else { fails.push(name); console.log('FAIL ' + name); }
   }
   function eq(a, b, name) { ok(a === b, name + ' (got ' + JSON.stringify(a) + ', want ' + JSON.stringify(b) + ')'); }
+  // v137: inline-handler arguments are jsAttr()-escaped (an HTML-escaped
+  // JSON string literal), so a raw substring check for fn('value') can
+  // never match again. hcallCheck instead finds every fn(...) call in the
+  // HTML, HTML-DECODES its argument like a browser parsing the attribute,
+  // EVALUATES it, and requires one call to carry exactly the wanted value. It fails
+  // when any call uses the old raw single-quote form (escaping regression)
+  // or when no decoded argument evaluates to the value. hcall/v28hcall
+  // report through the two counters.
+  function hcallCheck(html, fn, want) {
+    // (no backslash escapes here - this runs inside the harness template,
+    // which halves them; [(] and [)] are literal-paren character classes)
+    var re = new RegExp(fn.replace(/[^a-zA-Z0-9_$]/g, '') + '[(]([^)]*)[)]', 'g');
+    var m, sawRaw = false, found = false, badEval = false;
+    while ((m = re.exec(html))) {
+      var argText = m[1];
+      if (argText.charAt(0) === "'") sawRaw = true;
+      var decoded = argText.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+      var v;
+      try { v = (new Function('return (' + decoded + ');'))(); } catch (e) { badEval = true; continue; }
+      if (v === want) found = true;
+    }
+    if (sawRaw) return 'raw unescaped handler argument present';
+    if (!found) return badEval ? 'handler argument does not evaluate' : 'no handler call carries the exact value';
+    return '';
+  }
+  function hcall(html, fn, want, name) { var r = hcallCheck(html, fn, want); ok(r === '', r ? name + ' — ' + r : name); }
   // B3 (harness fix): logout() is async since the outbox flush runs first
   // and the clear lands on a promise/timer — a test that asserts right
   // after logout() races the clear (the pre-B3 tests assumed a
@@ -3723,10 +3749,10 @@ const test = `
   ok(rcTxt38.indexOf('reminder') === -1 && rcTxt38.indexOf('due') === -1, 'v38 (iii): the receipt message is not a reminder');
   ok(db.auditLog.some(function (a) { return a.action === 'WhatsApp opened' && a.details.indexOf('Receipt share') !== -1; }), 'v38 (vii): the receipt share writes an opened audit entry');
   state.savedReceiptId = 'RCP-2026-999';
-  ok(collectFeePage(ownStu38.id).indexOf("waReceiptShare('RCP-2026-999')") !== -1, 'v38 (iii): the saved receipt view has a Share on WhatsApp button');
+  hcall(collectFeePage(ownStu38.id), 'waReceiptShare', 'RCP-2026-999', 'v38 (iii): the saved receipt view has a Share on WhatsApp button');
   state.savedReceiptId = null;
-  ok(receiptListCard(ownStu38.id).indexOf("waReceiptShare('RCP-2026-999')") !== -1, 'v38 (iii): the receipt list has a share button');
-  ok(studentFeeProfile(ownStu38.id).indexOf("waReceiptShare('RCP-2026-999')") !== -1, 'v38 (iii): the fee profile shows the receipt share button');
+  hcall(receiptListCard(ownStu38.id), 'waReceiptShare', 'RCP-2026-999', 'v38 (iii): the receipt list has a share button');
+  hcall(studentFeeProfile(ownStu38.id), 'waReceiptShare', 'RCP-2026-999', 'v38 (iii): the fee profile shows the receipt share button');
 
   // (iv) profile chat: greeting naming school + student, toolbar + overview entry points
   window.__opened.length = 0;
@@ -3811,7 +3837,7 @@ const test = `
   eq(receiptCellForRecord(recNoRc64).indexOf('openSavedReceipt'), -1, 'v39 (a): the receipt cell shows nothing to open when there is no receipt');
   var recPend64 = db.feeRecords.filter(function (r) { return r.id === 'fee-wa-own'; })[0];
   eq(receiptCellForRecord(recPend64).indexOf('openSavedReceipt'), -1, 'v39 (a): a Pending row never shows a receipt, even for a month already partly paid');
-  ok(receiptCellForRecord(recOwn64).indexOf("openSavedReceipt('RCP-2026-999')") !== -1, 'v39 (a): the receipt cell links the receipt number to openSavedReceipt');
+  hcall(receiptCellForRecord(recOwn64), 'openSavedReceipt', 'RCP-2026-999', 'v39 (a): the receipt cell links the receipt number to openSavedReceipt');
   db.feeRecords.push({ id: 'fee-rc-sep', studentId: ownStu38.id, student: ownStu38.name, cls: '10th-A', month: 'Sep', type: 'Tuition', amount: 800, status: 'Collected', date: todayIST() });
   ok(receiptCellForRecord(recNoRc64).indexOf('openSavedReceipt') === -1, 'v39 (a): the receipt cell shows nothing to open when there is no receipt');
 
@@ -3823,26 +3849,26 @@ const test = `
   var feesHtml64 = feesPage();
   state.feeSearch = '';
   ok(feesHtml64.indexOf(t('thReceipt')) !== -1, 'v39 (b): the Fees list has a Receipt column');
-  ok(feesHtml64.indexOf("openSavedReceipt('RCP-2026-999')") !== -1, 'v39 (b): the Fees list opens the receipt from the Collected row');
+  hcall(feesHtml64, 'openSavedReceipt', 'RCP-2026-999', 'v39 (b): the Fees list opens the receipt from the Collected row');
   ok(feesHtml64.indexOf('RCP-2026-999') !== -1, 'v39 (b): the Fees list shows the receipt number');
-  ok(feesHtml64.indexOf("openSavedReceipt('RCP-2026-998')") !== -1, 'v39 (b): the Fees list links the Sep receipt to the Sep collected record, not the Oct one');
+  hcall(feesHtml64, 'openSavedReceipt', 'RCP-2026-998', 'v39 (b): the Fees list links the Sep receipt to the Sep collected record, not the Oct one');
 
   // (c) profile Fee History tab: receipt number + View for the collected record, dash for pending
   var feesTab64 = profileTabBody(ownStu38, 'fees');
   ok(feesTab64.indexOf(t('thReceipt')) !== -1, 'v39 (c): the profile Fee History tab has a Receipt column');
-  ok(feesTab64.indexOf("openSavedReceipt('RCP-2026-999')") !== -1, 'v39 (c): the profile Fee History tab opens the receipt');
+  hcall(feesTab64, 'openSavedReceipt', 'RCP-2026-999', 'v39 (c): the profile Fee History tab opens the receipt');
   ok(feesTab64.indexOf('RCP-2026-999') !== -1, 'v39 (c): the profile Fee History tab shows the receipt number');
 
   // (d) the receipt view opens deterministically across repeated renders, not just after collecting
   openSavedReceipt('RCP-2026-999');
   eq(state.savedReceiptId, 'RCP-2026-999', 'v39 (d): opening the receipt sets the saved receipt id');
   ok(collectFeePage(ownStu38.id).indexOf('RCP-2026-999') !== -1, 'v39 (d): the receipt view renders the receipt');
-  ok(collectFeePage(ownStu38.id).indexOf("waReceiptShare('RCP-2026-999')") !== -1, 'v39 (d): the receipt view has a Share on WhatsApp button');
+  hcall(collectFeePage(ownStu38.id), 'waReceiptShare', 'RCP-2026-999', 'v39 (d): the receipt view has a Share on WhatsApp button');
   ok(collectFeePage(ownStu38.id).indexOf('RCP-2026-999') !== -1, 'v39 (d): the receipt view still renders on a second render');
   state.view = 'students'; state.collectStudent = null; state.savedReceiptId = null; state.feeStudent = null;
   openSavedReceipt('RCP-2026-999');
   eq(state.savedReceiptId, 'RCP-2026-999', 'v39 (d): the receipt re-opens after navigating away and back');
-  ok(collectFeePage(ownStu38.id).indexOf("waReceiptShare('RCP-2026-999')") !== -1, 'v39 (d): the re-opened receipt still has its Share button');
+  hcall(collectFeePage(ownStu38.id), 'waReceiptShare', 'RCP-2026-999', 'v39 (d): the re-opened receipt still has its Share button');
   state.view = 'fees'; state.collectStudent = null; state.savedReceiptId = null; state.feeStudent = null;
 
   // (e) verify + guard count only NUMBERED receipts — a numberless offline receipt never blocks them
@@ -3928,7 +3954,7 @@ const test = `
   db.receipts.push({ receiptNo: 'RCP-2026-103', studentId: ownStu38.id, name: ownStu38.name, cls: '10th-A', date: todayIST(), month: 'Oct', total: 1500, payMode: 'Cash', payDate: todayIST(), counterNo: '1', session: '2025-26', lines: dupLines66 });
   db.receipts.push({ receiptNo: 'RCP-2026-157', studentId: ownStu38.id, name: ownStu38.name, cls: '10th-A', date: todayIST(), month: 'Oct', total: 1500, payMode: 'Cash', payDate: todayIST(), counterNo: '1', session: '2025-26', lines: dupLines66 });
   eq(receiptForFeeRecord(recOwn64).receiptNo, 'RCP-2026-003', 'v41 (b): among same-date duplicates the lookup shows the earliest (original) number');
-  eq(receiptCellForRecord(recOwn64).indexOf("openSavedReceipt('RCP-2026-003')") !== -1, true, 'v41 (b): the receipt cell links the original number');
+  hcall(receiptCellForRecord(recOwn64), 'openSavedReceipt', 'RCP-2026-003', 'v41 (b): the receipt cell links the original number');
   eq(receiptCellForRecord(recOwn64).indexOf('RCP-2026-157'), -1, 'v41 (b): the receipt cell never shows a re-minted duplicate number');
   // (c) Fees list: the numbers are identical on two renders (the live loop changed them +3 per render)
   state.feeSearch = ownStu38.name; state.feeFilter = 'All'; state.feeType = 'All';
@@ -3947,7 +3973,7 @@ const test = `
   db.receipts.push({ receiptNo: 'RCP-2026-200', studentId: ownStu38.id, name: ownStu38.name, cls: '10th-A', date: laterDate41, month: 'Oct', total: 1500, payMode: 'Cash', payDate: laterDate41, counterNo: '1', session: '2025-26', lines: dupLines66 });
   eq(receiptForFeeRecord(recOwn64).receiptNo, 'RCP-2026-200', 'v41 (d): a later-dated receipt still wins over the earliest number');
   var feesTab66 = profileTabBody(ownStu38, 'fees');
-  ok(feesTab66.indexOf("openSavedReceipt('RCP-2026-200')") !== -1, 'v41 (d): the profile Fee History tab shows the same latest receipt as the Fees list');
+  hcall(feesTab66, 'openSavedReceipt', 'RCP-2026-200', 'v41 (d): the profile Fee History tab shows the same latest receipt as the Fees list');
   db.receipts.pop();
   eq(receiptForFeeRecord(recOwn64).receiptNo, 'RCP-2026-003', 'v41 (d): removing the later receipt returns the lookup to the original number');
   // (e) the receipt view renders even when the student row is missing locally
@@ -3955,7 +3981,7 @@ const test = `
   state.collectStudent = 'stu-missing-41'; state.savedReceiptId = 'RCP-2026-041';
   var missHtml66 = collectFeePage('stu-missing-41');
   ok(missHtml66.indexOf('RCP-2026-041') !== -1, 'v41 (e): the receipt view renders from the receipt itself when the student row is missing');
-  ok(missHtml66.indexOf("waReceiptShare('RCP-2026-041')") !== -1, 'v41 (e): the rendered receipt still has its Share on WhatsApp button');
+  hcall(missHtml66, 'waReceiptShare', 'RCP-2026-041', 'v41 (e): the rendered receipt still has its Share on WhatsApp button');
   ok(missHtml66.indexOf('Missing Kid') !== -1, 'v41 (e): the receipt view shows the receipt student name, not a blank');
   state.collectStudent = null; state.savedReceiptId = null;
   // (f) adopt-before-mint: the content match finds the earliest server number, and refuses a different fee type
@@ -3987,7 +4013,7 @@ const test = `
   ].map(function (a) { return sbMapActivity(a, 'srv-school-67'); });
   var actKeys67 = actRows67.map(function (r) { return Object.keys(r).sort().join(','); });
   ok(actKeys67.every(function (k) { return k === actKeys67[0]; }), 'v42 (a): every mapped activity row carries the identical key set (no PGRST102)');
-  eq(actKeys67[0], 'bg,created_at,icon,school_id,sub,title', 'v42 (a): the key set is exactly the ss_activities columns');
+  eq(actKeys67[0], 'bg,created_at,icon,local_id,school_id,sub,title', 'v42 (a): the key set is exactly the ss_activities columns (local_id included since v135 / SQL 45)');
   eq(actRows67[2].created_at, '2026-11-09T15:30:00.000Z', 'v42 (a): a logged activity keeps its own timestamp');
   eq(actRows67[0].created_at, '1970-01-01T00:00:00.000Z', 'v42 (a): a seed activity without ts gets the fixed epoch fallback, never a missing key');
   ok(!isNaN(Date.parse(actRows67[0].created_at)), 'v42 (a): the fallback created_at is a valid timestamp');
@@ -5318,7 +5344,7 @@ const test = `
   // And the plain fees list now links the receipt number (the v65 dead-end is gone).
   state.savedReceiptId = null;
   loginAs(par125, { silent: true });
-  ok(studentFeesPage().indexOf("openSavedReceipt('RCP-2026-125')") !== -1, 'v125: the parent fees list links the receipt number (it opens the receipt view now)');
+  hcall(studentFeesPage(), 'openSavedReceipt', 'RCP-2026-125', 'v125: the parent fees list links the receipt number (it opens the receipt view now)');
   loginAs(TEST_ACCOUNTS.school);
   state.savedReceiptId = null;
   // Restore.
@@ -7342,6 +7368,7 @@ function sbNowISO() { sbNowMs += 1000; return new Date(sbNowMs).toISOString(); }
 const sbServer = { ss_schools: [], ss_students: [], ss_fee_records: [], ss_fee_structure: [], ss_attendance: [], ss_receipts: [], ss_audit_log: [], ss_activities: [], ss_teachers: [], ss_exams: [], ss_marks: [], ss_homework: [], ss_notices: [], ss_holidays: [], ss_platform_admins: [], ss_admission_requests: [], ss_support_requests: [], ss_staff: [], ss_classes: [] }; // v90: the mock server has the ss_staff table (SQL 30 created it live); v100: ss_holidays (SQL 38); v119: ss_classes (SQL 42)
 let sbSeq = 0;
 let sbSignupMode = 'ok'; // v34: 'ok' | 'rate-limit' | 'exists' — drives the mocked GoTrue signup
+let sbSuperAdminMode = 'ok'; // v137: 'ok' | 'error' — drives the mocked ss_is_super_admin verdict RPC
 let sbRefreshFail = false; // v34: when true the mocked refresh token is rejected (400)
 let sbGetSchoolsEmptyOnce = false; // v34: the next ss_schools GET returns [] once (race simulation)
 function sbJsonRes(status, data) {
@@ -7447,6 +7474,19 @@ function sbMockFetch(url, init) {
   if (u.indexOf('/rest/v1/rpc/ss_list_public_schools') !== -1) {
     const rows = sbServer.ss_schools.filter(function (s) { return !s.is_demo; }).map(function (s) { return { id: s.id, name: s.name, city: s.city }; });
     return Promise.resolve(sbJsonRes(200, rows));
+  }
+  // v137: the server-side Super Admin verdict behind every server link
+  // (v135). Only the dedicated platform-admin identity ('tok-superadmin',
+  // the mock's stand-in for an ss_platform_admins row) answers true; every
+  // other token answers false - including owner@platform.test, the
+  // simulated owner account WITHOUT platform-admin rights, which the v28
+  // checks require to be refused ("No school found"). 'error' mode
+  // simulates the RPC failing, and the app must then fail CLOSED (link
+  // held, nothing saved), never allow.
+  if (u.indexOf('/rest/v1/rpc/ss_is_super_admin') !== -1) {
+    if (sbSuperAdminMode === 'error') return Promise.resolve(sbJsonRes(500, { message: 'verdict unavailable' }));
+    var authz = String((init.headers || {}).Authorization || '');
+    return Promise.resolve(sbJsonRes(200, authz.indexOf('tok-superadmin') !== -1));
   }
   if (u.indexOf('/rest/v1/rpc/ss_wipe_school') !== -1) {
     const b = JSON.parse(init.body || '{}');
@@ -7596,6 +7636,25 @@ function v28ok(cond, name) {
   else { v28fails.push(name); console.log('FAIL ' + name); }
 }
 function v28eq(a, b, name) { v28ok(a === b, name + ' (got ' + JSON.stringify(a) + ', want ' + JSON.stringify(b) + ')'); }
+// v137: decode + execute inline-handler arguments (jsAttr-escaped since
+// v135), never raw substring matches on the pre-v135 quote style. This is
+// the top-level twin of the hcallCheck inside the sync template.
+function hcallCheck(html, fn, want) {
+  const re = new RegExp(fn.replace(/[^a-zA-Z0-9_$]/g, '\\$&') + '\\(([^)]*)\\)', 'g');
+  let m, sawRaw = false, found = false, badEval = false;
+  while ((m = re.exec(html))) {
+    const argText = m[1];
+    if (argText.charAt(0) === "'") sawRaw = true;
+    const decoded = argText.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+    let v;
+    try { v = (new Function('return (' + decoded + ');'))(); } catch (e) { badEval = true; continue; }
+    if (v === want) found = true;
+  }
+  if (sawRaw) return 'raw unescaped handler argument present';
+  if (!found) return badEval ? 'handler argument does not evaluate' : 'no handler call carries the exact value';
+  return '';
+}
+function v28hcall(html, fn, want, name) { const r = hcallCheck(html, fn, want); v28ok(r === '', r ? name + ' — ' + r : name); }
 const tick = () => new Promise(r => setTimeout(r, 0));
 // B3 (harness fix): logout() is async (flush-then-clear) — a test that
 // proceeds right after ctx.logout() races the clear; the late clear
@@ -7649,12 +7708,11 @@ async function v28run() {
   v28eq(typeof ctx.sbCheckSuperAdmin, 'function', 'v94: sbCheckSuperAdmin exists (the super admin check is back)');
   v28ok(src.includes('ss_is_super_admin'), 'v94: the super admin check calls the ss_is_super_admin RPC');
   v28ok(!src.includes('super@school-saathi.in'), 'v28: no super login address in app.js');
-  // v69 (harness fix): the owner email IS hard-coded twice now, deliberately
-  // — the migration guard (sbMaybeMigrate refuses to link a school to the
-  // Super Admin account) and the Link-to-Server modal block. Both are
-  // blocklists, never a login bypass, so the check is that the email
-  // appears ONLY in those two places.
-  v28eq((src.match(/ashutoshkumarjpg67@gmail\.com/g) || []).length, 2, 'v28: owner email appears only in the two v69 link blocks (migration guard + modal block)');
+  // v135: the Super Admin verdict moved server-side (sbLinkTargetVerdict
+  // + the ss_is_super_admin RPC). The v69 hard-coded owner email in the
+  // two link blocks was deliberately REMOVED from the shipped bundle —
+  // the check is now that the personal email appears NOWHERE in app.js.
+  v28eq((src.match(/ashutoshkumarjpg67@gmail\.com/g) || []).length, 0, 'v135: owner personal email no longer appears in the app bundle (server-side verdict replaced the v69 blocks)');
 
   // ---- Anon Apply-form insert must use return=minimal ----
   sbCalls = [];
@@ -8936,6 +8994,22 @@ async function v28run() {
   v28eq(linkAcct3.sbUid, 'sb-uid-link3@school.in', 'v34 P0-1: the signed-in sbUid is stored');
   sbSignupMode = 'ok';
 
+  // ---- v135: the verdict RPC erroring must HOLD the link (fail closed) ----
+  vm34Setup();
+  var linkAcctFC = { uid: 'u-link-fc', name: 'FC Admin', school: 'FC School', email: 'fc@school.in', pwHash: ctx.hashPw('TestAdmin-2026'), role: 'school', sub: 'School Admin • FC School', created: '2026-11-09' };
+  ctx.saveAccounts([linkAcctFC]);
+  sbSuperAdminMode = 'error';
+  var rFC = await ctx.sbLinkServerAccount(linkAcctFC, 'TestAdmin-2026');
+  v28eq(rFC.done, false, 'v135: a verdict RPC error blocks the link');
+  v28eq(rFC.reason, 'check-failed', 'v135: the link is HELD (fail closed) while the verdict is unknown');
+  v28eq(linkAcctFC.sbUid, undefined, 'v135: no sbUid is saved while the verdict is unknown');
+  v28eq(ctx.findAccount('fc@school.in').sbUid, undefined, 'v135: the stored account stays unlinked on a verdict error');
+  sbSuperAdminMode = 'ok';
+  // The verdict itself: the platform-admin identity verdicts admin (link
+  // refused), an ordinary school token verdicts ok.
+  v28eq(await ctx.sbLinkTargetVerdict('tok-superadmin'), 'admin', 'v135: the platform-admin token verdicts admin');
+  v28eq(await ctx.sbLinkTargetVerdict('tok-rahul@stxavier.in'), 'ok', 'v135: an ordinary school token verdicts ok');
+
   // ---- v34 P0-2 (i): an overpayment is capped, fee records + receipt agree ----
   vm34Setup();
   ctx.db.students.push(vmStudent('stu-ov1', 'Over Kid', 'ADM-2025-001', 'ENR-001'));
@@ -9593,11 +9667,11 @@ async function v28run() {
   v28ok(feesHtml41a.indexOf('RCP-2026-001') !== -1 && feesHtml41a.indexOf('RCP-2026-002') !== -1 && feesHtml41a.indexOf('RCP-2026-003') !== -1, 'v41 async: the Fees list shows the 3 original receipt numbers');
   v28eq(feesHtml41a, feesHtml41b, 'v41 async: two Fees list renders are identical — no number moves between renders');
   var feesTab41 = ctx.profileTabBody(ankit41, 'fees');
-  v28ok(feesTab41.indexOf("openSavedReceipt('RCP-2026-003')") !== -1, 'v41 async: the Fee History tab links the Dec receipt');
+  v28hcall(feesTab41, 'openSavedReceipt', 'RCP-2026-003', 'v41 async: the Fee History tab links the Dec receipt');
   ctx.openSavedReceipt('RCP-2026-003');
   v28eq(ctx.state.savedReceiptId, 'RCP-2026-003', 'v41 async: the Fee History receipt tap opens the receipt');
   v28ok(ctx.collectFeePage(ankit41.id).indexOf('RCP-2026-003') !== -1, 'v41 async: the tapped receipt renders its view');
-  v28ok(ctx.collectFeePage(ankit41.id).indexOf("waReceiptShare('RCP-2026-003')") !== -1, 'v41 async: the tapped receipt has its Share on WhatsApp button');
+  v28hcall(ctx.collectFeePage(ankit41.id), 'waReceiptShare', 'RCP-2026-003', 'v41 async: the tapped receipt has its Share on WhatsApp button');
   ctx.state.view = 'fees'; ctx.state.collectStudent = null; ctx.state.savedReceiptId = null; ctx.state.feeStudent = null;
   // (o) adopt-before-mint: a local receipt whose number is not on the server but whose content is, links to the earliest server number
   ls.removeItem('schoolSaathiSrvIds:sb-uid-vm@school.in');
@@ -9681,7 +9755,7 @@ async function v28run() {
   v28ok(feesHtml42a.indexOf('RCP-2026-193') === -1 && feesHtml42a.indexOf('RCP-2026-194') === -1 && feesHtml42a.indexOf('RCP-2026-195') === -1, 'v42 async: the Fees list shows no re-minted duplicate number');
   v28eq(feesHtml42a, feesHtml42b, 'v42 async: two Fees list renders are identical — the numbers stay stable');
   var feesTab42 = ctx.profileTabBody(v21_42, 'fees');
-  v28ok(feesTab42.indexOf("openSavedReceipt('RCP-2026-003')") !== -1, 'v42 async: the Fee History tab links the Dec receipt RCP-2026-003');
+  v28hcall(feesTab42, 'openSavedReceipt', 'RCP-2026-003', 'v42 async: the Fee History tab links the Dec receipt RCP-2026-003');
   v28ok(feesTab42.indexOf('RCP-2026-195') === -1, 'v42 async: the Fee History tab shows no re-minted duplicate number');
   ctx.openSavedReceipt('RCP-2026-003');
   v28eq(ctx.state.savedReceiptId, 'RCP-2026-003', 'v42 async: the Fee History receipt tap opens RCP-2026-003');
