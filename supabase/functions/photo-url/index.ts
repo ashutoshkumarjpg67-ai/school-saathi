@@ -12,11 +12,10 @@
 //             as ss_teacher_student_photo (SQL 24/29): the student must be
 //             in the teacher's school AND in one of the teacher's classes;
 //             expired/removed sessions are refused (revocation = row gone).
-//   parent  — school_id + admission_no + pin (body). Verified against the
-//             stored s256$ salted hash (or legacy plaintext, read-only: the
-//             upgrade still happens at login) using the SAME lockout as the
-//             login RPCs: ss_parent_pin_precheck / _failed / _ok (SQL 36),
-//             so 5 wrong PINs here lock the student for 15 minutes there.
+//   parent  — school_id + admission_no + pin (body). Verified by calling
+//             the live ss_student_cloud_login RPC (SQL 17/23), so bcrypt$,
+//             s256$ and legacy PINs all verify exactly as at login, with the
+//             same server-side lockout (5 wrong PINs lock 15 minutes).
 //
 // Hard rules (mirroring the audit requirements):
 //   * Object paths are DERIVED ON THE SERVER (<school_id>/<student_id>.jpg,
@@ -59,24 +58,6 @@ function json(body: Record<string, unknown>, status: number): Response {
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-async function sha256Hex(text: string): Promise<string> {
-  const data = new TextEncoder().encode(text)
-  const digest = await crypto.subtle.digest('SHA-256', data)
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
-}
-
-// Verify a PIN against the stored value: s256$<salt>$<hex sha256(salt|pin)>
-// or a legacy plaintext PIN (compared only — the login RPC owns the upgrade).
-async function pinMatches(stored: string, pin: string): Promise<boolean> {
-  if (!stored) return false
-  if (stored.startsWith('s256$')) {
-    const parts = stored.split('$')
-    if (parts.length !== 3) return false
-    return (await sha256Hex(parts[1] + '|' + pin)) === parts[2]
-  }
-  return stored === pin
-}
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
@@ -131,47 +112,30 @@ serve(async (req) => {
     schoolId = sess.school_id
     classScope = Array.isArray(teacher.classes) ? teacher.classes : []
   } else if (parentSchool && admissionNo && pin) {
-    // ---- parent: PIN with the existing lockout (SQL 36) ----
+    // ---- parent: verified by the LIVE login RPC (ss_student_cloud_login,
+    // SQL 17/23) so every stored hash form works — bcrypt$ (reset/upgraded
+    // PINs), s256$ and legacy plaintext — with the SAME server-side lockout
+    // (5 wrong PINs lock 15 minutes) the parent's own login uses. No
+    // parallel PIN logic can drift from the real one.
     if (!UUID_RE.test(parentSchool)) return json({ ok: false, error: 'bad_request' }, 400)
     const adm = admissionNo.trim().toLowerCase()
-    const { data: pre } = await admin.rpc('ss_parent_pin_precheck', {
+    const { data: login } = await admin.rpc('ss_student_cloud_login', {
       p_school_id: parentSchool,
       p_admission_no: adm,
+      p_pin: pin,
     })
-    if (pre && pre.locked) {
-      return json({ ok: false, error: 'locked', locked_until: pre.locked_until ?? null }, 423)
-    }
-    // ilike is only a case-insensitive prefilter: escape its wildcards and
-    // verify the exact (trimmed, lowercased) match in code, so an admission
-    // number containing % or _ can never match another student.
-    const admEsc = adm.replace(/[\\%_]/g, (ch) => '\\' + ch)
-    const { data: stuRaw } = await admin
-      .from('ss_students')
-      .select('id, admission_no, parent_pin')
-      .eq('school_id', parentSchool)
-      .ilike('admission_no', admEsc)
-      .limit(5)
-    const stu = (stuRaw || []).find(
-      (row) => String(row.admission_no || '').trim().toLowerCase() === adm,
-    )
-    if (!stu || !(await pinMatches(stu.parent_pin || '', pin))) {
-      // Only real students count toward lockout (same rule as the login RPC:
-      // unknown admission numbers never record an attempt).
-      if (stu) {
-        const { data: fail } = await admin.rpc('ss_parent_pin_failed', {
-          p_school_id: parentSchool,
-          p_admission_no: adm,
-        })
-        if (fail && fail.locked) {
-          return json({ ok: false, error: 'locked', locked_until: fail.locked_until ?? null }, 423)
-        }
-      }
+    if (!login || typeof login !== 'object') {
       return json({ ok: false, error: 'unauthorized' }, 401)
     }
-    await admin.rpc('ss_parent_pin_ok', { p_school_id: parentSchool, p_admission_no: adm })
+    if (login.locked) {
+      return json({ ok: false, error: 'locked', locked_until: login.locked_until ?? null }, 423)
+    }
+    if (!login.ok || !login.student || !login.student.id) {
+      return json({ ok: false, error: 'unauthorized' }, 401)
+    }
     schoolId = parentSchool
     // A parent may only ever see their own child's photo.
-    if (action === 'student' && stu.id !== studentId) {
+    if (action === 'student' && login.student.id !== studentId) {
       return json({ ok: false, error: 'not_allowed' }, 403)
     }
     if (action === 'school') return json({ ok: false, error: 'not_allowed' }, 403)
