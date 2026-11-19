@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 136;
+var APP_VERSION = 137;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -306,6 +306,65 @@ function sbUploadSchoolLogo(dataUrl) {
   if (!schoolId) return Promise.resolve(null);
   if (!sbSyncActive() || !sbIsOnline()) return Promise.resolve(null);
   return sbUploadImage('school-logos', schoolId + '/logo.png', dataUrl);
+}
+// v137 (photo privacy): role-verified signed photo URLs from the
+// photo-url edge function (supabase/functions/photo-url). While the
+// function is absent (404) every helper resolves null and the app keeps
+// the public-URL fallback, so shipping the app before the function is
+// safe. Signed URLs are cached by their ORIGINAL public URL, in memory
+// only, and never persisted — an expired entry just falls back to the
+// stored URL.
+var SB_PHOTO_FN = SB_URL + '/functions/v1/photo-url';
+var sbSignedPhotoCache = {};
+function sbIsSbPhotoUrl(u) { return typeof u === 'string' && u.indexOf(SB_URL + '/storage/v1/object/public/') === 0; }
+function sbCacheSignedPhoto(orig, signed, secs) {
+  if (!orig || !signed) return;
+  var ms = (typeof secs === 'number' && secs > 60 ? secs : 300) * 1000;
+  sbSignedPhotoCache[orig] = { url: signed, exp: Date.now() + ms - 30000 };
+}
+function sbSignedPhotoFor(u) {
+  var c = u ? sbSignedPhotoCache[u] : null;
+  return (c && c.exp > Date.now()) ? c.url : null;
+}
+function sbDisplayPhoto(u) { return sbIsSbPhotoUrl(u) ? (sbSignedPhotoFor(u) || u) : u; }
+function sbPhotoSignRequest(body, bearer) {
+  if (typeof fetch !== 'function') return Promise.resolve(null);
+  var headers = { 'apikey': SB_ANON_KEY, 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (bearer || SB_ANON_KEY) };
+  return sbFetchWithTimeout(SB_PHOTO_FN, { method: 'POST', headers: headers, body: JSON.stringify(body) }).then(function (res) {
+    if (!res || !res.ok) return null;
+    return res.json().then(function (d) { return (d && d.ok) ? d : null; }).catch(function () { return null; });
+  }).catch(function () { return null; });
+}
+// Owner batch re-mint: one call signs the logo + every student photo of
+// the caller's school; results are cached under their public URLs.
+function sbRefreshSignedPhotos() {
+  try {
+    if (!sbSyncActive() || !sbIsOnline()) return;
+    sbGetValidToken().then(function (token) {
+      if (!token) return;
+      sbPhotoSignRequest({ action: 'school' }, token).then(function (d) {
+        if (!d || !d.urls) return;
+        var sid = sbSchoolIdForUpload(); if (!sid) return;
+        Object.keys(d.urls).forEach(function (k) {
+          var orig = (k === 'logo') ? sbStoragePublicUrl('school-logos', sid + '/logo.png') : sbStoragePublicUrl('student-photos', sid + '/' + k + '.jpg');
+          sbCacheSignedPhoto(orig, d.urls[k], d.expires_in);
+        });
+        if (typeof renderPage === 'function') renderPage();
+      });
+    });
+  } catch (e) {}
+}
+// Cloud student/parent login: the payload's photo_url is exchanged for a
+// signed URL while the PIN is still in scope (POST body only, never a
+// query string, never stored). A missing function keeps the public URL.
+function sbPrefetchCloudPhoto(payload, serverId, adm, pin) {
+  try {
+    var stu = payload && payload.student;
+    if (!stu || !stu.id || !sbIsSbPhotoUrl(stu.photo_url) || stu.photo_data_url) return;
+    sbPhotoSignRequest({ action: 'student', student_id: stu.id, school_id: serverId, admission_no: adm, pin: pin }).then(function (d) {
+      if (d && d.url) { sbCacheSignedPhoto(stu.photo_url, d.url, d.expires_in); if (typeof renderPage === 'function') renderPage(); }
+    });
+  } catch (e) {}
 }
 // Fire-and-forget wrappers for the save paths. The save itself NEVER
 // waits for the upload (the admission/settings forms stay synchronous,
@@ -2547,6 +2606,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
       if (p.photoUrl) s.photoUrl = p.photoUrl;
     });
   })();
+  sbRefreshSignedPhotos(); // v137: re-mint signed URLs for any photos this pull filled
   var oldTeachers = d.teachers || [];
   d.teachers = mergeById('ss_teachers', d.teachers || [], byTable.ss_teachers || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [], deleted: !!row.deleted }; });
   // v117 (Module 4): merge-keep for a removed teacher — a local removal
@@ -5308,11 +5368,11 @@ function jsAttr(s) { return esc(JSON.stringify(String(s == null ? '' : s))); }
 function initialsOf(name) { return String(name || '').split(' ').filter(function (w) { return w; }).map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase(); }
 function avatarHTML(photo, name, cls) {
   var c = cls || 'avatar';
-  if (photo) return '<span class="' + c + ' has-photo"><img src="' + esc(photo) + '" alt=""></span>';
+  if (photo) return '<span class="' + c + ' has-photo"><img src="' + esc(sbDisplayPhoto(photo)) + '" alt=""></span>';
   return '<span class="' + c + '">' + esc(initialsOf(name)) + '</span>';
 }
 function photoPrevHTML(photo, name) {
-  if (photo) return '<img class="photo-prev" src="' + esc(photo) + '" alt="">';
+  if (photo) return '<img class="photo-prev" src="' + esc(sbDisplayPhoto(photo)) + '" alt="">';
   return '<span class="photo-prev">' + esc(initialsOf(name)) + '</span>';
 }
 function fitWithin(w, h, max) {
@@ -6909,6 +6969,7 @@ function doStudentCloudLogin(serverId, adm, pin, err) {
     }
     var slice = mapCloudStudentPayload(res);
     var me = slice.students[0];
+    sbPrefetchCloudPhoto(res, serverId, adm, pin);
     var acct = { role: 'student', name: me.name, sub: t('stuSub') + ' • ' + me.name, email: 'cloud-student:' + serverId + ':' + me.id, uid: 'cloud-student-' + me.id, studentId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
     err.classList.add('hidden');
     loginCloudStudent(acct, slice);
@@ -7127,6 +7188,7 @@ function doParentCloudLogin(serverId, adm, pin, err) {
     }
     var slice = mapCloudStudentPayload(res);
     var me = slice.students[0];
+    sbPrefetchCloudPhoto(res, serverId, adm, pin);
     var acct = { role: 'parent', name: me.name, sub: t('parentSub') + ' • ' + me.name, email: 'cloud-parent:' + serverId + ':' + me.id, uid: 'cloud-parent-' + me.id, studentId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
     err.classList.add('hidden');
     // v114: a cloud success clears the server counter too (with the PIN
@@ -7179,7 +7241,14 @@ function sbTeacherStudentPhoto(token, studentServerId) {
   _photoBody.p_token = token;
   _photoBody.p_student_id = studentServerId;
   return sbRest('POST', 'rpc/ss_teacher_student_photo', SB_ANON_KEY, _photoBody).then(function (r) {
-    return (r && r.ok && r.data && typeof r.data === 'object' && r.data.ok) ? (r.data.photo_data_url || r.data.photo_url || null) : null;
+    var got = (r && r.ok && r.data && typeof r.data === 'object' && r.data.ok) ? (r.data.photo_data_url || r.data.photo_url || null) : null;
+    // v137: a Storage URL is exchanged for a role-verified signed URL
+    // (the edge function re-checks the teacher token and class scope).
+    if (!got || !sbIsSbPhotoUrl(got)) return got;
+    return sbPhotoSignRequest({ action: 'student', student_id: studentServerId, teacher_token: token }).then(function (d) {
+      if (d && d.url) { sbCacheSignedPhoto(got, d.url, d.expires_in); return d.url; }
+      return got;
+    });
   }).catch(function () { return null; });
 }
 // v97 (cons fix): audit rows for cloud writes. A cloud teacher's
