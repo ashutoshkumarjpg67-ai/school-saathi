@@ -7672,7 +7672,7 @@ function v28hcall(html, fn, want, name) { const r = hcallCheck(html, fn, want); 
   const fn = readRel('supabase/functions/photo-url/index.ts');
   v28ok(fn.includes('createSignedUrl') && fn.includes('SIGN_TTL_SECONDS'), 'v137: edge function mints short-TTL signed URLs');
   v28ok(fn.includes("schoolId + '/' + studentId + '.jpg'") && !fn.includes('body.path'), 'v137: object paths are server-derived, never caller-supplied');
-  v28ok(fn.includes('ss_parent_pin_precheck') && fn.includes('ss_parent_pin_failed') && fn.includes('ss_parent_pin_ok'), 'v137: parent PIN verification reuses the SQL 36 lockout RPCs');
+  v28ok(fn.includes('ss_student_cloud_login') && fn.includes('p_pin: pin'), 'v138: parent PIN verification delegates to the live login RPC (bcrypt$/s256$/legacy + the login lockout)');
   v28ok(fn.includes('ss_teacher_sessions') && fn.includes('expires_at'), 'v137: teacher tokens are checked for expiry and revocation');
   v28ok(fn.includes("Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')") && !fn.includes('searchParams'), 'v137: service role key is env-only and no credentials come from the query string');
   v28ok(fn.includes('not_allowed'), 'v137: cross-scope requests are refused (403 not_allowed)');
