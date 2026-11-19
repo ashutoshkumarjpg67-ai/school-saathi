@@ -4,8 +4,8 @@
 -- is_ss_admin() returns true when auth.uid() is one of them. The app
 -- needs to ask "am I a Super Admin?" after a school-tab login, so this
 -- file adds a thin callable wrapper with explicit grants.
--- The Super Admin row for ashutoshkumarjpg67@gmail.com
--- (uid f245699a-f0fa-4ec7-9812-8c56f013c08e) is already seeded
+-- The Super Admin row for the platform owner account
+-- is already seeded
 -- (BACKEND_PLAN.md bootstrap). This file does NOT insert it again.
 -- Run ONLY against the School Saathi project (bsjqeeeemwimzldrehpw).
 -- Idempotent: safe to re-run.
