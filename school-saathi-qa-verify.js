@@ -7663,6 +7663,7 @@ function v28hcall(html, fn, want, name) { const r = hcallCheck(html, fn, want); 
 // staged manual step.
 (function () {
   v28ok(src.includes("var SB_PHOTO_FN = SB_URL + '/functions/v1/photo-url';"), 'v137: app calls the photo-url edge function endpoint');
+  v28ok(src.includes("var SB_PUB_KEY = 'sb_publishable_") && src.includes("'apikey': SB_PUB_KEY") && src.includes("Bearer ' + (bearer || SB_PUB_KEY)"), 'v138: function calls use the publishable key (the gateway rejects the legacy anon key)');
   v28ok(src.includes('function sbDisplayPhoto(u) { return sbIsSbPhotoUrl(u) ? (sbSignedPhotoFor(u) || u) : u; }'), 'v137: photo display resolves signed URLs with the public-URL fallback');
   v28ok((src.match(/esc[(]sbDisplayPhoto[(]photo[)][)]/g) || []).length === 2, 'v137: both avatar renderers go through sbDisplayPhoto');
   v28ok(src.includes("sbPhotoSignRequest({ action: 'student', student_id: studentServerId, teacher_token: token })"), 'v137: teacher photo fetch exchanges for a signed URL with the teacher token');
