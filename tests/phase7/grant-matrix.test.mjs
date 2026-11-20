@@ -177,7 +177,7 @@ describe('SECURITY DEFINER hygiene (static)', () => {
 
   it('every SECURITY DEFINER function sets search_path (no search_path-hijack hole)', () => {
     const blocks = fnBlocks();
-    assert.equal(blocks.length, 60, 'expected 60 CREATE FUNCTION blocks in SQL 01-52'); // v130: SQL 44 redefines ss_staff_cloud_login; v135: SQL 46 (+2), 47 (+1), 48 (+2); v141: SQL 52 (+3)
+    assert.equal(blocks.length, 61, 'expected 61 CREATE FUNCTION blocks in SQL 01-53'); // v130: SQL 44 redefines ss_staff_cloud_login; v135: SQL 46 (+2), 47 (+1), 48 (+2); v141: SQL 52 (+3); SQL 53 (+1, ss_public_schools redefined)
     for (const { name, head } of blocks) {
       if (/security definer/i.test(head)) {
         assert.match(head, /set search_path/i, `${name}: SECURITY DEFINER without search_path`);
