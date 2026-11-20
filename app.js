@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 138;
+var APP_VERSION = 140;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -342,6 +342,22 @@ function sbPhotoSignRequest(body, bearer) {
 function sbRefreshSignedPhotos() {
   try {
     if (!sbSyncActive() || !sbIsOnline()) return;
+    // v140 (photo privacy): a cloud staff/principal session re-mints through
+    // its staff token (action 'school'); the function scopes the batch like
+    // the login payload (principal: whole school, staff: own classes,
+    // accountant: refused). No JWT is involved, so no bearer is sent.
+    if (state.cloudStaffToken && state.user && state.user.cloud && state.role !== 'accountant') {
+      sbPhotoSignRequest({ action: 'school', staff_token: state.cloudStaffToken }).then(function (d) {
+        if (!d || !d.urls) return;
+        var sid = state.user.schoolServerId; if (!sid) return;
+        Object.keys(d.urls).forEach(function (k) {
+          var orig = (k === 'logo') ? sbStoragePublicUrl('school-logos', sid + '/logo.png') : sbStoragePublicUrl('student-photos', sid + '/' + k + '.jpg');
+          sbCacheSignedPhoto(orig, d.urls[k], d.expires_in);
+        });
+        if (typeof renderApp === 'function') renderApp(); // v140: re-render so staff avatars pick up the signed URLs
+      });
+      return;
+    }
     sbGetValidToken().then(function (token) {
       if (!token) return;
       sbPhotoSignRequest({ action: 'school' }, token).then(function (d) {
@@ -351,7 +367,7 @@ function sbRefreshSignedPhotos() {
           var orig = (k === 'logo') ? sbStoragePublicUrl('school-logos', sid + '/logo.png') : sbStoragePublicUrl('student-photos', sid + '/' + k + '.jpg');
           sbCacheSignedPhoto(orig, d.urls[k], d.expires_in);
         });
-        if (typeof renderPage === 'function') renderPage();
+        if (typeof renderApp === 'function') renderApp(); // v139: renderApp so the sidebar logo picks up the signed URL too
       });
     });
   } catch (e) {}
@@ -364,7 +380,7 @@ function sbPrefetchCloudPhoto(payload, serverId, adm, pin) {
     var stu = payload && payload.student;
     if (!stu || !stu.id || !sbIsSbPhotoUrl(stu.photo_url) || stu.photo_data_url) return;
     sbPhotoSignRequest({ action: 'student', student_id: stu.id, school_id: serverId, admission_no: adm, pin: pin }).then(function (d) {
-      if (d && d.url) { sbCacheSignedPhoto(stu.photo_url, d.url, d.expires_in); if (typeof renderPage === 'function') renderPage(); }
+      if (d && d.url) { sbCacheSignedPhoto(stu.photo_url, d.url, d.expires_in); if (typeof renderApp === 'function') renderApp(); } // v139: renderApp so the sidebar avatar picks up the signed URL too
     });
   } catch (e) {}
 }
@@ -6541,6 +6557,7 @@ function restoreSession() {
           db = cloudS.slice; DB_KEY = 'schoolSaathiCloudDB';
           showView('app'); renderApp();
           persistSession();
+          sbRefreshSignedPhotos(); // v140: staff photos sign through the staff token
           return Promise.resolve(true);
         }
       } catch (e3) {}
@@ -7523,6 +7540,7 @@ function loginCloudStaff(acct, slice, token) {
   try { sessSet(CLOUD_STAFF_KEY, JSON.stringify({ acct: acct, slice: slice, token: token })); } catch (e) {}
   showView('app'); renderApp();
   persistSession();
+  sbRefreshSignedPhotos(); // v140: staff photos sign through the staff token
   lastBackAt = 0; histExiting = false;
   histArmGuard();
   toast(t('tLoggedIn') + ' ' + acct.name);
@@ -7703,7 +7721,7 @@ function principalDashboard() {
     '<div class="tile orange"><div class="n">₹' + ft.collected + '</div><div class="l">' + t('feeCollected') + '</div></div>' +
     '<div class="tile red"><div class="n">₹' + ft.pending + '</div><div class="l">' + t('pendingFee') + '</div></div>' +
     '</div>' +
-    '<div class="card" style="margin-top:16px"><h3>' + t('todayAtt') + '</h3><p class="card-sub">' + st.avgAtt + '% ' + t('tileAtt') + ' • ' + db.students.length + ' ' + t('studentsW') + '</p>' + // v88b: studentStats returns avgAtt, not att (the live check showed "undefined%")
+    '<div class="card" style="margin-top:16px"><h3>' + t('todayAtt') + '</h3><p class="card-sub">' + (ta.total ? donutPct(ta.present, ta.total) + '% ' + t('presBtn') : t('attNotMarked')) + ' • ' + db.students.length + ' ' + t('studentsW') + '</p>' + // v139: subtitle matches the donut (today), not the all-time average — the old avgAtt subtitle contradicted the donut centre whenever today differed from the average
     donutSVG([{ value: ta.present, color: GREEN, label: t('presBtn'), pct: donutPct(ta.present, ta.total) }, { value: ta.absent, color: RED, label: t('absBtn'), pct: donutPct(ta.absent, ta.total) }, { value: ta.late, color: ORANGE, label: t('lateBtn'), pct: donutPct(ta.late, ta.total) }], 190, donutPct(ta.present, ta.total) + '%', t('todayAtt')) + '</div>' +
     '<div class="card" style="margin-top:16px"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div>';
 }
@@ -8246,17 +8264,17 @@ function renderApp() {
   }).join('');
   var u = state.user;
   var me = (state.role === 'student' || state.role === 'parent') ? meStudent() : null; // v86: a parent's sidebar avatar is the child's photo too
-  var whoPhoto = me ? me.photo : null;
+  var whoPhoto = me ? sbDisplayPhoto(me.photo) : null; // v139: sidebar avatar goes through the signed-URL cache like every other avatar
   var schoolLogo = (db.profile && db.profile.logo) || null;
   var wa = $('whoAvatar');
-  if (schoolLogo) { wa.innerHTML = '<img src="' + esc(schoolLogo) + '" alt="">'; wa.classList.add('has-logo'); wa.classList.remove('has-photo'); }
+  if (schoolLogo) { wa.innerHTML = '<img src="' + esc(sbDisplayPhoto(schoolLogo)) + '" alt="">'; wa.classList.add('has-logo'); wa.classList.remove('has-photo'); } // v139: logo through the signed-URL cache
   else if (whoPhoto) { wa.innerHTML = '<img src="' + esc(whoPhoto) + '" alt="">'; wa.classList.add('has-photo'); wa.classList.remove('has-logo'); }
   else { wa.textContent = initialsOf(u.name); wa.classList.remove('has-photo'); wa.classList.remove('has-logo'); }
   $('whoName').textContent = u.name;
   $('whoRole').textContent = u.sub;
   var prof = db.profile;
   var bc = $('sideBrandCap');
-  if (bc) bc.innerHTML = prof.logo ? '<img class="side-logo" src="' + esc(prof.logo) + '" alt="">' : '🎓';
+  if (bc) bc.innerHTML = prof.logo ? '<img class="side-logo" src="' + esc(sbDisplayPhoto(prof.logo)) + '" alt="">' : '🎓'; // v139: signed-URL cache
   $('sideSchoolInfo').innerHTML = '<b style="color:#fff">' + esc(prof.name) + '</b><br>' + esc(prof.city) + ', Bihar';
   var sess = $('sessionSel');
   if (!sess.options.length) {

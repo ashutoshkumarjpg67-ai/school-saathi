@@ -12,6 +12,10 @@
 //             as ss_teacher_student_photo (SQL 24/29): the student must be
 //             in the teacher's school AND in one of the teacher's classes;
 //             expired/removed sessions are refused (revocation = row gone).
+//   staff   - a ss_staff_sessions token (body.staff_token). Scope mirrors
+//             the ss_staff_cloud_login payload (SQL 30): principals may
+//             sign the whole school, class-scoped staff their classes,
+//             accountants nothing.
 //   parent  — school_id + admission_no + pin (body). Verified by calling
 //             the live ss_student_cloud_login RPC (SQL 17/23), so bcrypt$,
 //             s256$ and legacy PINs all verify exactly as at login, with the
@@ -93,8 +97,32 @@ serve(async (req) => {
   const parentSchool = typeof body.school_id === 'string' ? body.school_id : ''
   const admissionNo = typeof body.admission_no === 'string' ? body.admission_no : ''
   const pin = typeof body.pin === 'string' ? body.pin.replace(/\D/g, '') : ''
+  const staffToken = typeof body.staff_token === 'string' ? body.staff_token : ''
 
-  if (teacherToken) {
+  if (staffToken) {
+    // ---- staff/principal: session token, expiry and revocation checked
+    // live; scope mirrors the ss_staff_cloud_login payload (SQL 30).
+    if (!UUID_RE.test(staffToken)) return json({ ok: false, error: 'unauthorized' }, 401)
+    const { data: sess } = await admin
+      .from('ss_staff_sessions')
+      .select('staff_id, school_id, expires_at')
+      .eq('token', staffToken)
+      .maybeSingle()
+    if (!sess || new Date(sess.expires_at).getTime() <= Date.now()) {
+      return json({ ok: false, error: 'bad_token' }, 401)
+    }
+    const { data: staff } = await admin
+      .from('ss_staff')
+      .select('role, classes, deleted')
+      .eq('id', sess.staff_id)
+      .maybeSingle()
+    if (!staff || staff.deleted) return json({ ok: false, error: 'bad_token' }, 401)
+    // Accountants never receive photo_url in their login payload, so they
+    // get no photo access here either.
+    if (staff.role === 'accountant') return json({ ok: false, error: 'not_allowed' }, 403)
+    schoolId = sess.school_id
+    classScope = staff.role === 'staff' ? (Array.isArray(staff.classes) ? staff.classes : []) : null
+  } else if (teacherToken) {
     // ---- teacher: session token, expiry and revocation checked live ----
     if (!UUID_RE.test(teacherToken)) return json({ ok: false, error: 'unauthorized' }, 401)
     const { data: sess } = await admin
@@ -203,16 +231,18 @@ serve(async (req) => {
     return json({ ok: true, url: signed, expires_in: SIGN_TTL_SECONDS }, 200)
   }
 
-  // action 'school' (owner only): logo + every student photo of the school.
+  // action 'school': logo + student photos of the school, filtered to
+  // the caller's class scope when one applies (owner/principal: all).
   const out: Record<string, string> = {}
   const logo = await sign(LOGO_BUCKET, schoolId + '/logo.png')
   if (logo) out['logo'] = logo
   const { data: students } = await admin
     .from('ss_students')
-    .select('id, photo_url')
+    .select('id, cls, photo_url')
     .eq('school_id', schoolId)
     .not('photo_url', 'is', null)
   for (const row of students || []) {
+    if (classScope && !(row.cls && classScope.includes(row.cls))) continue
     const path = photoPathFromUrl(row.photo_url)
     if (!path) continue
     const signed = await sign(PHOTO_BUCKET, path)

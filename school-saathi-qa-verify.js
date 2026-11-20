@@ -5806,6 +5806,24 @@ const test = `
   var pd88b = principalDashboard();
   ok(pd88b.indexOf('undefined') === -1, 'v88b: the principal dashboard never shows undefined');
   ok(pd88b.indexOf('%') !== -1, 'v88b: the principal dashboard shows the attendance percentage');
+  // ---- v139: the principal dashboard's Today card must not mix the
+  // all-time average subtitle (st.avgAtt) with today's donut. The subtitle
+  // always mirrors today's donut percentage (or Not marked when nothing is
+  // marked today), never the all-time average.
+  var ta139 = todayAtt();
+  var pd139 = principalDashboard();
+  var want139 = ta139.total ? donutPct(ta139.present, ta139.total) + '% ' + t('presBtn') : t('attNotMarked');
+  ok(pd139.indexOf(want139) !== -1, 'v139: principal Today card subtitle mirrors the donut state today');
+  ok(pd139.indexOf('% ' + t('tileAtt')) === -1, 'v139: principal Today card drops the all-time-average subtitle');
+  var att139k = todayIST() + '|' + riya88.cls;
+  db.attendance = db.attendance || {};
+  var att139had = db.attendance[att139k] && db.attendance[att139k][riya88.id];
+  db.attendance[att139k] = db.attendance[att139k] || {};
+  db.attendance[att139k][riya88.id] = 'Present';
+  var ta139b = todayAtt();
+  var pd139b = principalDashboard();
+  ok(pd139b.indexOf(donutPct(ta139b.present, ta139b.total) + '% ' + t('presBtn')) !== -1, 'v139: principal Today card subtitle tracks the donut when attendance changes');
+  if (att139had) db.attendance[att139k][riya88.id] = att139had; else delete db.attendance[att139k][riya88.id];
   // (2) The top crumb for a principal said "Teacher Dashboard" — the
   // v87 parent branch did not cover the principal.
   eq(t('principalDash'), 'Principal Dashboard', 'v88b: the principal dashboard label exists');
@@ -7677,6 +7695,18 @@ function v28hcall(html, fn, want, name) { const r = hcallCheck(html, fn, want); 
   v28ok((fn.match(/action === 'school'\) return json\(\{ ok: false, error: 'not_allowed' \}, 403\)/g) || []).length === 2, 'v139: action=school is owner-only — both the teacher and the parent branches refuse it');
   v28ok(fn.includes("Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')") && !fn.includes('searchParams'), 'v137: service role key is env-only and no credentials come from the query string');
   v28ok(fn.includes('not_allowed'), 'v137: cross-scope requests are refused (403 not_allowed)');
+  v28ok(src.includes('var whoPhoto = me ? sbDisplayPhoto(me.photo) : null;'), 'v139: sidebar avatar goes through the signed-URL cache');
+  v28ok(src.includes('esc(sbDisplayPhoto(schoolLogo))') && src.includes('esc(sbDisplayPhoto(prof.logo))'), 'v139: topbar and sidebar logos go through the signed-URL cache');
+  v28ok(src.includes('sbCacheSignedPhoto(stu.photo_url, d.url, d.expires_in); if (typeof renderApp'), 'v139: parent/student photo sign re-renders the whole shell');
+  v28ok(src.includes('if (typeof renderApp === \'function\') renderApp(); // v139: renderApp so the sidebar logo picks up the signed URL too'), 'v139: owner batch sign re-renders the whole shell');
+  v28ok(fn.includes('ss_staff_sessions') && fn.includes(".from('ss_staff')") && fn.includes('staff_token'), 'v140: staff/principal tokens verify against ss_staff_sessions with expiry and revocation');
+  v28ok(fn.includes("staff.role === 'accountant'") && fn.includes("classScope = staff.role === 'staff'"), 'v140: accountants get no photos; class-scoped staff keep their class scope');
+  v28ok(fn.includes('if (classScope && !(row.cls && classScope.includes(row.cls))) continue'), 'v140: batch school signing filters to the class scope');
+  v28ok(src.includes("sbPhotoSignRequest({ action: 'school', staff_token: state.cloudStaffToken })"), 'v140: staff sessions re-mint signed URLs with the staff token');
+  v28ok(src.includes("state.cloudStaffToken && state.user && state.user.cloud && state.role !== 'accountant'"), 'v140: the app never asks for photos in an accountant session');
+  v28ok((src.match(/sbRefreshSignedPhotos[(][)]; \/\/ v140: staff photos sign through the staff token/g) || []).length === 2, 'v140: staff login AND staff session restore both re-mint signed URLs');
+  const sql51 = readRel('supabase/51_staff_photo_fn_grants.sql');
+  v28ok(sql51.includes('grant select on public.ss_staff, public.ss_staff_sessions to service_role'), 'v140: SQL 51 grants the function service_role access to staff sessions');
   const sql49 = readRel('supabase/49_private_photo_buckets.sql');
   v28ok(sql49.includes('set public = false') && sql49.includes('DO NOT RUN'), 'v137: SQL 49 flips both buckets private as a staged manual step');
 })();
