@@ -351,7 +351,7 @@ function sbRefreshSignedPhotos() {
           var orig = (k === 'logo') ? sbStoragePublicUrl('school-logos', sid + '/logo.png') : sbStoragePublicUrl('student-photos', sid + '/' + k + '.jpg');
           sbCacheSignedPhoto(orig, d.urls[k], d.expires_in);
         });
-        if (typeof renderPage === 'function') renderPage();
+        if (typeof renderApp === 'function') renderApp(); // v139: renderApp so the sidebar logo picks up the signed URL too
       });
     });
   } catch (e) {}
@@ -364,7 +364,7 @@ function sbPrefetchCloudPhoto(payload, serverId, adm, pin) {
     var stu = payload && payload.student;
     if (!stu || !stu.id || !sbIsSbPhotoUrl(stu.photo_url) || stu.photo_data_url) return;
     sbPhotoSignRequest({ action: 'student', student_id: stu.id, school_id: serverId, admission_no: adm, pin: pin }).then(function (d) {
-      if (d && d.url) { sbCacheSignedPhoto(stu.photo_url, d.url, d.expires_in); if (typeof renderPage === 'function') renderPage(); }
+      if (d && d.url) { sbCacheSignedPhoto(stu.photo_url, d.url, d.expires_in); if (typeof renderApp === 'function') renderApp(); } // v139: renderApp so the sidebar avatar picks up the signed URL too
     });
   } catch (e) {}
 }
@@ -8246,17 +8246,17 @@ function renderApp() {
   }).join('');
   var u = state.user;
   var me = (state.role === 'student' || state.role === 'parent') ? meStudent() : null; // v86: a parent's sidebar avatar is the child's photo too
-  var whoPhoto = me ? me.photo : null;
+  var whoPhoto = me ? sbDisplayPhoto(me.photo) : null; // v139: sidebar avatar goes through the signed-URL cache like every other avatar
   var schoolLogo = (db.profile && db.profile.logo) || null;
   var wa = $('whoAvatar');
-  if (schoolLogo) { wa.innerHTML = '<img src="' + esc(schoolLogo) + '" alt="">'; wa.classList.add('has-logo'); wa.classList.remove('has-photo'); }
+  if (schoolLogo) { wa.innerHTML = '<img src="' + esc(sbDisplayPhoto(schoolLogo)) + '" alt="">'; wa.classList.add('has-logo'); wa.classList.remove('has-photo'); } // v139: logo through the signed-URL cache
   else if (whoPhoto) { wa.innerHTML = '<img src="' + esc(whoPhoto) + '" alt="">'; wa.classList.add('has-photo'); wa.classList.remove('has-logo'); }
   else { wa.textContent = initialsOf(u.name); wa.classList.remove('has-photo'); wa.classList.remove('has-logo'); }
   $('whoName').textContent = u.name;
   $('whoRole').textContent = u.sub;
   var prof = db.profile;
   var bc = $('sideBrandCap');
-  if (bc) bc.innerHTML = prof.logo ? '<img class="side-logo" src="' + esc(prof.logo) + '" alt="">' : '🎓';
+  if (bc) bc.innerHTML = prof.logo ? '<img class="side-logo" src="' + esc(sbDisplayPhoto(prof.logo)) + '" alt="">' : '🎓'; // v139: signed-URL cache
   $('sideSchoolInfo').innerHTML = '<b style="color:#fff">' + esc(prof.name) + '</b><br>' + esc(prof.city) + ', Bihar';
   var sess = $('sessionSel');
   if (!sess.options.length) {
