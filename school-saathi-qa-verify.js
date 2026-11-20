@@ -5806,6 +5806,24 @@ const test = `
   var pd88b = principalDashboard();
   ok(pd88b.indexOf('undefined') === -1, 'v88b: the principal dashboard never shows undefined');
   ok(pd88b.indexOf('%') !== -1, 'v88b: the principal dashboard shows the attendance percentage');
+  // ---- v139: the principal dashboard's Today card must not mix the
+  // all-time average subtitle (st.avgAtt) with today's donut. The subtitle
+  // always mirrors today's donut percentage (or Not marked when nothing is
+  // marked today), never the all-time average.
+  var ta139 = todayAtt();
+  var pd139 = principalDashboard();
+  var want139 = ta139.total ? donutPct(ta139.present, ta139.total) + '% ' + t('presBtn') : t('attNotMarked');
+  ok(pd139.indexOf(want139) !== -1, 'v139: principal Today card subtitle mirrors the donut state today');
+  ok(pd139.indexOf('% ' + t('tileAtt')) === -1, 'v139: principal Today card drops the all-time-average subtitle');
+  var att139k = todayIST() + '|' + riya88.cls;
+  db.attendance = db.attendance || {};
+  var att139had = db.attendance[att139k] && db.attendance[att139k][riya88.id];
+  db.attendance[att139k] = db.attendance[att139k] || {};
+  db.attendance[att139k][riya88.id] = 'Present';
+  var ta139b = todayAtt();
+  var pd139b = principalDashboard();
+  ok(pd139b.indexOf(donutPct(ta139b.present, ta139b.total) + '% ' + t('presBtn')) !== -1, 'v139: principal Today card subtitle tracks the donut when attendance changes');
+  if (att139had) db.attendance[att139k][riya88.id] = att139had; else delete db.attendance[att139k][riya88.id];
   // (2) The top crumb for a principal said "Teacher Dashboard" — the
   // v87 parent branch did not cover the principal.
   eq(t('principalDash'), 'Principal Dashboard', 'v88b: the principal dashboard label exists');
