@@ -16,6 +16,10 @@
 //             the ss_staff_cloud_login payload (SQL 30): principals may
 //             sign the whole school, class-scoped staff their classes,
 //             accountants nothing.
+//   parent  - a ss_parent_sessions token (body.parent_token, SQL 52):
+//             re-mints ONLY the one student the PIN login verified, so a
+//             parent session survives signed-URL expiry without the app
+//             ever keeping the PIN.
 //   parent  — school_id + admission_no + pin (body). Verified by calling
 //             the live ss_student_cloud_login RPC (SQL 17/23), so bcrypt$,
 //             s256$ and legacy PINs all verify exactly as at login, with the
@@ -65,6 +69,12 @@ function json(body: Record<string, unknown>, status: number): Response {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+// SQL 52 stores only the SHA-256 of a parent session token.
+async function sha256hex(s: string): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s))
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
   if (req.method !== 'POST') return json({ ok: false, error: 'method' }, 405)
@@ -98,8 +108,24 @@ serve(async (req) => {
   const admissionNo = typeof body.admission_no === 'string' ? body.admission_no : ''
   const pin = typeof body.pin === 'string' ? body.pin.replace(/\D/g, '') : ''
   const staffToken = typeof body.staff_token === 'string' ? body.staff_token : ''
+  const parentToken = typeof body.parent_token === 'string' ? body.parent_token : ''
 
-  if (staffToken) {
+  if (parentToken) {
+    // ---- parent session (SQL 52): 30-day revocable token; expiry and
+    // revocation checked live; signs only the login-verified student.
+    if (!UUID_RE.test(parentToken)) return json({ ok: false, error: 'unauthorized' }, 401)
+    const { data: sess } = await admin
+      .from('ss_parent_sessions')
+      .select('student_id, school_id, expires_at')
+      .eq('token_hash', await sha256hex(parentToken))
+      .maybeSingle()
+    if (!sess || new Date(sess.expires_at).getTime() <= Date.now()) {
+      return json({ ok: false, error: 'bad_token' }, 401)
+    }
+    schoolId = sess.school_id
+    if (action === 'school') return json({ ok: false, error: 'not_allowed' }, 403)
+    if (sess.student_id !== studentId) return json({ ok: false, error: 'not_allowed' }, 403)
+  } else if (staffToken) {
     // ---- staff/principal: session token, expiry and revocation checked
     // live; scope mirrors the ss_staff_cloud_login payload (SQL 30).
     if (!UUID_RE.test(staffToken)) return json({ ok: false, error: 'unauthorized' }, 401)

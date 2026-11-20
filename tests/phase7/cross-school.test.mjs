@@ -51,6 +51,7 @@ const RPC_ONLY_TABLES = [
   'ss_school_login_attempts',
   'ss_staff_login_attempts',
   'ss_staff_sessions',
+  'ss_parent_sessions', // v141: SQL 52 - RPC-only like the other session tables, no policies by design
   'ss_student_login_attempts',
   'ss_teacher_login_attempts',
   'ss_teacher_sessions',
@@ -68,7 +69,7 @@ function policyTables() {
 describe('RLS shape (static, from repo SQL files)', () => {
   it('RLS is enabled on every table (27 tables, files 01-42)', () => {
     const tables = allTables();
-    assert.equal(tables.length, 27, `expected 27 ss_ tables, got ${tables.length}: ${tables.join(', ')}`);
+    assert.equal(tables.length, 28, `expected 28 ss_ tables, got ${tables.length}: ${tables.join(', ')}`); // v141: + ss_parent_sessions (SQL 52)
     const enabled = [...new Set([...sqlCode.matchAll(/alter table public\.(ss_[a-z_0-9]+)\s+enable row level security/gi)].map((m) => m[1]))].sort();
     for (const t of tables) assert.ok(enabled.includes(t), `${t}: RLS not enabled`);
   });

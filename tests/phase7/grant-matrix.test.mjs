@@ -87,8 +87,8 @@ const EXPECTED_PUBLIC = [
 ];
 
 describe('grant matrix (from repo SQL 01-39)', () => {
-  it('33 RPCs exist in the repo (roadmap Appendix C listed 20 at v67)', () => {
-    assert.equal(MATRIX.size, 34, [...MATRIX.keys()].sort().join(', ')); // v135: + ss_is_listable_school (SQL 46)
+  it('36 RPCs exist in the repo (roadmap Appendix C listed 20 at v67)', () => {
+    assert.equal(MATRIX.size, 37, [...MATRIX.keys()].sort().join(', ')); // v141: + ss_parent_session_open, ss_parent_revoke_session, ss_parent_sessions_pin_wipe (SQL 52)
   });
 
   it('PUBLIC execute remains only on the trigger function (SQL 39 closed the other 7)', () => {
@@ -177,7 +177,7 @@ describe('SECURITY DEFINER hygiene (static)', () => {
 
   it('every SECURITY DEFINER function sets search_path (no search_path-hijack hole)', () => {
     const blocks = fnBlocks();
-    assert.equal(blocks.length, 57, 'expected 57 CREATE FUNCTION blocks in SQL 01-48'); // v130: SQL 44 redefines ss_staff_cloud_login; v135: SQL 46 (+2), 47 (+1), 48 (+2)
+    assert.equal(blocks.length, 60, 'expected 60 CREATE FUNCTION blocks in SQL 01-52'); // v130: SQL 44 redefines ss_staff_cloud_login; v135: SQL 46 (+2), 47 (+1), 48 (+2); v141: SQL 52 (+3)
     for (const { name, head } of blocks) {
       if (/security definer/i.test(head)) {
         assert.match(head, /set search_path/i, `${name}: SECURITY DEFINER without search_path`);
