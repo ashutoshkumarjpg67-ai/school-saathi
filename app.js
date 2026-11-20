@@ -342,16 +342,19 @@ function sbPhotoSignRequest(body, bearer) {
 // v141: signed URLs live 5 minutes; re-mint every 4 so an idle logged-in
 // page keeps a valid signed URL after the bucket flip (all roles - the
 // dispatcher inside picks staff token, parent token, or owner JWT).
-var sbPhotoReMintTimer = null;
-function sbStartPhotoReMint() {
-  if (sbPhotoReMintTimer || typeof setInterval !== 'function') return;
-  sbPhotoReMintTimer = setInterval(function () {
-    try {
-      if (!state.user) return;
-      if (!sbSyncActive() || !sbIsOnline()) return;
-      sbRefreshSignedPhotos();
-    } catch (e) {}
-  }, 240000);
+// v141: re-minting rides the existing 30s sync tick (one interval per
+// session - the v32 invariant): a tick more than 240s after the last
+// mint refreshes, so an idle logged-in page keeps a valid signed URL.
+function sbPhotoReMintTick() {
+  try {
+    if (typeof state === 'undefined' || !state.user) return;
+    if (!sbIsOnline()) return;
+    if (!sbSyncActive() && !state.cloudTeacherToken && !state.cloudParentToken && !state.cloudStaffToken) return;
+    var soon = Date.now() + 90000;
+    for (var k in sbSignedPhotoCache) {
+      if (sbSignedPhotoCache[k] && sbSignedPhotoCache[k].exp < soon) { sbRefreshSignedPhotos(); return; }
+    }
+  } catch (e) {}
 }
 // v141: a backgrounded tab suspends timers; re-mint when the page comes
 // back to the foreground so a resumed page never renders an expired URL.
@@ -367,7 +370,6 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 function sbRefreshSignedPhotos() {
   try {
-    sbStartPhotoReMint();
     if (!sbSyncActive() || !sbIsOnline()) return;
     // v141 (photo privacy): a parent/student session re-mints its ONE
     // student photo through the SQL 52 session token - the PIN is long
@@ -3100,6 +3102,7 @@ function sbSyncBackgroundTick() {
 }
 function sbSyncAutoTick() {
   sbSyncBackgroundTick();
+  sbPhotoReMintTick(); // v141: re-mint due signed photos on the same tick
 }
 function sbSyncAutoStart() {
   if (sbSyncIntervalId) return; // idempotent: one interval per session
