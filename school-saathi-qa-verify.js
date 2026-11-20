@@ -7687,8 +7687,8 @@ function v28hcall(html, fn, want, name) { const r = hcallCheck(html, fn, want); 
 (function () {
   v28ok(src.includes("var SB_PHOTO_FN = SB_URL + '/functions/v1/photo-url';"), 'v137: app calls the photo-url edge function endpoint');
   v28ok(src.includes("var SB_PUB_KEY = 'sb_publishable_") && src.includes("'apikey': SB_PUB_KEY") && src.includes("Bearer ' + (bearer || SB_PUB_KEY)"), 'v138: function calls use the publishable key (the gateway rejects the legacy anon key)');
-  v28ok(src.includes('function sbDisplayPhoto(u) { return sbIsSbPhotoUrl(u) ? (sbSignedPhotoFor(u) || u) : u; }'), 'v137: photo display resolves signed URLs with the public-URL fallback');
-  v28ok((src.match(/esc[(]sbDisplayPhoto[(]photo[)][)]/g) || []).length === 2, 'v137: both avatar renderers go through sbDisplayPhoto');
+  v28ok(src.includes("return u.indexOf('/object/public/student-photos/') !== -1 ? '' : u;"), 'v137+v145: photo display resolves signed URLs first; an unsigned STUDENT photo yields empty (private bucket can never load) while other buckets keep the public-URL fallback');
+  v28ok((src.match(/sbDisplayPhoto[(]photo[)]/g) || []).length === 2, 'v137: both avatar renderers go through sbDisplayPhoto');
   v28ok(src.includes("sbPhotoSignRequest({ action: 'student', student_id: studentServerId, teacher_token: token })"), 'v137: teacher photo fetch exchanges for a signed URL with the teacher token');
   v28ok((src.match(/sbPrefetchCloudPhoto[(]res, serverId, adm, pin[)]/g) || []).length === 2, 'v137: cloud student AND parent logins prefetch a signed photo URL');
   v28ok(src.includes('sbRefreshSignedPhotos();') && src.includes("action: 'school'"), 'v137: owner sync re-mints signed URLs in one batch call');
@@ -9941,6 +9941,15 @@ async function v28run() {
       v28ok(sbCalls[0].body.teacher_token === 'ttok-142' && sbCalls[0].body.student_id === 'srv-stu-t1', 'v142: the teacher due re-mint carries the teacher token and a slice student');
       v28ok(sbCalls.every(function (c) { return c.url.indexOf('/rest/v1/') === -1; }), 'v142: a teacher tick never touches REST either');
       v28eq(ctx.sbSignedPhotoCache[SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg'].sid, 'srv-stu-t1', 'v144: the re-minted cache entry keeps its student id for the next round');
+      // v145: post-flip display fallback - an unsigned student-photos public URL can never load (private bucket), so the display helper yields '' and avatars fall back to initials; school-logos stays public and keeps its fallback
+      ctx.sbSignedPhotoCache = {};
+      v28eq(ctx.sbDisplayPhoto(SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg'), '', 'v145: an unsigned student-photos URL displays as nothing (private bucket), never a guaranteed-broken public URL');
+      var av145 = ctx.avatarHTML(SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg', 'T Kid');
+      v28ok(av145.indexOf('<img') === -1 && av145.indexOf('has-photo') === -1, 'v145: an unsigned private photo falls back to initials, not a broken img');
+      ctx.sbCacheSignedPhoto(SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg', SB_URL + '/storage/v1/object/sign/student-photos/sch1/t1.jpg?token=abc145', 300, 'srv-stu-t1');
+      v28eq(ctx.sbDisplayPhoto(SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg'), SB_URL + '/storage/v1/object/sign/student-photos/sch1/t1.jpg?token=abc145', 'v145: a signed cache entry still wins for a student photo');
+      v28ok(ctx.avatarHTML(SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg', 'T Kid').indexOf('/object/sign/') !== -1, 'v145: the avatar renders the signed URL when the cache has one');
+      v28eq(ctx.sbDisplayPhoto(SB_URL + '/storage/v1/object/public/school-logos/sch1/logo.png'), SB_URL + '/storage/v1/object/public/school-logos/sch1/logo.png', 'v145: school-logos stays public - its unsigned URL still displays (dashboard, receipts, ID cards)');
     } finally {
       sbPhotoFnLive = false;
       ctx.sbSyncAutoStop();
