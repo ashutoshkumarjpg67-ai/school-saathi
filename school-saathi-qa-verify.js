@@ -9891,16 +9891,16 @@ async function v28run() {
     try {
       ctx.sbSyncAutoStop();
       const t0 = ctx.__timers.length;
-      // a parent session exactly as loginCloudStudent leaves it (v142: the slice student carries srvId)
-      ctx.state.role = 'parent';
-      ctx.state.user = { role: 'parent', name: 'QA Parent', email: 'cloud-parent:srv-school-1:stu-p1', studentId: 'stu-p1', cloud: true };
-      ctx.state.sb = null;
-      ctx.state.cloudParentToken = 'ptok-142'; ctx.state.cloudTeacherToken = null; ctx.state.cloudStaffToken = null;
-      ctx.db = { students: [{ id: 'stu-p1', srvId: 'srv-stu-p1', name: 'QA Kid', cls: '9th-B', photo: SB_URL + '/storage/v1/object/public/student-photos/sch1/p1.jpg' }] };
+      ctx.state.sb = null; ctx.state.cloudTeacherToken = null; ctx.state.cloudStaffToken = null;
       ctx.sbSignedPhotoCache = {};
       sbCalls = [];
-      ctx.sbRefreshSignedPhotos(); // the login/restore entry point
-      v28eq(ctx.__timers.length, t0 + 1, 'v142: a parent session that signs photos starts the shared 30s tick');
+      ctx.loginCloudStudent({ role: 'parent', name: 'QA Parent', email: 'cloud-parent:srv-school-1:stu-p1', studentId: 'stu-p1', cloud: true },
+        { students: [{ id: 'stu-p1', srvId: 'srv-stu-p1', name: 'QA Kid', cls: '9th-B', photo: SB_URL + '/storage/v1/object/public/student-photos/sch1/p1.jpg' }] },
+        { token: 'ptok-142', silent: true });
+      v28eq(ctx.__timers.length, t0 + 1, 'v142: a fresh parent login starts the shared 30s tick');
+      v28ok(ctx.state.cloudParentToken === 'ptok-142' && ctx.db.students[0].srvId === 'srv-stu-p1', 'v142: the parent login carries the photo token and the slice student srvId');
+      sbCalls = [];
+      ctx.sbRefreshSignedPhotos(); // the restore entry point
       v28eq(ctx.__timers[ctx.__timers.length - 1].ms, 30000, 'v142: the shared tick stays 30 seconds');
       await new Promise(function (r) { setTimeout(r, 0); });
       await new Promise(function (r) { setTimeout(r, 0); });
@@ -9926,10 +9926,10 @@ async function v28run() {
       v28ok(sbCalls[0].url.indexOf('/functions/v1/photo-url') !== -1 && sbCalls[0].body.parent_token === 'ptok-142' && sbCalls[0].body.student_id === 'srv-stu-p1', 'v142: the due re-mint stays parent-token + own-student scoped');
       v28ok(sbCalls.every(function (c) { return c.url.indexOf('/rest/v1/') === -1; }), 'v142: a parent tick never touches REST (no push, no write, no broader read)');
       // teacher session: same tick, teacher token, class-slice students
-      ctx.state.role = 'teacher';
-      ctx.state.user = { role: 'teacher', name: 'QA Teach', email: 'cloud-teacher:srv-school-1:t1', teacherId: 't1', cloud: true };
-      ctx.state.cloudParentToken = null; ctx.state.cloudTeacherToken = 'ttok-142';
-      ctx.db = { students: [{ id: 'stu-t1', srvId: 'srv-stu-t1', name: 'T Kid', cls: '10th-A', photo: SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg' }] };
+      ctx.loginCloudTeacher({ role: 'teacher', name: 'QA Teach', email: 'cloud-teacher:srv-school-1:t1', teacherId: 't1', cloud: true },
+        { students: [{ id: 'stu-t1', srvId: 'srv-stu-t1', name: 'T Kid', cls: '10th-A', photo: SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg' }] }, 'ttok-142', { silent: true });
+      v28eq(ctx.__timers.length, t0 + 1, 'v142: a fresh teacher login keeps exactly the one shared tick');
+      ctx.state.cloudParentToken = null;
       ctx.sbSignedPhotoCache = {};
       ctx.sbSignedPhotoCache[SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg'] = { url: 'old-signed', exp: Date.now() - 1000 }; // already expired: due for the tick AND re-signed by the teacher branch
       sbCalls = [];
