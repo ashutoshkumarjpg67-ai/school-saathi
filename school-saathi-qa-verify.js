@@ -7710,7 +7710,7 @@ function v28hcall(html, fn, want, name) { const r = hcallCheck(html, fn, want); 
   v28ok(fn.includes('ss_parent_sessions') && fn.includes('parent_token'), 'v141: parent session tokens verify against ss_parent_sessions with expiry and revocation');
   v28ok(fn.includes('if (sess.student_id !== studentId) return json({ ok: false, error: \'not_allowed\' }, 403)'), 'v141: a parent token signs only the login-verified student');
   v28ok(src.includes('rpc/ss_parent_session_open'), 'v141: parent/student login opens a SQL 52 photo session (PIN verification still delegated)');
-  v28ok(src.includes('state.cloudParentToken = (opts && opts.token) || null;') && src.includes('token: state.cloudParentToken }),'), 'v141: the photo session token lives in state + the sessionStorage snapshot, never the PIN');
+  v28ok(src.includes('state.cloudParentToken = (opts && opts.token) || null;') && src.includes('token: state.cloudParentToken })'), 'v141: the photo session token lives in state + the sessionStorage snapshot, never the PIN');
   v28ok(src.includes('sbPhotoSignRequest({ action: \'student\', student_id: pme.srvId, parent_token: state.cloudParentToken })'), 'v141: parent photos re-mint with the session token');
   v28ok(src.includes('if (state.cloudParentToken) { try { sbParentRevokeSession(state.cloudParentToken); } catch (e9) {} }'), 'v141: logout revokes the parent photo session');
   v28ok(src.includes('sv.role === \'parent\' && typeof sv.email === \'string\' && sv.email.indexOf(\'cloud-parent:\') === 0'), 'v141: cloud parent sessions restore with their token');
