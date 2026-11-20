@@ -353,6 +353,18 @@ function sbStartPhotoReMint() {
     } catch (e) {}
   }, 240000);
 }
+// v141: a backgrounded tab suspends timers; re-mint when the page comes
+// back to the foreground so a resumed page never renders an expired URL.
+if (typeof document !== 'undefined' && document.addEventListener) {
+  document.addEventListener('visibilitychange', function () {
+    try { if (!document.hidden && typeof sbRefreshSignedPhotos === 'function') sbRefreshSignedPhotos(); } catch (e) {}
+  });
+}
+if (typeof window !== 'undefined' && window.addEventListener) {
+  window.addEventListener('focus', function () {
+    try { if (typeof sbRefreshSignedPhotos === 'function') sbRefreshSignedPhotos(); } catch (e) {}
+  });
+}
 function sbRefreshSignedPhotos() {
   try {
     sbStartPhotoReMint();
@@ -367,6 +379,17 @@ function sbRefreshSignedPhotos() {
           if (d && d.url) { sbCacheSignedPhoto(pme.photo, d.url, d.expires_in); if (typeof renderApp === 'function') renderApp(); }
         });
       }
+      return;
+    }
+    // v141: a cloud teacher re-signs the photos they have viewed (the
+    // slice only carries photos fetched on demand, so this stays small).
+    if (state.cloudTeacherToken && state.user && state.user.cloud) {
+      (db.students || []).forEach(function (s) {
+        if (!s.srvId || !sbIsSbPhotoUrl(s.photo) || sbSignedPhotoFor(s.photo)) return;
+        sbPhotoSignRequest({ action: 'student', student_id: s.srvId, teacher_token: state.cloudTeacherToken }).then(function (d) {
+          if (d && d.url) { sbCacheSignedPhoto(s.photo, d.url, d.expires_in); if (typeof renderApp === 'function') renderApp(); }
+        });
+      });
       return;
     }
     // v140 (photo privacy): a cloud staff/principal session re-mints through
