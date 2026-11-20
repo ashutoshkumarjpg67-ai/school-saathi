@@ -6439,6 +6439,13 @@ const test = `
     }
     if (u.indexOf('ss_parent_pin_failed') !== -1) return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: true, locked: false, fails: 1 }); } });
     if (u.indexOf('ss_parent_pin_ok') !== -1) return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: true }); } });
+    if (u.indexOf('ss_parent_session_open') !== -1) {
+      // v145: the online local-school parent login opens a server session first.
+      var soBody = {};
+      try { soBody = JSON.parse(init.body || '{}'); } catch (e) {}
+      if (soBody.p_pin === '4321') return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: true, token: 'ptok-145', student: { id: 'srv-stu33', local_id: 'stu33', name: 'Riya99 Cloud', cls: '5th-A' }, exams: [], fees: [], attendance: [], homework: [], notices: [] }); } });
+      return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: false, locked: false }); } });
+    }
     if (u.indexOf('ss_parent_pin_reset_by_dob') !== -1) {
       try { resetBody99 = JSON.parse(init.body || '{}'); } catch (e) { resetBody99 = null; }
       if (resetBody99 && resetBody99.p_admission_no === 'ADM-LOCKED-99') return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: false, locked: true }); } });
@@ -6508,7 +6515,8 @@ const test = `
   $('parentErr').textContent = '';
   doParentLogin({ preventDefault: function () {} });
   await tick99(); await tick99(); await tick99(); await tick99();
-  eq(rpcCalls99.some(function (u) { return u.indexOf('ss_parent_pin_failed') !== -1; }), true, 'v99: a wrong local parent PIN records the failure on the server');
+  eq(rpcCalls99.some(function (u) { return u.indexOf('ss_parent_session_open') !== -1; }), true, 'v145: an online local-school parent login is verified on the server first');
+  eq(rpcCalls99.some(function (u) { return u.indexOf('ss_parent_pin_failed') !== -1; }), false, 'v145: a server-refused parent PIN is NOT double-counted through the local failure RPC (ss_student_cloud_login rate-limits internally)');
   eq($('parentErr').textContent, t('tInvalidStudent'), 'v99: a wrong local parent PIN shows the generic error');
   ok(state.role !== 'parent', 'v99: a wrong local parent PIN does not log in');
   rpcCalls99 = [];
@@ -6518,6 +6526,8 @@ const test = `
   await tick99(); await tick99(); await tick99(); await tick99();
   eq(state.role, 'parent', 'v99: the right local parent PIN logs in as parent');
   eq(state.user && state.user.studentId, 'stu33', 'v99: the parent session is tied to the one student');
+  eq(state.user && state.user.cloud, true, 'v145: an online local-school parent login is a server-verified CLOUD session (photo re-mint token in scope)');
+  eq(state.cloudParentToken, 'ptok-145', 'v145: the online parent login carries the SQL 52 re-mint token');
   eq(rpcCalls99.some(function (u) { return u.indexOf('ss_parent_pin_ok') !== -1; }), true, 'v99: a right local parent PIN clears the server counter');
   logout(); await waitLogout();
   rpcCalls99 = [];
@@ -7729,7 +7739,7 @@ function v28hcall(html, fn, want, name) { const r = hcallCheck(html, fn, want); 
   v28ok(src.includes('visibilitychange') && src.includes("window.addEventListener('focus'"), 'v141: foreground resume re-mints signed URLs (background tabs suspend timers)');
   v28ok(src.includes('sbCacheSignedPhoto(got, d.url, d.expires_in, studentServerId)') && src.includes('v144: re-mint the photos the teacher has actually viewed'), 'v144: teacher on-demand photo fetches tag the cache with the student id and the idle re-mint runs from the cache, not the photo-less slice');
   const sql49 = readRel('supabase/49_private_photo_buckets.sql');
-  v28ok(sql49.includes('set public = false') && sql49.includes('DO NOT RUN'), 'v137: SQL 49 flips both buckets private as a staged manual step');
+  v28ok(sql49.includes("id = 'student-photos'") && sql49.includes('set public = false') && sql49.includes('school-logos INTENTIONALLY STAYS PUBLIC') && sql49.includes('set public = true'), 'v145: SQL 49 flips ONLY student-photos private, keeps school-logos public (unsigned logo renders) and documents the emergency rollback');
 })();
 const tick = () => new Promise(r => setTimeout(r, 0));
 // B3 (harness fix): logout() is async (flush-then-clear) — a test that
