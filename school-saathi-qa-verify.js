@@ -6439,6 +6439,13 @@ const test = `
     }
     if (u.indexOf('ss_parent_pin_failed') !== -1) return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: true, locked: false, fails: 1 }); } });
     if (u.indexOf('ss_parent_pin_ok') !== -1) return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: true }); } });
+    if (u.indexOf('ss_parent_session_open') !== -1) {
+      // v145: the online local-school parent login opens a server session first.
+      var soBody = {};
+      try { soBody = JSON.parse(init.body || '{}'); } catch (e) {}
+      if (soBody.p_pin === '4321') return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: true, token: 'ptok-145', student: { id: 'srv-stu33', local_id: 'stu33', name: 'Riya99 Cloud', cls: '5th-A' }, exams: [], fees: [], attendance: [], homework: [], notices: [] }); } });
+      return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: false, locked: false }); } });
+    }
     if (u.indexOf('ss_parent_pin_reset_by_dob') !== -1) {
       try { resetBody99 = JSON.parse(init.body || '{}'); } catch (e) { resetBody99 = null; }
       if (resetBody99 && resetBody99.p_admission_no === 'ADM-LOCKED-99') return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: false, locked: true }); } });
@@ -6508,7 +6515,8 @@ const test = `
   $('parentErr').textContent = '';
   doParentLogin({ preventDefault: function () {} });
   await tick99(); await tick99(); await tick99(); await tick99();
-  eq(rpcCalls99.some(function (u) { return u.indexOf('ss_parent_pin_failed') !== -1; }), true, 'v99: a wrong local parent PIN records the failure on the server');
+  eq(rpcCalls99.some(function (u) { return u.indexOf('ss_parent_session_open') !== -1; }), true, 'v145: an online local-school parent login is verified on the server first');
+  eq(rpcCalls99.some(function (u) { return u.indexOf('ss_parent_pin_failed') !== -1; }), false, 'v145: a server-refused parent PIN is NOT double-counted through the local failure RPC (ss_student_cloud_login rate-limits internally)');
   eq($('parentErr').textContent, t('tInvalidStudent'), 'v99: a wrong local parent PIN shows the generic error');
   ok(state.role !== 'parent', 'v99: a wrong local parent PIN does not log in');
   rpcCalls99 = [];
@@ -6518,6 +6526,8 @@ const test = `
   await tick99(); await tick99(); await tick99(); await tick99();
   eq(state.role, 'parent', 'v99: the right local parent PIN logs in as parent');
   eq(state.user && state.user.studentId, 'stu33', 'v99: the parent session is tied to the one student');
+  eq(state.user && state.user.cloud, true, 'v145: an online local-school parent login is a server-verified CLOUD session (photo re-mint token in scope)');
+  eq(state.cloudParentToken, 'ptok-145', 'v145: the online parent login carries the SQL 52 re-mint token');
   eq(rpcCalls99.some(function (u) { return u.indexOf('ss_parent_pin_ok') !== -1; }), true, 'v99: a right local parent PIN clears the server counter');
   logout(); await waitLogout();
   rpcCalls99 = [];
@@ -7687,8 +7697,8 @@ function v28hcall(html, fn, want, name) { const r = hcallCheck(html, fn, want); 
 (function () {
   v28ok(src.includes("var SB_PHOTO_FN = SB_URL + '/functions/v1/photo-url';"), 'v137: app calls the photo-url edge function endpoint');
   v28ok(src.includes("var SB_PUB_KEY = 'sb_publishable_") && src.includes("'apikey': SB_PUB_KEY") && src.includes("Bearer ' + (bearer || SB_PUB_KEY)"), 'v138: function calls use the publishable key (the gateway rejects the legacy anon key)');
-  v28ok(src.includes('function sbDisplayPhoto(u) { return sbIsSbPhotoUrl(u) ? (sbSignedPhotoFor(u) || u) : u; }'), 'v137: photo display resolves signed URLs with the public-URL fallback');
-  v28ok((src.match(/esc[(]sbDisplayPhoto[(]photo[)][)]/g) || []).length === 2, 'v137: both avatar renderers go through sbDisplayPhoto');
+  v28ok(src.includes("return u.indexOf('/object/public/student-photos/') !== -1 ? '' : u;"), 'v137+v145: photo display resolves signed URLs first; an unsigned STUDENT photo yields empty (private bucket can never load) while other buckets keep the public-URL fallback');
+  v28ok((src.match(/sbDisplayPhoto[(]photo[)]/g) || []).length === 2, 'v137: both avatar renderers go through sbDisplayPhoto');
   v28ok(src.includes("sbPhotoSignRequest({ action: 'student', student_id: studentServerId, teacher_token: token })"), 'v137: teacher photo fetch exchanges for a signed URL with the teacher token');
   v28ok((src.match(/sbPrefetchCloudPhoto[(]res, serverId, adm, pin[)]/g) || []).length === 2, 'v137: cloud student AND parent logins prefetch a signed photo URL');
   v28ok(src.includes('sbRefreshSignedPhotos();') && src.includes("action: 'school'"), 'v137: owner sync re-mints signed URLs in one batch call');
@@ -7729,7 +7739,7 @@ function v28hcall(html, fn, want, name) { const r = hcallCheck(html, fn, want); 
   v28ok(src.includes('visibilitychange') && src.includes("window.addEventListener('focus'"), 'v141: foreground resume re-mints signed URLs (background tabs suspend timers)');
   v28ok(src.includes('sbCacheSignedPhoto(got, d.url, d.expires_in, studentServerId)') && src.includes('v144: re-mint the photos the teacher has actually viewed'), 'v144: teacher on-demand photo fetches tag the cache with the student id and the idle re-mint runs from the cache, not the photo-less slice');
   const sql49 = readRel('supabase/49_private_photo_buckets.sql');
-  v28ok(sql49.includes('set public = false') && sql49.includes('DO NOT RUN'), 'v137: SQL 49 flips both buckets private as a staged manual step');
+  v28ok(sql49.includes("id = 'student-photos'") && sql49.includes('set public = false') && sql49.includes('school-logos INTENTIONALLY STAYS PUBLIC') && sql49.includes('set public = true'), 'v145: SQL 49 flips ONLY student-photos private, keeps school-logos public (unsigned logo renders) and documents the emergency rollback');
 })();
 const tick = () => new Promise(r => setTimeout(r, 0));
 // B3 (harness fix): logout() is async (flush-then-clear) — a test that
@@ -9941,6 +9951,15 @@ async function v28run() {
       v28ok(sbCalls[0].body.teacher_token === 'ttok-142' && sbCalls[0].body.student_id === 'srv-stu-t1', 'v142: the teacher due re-mint carries the teacher token and a slice student');
       v28ok(sbCalls.every(function (c) { return c.url.indexOf('/rest/v1/') === -1; }), 'v142: a teacher tick never touches REST either');
       v28eq(ctx.sbSignedPhotoCache[SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg'].sid, 'srv-stu-t1', 'v144: the re-minted cache entry keeps its student id for the next round');
+      // v145: post-flip display fallback - an unsigned student-photos public URL can never load (private bucket), so the display helper yields '' and avatars fall back to initials; school-logos stays public and keeps its fallback
+      ctx.sbSignedPhotoCache = {};
+      v28eq(ctx.sbDisplayPhoto(SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg'), '', 'v145: an unsigned student-photos URL displays as nothing (private bucket), never a guaranteed-broken public URL');
+      var av145 = ctx.avatarHTML(SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg', 'T Kid');
+      v28ok(av145.indexOf('<img') === -1 && av145.indexOf('has-photo') === -1, 'v145: an unsigned private photo falls back to initials, not a broken img');
+      ctx.sbCacheSignedPhoto(SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg', SB_URL + '/storage/v1/object/sign/student-photos/sch1/t1.jpg?token=abc145', 300, 'srv-stu-t1');
+      v28eq(ctx.sbDisplayPhoto(SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg'), SB_URL + '/storage/v1/object/sign/student-photos/sch1/t1.jpg?token=abc145', 'v145: a signed cache entry still wins for a student photo');
+      v28ok(ctx.avatarHTML(SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg', 'T Kid').indexOf('/object/sign/') !== -1, 'v145: the avatar renders the signed URL when the cache has one');
+      v28eq(ctx.sbDisplayPhoto(SB_URL + '/storage/v1/object/public/school-logos/sch1/logo.png'), SB_URL + '/storage/v1/object/public/school-logos/sch1/logo.png', 'v145: school-logos stays public - its unsigned URL still displays (dashboard, receipts, ID cards)');
     } finally {
       sbPhotoFnLive = false;
       ctx.sbSyncAutoStop();

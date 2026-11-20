@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 144;
+var APP_VERSION = 145;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -327,7 +327,17 @@ function sbSignedPhotoFor(u) {
   var c = u ? sbSignedPhotoCache[u] : null;
   return (c && c.exp > Date.now()) ? c.url : null;
 }
-function sbDisplayPhoto(u) { return sbIsSbPhotoUrl(u) ? (sbSignedPhotoFor(u) || u) : u; }
+function sbDisplayPhoto(u) {
+  if (!sbIsSbPhotoUrl(u)) return u;
+  var signed = sbSignedPhotoFor(u);
+  if (signed) return signed;
+  // v145: student-photos is a PRIVATE bucket (scoped SQL 49 flip) - an
+  // unsigned public URL can only render as a broken image there, so the
+  // caller gets '' and falls back to initials. school-logos stays public
+  // (dashboard / receipts / ID cards render it without a signing session),
+  // so its public fallback still loads.
+  return u.indexOf('/object/public/student-photos/') !== -1 ? '' : u;
+}
 function sbPhotoSignRequest(body, bearer) {
   if (typeof fetch !== 'function') return Promise.resolve(null);
   // v138: the functions gateway requires the publishable key (the legacy anon JWT is rejected there). Owner calls still send the user's JWT as the bearer; teacher/parent calls use the publishable key.
@@ -5451,11 +5461,13 @@ function jsAttr(s) { return esc(JSON.stringify(String(s == null ? '' : s))); }
 function initialsOf(name) { return String(name || '').split(' ').filter(function (w) { return w; }).map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase(); }
 function avatarHTML(photo, name, cls) {
   var c = cls || 'avatar';
-  if (photo) return '<span class="' + c + ' has-photo"><img src="' + esc(sbDisplayPhoto(photo)) + '" alt=""></span>';
+  var u = photo ? sbDisplayPhoto(photo) : ''; // v145: '' when the photo is an unsigned private-bucket URL
+  if (u) return '<span class="' + c + ' has-photo"><img src="' + esc(u) + '" alt=""></span>';
   return '<span class="' + c + '">' + esc(initialsOf(name)) + '</span>';
 }
 function photoPrevHTML(photo, name) {
-  if (photo) return '<img class="photo-prev" src="' + esc(sbDisplayPhoto(photo)) + '" alt="">';
+  var u = photo ? sbDisplayPhoto(photo) : ''; // v145
+  if (u) return '<img class="photo-prev" src="' + esc(u) + '" alt="">';
   return '<span class="photo-prev">' + esc(initialsOf(name)) + '</span>';
 }
 function fitWithin(w, h, max) {
@@ -6930,6 +6942,20 @@ function sbStudentCloudLogin(serverId, adm, pin) {
     return r.data;
   }).catch(function () { return null; });
 }
+// v145: the envelope-preserving variant, so an online caller can tell a
+// network-level failure (fall back to the local login, offline-honest)
+// from a server-side auth refusal (show it; never retry the PIN locally,
+// never double-count the server lockout).
+function sbParentSessionOpenRaw(serverId, adm, pin) {
+  return sbRest('POST', 'rpc/ss_parent_session_open', SB_ANON_KEY, { p_school_id: serverId, p_admission_no: adm, p_pin: pin }).then(function (r) {
+    // sbRest wraps the HTTP layer; the RPC payload (ok/token/student/
+    // locked) is r.data. An HTTP-level failure reaches the caller as
+    // env null, NOT as netfail - only a fetch failure is a network
+    // failure, and only a network failure may fall back to the local
+    // login.
+    return { netfail: false, env: (r && r.data && typeof r.data === 'object') ? r.data : null };
+  }).catch(function () { return { netfail: true, env: null }; });
+}
 // v63: server-side rate limit for the SCHOOL login (SQL 19). The school
 // password is verified by GoTrue, which only rate-limits per IP — it has
 // no per-account attempt counter. These RPCs hold the per-account lock:
@@ -7119,7 +7145,26 @@ function doParentLogin(e) {
         err.classList.remove('hidden');
         return;
       }
-      doParentLocalLogin(schoolUid, srvId, adm, pin, err);
+      // v145: an online, server-linked parent login becomes the
+      // server-verified cloud parent session (SQL 52 token -> signed
+      // photos that re-mint), so the on-school-device parent view keeps
+      // photos after the student-photos bucket flip. A server-side
+      // refusal (wrong PIN / locked) is shown as-is and never retried
+      // locally; only a NETWORK failure falls back to the local login
+      // (offline-honest: cached photo bytes if the device holds them,
+      // initials otherwise).
+      sbParentSessionOpenRaw(srvId, adm, pin).then(function (r2) {
+        if (r2 && !r2.netfail && r2.env && r2.env.ok && r2.env.student) { finishParentCloudLogin(srvId, adm, pin, r2.env, err); return; }
+        if (r2 && !r2.netfail) {
+          // A server answer - a refusal, a lock, or an HTTP-level error
+          // after sbRest's bounded retries - is shown as-is and is never
+          // retried against the local PIN check (no double lockout).
+          err.textContent = t(r2.env && r2.env.locked ? 'tPinLocked' : 'tInvalidStudent');
+          err.classList.remove('hidden');
+          return;
+        }
+        doParentLocalLogin(schoolUid, srvId, adm, pin, err);
+      }).catch(function () { doParentLocalLogin(schoolUid, srvId, adm, pin, err); });
     }).catch(function () { doParentLocalLogin(schoolUid, srvId, adm, pin, err); });
     return false;
   }
@@ -7297,16 +7342,22 @@ function doParentCloudLogin(serverId, adm, pin, err) {
       err.classList.remove('hidden');
       return;
     }
-    var slice = mapCloudStudentPayload(res);
-    var me = slice.students[0];
-    sbPrefetchCloudPhoto(res, serverId, adm, pin);
-    var acct = { role: 'parent', name: me.name, sub: t('parentSub') + ' • ' + me.name, email: 'cloud-parent:' + serverId + ':' + me.id, uid: 'cloud-parent-' + me.id, studentId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
-    err.classList.add('hidden');
-    // v114: a cloud success clears the server counter too (with the PIN
-    // just verified as proof) - the cloud path never did this before.
-    sbParentPinOk(serverId, adm, pin);
-    loginCloudStudent(acct, slice, { role: 'parent', token: res.token });
+    finishParentCloudLogin(serverId, adm, pin, res, err);
   });
+}
+// v145: shared tail of the cloud parent login (the cloud: school picker
+// and the online local-school path both end here). The PIN exists only
+// inside this call chain and is never persisted anywhere.
+function finishParentCloudLogin(serverId, adm, pin, res, err) {
+  var slice = mapCloudStudentPayload(res);
+  var me = slice.students[0];
+  sbPrefetchCloudPhoto(res, serverId, adm, pin);
+  var acct = { role: 'parent', name: me.name, sub: t('parentSub') + ' • ' + me.name, email: 'cloud-parent:' + serverId + ':' + me.id, uid: 'cloud-parent-' + me.id, studentId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
+  err.classList.add('hidden');
+  // v114: a cloud success clears the server counter too (with the PIN
+  // just verified as proof) - the cloud path never did this before.
+  sbParentPinOk(serverId, adm, pin);
+  loginCloudStudent(acct, slice, { role: 'parent', token: res.token });
 }
 // v62: teacher cloud login (SQL 18). Unlike students, teachers WRITE —
 // attendance, homework and marks go through token-authenticated RPCs,
