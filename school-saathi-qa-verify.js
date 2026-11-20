@@ -7714,7 +7714,7 @@ function v28hcall(html, fn, want, name) { const r = hcallCheck(html, fn, want); 
   v28ok(src.includes('sbPhotoSignRequest({ action: \'student\', student_id: pme.srvId, parent_token: state.cloudParentToken })'), 'v141: parent photos re-mint with the session token');
   v28ok(src.includes('if (state.cloudParentToken) { try { sbParentRevokeSession(state.cloudParentToken); } catch (e9) {} }'), 'v141: logout revokes the parent photo session');
   v28ok(src.includes('sv.role === \'parent\' && typeof sv.email === \'string\' && sv.email.indexOf(\'cloud-parent:\') === 0'), 'v141: cloud parent sessions restore with their token');
-  v28ok(src.includes('sbPhotoReMintTimer = setInterval') && src.includes('}, 240000);'), 'v141: a 4-minute re-mint timer keeps signed URLs valid on idle pages');
+  v28ok(src.includes('sbPhotoReMintTick(); // v141: re-mint due signed photos on the same tick') && src.includes('sbSignedPhotoCache[k].exp < soon'), 'v141: the 30s sync tick re-mints a signed photo before its 5-minute URL expires on idle pages (one interval per session)');
   const sql52 = readRel('supabase/52_parent_photo_sessions.sql');
   v28ok(sql52.includes('v_login := public.ss_student_cloud_login(p_school_id, p_admission_no, p_pin)') && sql52.includes('grant select on public.ss_parent_sessions to service_role'), 'v141: SQL 52 delegates PIN verification to the live login RPC and grants service_role session reads');
   v28ok(sql52.includes('token_hash text primary key') && sql52.includes("extensions.digest(v_token::text, 'sha256')"), 'v141: parent session tokens are unguessable uuids stored as SHA-256 hashes only');
