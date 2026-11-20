@@ -7385,6 +7385,7 @@ let sbNowMs = Date.parse('2026-11-09T06:00:00Z');
 function sbNowISO() { sbNowMs += 1000; return new Date(sbNowMs).toISOString(); }
 const sbServer = { ss_schools: [], ss_students: [], ss_fee_records: [], ss_fee_structure: [], ss_attendance: [], ss_receipts: [], ss_audit_log: [], ss_activities: [], ss_teachers: [], ss_exams: [], ss_marks: [], ss_homework: [], ss_notices: [], ss_holidays: [], ss_platform_admins: [], ss_admission_requests: [], ss_support_requests: [], ss_staff: [], ss_classes: [] }; // v90: the mock server has the ss_staff table (SQL 30 created it live); v100: ss_holidays (SQL 38); v119: ss_classes (SQL 42)
 let sbSeq = 0;
+let sbPhotoFnLive = false; // v142: the photo-url mock answers only while a photo test arms it, so older flows keep the 404 path
 let sbSignupMode = 'ok'; // v34: 'ok' | 'rate-limit' | 'exists' — drives the mocked GoTrue signup
 let sbSuperAdminMode = 'ok'; // v137: 'ok' | 'error' — drives the mocked ss_is_super_admin verdict RPC
 let sbRefreshFail = false; // v34: when true the mocked refresh token is rejected (400)
@@ -7464,6 +7465,10 @@ function sbMockFetch(url, init) {
   if (u.indexOf('/auth/v1/user') !== -1 && method === 'PUT') return Promise.resolve(sbJsonRes(200, { id: 'sb-uid-x', email: 'x@school.in' }));
   if (u.indexOf('/auth/v1/user') !== -1 && method === 'GET') return Promise.resolve(sbJsonRes(200, { id: 'sb-uid-x', email: 'x@school.in' }));
   if (u.indexOf('/auth/v1/logout') !== -1) return Promise.resolve(sbJsonRes(204, null));
+  if (u.indexOf('/functions/v1/photo-url') !== -1) {
+    if (!sbPhotoFnLive) return Promise.resolve(sbJsonRes(404, { message: 'not mocked: ' + u }));
+    return Promise.resolve(sbJsonRes(200, { ok: true, url: SB_URL + '/storage/v1/object/sign/student-photos/mock-' + (++sbSeq) + '.jpg?token=mocktok' + sbSeq, expires_in: 300 }));
+  }
   // v33: the atomic numbering RPCs. They read the school row, return the
   // counter value as the next number, and increment it — exactly like
   // the live ss_next_adm_no / ss_next_receipt_no (which also lock the
@@ -9873,6 +9878,77 @@ async function v28run() {
   v28eq(c43c.done, true, 'v43 async: the cycle after a server-side change completes');
   v28ok(renderCalls43 > 0, 'v43 async: a pull that changes data still re-renders the page');
   v28eq(ctx.db.feeRecords.filter(function (r) { return r.id === 'fee-42-Oct'; })[0].amount, 900, 'v43 async: the changed fee amount arrived locally');
+
+  // ---- v142 runtime: the shared 30s tick drives photo re-mint safely in cloud roles ----
+  {
+    const saveUser = ctx.state.user, saveRole = ctx.state.role, saveSb = ctx.state.sb;
+    const savePT = ctx.state.cloudParentToken, saveTT = ctx.state.cloudTeacherToken, saveST = ctx.state.cloudStaffToken;
+    const saveDb = ctx.db, saveCache = ctx.sbSignedPhotoCache;
+    const saveRender = ctx.renderApp;
+    let renderCalls142 = 0;
+    ctx.renderApp = function () { renderCalls142++; };
+    sbPhotoFnLive = true;
+    try {
+      ctx.sbSyncAutoStop();
+      const t0 = ctx.__timers.length;
+      // a parent session exactly as loginCloudStudent leaves it (v142: the slice student carries srvId)
+      ctx.state.role = 'parent';
+      ctx.state.user = { role: 'parent', name: 'QA Parent', email: 'cloud-parent:srv-school-1:stu-p1', studentId: 'stu-p1', cloud: true };
+      ctx.state.sb = null;
+      ctx.state.cloudParentToken = 'ptok-142'; ctx.state.cloudTeacherToken = null; ctx.state.cloudStaffToken = null;
+      ctx.db = { students: [{ id: 'stu-p1', srvId: 'srv-stu-p1', name: 'QA Kid', cls: '9th-B', photo: SB_URL + '/storage/v1/object/public/student-photos/sch1/p1.jpg' }] };
+      ctx.sbSignedPhotoCache = {};
+      sbCalls = [];
+      ctx.sbRefreshSignedPhotos(); // the login/restore entry point
+      v28eq(ctx.__timers.length, t0 + 1, 'v142: a parent session that signs photos starts the shared 30s tick');
+      v28eq(ctx.__timers[ctx.__timers.length - 1].ms, 30000, 'v142: the shared tick stays 30 seconds');
+      await new Promise(function (r) { setTimeout(r, 0); });
+      await new Promise(function (r) { setTimeout(r, 0); });
+      v28eq(sbCalls.length, 1, 'v142: parent login re-mints through the photo function only (no sync calls)');
+      v28eq(sbCalls[0].body.action, 'student', 'v142: parent re-mint is the single-student action');
+      v28eq(sbCalls[0].body.parent_token, 'ptok-142', 'v142: parent re-mint carries the parent session token');
+      v28eq(sbCalls[0].body.student_id, 'srv-stu-p1', 'v142: parent re-mint targets the login-verified student srvId');
+      const tickFn142 = ctx.__timers[ctx.__timers.length - 1].fn;
+      // not due: a fresh cache entry must keep the tick silent
+      sbCalls = [];
+      tickFn142();
+      await new Promise(function (r) { setTimeout(r, 0); });
+      v28eq(sbCalls.length, 0, 'v142: a tick with no due photo makes zero server calls (no sync cycle in a parent session)');
+      // due: expiring within the 90s window re-mints once, still role-scoped
+      const cacheKey142 = Object.keys(ctx.sbSignedPhotoCache)[0];
+      v28ok(!!cacheKey142, 'v142: the login re-mint cached a signed URL');
+      ctx.sbSignedPhotoCache[cacheKey142].exp = Date.now() + 10000;
+      sbCalls = [];
+      tickFn142();
+      await new Promise(function (r) { setTimeout(r, 0); });
+      await new Promise(function (r) { setTimeout(r, 0); });
+      v28eq(sbCalls.length, 1, 'v142: a due tick re-mints exactly once');
+      v28ok(sbCalls[0].url.indexOf('/functions/v1/photo-url') !== -1 && sbCalls[0].body.parent_token === 'ptok-142' && sbCalls[0].body.student_id === 'srv-stu-p1', 'v142: the due re-mint stays parent-token + own-student scoped');
+      v28ok(sbCalls.every(function (c) { return c.url.indexOf('/rest/v1/') === -1; }), 'v142: a parent tick never touches REST (no push, no write, no broader read)');
+      // teacher session: same tick, teacher token, class-slice students
+      ctx.state.role = 'teacher';
+      ctx.state.user = { role: 'teacher', name: 'QA Teach', email: 'cloud-teacher:srv-school-1:t1', teacherId: 't1', cloud: true };
+      ctx.state.cloudParentToken = null; ctx.state.cloudTeacherToken = 'ttok-142';
+      ctx.db = { students: [{ id: 'stu-t1', srvId: 'srv-stu-t1', name: 'T Kid', cls: '10th-A', photo: SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg' }] };
+      ctx.sbSignedPhotoCache = {};
+      ctx.sbSignedPhotoCache[SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg'] = { url: 'old-signed', exp: Date.now() - 1000 }; // already expired: due for the tick AND re-signed by the teacher branch
+      sbCalls = [];
+      tickFn142();
+      await new Promise(function (r) { setTimeout(r, 0); });
+      await new Promise(function (r) { setTimeout(r, 0); });
+      v28eq(sbCalls.length, 1, 'v142: a teacher due tick re-mints exactly once');
+      v28ok(sbCalls[0].body.teacher_token === 'ttok-142' && sbCalls[0].body.student_id === 'srv-stu-t1', 'v142: the teacher due re-mint carries the teacher token and a slice student');
+      v28ok(sbCalls.every(function (c) { return c.url.indexOf('/rest/v1/') === -1; }), 'v142: a teacher tick never touches REST either');
+    } finally {
+      sbPhotoFnLive = false;
+      ctx.sbSyncAutoStop();
+      ctx.state.user = saveUser; ctx.state.role = saveRole; ctx.state.sb = saveSb;
+      ctx.state.cloudParentToken = savePT; ctx.state.cloudTeacherToken = saveTT; ctx.state.cloudStaffToken = saveST;
+      ctx.db = saveDb; ctx.sbSignedPhotoCache = saveCache; ctx.renderApp = saveRender;
+      ctx.sbSyncAutoStart(); // restore the school session tick the later phases rely on
+      v28eq(ctx.__timers.length, 1, 'v142: cleanup restores exactly the school auto-pull tick');
+    }
+  }
   v28eq(ctx.sbLoadStatus().state, 'synced', 'v43 async: after the change cycle the status is synced again');
   v28ok(writes43.indexOf('syncing') === -1, 'v43 async: the change cycle also stays quiet — the local upload was empty, only the pull brought data');
   ctx.sbSetStatus = origSetStatus43;
