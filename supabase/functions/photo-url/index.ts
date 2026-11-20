@@ -69,6 +69,12 @@ function json(body: Record<string, unknown>, status: number): Response {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+// SQL 52 stores only the SHA-256 of a parent session token.
+async function sha256hex(s: string): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s))
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
   if (req.method !== 'POST') return json({ ok: false, error: 'method' }, 405)
@@ -111,7 +117,7 @@ serve(async (req) => {
     const { data: sess } = await admin
       .from('ss_parent_sessions')
       .select('student_id, school_id, expires_at')
-      .eq('token', parentToken)
+      .eq('token_hash', await sha256hex(parentToken))
       .maybeSingle()
     if (!sess || new Date(sess.expires_at).getTime() <= Date.now()) {
       return json({ ok: false, error: 'bad_token' }, 401)
