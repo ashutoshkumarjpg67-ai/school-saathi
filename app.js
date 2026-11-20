@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 144;
+var APP_VERSION = 145;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -327,7 +327,17 @@ function sbSignedPhotoFor(u) {
   var c = u ? sbSignedPhotoCache[u] : null;
   return (c && c.exp > Date.now()) ? c.url : null;
 }
-function sbDisplayPhoto(u) { return sbIsSbPhotoUrl(u) ? (sbSignedPhotoFor(u) || u) : u; }
+function sbDisplayPhoto(u) {
+  if (!sbIsSbPhotoUrl(u)) return u;
+  var signed = sbSignedPhotoFor(u);
+  if (signed) return signed;
+  // v145: student-photos is a PRIVATE bucket (scoped SQL 49 flip) - an
+  // unsigned public URL can only render as a broken image there, so the
+  // caller gets '' and falls back to initials. school-logos stays public
+  // (dashboard / receipts / ID cards render it without a signing session),
+  // so its public fallback still loads.
+  return u.indexOf('/object/public/student-photos/') !== -1 ? '' : u;
+}
 function sbPhotoSignRequest(body, bearer) {
   if (typeof fetch !== 'function') return Promise.resolve(null);
   // v138: the functions gateway requires the publishable key (the legacy anon JWT is rejected there). Owner calls still send the user's JWT as the bearer; teacher/parent calls use the publishable key.
@@ -5451,11 +5461,13 @@ function jsAttr(s) { return esc(JSON.stringify(String(s == null ? '' : s))); }
 function initialsOf(name) { return String(name || '').split(' ').filter(function (w) { return w; }).map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase(); }
 function avatarHTML(photo, name, cls) {
   var c = cls || 'avatar';
-  if (photo) return '<span class="' + c + ' has-photo"><img src="' + esc(sbDisplayPhoto(photo)) + '" alt=""></span>';
+  var u = photo ? sbDisplayPhoto(photo) : ''; // v145: '' when the photo is an unsigned private-bucket URL
+  if (u) return '<span class="' + c + ' has-photo"><img src="' + esc(u) + '" alt=""></span>';
   return '<span class="' + c + '">' + esc(initialsOf(name)) + '</span>';
 }
 function photoPrevHTML(photo, name) {
-  if (photo) return '<img class="photo-prev" src="' + esc(sbDisplayPhoto(photo)) + '" alt="">';
+  var u = photo ? sbDisplayPhoto(photo) : ''; // v145
+  if (u) return '<img class="photo-prev" src="' + esc(u) + '" alt="">';
   return '<span class="photo-prev">' + esc(initialsOf(name)) + '</span>';
 }
 function fitWithin(w, h, max) {
