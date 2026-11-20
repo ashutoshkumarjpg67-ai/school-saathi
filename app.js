@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 140;
+var APP_VERSION = 141;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -339,9 +339,36 @@ function sbPhotoSignRequest(body, bearer) {
 }
 // Owner batch re-mint: one call signs the logo + every student photo of
 // the caller's school; results are cached under their public URLs.
+// v141: signed URLs live 5 minutes; re-mint every 4 so an idle logged-in
+// page keeps a valid signed URL after the bucket flip (all roles - the
+// dispatcher inside picks staff token, parent token, or owner JWT).
+var sbPhotoReMintTimer = null;
+function sbStartPhotoReMint() {
+  if (sbPhotoReMintTimer || typeof setInterval !== 'function') return;
+  sbPhotoReMintTimer = setInterval(function () {
+    try {
+      if (!state.user) return;
+      if (!sbSyncActive() || !sbIsOnline()) return;
+      sbRefreshSignedPhotos();
+    } catch (e) {}
+  }, 240000);
+}
 function sbRefreshSignedPhotos() {
   try {
+    sbStartPhotoReMint();
     if (!sbSyncActive() || !sbIsOnline()) return;
+    // v141 (photo privacy): a parent/student session re-mints its ONE
+    // student photo through the SQL 52 session token - the PIN is long
+    // gone by now, and the server still enforces the single-student scope.
+    if (state.cloudParentToken && state.user && state.user.cloud) {
+      var pme = (db && db.students ? db.students : []).find(function (x) { return x.id === state.user.studentId; });
+      if (pme && pme.srvId && sbIsSbPhotoUrl(pme.photo)) {
+        sbPhotoSignRequest({ action: 'student', student_id: pme.srvId, parent_token: state.cloudParentToken }).then(function (d) {
+          if (d && d.url) { sbCacheSignedPhoto(pme.photo, d.url, d.expires_in); if (typeof renderApp === 'function') renderApp(); }
+        });
+      }
+      return;
+    }
     // v140 (photo privacy): a cloud staff/principal session re-mints through
     // its staff token (action 'school'); the function scopes the batch like
     // the login payload (principal: whole school, staff: own classes,
@@ -6533,9 +6560,31 @@ function restoreSession() {
         var cloud = rawCloud ? JSON.parse(rawCloud) : null;
         if (cloud && cloud.acct && cloud.slice && cloud.slice.students && cloud.slice.students[0] && cloud.slice.students[0].id === cloud.acct.studentId) {
           state.role = 'student'; state.user = cloud.acct; state.cloudDb = cloud.slice; state.view = 'dashboard'; state.profileStudent = null;
+          state.cloudParentToken = cloud.token || null; // v141
           db = cloud.slice; DB_KEY = 'schoolSaathiCloudDB';
           showView('app'); renderApp();
           persistSession();
+          sbRefreshSignedPhotos(); // v141: re-mint the signed photo on restore
+          return Promise.resolve(true);
+        }
+      } catch (e3) {}
+      return Promise.resolve(false);
+    }
+    if (sv.role === 'parent' && typeof sv.email === 'string' && sv.email.indexOf('cloud-parent:') === 0) {
+      // v141: a cloud parent session restores from its snapshot like the
+      // student one. The SQL 52 token rides with the snapshot (no PIN is
+      // ever stored); without a token the photo could never re-mint, so a
+      // tokenless pre-v141 snapshot means a fresh login.
+      try {
+        var rawCloudP = sessGet(CLOUD_STUDENT_KEY);
+        var cloudP = rawCloudP ? JSON.parse(rawCloudP) : null;
+        if (cloudP && cloudP.acct && cloudP.slice && cloudP.token && cloudP.acct.email === sv.email && cloudP.slice.students && cloudP.slice.students[0] && cloudP.slice.students[0].id === cloudP.acct.studentId) {
+          state.role = 'parent'; state.user = cloudP.acct; state.cloudDb = cloudP.slice; state.view = 'dashboard'; state.profileStudent = null;
+          state.cloudParentToken = cloudP.token;
+          db = cloudP.slice; DB_KEY = 'schoolSaathiCloudDB';
+          showView('app'); renderApp();
+          persistSession();
+          sbRefreshSignedPhotos();
           return Promise.resolve(true);
         }
       } catch (e3) {}
@@ -6835,7 +6884,10 @@ function doStudentLogin(e) {
 // The student session is read-only: nothing in the cloud slice is ever
 // uploaded, and the slice never enters any school's local DB.
 function sbStudentCloudLogin(serverId, adm, pin) {
-  return sbRest('POST', 'rpc/ss_student_cloud_login', SB_ANON_KEY, { p_school_id: serverId, p_admission_no: adm, p_pin: pin }).then(function (r) {
+  // v141: the login RPC is ss_parent_session_open (SQL 52) - it delegates
+  // PIN verification to ss_student_cloud_login (same payload, lockout and
+  // all) and adds a 30-day revocable photo-session token for re-mints.
+  return sbRest('POST', 'rpc/ss_parent_session_open', SB_ANON_KEY, { p_school_id: serverId, p_admission_no: adm, p_pin: pin }).then(function (r) {
     if (!r || !r.ok || !r.data || typeof r.data !== 'object') return null;
     return r.data;
   }).catch(function () { return null; });
@@ -6963,8 +7015,9 @@ function loginCloudStudent(acct, slice, opts) {
   // v86: opts.role lets a parent log in through the same cloud slice —
   // the role comes from the account, never from the payload.
   state.role = (opts && opts.role) || acct.role || 'student'; state.user = acct; state.cloudDb = slice; state.view = 'dashboard'; state.profileStudent = null;
+  state.cloudParentToken = (opts && opts.token) || null; // v141: photo re-mint token (SQL 52), sessionStorage only
   db = slice; DB_KEY = 'schoolSaathiCloudDB';
-  try { sessSet(CLOUD_STUDENT_KEY, JSON.stringify({ acct: acct, slice: slice })); } catch (e) {}
+  try { sessSet(CLOUD_STUDENT_KEY, JSON.stringify({ acct: acct, slice: slice, token: state.cloudParentToken })); } catch (e) {}
   showView('app'); renderApp();
   persistSession();
   lastBackAt = 0; histExiting = false;
@@ -6991,7 +7044,7 @@ function doStudentCloudLogin(serverId, adm, pin, err) {
     sbPrefetchCloudPhoto(res, serverId, adm, pin);
     var acct = { role: 'student', name: me.name, sub: t('stuSub') + ' • ' + me.name, email: 'cloud-student:' + serverId + ':' + me.id, uid: 'cloud-student-' + me.id, studentId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
     err.classList.add('hidden');
-    loginCloudStudent(acct, slice);
+    loginCloudStudent(acct, slice, { token: res.token });
   });
 }
 // v86 (Phase 4): the Parent role returns as its OWN role. A parent logs
@@ -7213,7 +7266,7 @@ function doParentCloudLogin(serverId, adm, pin, err) {
     // v114: a cloud success clears the server counter too (with the PIN
     // just verified as proof) - the cloud path never did this before.
     sbParentPinOk(serverId, adm, pin);
-    loginCloudStudent(acct, slice, { role: 'parent' });
+    loginCloudStudent(acct, slice, { role: 'parent', token: res.token });
   });
 }
 // v62: teacher cloud login (SQL 18). Unlike students, teachers WRITE —
@@ -7331,6 +7384,14 @@ function sbStaffRevokeSession(token) {
   var _revokeBody = {};
   _revokeBody.p_token = token;
   return sbRest('POST', 'rpc/ss_staff_revoke_session', SB_ANON_KEY, _revokeBody).then(function (r) {
+    return (r && r.ok) ? true : false;
+  }).catch(function () { return false; });
+}
+function sbParentRevokeSession(token) {
+  // v141: revoke a parent photo session on logout (SQL 52), best-effort.
+  var _revokeBody = {};
+  _revokeBody.p_token = token;
+  return sbRest('POST', 'rpc/ss_parent_revoke_session', SB_ANON_KEY, _revokeBody).then(function (r) {
     return (r && r.ok) ? true : false;
   }).catch(function () { return false; });
 }
@@ -7949,6 +8010,9 @@ function logoutClear() {
   // logout left a live 30-day token on the server.
   if (state.cloudStaffToken) { try { sbStaffRevokeSession(state.cloudStaffToken); } catch (e9) {} }
   state.cloudStaffToken = null;
+  // v141: revoke a parent photo session too (SQL 52) and drop its token.
+  if (state.cloudParentToken) { try { sbParentRevokeSession(state.cloudParentToken); } catch (e9) {} }
+  state.cloudParentToken = null;
   state.feeStudent = null; state.feeSearch = ''; state.feeType = 'All'; state.feeFilter = 'All'; state.feeFormOpen = false; state.feePreselect = null;
   state.profileStudent = null; state.profileTab = 'overview'; state.stuPage = 1;
   state.admReqFilter = 'All';
