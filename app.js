@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 143;
+var APP_VERSION = 144;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -318,10 +318,10 @@ function sbUploadSchoolLogo(dataUrl) {
 var SB_PHOTO_FN = SB_URL + '/functions/v1/photo-url';
 var sbSignedPhotoCache = {};
 function sbIsSbPhotoUrl(u) { return typeof u === 'string' && u.indexOf(SB_URL + '/storage/v1/object/public/') === 0; }
-function sbCacheSignedPhoto(orig, signed, secs) {
+function sbCacheSignedPhoto(orig, signed, secs, studentId) {
   if (!orig || !signed) return;
   var ms = (typeof secs === 'number' && secs > 60 ? secs : 300) * 1000;
-  sbSignedPhotoCache[orig] = { url: signed, exp: Date.now() + ms - 30000 };
+  sbSignedPhotoCache[orig] = { url: signed, exp: Date.now() + ms - 30000, sid: studentId || null };
 }
 function sbSignedPhotoFor(u) {
   var c = u ? sbSignedPhotoCache[u] : null;
@@ -390,10 +390,18 @@ function sbRefreshSignedPhotos() {
     // v141: a cloud teacher re-signs the photos they have viewed (the
     // slice only carries photos fetched on demand, so this stays small).
     if (state.cloudTeacherToken && state.user && state.user.cloud) {
-      (db.students || []).forEach(function (s) {
-        if (!s.srvId || !sbIsSbPhotoUrl(s.photo) || sbSignedPhotoFor(s.photo)) return;
-        sbPhotoSignRequest({ action: 'student', student_id: s.srvId, teacher_token: state.cloudTeacherToken }).then(function (d) {
-          if (d && d.url) { sbCacheSignedPhoto(s.photo, d.url, d.expires_in); if (typeof renderApp === 'function') renderApp(); }
+      // v144: re-mint the photos the teacher has actually viewed, straight
+      // from the signed-URL cache. The v141 loop scanned db.students[].photo,
+      // but the teacher slice carries NO photo URLs (SQL 24: photos are
+      // fetched on demand via ss_teacher_student_photo), so the loop matched
+      // nothing and teacher photos died at expiry - caught by the live idle
+      // TTL proof. The cache remembers which student each URL belongs to.
+      var teacherDue = Date.now() + 90000;
+      Object.keys(sbSignedPhotoCache).forEach(function (orig) {
+        var c = sbSignedPhotoCache[orig];
+        if (!c || !c.sid || c.exp > teacherDue) return;
+        sbPhotoSignRequest({ action: 'student', student_id: c.sid, teacher_token: state.cloudTeacherToken }).then(function (d) {
+          if (d && d.url) { sbCacheSignedPhoto(orig, d.url, d.expires_in, c.sid); if (typeof renderApp === 'function') renderApp(); }
         });
       });
       return;
@@ -7349,7 +7357,7 @@ function sbTeacherStudentPhoto(token, studentServerId) {
     // (the edge function re-checks the teacher token and class scope).
     if (!got || !sbIsSbPhotoUrl(got)) return got;
     return sbPhotoSignRequest({ action: 'student', student_id: studentServerId, teacher_token: token }).then(function (d) {
-      if (d && d.url) { sbCacheSignedPhoto(got, d.url, d.expires_in); return d.url; }
+      if (d && d.url) { sbCacheSignedPhoto(got, d.url, d.expires_in, studentServerId); return d.url; }
       return got;
     });
   }).catch(function () { return null; });

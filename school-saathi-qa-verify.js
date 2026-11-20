@@ -7727,7 +7727,7 @@ function v28hcall(html, fn, want, name) { const r = hcallCheck(html, fn, want); 
   v28ok(sql52.includes('create trigger ss_parent_sessions_pin_wipe') && sql52.includes('new.parent_pin is distinct from old.parent_pin'), 'v141: any PIN change wipes the student photo sessions (reset, owner change, hash upgrade)');
   v28ok(fn.includes('async function sha256hex') && fn.includes(".eq('token_hash', await sha256hex(parentToken))"), 'v141: the function looks sessions up by token hash, never the bearer token');
   v28ok(src.includes('visibilitychange') && src.includes("window.addEventListener('focus'"), 'v141: foreground resume re-mints signed URLs (background tabs suspend timers)');
-  v28ok(src.includes('teacher_token: state.cloudTeacherToken }).then(function (d) {\n          if (d && d.url) { sbCacheSignedPhoto(s.photo, d.url, d.expires_in);'), 'v141: teacher idle pages re-mint viewed photos with the teacher token');
+  v28ok(src.includes('sbCacheSignedPhoto(got, d.url, d.expires_in, studentServerId)') && src.includes('v144: re-mint the photos the teacher has actually viewed'), 'v144: teacher on-demand photo fetches tag the cache with the student id and the idle re-mint runs from the cache, not the photo-less slice');
   const sql49 = readRel('supabase/49_private_photo_buckets.sql');
   v28ok(sql49.includes('set public = false') && sql49.includes('DO NOT RUN'), 'v137: SQL 49 flips both buckets private as a staged manual step');
 })();
@@ -9927,11 +9927,12 @@ async function v28run() {
       v28ok(sbCalls.every(function (c) { return c.url.indexOf('/rest/v1/') === -1; }), 'v142: a parent tick never touches REST (no push, no write, no broader read)');
       // teacher session: same tick, teacher token, class-slice students
       ctx.loginCloudTeacher({ role: 'teacher', name: 'QA Teach', email: 'cloud-teacher:srv-school-1:t1', teacherId: 't1', cloud: true },
-        { students: [{ id: 'stu-t1', srvId: 'srv-stu-t1', name: 'T Kid', cls: '10th-A', photo: SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg' }] }, 'ttok-142', { silent: true });
+        { students: [{ id: 'stu-t1', srvId: 'srv-stu-t1', name: 'T Kid', cls: '10th-A' }] }, 'ttok-142', { silent: true }); // v144: no photo in the slice - the real SQL-24 shape the v141 loop could never match
       v28eq(ctx.__timers.length, t0 + 1, 'v142: a fresh teacher login keeps exactly the one shared tick');
       ctx.state.cloudParentToken = null;
       ctx.sbSignedPhotoCache = {};
-      ctx.sbSignedPhotoCache[SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg'] = { url: 'old-signed', exp: Date.now() - 1000 }; // already expired: due for the tick AND re-signed by the teacher branch
+      ctx.sbCacheSignedPhoto(SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg', 'old-signed', 300, 'srv-stu-t1'); // v144: what the on-demand fetch records
+      ctx.sbSignedPhotoCache[SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg'].exp = Date.now() - 1000; // already expired: due for the tick, re-minted from the cache even with no photo URL in the slice
       sbCalls = [];
       tickFn142();
       await new Promise(function (r) { setTimeout(r, 0); });
@@ -9939,6 +9940,7 @@ async function v28run() {
       v28eq(sbCalls.length, 1, 'v142: a teacher due tick re-mints exactly once');
       v28ok(sbCalls[0].body.teacher_token === 'ttok-142' && sbCalls[0].body.student_id === 'srv-stu-t1', 'v142: the teacher due re-mint carries the teacher token and a slice student');
       v28ok(sbCalls.every(function (c) { return c.url.indexOf('/rest/v1/') === -1; }), 'v142: a teacher tick never touches REST either');
+      v28eq(ctx.sbSignedPhotoCache[SB_URL + '/storage/v1/object/public/student-photos/sch1/t1.jpg'].sid, 'srv-stu-t1', 'v144: the re-minted cache entry keeps its student id for the next round');
     } finally {
       sbPhotoFnLive = false;
       ctx.sbSyncAutoStop();
