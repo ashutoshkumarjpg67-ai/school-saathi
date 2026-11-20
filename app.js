@@ -1,5 +1,5 @@
-/* School Saathi — static build. v31: SERVER-FIRST for schools logged in
-   via Supabase — the server is the source of truth, the local store is a
+/* School Saathi â static build. v31: SERVER-FIRST for schools logged in
+   via Supabase â the server is the source of truth, the local store is a
    cache/mirror that syncs on login, on save and on reconnect (outbox for
    offline changes). Local-only accounts (no server session) still work
    exactly as before: everything lives in localStorage on this device.
@@ -12,35 +12,35 @@
    devices; logout no longer lets an in-flight sync write "Backup
    failed" after the session is cleared.
    v37: exam creation (school + teacher, own classes only); classes
-   Nursery–12th; full-year Apr–Mar fee trend; full backup/restore
+   Nurseryâ12th; full-year AprâMar fee trend; full backup/restore
    (JSON, safety copy first); in-app version check so a stale SW
    shell flips to the new build within one or two plain loads;
    local-only accounts show a stable "Not linked to server" line.
-   v38: WhatsApp via wa.me links ONLY (manual send — the app opens
+   v38: WhatsApp via wa.me links ONLY (manual send â the app opens
    the chat with the message prefilled, the user presses Send inside
    WhatsApp). No API, no automation, no bot, no auto-send. Fee due
    reminders, absent/late alerts, fee receipt share, profile chat.
-   The app logs "WhatsApp opened", never "sent" — it cannot know
+   The app logs "WhatsApp opened", never "sent" â it cannot know
    whether the user pressed Send.
    v39: the receipt view is reachable from stable places (Receipt
-   column on the Fees list and on the profile Fee History tab — the
+   column on the Fees list and on the profile Fee History tab â the
    only entry used to be the fee profile's bottom card plus the
    one-shot view right after collecting); a receipt the server lacks
    uploads even when a stale snapshot entry says it already synced
    (the live test account: RCP-2026-003 was server-minted yet never
    landed, and the guard failed every cycle with "Backup failed");
-   one table's upload failure no longer kills the whole sync pass —
+   one table's upload failure no longer kills the whole sync pass â
    the status line now names the failing table; verify/guard count
    only numbered receipts. */
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 142;
+var APP_VERSION = 143;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
-var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
+var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session â 30 days from the interactive login.
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
-var FEE_MONTHS = [ // seed-only monthly ledger (seedDB splits it into feeRecords) — sums MUST equal 8,45,000 collected / 1,20,000 pending. Never stored on a real school DB (no db.feeMonths field).
+var FEE_MONTHS = [ // seed-only monthly ledger (seedDB splits it into feeRecords) â sums MUST equal 8,45,000 collected / 1,20,000 pending. Never stored on a real school DB (no db.feeMonths field).
   { m: 'Apr', collected: 165000, pending: 25000 },
   { m: 'May', collected: 178000, pending: 22000 },
   { m: 'Jun', collected: 162000, pending: 28000 },
@@ -50,11 +50,11 @@ var FEE_MONTHS = [ // seed-only monthly ledger (seedDB splits it into feeRecords
 /* Accounts live in localStorage on this device (server auth is Phase 2).
    School accounts are created via Sign Up; each school gets its own
    workspace copy under its own DB key. v28: there is no platform-owner
-   account in the app — the old built-in Super Admin login is removed,
+   account in the app â the old built-in Super Admin login is removed,
    and a Supabase account with no school
    tied to it gets a no-school message, never an admin view. */
 var ACC_KEY = 'schoolSaathiAccounts';
-/* Phase 2 (v71): crypto / identity helpers (hashPw, randomHex, uniqueId, sha256Hex, hashPwNew, verifyPw, hashPin, aadhaarLast4, ...) moved to js/modules/crypto.js — loaded before app.js. */
+/* Phase 2 (v71): crypto / identity helpers (hashPw, randomHex, uniqueId, sha256Hex, hashPwNew, verifyPw, hashPin, aadhaarLast4, ...) moved to js/modules/crypto.js â loaded before app.js. */
 function loadAccounts() { try { var r = localStorage.getItem(ACC_KEY); if (r) { var a = JSON.parse(r); if (Array.isArray(a)) return a; } } catch (e) {} return []; }
 function saveAccounts(list) { try { localStorage.setItem(ACC_KEY, JSON.stringify(list)); } catch (e) {} }
 function findAccount(email) {
@@ -65,7 +65,7 @@ function findAccount(email) {
 }
 function dbKeyFor(a) {
   // School accounts own their DB. Student and teacher logins open the
-  // SCHOOL's DB — they never have a DB of their own (a fresh key would
+  // SCHOOL's DB â they never have a DB of their own (a fresh key would
   // seed the demo DB under the school's name).
   // v86: a parent opens the same school DB as the student they are tied to.
   // v88: a staff member (principal/accountant/staff) opens the school's DB too.
@@ -75,17 +75,17 @@ function dbKeyFor(a) {
 function applySchoolProfile(d, a) { d.profile.name = a.school; d.profile.principal = a.name; d.profile.email = a.email; return d; }
 
 /* ================= Supabase Auth (v27; v28 removes the admin role) =================
-   Server login via GoTrue REST with plain fetch — NO external JS library,
+   Server login via GoTrue REST with plain fetch â NO external JS library,
    the app stays self-contained. The anon (publishable) key below is safe to
    ship in client code; it is NOT a service_role key (there is none anywhere
-   in this app — never add one). Project: School Saathi,
+   in this app â never add one). Project: School Saathi,
    https://bsjqeeeemwimzldrehpw.supabase.co (ref has FOUR e's after bsjq).
    Login order: Supabase first when online, local djb2 accounts as the
    offline fallback. v28: the app has no admin role. The old local
    Super Admin account is removed, and the platform-admin lookup is
    gone. A Supabase account with no school
    tied to it (no local school account, no server school row, no signup
-   metadata naming a school) gets a no-school message — it never logs in
+   metadata naming a school) gets a no-school message â it never logs in
    as a school, never creates a bogus school, never sees an admin view.
    Never hard-code an email anywhere in the app. */
 var SB_URL = 'https://bsjqeeeemwimzldrehpw.supabase.co';
@@ -109,7 +109,7 @@ function sbIsOnline() {
   try { if (typeof navigator !== 'undefined' && navigator.onLine === false) return false; } catch (e) {}
   // B8 (M-17): navigator.onLine lies behind captive portals and dead
   // endpoints. After 3 consecutive fetch-level failures the device
-  // counts as offline for 30s — long enough to stop futile calls and
+  // counts as offline for 30s â long enough to stop futile calls and
   // fall back to local login, short enough that a recovered network
   // is usable again on the next attempt (a successful probe or any
   // HTTP response clears it sooner).
@@ -118,7 +118,7 @@ function sbIsOnline() {
 }
 // B8 (M-17/M-18): connectivity bookkeeping + bounded retry. sbRestNetFails
 // counts consecutive fetch-level failures (a request that got NO HTTP
-// response at all — a 429/5xx response still proves the network is up
+// response at all â a 429/5xx response still proves the network is up
 // and resets the count). sbNetDownAt is stamped on the 3rd failure.
 var sbRestNetFails = 0;
 var sbNetDownAt = 0;
@@ -128,7 +128,7 @@ var SB_REST_MAX_ATTEMPTS = 3; // B8 (M-18): initial try + at most 2 retries, 429
 var SB_REST_RETRY_CAP_MS = 10000; // B8: never wait longer than this for one retry (Retry-After is capped too)
 // v34 (P1-2): fetch with an AbortController timeout. A request that hangs
 // (slow network, dead connection) rejects after sbFetchTimeoutMs so the
-// sync lock is released instead of holding "Syncing…" forever.
+// sync lock is released instead of holding "Syncingâ¦" forever.
 function sbFetchWithTimeout(url, init) {
   if (typeof fetch !== 'function') return Promise.reject(new Error('no-fetch'));
   if (typeof AbortController !== 'function') return fetch(url, init).then(function (res) { sbRestNetOk(); return res; }, function (err) { sbRestNetFailed(); throw err; });
@@ -136,7 +136,7 @@ function sbFetchWithTimeout(url, init) {
   var timer = setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, sbFetchTimeoutMs);
   init = init || {};
   init.signal = ctrl.signal;
-  // B8 (M-17): every request feeds the connectivity bookkeeping — a
+  // B8 (M-17): every request feeds the connectivity bookkeeping â a
   // response of ANY status proves the path is alive; only a rejection
   // (network down, DNS, timeout) counts toward "offline". On the 3rd
   // consecutive failure a background probe is kicked off (see below).
@@ -160,7 +160,7 @@ function sbProbeKick() {
   sbProbeOnline().then(function () { sbProbeInFlight = false; }, function () { sbProbeInFlight = false; });
 }
 function sbProbeOnline() {
-  // B8 (M-17): tiny connectivity probe — the GoTrue health endpoint, 5s
+  // B8 (M-17): tiny connectivity probe â the GoTrue health endpoint, 5s
   // cap, no auth needed. ANY HTTP response proves the path to Supabase
   // is alive (even a 4xx); only a fetch failure means offline.
   if (typeof fetch !== 'function') return Promise.resolve(false);
@@ -195,10 +195,10 @@ function sbAuthFetch(path, opts) {
 }
 function sbRest(method, path, token, body, prefer) {
   if (typeof fetch !== 'function') return Promise.reject(new Error('no-fetch'));
-  // B8 (M-18): bounded retry for 429/5xx ONLY — at most SB_REST_MAX_ATTEMPTS
+  // B8 (M-18): bounded retry for 429/5xx ONLY â at most SB_REST_MAX_ATTEMPTS
   // tries in total, exponential backoff (500ms, then 1000ms), honouring
   // Retry-After (seconds, capped). Any other 4xx is never retried, and
-  // a network failure (no response) is never retried here either — it
+  // a network failure (no response) is never retried here either â it
   // feeds the offline bookkeeping instead, and the outbox + next cycle
   // replay the call. (A retried POST replays exactly like the next
   // cycle's outbox replay already would; tables with business unique
@@ -235,7 +235,7 @@ function sbRest(method, path, token, body, prefer) {
   return attempt();
 }
 function sbRestNoteRetry() {
-  // B8 (M-18): surface the retry in the status line — transiently, on
+  // B8 (M-18): surface the retry in the status line â transiently, on
   // the two visible nodes only, without persisting a status state (a
   // persisted "retrying" would lie on the login screen if the app died
   // mid-retry; the cycle's own end state overwrites this right after).
@@ -254,7 +254,7 @@ function sbRestNoteRetry() {
 // (logo_url / photo_url); the old Data URL columns stay as fallback.
 // Uploads happen at SAVE time, awaited, so the sync sends the URL
 // instead of the data URL. Every helper here resolves to null on ANY
-// failure (offline, no session, no server school, rejected upload) —
+// failure (offline, no session, no server school, rejected upload) â
 // a null result is NOT an error, it just keeps the data URL path.
 function sbStoragePublicUrl(bucket, path) { return SB_URL + '/storage/v1/object/public/' + bucket + '/' + path; }
 function dataUrlToBlob(url) {
@@ -313,7 +313,7 @@ function sbUploadSchoolLogo(dataUrl) {
 // function is absent (404) every helper resolves null and the app keeps
 // the public-URL fallback, so shipping the app before the function is
 // safe. Signed URLs are cached by their ORIGINAL public URL, in memory
-// only, and never persisted — an expired entry just falls back to the
+// only, and never persisted â an expired entry just falls back to the
 // stored URL.
 var SB_PHOTO_FN = SB_URL + '/functions/v1/photo-url';
 var sbSignedPhotoCache = {};
@@ -532,7 +532,7 @@ function sbGetValidToken() {
   return sbRefresh(s.refresh_token).then(function (r) {
     if (!r.ok || !r.data || !r.data.access_token) {
       // v34 (P1-3): the SERVER rejected the refresh (expired / revoked
-      // token). That is not "offline" — the user must log in again.
+      // token). That is not "offline" â the user must log in again.
       // A network failure lands in the .catch below and stays offline.
       sbSessionExpired = true;
       sbClearSession();
@@ -544,7 +544,7 @@ function sbGetValidToken() {
 }
 // Phase 1 (CR-1/H-1): boot-time server validation for a server-linked
 // school session. Returns Promise<boolean>. true = the server still
-// accepts the session — OR the network failed, in which case the boot
+// accepts the session â OR the network failed, in which case the boot
 // falls back to the local session exactly as before (offline boot is
 // unchanged). false = the SERVER rejected the token (revoked/expired),
 // and the stored session must be dropped. The boot never hangs on a
@@ -554,7 +554,7 @@ function sbGetValidToken() {
 function sbValidateSchoolSession() {
   var checked = sbGetValidToken().then(function (tok) {
     if (!tok) {
-      // v104: NO stored session is not "offline" — the school is not
+      // v104: NO stored session is not "offline" â the school is not
       // authenticated (a new tab: the Supabase session lives in
       // sessionStorage, which is per-tab, so a reload in a fresh tab
       // has nothing to refresh from). Restoring such a school into
@@ -578,7 +578,7 @@ function sbHealSchoolSession() {
   // v104: adopt a stored Supabase session into state.sb when the
   // restore missed it (validation give-up race, or a session stored
   // after restore). Without this a tab can sit session-less forever
-  // even though a valid session exists in storage — sync stays dead
+  // even though a valid session exists in storage â sync stays dead
   // while the UI looks logged in.
   try {
     if (typeof state === 'undefined' || !state || !state.user || state.user.role !== 'school') return false;
@@ -589,7 +589,7 @@ function sbHealSchoolSession() {
   return false;
 }
 function sbIsLocalOnlySchool() {
-  // v37: a school account with NO server session — no sbUid on the
+  // v37: a school account with NO server session â no sbUid on the
   // account AND no live server session. Either one present means the
   // account is server-linked. (Checked against both because the
   // session can be set without the account row carrying sbUid yet.)
@@ -597,12 +597,12 @@ function sbIsLocalOnlySchool() {
   return !state.user.sbUid && !(state.sb && state.sb.uid);
 }
 function sbSetStatus(st, detail) {
-  // v37: a local-only school account has no server to back up to — every
+  // v37: a local-only school account has no server to back up to â every
   // status it writes becomes the local-only line, never "Backup failed"
   // or "Offline" for a backup that cannot exist.
   if (sbIsLocalOnlySchool()) { st = 'local-only'; detail = ''; }
   // v36 (logout-backup race): a sync cycle that was in flight at logout
-  // keeps running after the session is cleared — its failure (no token /
+  // keeps running after the session is cleared â its failure (no token /
   // network) used to overwrite the status with "Backup failed" on the
   // login screen, although the data was safe in the outbox and retries
   // on the next login. Failure states are only ever written while a
@@ -618,7 +618,7 @@ function sbSetStatus(st, detail) {
   // state. Both lines are rendered once (Settings on navigation, login
   // screen on showLogin) and no re-render follows a background cycle,
   // so without this the Settings line kept showing the state it was
-  // rendered with — live v42: "Syncing…" for ~150s after the cycle had
+  // rendered with â live v42: "Syncingâ¦" for ~150s after the cycle had
   // finished. Updating the two known nodes here is far cheaper than a
   // full renderApp on every cycle, and it cannot swallow a tap the way
   // a re-render can (see the pull render gate below).
@@ -633,13 +633,13 @@ function sbSetStatus(st, detail) {
   } catch (e2) {}
 }
 function sbOfflineChipRefresh() {
-  // B7 (M-26): the offline/pending chip in the topbar — the app's only
+  // B7 (M-26): the offline/pending chip in the topbar â the app's only
   // always-visible connectivity indicator (the status line lives on the
   // login screen / Settings only). Driven by sbIsOnline() + the outbox
   // count, for a server-linked school only: a local-only school has no
   // server to sync to, and cloud student/teacher slices have no outbox.
   // The node is created once from app.js (no index.html change) and
-  // only its text/visibility changes afterwards. Inline styles only —
+  // only its text/visibility changes afterwards. Inline styles only â
   // styles.css is untouched.
   try {
     if (typeof document === 'undefined' || !document.querySelector) return;
@@ -682,16 +682,16 @@ function sbAtLabel(iso) {
 }
 function sbStatusText() {
   // v37: while a local-only school is logged in, the line is the
-  // local-only wording whatever the persisted status says — an old
+  // local-only wording whatever the persisted status says â an old
   // "Backed up" written before v37 must not survive the upgrade.
   if (sbIsLocalOnlySchool()) return t('sbStatusLocalOnly');
   // v104: a server-linked school with no Supabase session is not
-  // synced — the persisted "Backed up" line (written by an earlier
+  // synced â the persisted "Backed up" line (written by an earlier
   // tab's cycle) must not stand while this tab cannot sync at all.
   if (typeof state !== 'undefined' && state && state.user && state.user.role === 'school' && state.user.sbUid && !(state.sb && state.sb.uid)) return t('sbStatusSessionExpired');
   var st = sbLoadStatus();
   if (!st) {
-    // v47: no status was ever recorded on this device — claiming
+    // v47: no status was ever recorded on this device â claiming
     // "Backup pending" on a first visit is wrong. Show pending only
     // if the logged-in school actually has queued offline changes.
     try {
@@ -708,8 +708,8 @@ function sbStatusText() {
   if (st.state === 'syncing') return t('sbStatusSyncing');
   // v42: a persisted 'pending'/'offline' state is only truthful while
   // the device is actually offline. A cycle that started offline
-  // writes it, the device comes back online, the user logs out — and
-  // the login screen then claimed "Offline — changes will sync when
+  // writes it, the device comes back online, the user logs out â and
+  // the login screen then claimed "Offline â changes will sync when
   // you are back online" while online (live v41). While online, show
   // the pending wording instead; while offline, keep the Offline
   // wording. The truthful failed line (with its detail) is untouched.
@@ -719,9 +719,9 @@ function sbStatusText() {
   // "Backup failed", last attempt 09/11/2026 20:24) could never be
   // diagnosed from the screen. The detail names the failing
   // operation (table + error, e.g. "ss_receipts: insert-ss_receipts"
-  // or "ss_receipts 0/1") — short, capped, never a secret.
+  // or "ss_receipts 0/1") â short, capped, never a secret.
   // v43: a failure persisted by an OLDER build is stale the moment the
-  // app updates — it describes a bug that may already be fixed, and the
+  // app updates â it describes a bug that may already be fixed, and the
   // login screen showed v41's PGRST102 failure on a fresh v42 load
   // before any v42 cycle had run (live v42). Until a cycle under THIS
   // version writes a fresh state, show the pending wording instead.
@@ -734,12 +734,12 @@ function sbStatusText() {
   return t('sbStatusPending');
 }
 function sbSyncDetailsHtml() {
-  // v53: the Settings "Sync details" section — display only, no
+  // v53: the Settings "Sync details" section â display only, no
   // behaviour change. The browser agent cannot run JS or read
   // localStorage, so the next live verifier reads the outbox count,
   // last cycle duration/result and the queued entries from this HTML.
   // Everything is escaped; the queued list shows the first 10 entries
-  // as "table — key" plus "and N more".
+  // as "table â key" plus "and N more".
   var d = sbSyncDiagLoad();
   var uid = (typeof state !== 'undefined' && state && state.sb && state.sb.uid) || null;
   var out = uid ? sbOutboxLoad(uid) : [];
@@ -748,20 +748,20 @@ function sbSyncDetailsHtml() {
   h += '<div style="font-size:13px;line-height:1.7;margin-top:4px">';
   h += '<div>' + esc(t('sbSyncPendingUploads')) + ': <b>' + out.length + '</b></div>';
   if (lc) {
-    h += '<div>' + esc(t('sbSyncLastCycle')) + ': ' + esc(lc.result || '') + ' · ' + esc(lc.ms == null ? '' : (lc.ms / 1000).toFixed(1) + 's') + (lc.at ? ' · ' + esc(sbAtLabel(lc.at)) : '') + (lc.calls != null ? ' · ' + esc(String(lc.calls)) + ' ' + esc(t('sbSyncCalls')) : '') + '</div>';
+    h += '<div>' + esc(t('sbSyncLastCycle')) + ': ' + esc(lc.result || '') + ' Â· ' + esc(lc.ms == null ? '' : (lc.ms / 1000).toFixed(1) + 's') + (lc.at ? ' Â· ' + esc(sbAtLabel(lc.at)) : '') + (lc.calls != null ? ' Â· ' + esc(String(lc.calls)) + ' ' + esc(t('sbSyncCalls')) : '') + '</div>';
     if (lc.detail) h += '<div>' + esc(t('sbSyncLastError')) + ': ' + esc(String(lc.detail).slice(0, 120)) + '</div>';
   } else {
-    h += '<div>' + esc(t('sbSyncLastCycle')) + ': —</div>';
+    h += '<div>' + esc(t('sbSyncLastCycle')) + ': â</div>';
   }
   if (lf) {
-    h += '<div>' + esc(t('sbSyncLastFlush')) + ': ' + esc(t('sbSyncPushed')) + ' ' + esc(String(lf.pushed || 0)) + ' · ' + esc(t('sbSyncConflicts')) + ' ' + esc(String(lf.conflicts || 0)) + ' · ' + esc(t('sbSyncLeftover')) + ' ' + esc(String(lf.leftover || 0)) + ' · ' + esc(lf.ms == null ? '' : (lf.ms / 1000).toFixed(1) + 's') + (lf.calls != null ? ' · ' + esc(String(lf.calls)) + ' ' + esc(t('sbSyncCalls')) : '') + '</div>';
+    h += '<div>' + esc(t('sbSyncLastFlush')) + ': ' + esc(t('sbSyncPushed')) + ' ' + esc(String(lf.pushed || 0)) + ' Â· ' + esc(t('sbSyncConflicts')) + ' ' + esc(String(lf.conflicts || 0)) + ' Â· ' + esc(t('sbSyncLeftover')) + ' ' + esc(String(lf.leftover || 0)) + ' Â· ' + esc(lf.ms == null ? '' : (lf.ms / 1000).toFixed(1) + 's') + (lf.calls != null ? ' Â· ' + esc(String(lf.calls)) + ' ' + esc(t('sbSyncCalls')) : '') + '</div>';
   }
   if (out.length) {
     h += '<div style="margin-top:4px">' + esc(t('sbSyncQueued')) + ':</div>';
-    out.slice(0, 10).forEach(function (e) { h += '<div>• ' + esc(e.table) + ' — ' + esc(String(e.key)) + (e.op ? ' (' + esc(String(e.op)) + ')' : '') + (e.failReason ? ' (' + esc(String(e.failReason).slice(0, 60)) + ')' : '') + '</div>'; });
-    if (out.length > 10) h += '<div>… ' + esc(t('sbSyncAndMore').replace('{n}', String(out.length - 10))) + '</div>';
+    out.slice(0, 10).forEach(function (e) { h += '<div>â¢ ' + esc(e.table) + ' â ' + esc(String(e.key)) + (e.op ? ' (' + esc(String(e.op)) + ')' : '') + (e.failReason ? ' (' + esc(String(e.failReason).slice(0, 60)) + ')' : '') + '</div>'; });
+    if (out.length > 10) h += '<div>â¦ ' + esc(t('sbSyncAndMore').replace('{n}', String(out.length - 10))) + '</div>';
   }
-  // v103: live sync-state diagnostics — the snapshot keys, session and
+  // v103: live sync-state diagnostics â the snapshot keys, session and
   // school-map state the diff depends on. Display only; the verifier
   // reads them from this HTML because the browser cannot run JS. The
   // holiday delete never queued live (12 Nov), so the first question
@@ -770,9 +770,9 @@ function sbSyncDetailsHtml() {
     var snapD = {};
     if (state && state.user && state.user.uid) snapD = sbSnapLoad(state.user.uid) || {};
     var holKeysD = snapD.ss_holidays ? Object.keys(snapD.ss_holidays) : [];
-    h += '<div style="margin-top:4px">Snapshot holidays: ' + (holKeysD.length ? esc(holKeysD.join(', ')) : '—') + '</div>';
-    h += '<div>Local holidays: ' + esc(((typeof db !== 'undefined' && db && db.holidays) || []).map(function (hh) { return hh.id; }).join(', ') || '—') + '</div>';
-    h += '<div>Online: ' + (sbIsOnline() ? 'yes' : 'no') + ' · Session: ' + ((state && state.sb && state.sb.uid) ? 'yes' : 'no') + ' · School mapped: ' + ((state && state.user && state.user.uid && (sbServerSchoolMap()[state.user.uid])) ? 'yes' : 'no') + '</div>';
+    h += '<div style="margin-top:4px">Snapshot holidays: ' + (holKeysD.length ? esc(holKeysD.join(', ')) : 'â') + '</div>';
+    h += '<div>Local holidays: ' + esc(((typeof db !== 'undefined' && db && db.holidays) || []).map(function (hh) { return hh.id; }).join(', ') || 'â') + '</div>';
+    h += '<div>Online: ' + (sbIsOnline() ? 'yes' : 'no') + ' Â· Session: ' + ((state && state.sb && state.sb.uid) ? 'yes' : 'no') + ' Â· School mapped: ' + ((state && state.user && state.user.uid && (sbServerSchoolMap()[state.user.uid])) ? 'yes' : 'no') + '</div>';
   } catch (eD) {}
   h += '</div>';
   return h;
@@ -798,22 +798,22 @@ function sbSyncConflictLabel(k) {
   return String(k).replace(/_/g, ' ');
 }
 function sbSyncConflictRowHtml(row) {
-  // v107: one side of a conflict — a readable field list, technical
+  // v107: one side of a conflict â a readable field list, technical
   // columns hidden. Works for any table without a per-table mapper.
-  if (!row || typeof row !== 'object') return '<div class="muted">—</div>';
+  if (!row || typeof row !== 'object') return '<div class="muted">â</div>';
   var keys = Object.keys(row).filter(function (k) { return !SB_CONFLICT_HIDE_KEYS[k]; });
-  if (!keys.length) return '<div class="muted">—</div>';
+  if (!keys.length) return '<div class="muted">â</div>';
   var h = '<div style="font-size:13px;line-height:1.7">';
   keys.slice(0, 10).forEach(function (k) {
     var v = row[k];
-    var vs = (v === null || v === undefined || v === '') ? '—' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+    var vs = (v === null || v === undefined || v === '') ? 'â' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
     h += '<div><b>' + esc(sbSyncConflictLabel(k)) + ':</b> ' + esc(vs.slice(0, 80)) + '</div>';
   });
-  if (keys.length > 10) h += '<div>… ' + esc(String(keys.length - 10)) + ' more</div>';
+  if (keys.length > 10) h += '<div>â¦ ' + esc(String(keys.length - 10)) + ' more</div>';
   return h + '</div>';
 }
 function sbSyncConflictsHtml() {
-  // v107: the unresolved-conflicts list in Settings → Server Backup.
+  // v107: the unresolved-conflicts list in Settings â Server Backup.
   // Empty when there is nothing to resolve, so Settings stays clean.
   var list = (typeof db !== 'undefined' && db && db.syncConflicts) || [];
   if (!list.length) return '';
@@ -822,19 +822,19 @@ function sbSyncConflictsHtml() {
   list.slice(0, 20).forEach(function (c, i) {
     var label = SB_CONFLICT_TABLE_LABELS[c.table] || c.table;
     h += '<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin-top:8px">';
-    h += '<div style="font-size:13px"><b>' + esc(label) + '</b> — ' + esc(String(c.key)) + (c.at ? ' · ' + esc(sbAtLabel(c.at)) : '') + '</div>';
+    h += '<div style="font-size:13px"><b>' + esc(label) + '</b> â ' + esc(String(c.key)) + (c.at ? ' Â· ' + esc(sbAtLabel(c.at)) : '') + '</div>';
     h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px"><div><div class="muted">' + esc(t('sbConflictsYours')) + '</div>' + sbSyncConflictRowHtml(c.localRow) + '</div><div><div class="muted">' + esc(t('sbConflictsServer')) + '</div>' + sbSyncConflictRowHtml(c.serverRow) + '</div></div>';
     h += '<div class="actions" style="justify-content:flex-start;margin-top:8px"><button type="button" class="btn sm" onclick="sbSyncResolveConflict(' + i + ', true)">' + esc(t('sbConflictsKeepMine')) + '</button><button type="button" class="btn ghost sm" onclick="sbSyncResolveConflict(' + i + ', false)">' + esc(t('sbConflictsUseServer')) + '</button></div>';
     h += '</div>';
   });
-  if (list.length > 20) h += '<div class="muted">… ' + esc(String(list.length - 20)) + ' more</div>';
+  if (list.length > 20) h += '<div class="muted">â¦ ' + esc(String(list.length - 20)) + ' more</div>';
   return h + '</div>';
 }
 function sbSyncConflictsRefresh() {
   try { if (typeof document !== 'undefined' && document.getElementById) { var el = document.getElementById('sbSyncConflicts'); if (el) el.innerHTML = sbSyncConflictsHtml(); } } catch (e) {}
 }
 function sbSyncResolveConflict(idx, keepMine) {
-  // v107: resolve one recorded conflict. School admin only — Settings
+  // v107: resolve one recorded conflict. School admin only â Settings
   // is school-only, and only the school role runs the sync cycle.
   // Keep mine: re-queue the LOCAL row as a fresh upsert with a new
   // timestamp, so the next push's conflict check (server updated_at
@@ -842,17 +842,17 @@ function sbSyncResolveConflict(idx, keepMine) {
   // the record; the snapshot is already re-based to the local row, so
   // the next pull restores the server version. When Keep mine cannot
   // queue (no session, or the local row is gone) the record is kept and
-  // the admin is told — never silently switch the choice to Use server.
+  // the admin is told â never silently switch the choice to Use server.
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   if (!db || !db.syncConflicts || !db.syncConflicts[idx]) return;
   var rec = db.syncConflicts[idx];
   // Keep mine: re-queue the LOCAL row as a fresh upsert with a new
   // timestamp, so the next push's conflict check (server updated_at vs
   // the new entry.at) lets the local version win. The row re-queued
-  // MUST be rec.localRow — the copy preserved in the record at
+  // MUST be rec.localRow â the copy preserved in the record at
   // conflict time. v107 re-read the CURRENT local row instead, but by
   // the time the admin clicks, the pull has already overwritten the
-  // local row with the server version — so Keep mine pushed the server
+  // local row with the server version â so Keep mine pushed the server
   // version back onto the server and nothing changed (live 12 Nov).
   // Only when the record has no local copy (it always does since v107)
   // fall back to the current local row.
@@ -905,12 +905,12 @@ function sbLoginNewSchool(meta, email, pw, uid, token, serverSchool) {
   var school = (serverSchool && serverSchool.name) || meta.school || '';
   var name = (serverSchool && serverSchool.principal) || meta.name || email;
   var pwH = pw ? hashPwNew(pw) : '';
-  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: pwH, hashScheme: hashSchemeOf(pwH), role: 'school', sub: 'School Admin • ' + school, created: todayIST(), sbUid: uid };
+  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: pwH, hashScheme: hashSchemeOf(pwH), role: 'school', sub: 'School Admin â¢ ' + school, created: todayIST(), sbUid: uid };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   state.sb = { uid: uid, email: email };
   $('loginErr').classList.add('hidden');
   loginAs(a);
-  // v32: one serialized cycle does it all — upload-missing into the
+  // v32: one serialized cycle does it all â upload-missing into the
   // existing school row, then pull (for a fresh empty workspace the pull
   // IS the download), then flush. No separate download step and no
   // parallel migration: the v31 login fired both at once, and a
@@ -919,7 +919,7 @@ function sbLoginNewSchool(meta, email, pw, uid, token, serverSchool) {
   sbSyncAutoStart();
 }
 function sbCheckSuperAdmin(token, email, uid) {
-  // v94: a super admin has no school — no local account, no server school
+  // v94: a super admin has no school â no local account, no server school
   // row, no signup metadata. So the school login ends at "no school" for
   // them. Check the server FIRST (ss_is_super_admin, SQL 31) and open the
   // super admin portal when it says yes. Returns a promise of true/false.
@@ -929,7 +929,7 @@ function sbCheckSuperAdmin(token, email, uid) {
     if (!(res && res.ok && res.data === true)) return false;
     // Keep a local super admin account so a page reload restores the
     // session (restoreSession looks accounts up by email). It carries no
-    // password hash, so the LOCAL login can never use it — only the
+    // password hash, so the LOCAL login can never use it â only the
     // Supabase login + this RPC can open the portal. It never appears in
     // the school picker (that filters role === 'school').
     var list = loadAccounts();
@@ -950,7 +950,7 @@ function sbCheckSuperAdmin(token, email, uid) {
   }).catch(function () { return false; });
 }
 function sbLoadSuperSchools(token) {
-  // v94: the super admin's schools list — every school on the server.
+  // v94: the super admin's schools list â every school on the server.
   // The ss_schools read policy already lets a super admin read all rows
   // (is_ss_admin), so this is one plain PostgREST select. The result is
   // cached on state; the page re-renders when it lands.
@@ -966,7 +966,7 @@ function sbLoadSuperSchools(token) {
 function schoolsPage() {
   // v94: the super admin's schools list (read-only in this step).
   var rows = (state.superSchools || []).map(function (s) {
-    return '<tr><td><b>' + esc(s.name || '—') + '</b></td><td>' + esc(s.city || '—') + '</td><td>' + esc(s.session || '—') + '</td><td>' + esc(s.owner_id || '—') + '</td><td>' + esc(s.created_at ? String(s.created_at).slice(0, 10) : '—') + '</td></tr>';
+    return '<tr><td><b>' + esc(s.name || 'â') + '</b></td><td>' + esc(s.city || 'â') + '</td><td>' + esc(s.session || 'â') + '</td><td>' + esc(s.owner_id || 'â') + '</td><td>' + esc(s.created_at ? String(s.created_at).slice(0, 10) : 'â') + '</td></tr>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('schools') + '</h2><p>' + t('schoolsSub') + '</p></div></div>' +
     '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thSchool') + '</th><th>' + t('thCity') + '</th><th>' + t('thSession') + '</th><th>' + t('thOwner') + '</th><th>' + t('thCreated') + '</th></tr></thead><tbody>' +
@@ -975,8 +975,8 @@ function schoolsPage() {
 function sbShowNoSchool() {
   // v28: a Supabase account with no school tied to it (no local school
   // account, no server school row, no signup metadata naming a school)
-  // is NOT a school. Show a clear message — never log it in as a school,
-  // never create a bogus school, never show an admin view — and drop the
+  // is NOT a school. Show a clear message â never log it in as a school,
+  // never create a bogus school, never show an admin view â and drop the
   // stored session so a refresh cannot revive it.
   sbClearSession();
   state.sb = null;
@@ -987,7 +987,7 @@ function sbShowNoSchool() {
 function sbFinishSupabaseLogin(data, email, pw) {
   var uid = data.user && data.user.id;
   // v59 (H-2): a token answer without a user id cannot be trusted to
-  // identify anyone — never fall back to the local account on it.
+  // identify anyone â never fall back to the local account on it.
   if (!uid) {
     var err59 = $('loginErr');
     err59.textContent = t('tInvalidCreds');
@@ -1016,12 +1016,12 @@ function sbFinishSupabaseLogin(data, email, pw) {
   // No local account for this Supabase user. A school is recognised in
   // two ways: a server school row owned by this user (a school signing
   // in on a second device), or signup metadata carrying a school name
-  // (the app's signup form always sends data.school — a fresh signup
+  // (the app's signup form always sends data.school â a fresh signup
   // whose migration has not run yet). Anything else has no school.
   sbGetServerSchoolId(uid, data.access_token).then(function (row) {
     var metaSchool = meta.school && String(meta.school).trim();
     if (!row && !metaSchool) {
-      // v94: a super admin has no school row and no signup metadata —
+      // v94: a super admin has no school row and no signup metadata â
       // check the server before giving up. If they are a super admin the
       // portal opens; otherwise the no-school message stands.
       sbCheckSuperAdmin(data.access_token, email, uid).then(function (isSuper) {
@@ -1040,7 +1040,7 @@ function sbFinishSupabaseLogin(data, email, pw) {
 }
 function sbLocalLogin(id, pw, err, offline) {
   var a = findAccount(id);
-  // v59 (H-4): local rate limit — 5 wrong guesses lock this email's LOCAL
+  // v59 (H-4): local rate limit â 5 wrong guesses lock this email's LOCAL
   // login on this device for 15 minutes (same pattern as the student PIN
   // lockout). Only a real account counts; an unknown email never locks
   // anything. The lock never blocks a server login, only this local check.
@@ -1054,11 +1054,11 @@ function sbLocalLogin(id, pw, err, offline) {
   if (ok && chk.legacy) upgradePwHash(a, pw); // v36: old djb2 hash verifies, then upgrades to salted SHA-256 on this login
   if (!a || !ok) {
     if (a) loginFailRecord(id);
-    // v99: a local wrong password counts server-side too, when online —
+    // v99: a local wrong password counts server-side too, when online â
     // otherwise the per-device lock is the only defence and 5 guesses
     // per device are free forever. Fire-and-forget; offline login is
     // unaffected. No ok-call here: clearing the server counter needs a
-    // GoTrue token (SQL 21), which a local login never has — the counter
+    // GoTrue token (SQL 21), which a local login never has â the counter
     // self-heals when its 15-minute lock expires, and a server login
     // clears it. Unknown emails no-op inside the RPC.
     if (a && !offline && sbIsOnline()) sbSchoolLoginFailed(id);
@@ -1070,7 +1070,7 @@ function sbLocalLogin(id, pw, err, offline) {
   err.classList.add('hidden');
   loginAs(a);
   // v59 (H-2): this login ran on the local account because the server
-  // could not be reached — say so out loud instead of logging in
+  // could not be reached â say so out loud instead of logging in
   // silently with sync off.
   if (offline) toast(t('sbOfflineLogin'));
   // v34 (P0-1): a school account that never got its server account (the
@@ -1085,7 +1085,7 @@ function sbLocalLogin(id, pw, err, offline) {
 }
 // v135 (audit fix): is the freshly-authenticated link target a platform
 // admin? Asked of the SERVER (ss_is_super_admin, SQL 31) with the new
-// session's token — the old code hard-coded the Super Admin's personal
+// session's token â the old code hard-coded the Super Admin's personal
 // email in the shipped bundle. Fails CLOSED: 'unknown' (RPC error,
 // offline mid-flight) holds the link instead of allowing it, because a
 // school linked to the Super Admin uid would put tenant data under the
@@ -1102,10 +1102,10 @@ function sbLinkServerAccount(account, pw, linkEmail) {
   // v27 signup was best-effort, so a failure (offline, GoTrue 429) left
   // the account local-only forever with re-signup blocked by the local
   // email-taken check. This retries the signup on login and from
-  // Settings → Server Backup. A 429 backs off 5 minutes and is never
+  // Settings â Server Backup. A 429 backs off 5 minutes and is never
   // spammed. If the server says the email is already registered
   // (created on another device), sign in instead of signing up.
-  // v69: the link email is editable in the modal — linkEmail (when given)
+  // v69: the link email is editable in the modal â linkEmail (when given)
   // is the server email, the LOCAL account keeps its own email, and the
   // link email is recorded as account.sbEmail. The Super Admin email can
   // never be a link target.
@@ -1117,7 +1117,7 @@ function sbLinkServerAccount(account, pw, linkEmail) {
   var localEmail = (account.email || '').trim().toLowerCase();
   var email = (linkEmail || account.email || '').trim().toLowerCase();
   if (!email || !pw) return Promise.resolve({ done: false, reason: 'no-credentials' });
-  // v135: no hard-coded Super Admin email here — the server check runs
+  // v135: no hard-coded Super Admin email here â the server check runs
   // after auth below (sbLinkTargetVerdict), before anything is saved.
   function saveLinked(uid) {
     account.sbUid = uid;
@@ -1135,7 +1135,7 @@ function sbLinkServerAccount(account, pw, linkEmail) {
     }
     if (res.ok && res.data && res.data.user && res.data.user.id) {
       // A signup without a session (email confirmation pending) is a
-      // brand-new auth user — it cannot be in ss_platform_admins.
+      // brand-new auth user â it cannot be in ss_platform_admins.
       if (!res.data.access_token) {
         saveLinked(res.data.user.id);
         sbSetStatus('pending');
@@ -1193,7 +1193,7 @@ function submitLinkServer(e) {
   // v135: the Super Admin check moved server-side (sbLinkTargetVerdict,
   // after auth). No personal email is hard-coded here any more.
   if (!pw) { err.textContent = t('tFillAll'); err.classList.remove('hidden'); return false; }
-  // The server account is created with THIS password — it must be the
+  // The server account is created with THIS password â it must be the
   // account's own password, not a typo, or the two accounts would diverge.
   if (!state.user || !verifyPw(pw, state.user).ok) {
     err.textContent = t('tInvalidCreds');
@@ -1214,7 +1214,7 @@ function submitLinkServer(e) {
 }
 function syncWelcomeHeading() {
   // v112: the login card's "Welcome back" heading stays visible above the
-  // password-reset forms — on a reset card it is the wrong heading. Show
+  // password-reset forms â on a reset card it is the wrong heading. Show
   // the reset title there instead (and hide the "Log in or sign up"
   // sub-line), and restore "Welcome back" on the login form. applyI18n
   // re-applies data-i18n on every language switch, so this runs after it
@@ -1289,7 +1289,7 @@ function doResetPassword(e) {
           saveAccounts(l2);
         }
       }
-    }).catch(function () { /* email lookup failed — server password still set */ });
+    }).catch(function () { /* email lookup failed â server password still set */ });
     sbRecoveryToken = null;
     try { history.replaceState(null, '', location.pathname); } catch (e2) {}
     $('resetForm').classList.add('hidden');
@@ -1371,11 +1371,11 @@ function sbMapFeeRecord(r, schoolId, stuMap) {
 }
 function sbMapTeacher(te, schoolId) {
   // v35: classes[] rides with the teacher row (supabase/08_teacher_classes.sql
-  // adds the column — apply it before v35 ships, or the upload 400s).
+  // adds the column â apply it before v35 ships, or the upload 400s).
   // v62: the teacher's login email + salted password hash ride with the
   // row too, so the teacher can log in from any device (SQL 18). The
   // hash-diff sync sees the new fields and PATCHes every teacher row up
-  // once. Only bcrypt$ / s256$ hashes are sent — a legacy djb2 hash is
+  // once. Only bcrypt$ / s256$ hashes are sent â a legacy djb2 hash is
   // skipped (the teacher logs in once on the school device, which
   // upgrades it, and syncs). The hash is never pulled back down: the
   // accounts store stays the source of truth.
@@ -1388,10 +1388,10 @@ function sbMapTeacher(te, schoolId) {
   return row;
 }
 function sbMapStaff(st, schoolId) {
-  // v90 (Phase 4): the staff row for ss_staff. Mirrors sbMapTeacher —
+  // v90 (Phase 4): the staff row for ss_staff. Mirrors sbMapTeacher â
   // the login email + salted password hash ride with the row, so the
   // staff member can log in from any device (SQL 30). Only bcrypt$ /
-  // s256$ hashes are sent — a legacy djb2 hash is skipped (the staff
+  // s256$ hashes are sent â a legacy djb2 hash is skipped (the staff
   // member logs in once on the school device, which upgrades it, and
   // syncs). The hash is never pulled back down: the accounts store
   // stays the source of truth. The role rides the row (the server
@@ -1406,7 +1406,7 @@ function sbMapStaff(st, schoolId) {
 }
 function sbMapClass(c, schoolId) {
   // v119 (Phase 5, Module 5): the class row for ss_classes. local_id
-  // is the class name itself — it IS the key, so a rename is a delete
+  // is the class name itself â it IS the key, so a rename is a delete
   // of the old key + an upsert of the new one (the diff handles both).
   return { school_id: schoolId, local_id: c.id || c.cls || '', cls: c.cls || '', subjects: Array.isArray(c.subjects) ? c.subjects.slice() : [] };
 }
@@ -1434,7 +1434,7 @@ function sbCounterNo(v) {
   // with HTTP 400 code 22P02 ("invalid input syntax for type
   // integer"), so RCP-2026-003 never landed and every sync cycle
   // failed with "Backup failed". Coerce here, at the upload mapping
-  // only — the local receipt keeps its label for display/print.
+  // only â the local receipt keeps its label for display/print.
   // Digits only: the hyphen in 'COUNTER-1' is a separator, not a
   // minus sign, so '-1' must never come out of this helper.
   if (typeof v === 'number' && isFinite(v)) return Math.floor(v);
@@ -1454,14 +1454,14 @@ function sbMapAudit(a, schoolId) {
   return { school_id: schoolId, ts: a.ts || new Date().toISOString(), actor: a.actor || 'system', action: a.action || '', details: a.details || '', local_id: a.localId || null };
 }
 function sbMapActivity(a, schoolId) {
-  // v42: every row in a bulk insert must carry the SAME key set —
+  // v42: every row in a bulk insert must carry the SAME key set â
   // PostgREST rejects mixed keys with PGRST102 "All object keys must
   // match". The old `if (a.ts)` left seed activities (no ts) without
   // created_at while logged activities carried it, so the mixed bulk
   // POST failed every cycle and the sync never completed (live v41:
-  // "Backup failed … (ss_activities: insert-ss_activities: PGRST102
+  // "Backup failed â¦ (ss_activities: insert-ss_activities: PGRST102
   // All object keys must match)"). A missing ts gets a fixed epoch
-  // fallback — deterministic, so the snapshot hash stays stable —
+  // fallback â deterministic, so the snapshot hash stays stable â
   // never a fresh timestamp, which would change the hash on every call.
   return { school_id: schoolId, icon: a.icon || '', bg: a.bg || '', title: a.title || '', sub: a.sub || '', created_at: a.ts || '1970-01-01T00:00:00.000Z', local_id: a.localId || null };
 }
@@ -1477,7 +1477,7 @@ function sbFlattenAttendance(d) {
   return out;
 }
 function sbCountUnique(arr, keyFn) {
-  // v52: the migration verify counts what the server can hold — one row
+  // v52: the migration verify counts what the server can hold â one row
   // per dedupe key. A legacy local DB can hold two rows for one id
   // (the v46 double-POST), and counting both made the verify fail
   // forever ("ss_fee_records 3/6") even when every unique row had
@@ -1489,7 +1489,7 @@ function sbCountUnique(arr, keyFn) {
 function sbLocalCounts(d) {
   return { students: sbCountUnique(d.students, function (s) { return s.id; }), feeRecords: sbCountUnique(d.feeRecords, function (r) { return r.id; }),
     feeStructure: sbCountUnique(d.feeStructure, function (f) { return (f.cls || '') + '|' + (f.type || 'Tuition'); }), attendance: sbFlattenAttendance(d).length,
-    // v39: only NUMBERED receipts count — a receipt saved offline has
+    // v39: only NUMBERED receipts count â a receipt saved offline has
     // no number yet and can never be on the server, so counting it
     // made the migration verify fail forever ("ss_receipts 0/1") even
     // when every numbered receipt had uploaded.
@@ -1505,7 +1505,7 @@ function sbLocalCounts(d) {
 function sbLocalCountsReal(d) {
   // v45: the migration guard + verification count only REAL rows.
   // The demo seed inflates every count (40 students, 12 teachers, 70
-  // fee records) and the seed never uploads — counting it made the
+  // fee records) and the seed never uploads â counting it made the
   // guard demand a migration the upload could never satisfy, so the
   // pull never ran, the seed never dropped locally, and the cycle never
   // completed (live v44: the flooded device stayed unsynced). Fee
@@ -1514,7 +1514,7 @@ function sbLocalCountsReal(d) {
   return { students: real('ss_students', d.students), feeRecords: real('ss_fee_records', d.feeRecords),
     feeStructure: sbCountUnique(d.feeStructure, function (f) { return (f.cls || '') + '|' + (f.type || 'Tuition'); }),
     attendance: sbFlattenAttendance(d).filter(function (a) { return !sbIsSeedStudentId(a.studentId, d); }).length,
-    // v39: only NUMBERED receipts count — a receipt saved offline has
+    // v39: only NUMBERED receipts count â a receipt saved offline has
     // no number yet and can never be on the server.
     receipts: sbCountUnique((d.receipts || []).filter(function (rc) { return !!rc.receiptNo && !sbIsSeedStudentId(rc.studentId, d); }), function (rc) { return rc.receiptNo; }),
     auditLog: sbCountUnique(d.auditLog, sbAuditKey),
@@ -1523,7 +1523,7 @@ function sbLocalCountsReal(d) {
     marks: sbCountUnique((d.marks || []).filter(function (m) { return !sbIsSeedExamId(m.examId, d) && !sbIsSeedStudentId(m.studentId, d); }), function (m) { return m.examId + '|' + m.studentId; }),
     homework: real('ss_homework', d.homework), notices: real('ss_notices', d.notices), holidays: real('ss_holidays', d.holidays) };
 }
-// v64: paged fetch — the sync pull/download/verify/upload-dedupe used to
+// v64: paged fetch â the sync pull/download/verify/upload-dedupe used to
 // fetch each table with a single `limit=5000`, so a table with more than
 // 5000 rows was silently truncated: a new device downloaded a partial
 // school, the pull never saw the missing rows, and the verify failed
@@ -1531,7 +1531,7 @@ function sbLocalCountsReal(d) {
 // a keyset cursor (id=gt.<last id>), so a row inserted by another device
 // mid-pull can neither be skipped nor duplicated, and the loop stops
 // the moment a page comes back short. If a page returns rows but the
-// cursor does not advance, the server is misbehaving — throw instead of
+// cursor does not advance, the server is misbehaving â throw instead of
 // looping forever. Returns the sbRest shape ({ok, data}) so every
 // existing caller keeps working unchanged.
 var SB_PAGE_SIZE = 5000;
@@ -1558,7 +1558,7 @@ function sbFetchAllPages(table, selectCols, schoolId, token) {
 function sbNormTs(v) { return String(v || '').slice(0, 19); }
 // v135 (audit fix): the audit-log dedupe key (ts to the second + actor +
 // action + details) and the activities key (title + sub) collapsed two
-// DISTINCT entries that happened to share them — the second one was
+// DISTINCT entries that happened to share them â the second one was
 // deduped away and never reached the server. New entries carry a stable
 // localId (minted once in logAudit/logActivity, stored on the entry, never
 // regenerated per sync) which the key now includes. Legacy entries have no
@@ -1574,7 +1574,7 @@ function sbUploadMissing(token, schoolId, table, selectCols, rows, keyFn, onInse
   if (!rows.length) {
     // v39: the id map must still be built when nothing is fresh. The
     // students/exams steps feed stuMap/examMap to every dependent row
-    // below, and the early return skipped the GET that fills them — so
+    // below, and the early return skipped the GET that fills them â so
     // on any cycle where every student was already synced, a fee
     // record or receipt added since was silently dropped by the
     // student_id filter and could only ever land via the migration
@@ -1592,7 +1592,7 @@ function sbUploadMissing(token, schoolId, table, selectCols, rows, keyFn, onInse
     existing.forEach(function (row) { seen[keyFn(row)] = true; });
     var missing = rows.filter(function (row) {
       if (seen[keyFn(row)]) return false;
-      if (sbTombUidCurrent && sbTombHas(sbTombUidCurrent, table, keyFn(row))) return false; // v105: a tombstoned row was deleted — never re-POST it, even when the caller bypassed the snapshot filter (the v47 bypass uploads every local row and relies on this dedupe)
+      if (sbTombUidCurrent && sbTombHas(sbTombUidCurrent, table, keyFn(row))) return false; // v105: a tombstoned row was deleted â never re-POST it, even when the caller bypassed the snapshot filter (the v47 bypass uploads every local row and relies on this dedupe)
       return true;
     });
     if (onInserted) onInserted(existing);
@@ -1624,7 +1624,7 @@ function sbEnsureServerSchool(account, sbUid, token, d) {
     var p = d.profile || {};
     var e = d.feeExtras || {};
     var row = { owner_id: sbUid, name: p.name || account.school || '', city: p.city || '', principal: p.principal || '',
-      phone: p.phone || '', email: p.email || account.email || '', session: p.session || '2025–26',
+      phone: p.phone || '', email: p.email || account.email || '', session: p.session || '2025â26',
       address: p.address || '', logo_data_url: p.logo || null, plan: 'Active', status: 'active', is_demo: false,
       adm_counter: d.admCounter || 1, receipt_counter: d.receiptCounter || 1,
       admission_fee: e.admissionFee || 0, caution_money: e.cautionMoney || 0,
@@ -1632,7 +1632,7 @@ function sbEnsureServerSchool(account, sbUid, token, d) {
     return sbRest('POST', 'ss_schools', token, row, 'return=representation').then(function (r2) {
       if (r2.status === 409) {
         // v34 (P1-11): another device created the school row a moment
-        // ago — the unique index on ss_schools(owner_id) rejected the
+        // ago â the unique index on ss_schools(owner_id) rejected the
         // second insert. Re-read the existing row instead of failing.
         return sbRest('GET', 'ss_schools?select=id&owner_id=eq.' + encodeURIComponent(sbUid), token).then(function (r3) {
           if (r3.ok && Array.isArray(r3.data) && r3.data.length) {
@@ -1657,7 +1657,7 @@ function sbVerifyCounts(token, schoolId, counts) {
     ['ss_exams', 'local_id', counts.exams], ['ss_marks', 'exam_id', counts.marks],
     ['ss_homework', 'local_id', counts.homework], ['ss_notices', 'local_id', counts.notices], ['ss_holidays', 'local_id', counts.holidays]
   ];
-  // v52: the 12 count checks ran as 12 SEQUENTIAL round-trips — the
+  // v52: the 12 count checks ran as 12 SEQUENTIAL round-trips â the
   // manual "Back Up Now" path spent most of its 90s+ stall here (and
   // in the upload pass). The checks are independent reads, so they fire
   // in one batch; the first failure is still reported in table order,
@@ -1666,7 +1666,7 @@ function sbVerifyCounts(token, schoolId, counts) {
     return sbFetchAllPages(c[0], c[1], schoolId, token).then(function (r) {
       var got = Array.isArray(r.data) ? r.data.length : 0;
       // Server may hold MORE rows than this device (another device already
-      // migrated) — that is fine. Fewer means this upload did not land.
+      // migrated) â that is fine. Fewer means this upload did not land.
       if (got < c[2]) return { ok: false, detail: c[0] + ' ' + got + '/' + c[2] };
       return { ok: true, detail: '' };
     }).catch(function () { return { ok: false, detail: 'verify-' + c[0] }; });
@@ -1675,24 +1675,24 @@ function sbVerifyCounts(token, schoolId, counts) {
     return { ok: true, detail: '' };
   });
 }
-/* v32: upload-missing pass — the core of the automatic sync. Every local
+/* v32: upload-missing pass â the core of the automatic sync. Every local
    row the server lacks goes up into the EXISTING server school row
    (sbEnsureServerSchool finds it, never duplicates it). Runs on EVERY
    sync cycle, never blocked by the migration flag (the flag only records
    that the first full migration completed) and never skipped because a
-   server school row already exists — that skip is exactly what stranded
+   server school row already exists â that skip is exactly what stranded
    the phone's student in the live VM School failure (laptop logged in
    first and created an empty server school; the phone's re-login then
    took the pull path and its upload never ran). Idempotent:
    sbUploadMissing dedupes by local_id. Rows already in the sync
    snapshot were synced before, so their absence on the server means
-   they were deleted elsewhere — the pull drops them locally instead of
+   they were deleted elsewhere â the pull drops them locally instead of
    resurrecting them. Never rejects: a failed pass returns {done:false}
    and the cycle's pull + needs-migration fallback still runs. */
 /* ================= v45: the demo-seed quarantine =================
    Live 9 Nov 2026 (v44 verification): the test school went from 1
    student to 40 in ~5 minutes, its school row renamed to "St. Xavier
-   School" with counters 41/1, and ~149 receipt numbers were minted —
+   School" with counters 41/1, and ~149 receipt numbers were minted â
    all demo-seed rows (the harness fixture set, now in
    scripts/seed-fixtures.js) uploaded from
    a client whose local DB still held the pre-v36 seed. The fixtures have no
@@ -1702,29 +1702,29 @@ function sbVerifyCounts(token, schoolId, counts) {
    A seed row is recognisable by its local_id AND its content: the seed
    mints short ids (stu1..stu40, t1..t12, fee1..fee200, ex1..ex5,
    hw1..hw4, n1..n3) while the app mints uniqueId() ids (prefix +
-   base-36 timestamp + counter + random — the real V21 Test Kumar row
-   is stu1794162292000, 13 digits, never 1–40). The id alone is NOT
+   base-36 timestamp + counter + random â the real V21 Test Kumar row
+   is stu1794162292000, 13 digits, never 1â40). The id alone is NOT
    enough: ordinary rows can reuse a short id (the harness fixtures use
    stu1/stu2/ex1/fee1 for real rows), so the fingerprint table below is
-   precomputed from the seed fixtures themselves — id plus the seed's exact content for that id
+   precomputed from the seed fixtures themselves â id plus the seed's exact content for that id
    (name + numbers for a student, name + subject + class for a teacher,
    and so on). A row is seed only when both match; an edited seed row
-   escapes the quarantine, which is safe — it was user-edited, and the
+   escapes the quarantine, which is safe â it was user-edited, and the
    server cleanup removes the pristine rows.
    Quarantine rules, all in this version:
-   (1) a seed row is never hashed (sbSyncTableHashes) — the diff never
+   (1) a seed row is never hashed (sbSyncTableHashes) â the diff never
        queues it and the snapshot never marks it synced;
    (2) the upload pass never POSTs it;
    (3) the repair pass never re-numbers it or mints for it (the live
-       flood's stu1, ADM-2025-001, collides with the real V21 row — the
+       flood's stu1, ADM-2025-001, collides with the real V21 row â the
        repair would otherwise mint it a new number and upload it as a
        41st student);
-   (4) the flush never POSTs/PATCHes it — a queued seed entry is
+   (4) the flush never POSTs/PATCHes it â a queued seed entry is
        dropped as skipped, so the outbox drains instead of replaying
        seed rows one by one forever (the live flood's one-at-a-time
        ~1.4s cadence was the flush, not the bulk upload pass);
    (5) the pull drops a local seed row the server no longer has
-       (mergeById + the attendance/marks keep-loops) — demo data is not
+       (mergeById + the attendance/marks keep-loops) â demo data is not
        user data, so dropping it cannot lose anything the account
        created; a real local-only row is still kept exactly as before.
    The seed PROFILE is fingerprinted separately (name + city +
@@ -1736,7 +1736,7 @@ function sbVerifyCounts(token, schoolId, counts) {
 // (sbSeedFingerprints below) reads this table instead of calling
 // seedDB() at runtime, because seedDB() no longer ships in app.js.
 // If the fixtures ever change, regenerate this table from the new
-// seedDB() output and update the counts in this comment — a stale
+// seedDB() output and update the counts in this comment â a stale
 // table silently stops quarantining the changed rows.
 var SB_SEED_FINGERPRINTS = {
   "students": {"stu1":"Aarav Verma|ADM-2025-001|ENR-001","stu2":"Vivaan Choudhary|ADM-2025-002|ENR-002","stu3":"Aditya Roy|ADM-2025-003|ENR-003","stu4":"Arjun Gupta|ADM-2025-004|ENR-004","stu5":"Sai Ranjan|ADM-2025-005|ENR-005","stu6":"Reyansh Kumari|ADM-2025-006|ENR-006","stu7":"Krishna Mishra|ADM-2025-007|ENR-007","stu8":"Ishaan Srivastava|ADM-2025-008|ENR-008","stu9":"Rohan Devi|ADM-2025-009|ENR-009","stu10":"Kabir Tiwari|ADM-2025-010|ENR-010","stu11":"Ananya Dubey|ADM-2025-011|ENR-011","stu12":"Diya Kumar|ADM-2025-012|ENR-012","stu13":"Aadhya Yadav|ADM-2025-013|ENR-013","stu14":"Myra Sinha|ADM-2025-014|ENR-014","stu15":"Sara Singh|ADM-2025-015|ENR-015","stu16":"Ira Jha|ADM-2025-016|ENR-016","stu17":"Priya Patel|ADM-2025-017|ENR-017","stu18":"Riya Sharma|ADM-2025-018|ENR-018","stu19":"Anika Pandey|ADM-2025-019|ENR-019","stu20":"Navya Das|ADM-2025-020|ENR-020","stu21":"Aarush Verma|ADM-2025-021|ENR-021","stu22":"Vihaan Choudhary|ADM-2025-022|ENR-022","stu23":"Aryan Roy|ADM-2025-023|ENR-023","stu24":"Dhruv Gupta|ADM-2025-024|ENR-024","stu25":"Meera Ranjan|ADM-2025-025|ENR-025","stu26":"Kavya Kumari|ADM-2025-026|ENR-026","stu27":"Sneha Mishra|ADM-2025-027|ENR-027","stu28":"Pooja Srivastava|ADM-2025-028|ENR-028","stu29":"Nikhil Devi|ADM-2025-029|ENR-029","stu30":"Varun Tiwari|ADM-2025-030|ENR-030","stu31":"Rahul Dubey|ADM-2025-031|ENR-031","stu32":"Sana Kumar|ADM-2025-032|ENR-032","stu33":"Riya Kumari|ADM-2025-033|ENR-033","stu34":"Priya Kumari|ADM-2025-034|ENR-034","stu35":"Ishita Yadav|ADM-2025-035|ENR-035","stu36":"Tanvi Sinha|ADM-2025-036|ENR-036","stu37":"Yash Singh|ADM-2025-037|ENR-037","stu38":"Om Jha|ADM-2025-038|ENR-038","stu39":"Dev Patel|ADM-2025-039|ENR-039","stu40":"Rudra Sharma|ADM-2025-040|ENR-040"},
@@ -1750,7 +1750,7 @@ var SB_SEED_FINGERPRINTS = {
 var __sbSeedFp = null;
 function sbSeedFingerprints() {
   // Phase D (L-8): returns the precomputed SB_SEED_FINGERPRINTS table
-  // (generated from the seed fixtures at v67) — per local_id, the
+  // (generated from the seed fixtures at v67) â per local_id, the
   // fields that identify a row as the demo seed. seedDB() itself no
   // longer ships in app.js, so the table is the only copy the
   // quarantine has; it must be regenerated if the fixtures change.
@@ -1782,9 +1782,9 @@ function sbSeedRowContent(table, row) {
 function sbIsSeedStudentId(id, d) {
   // A student id is a seed id only when the local row for it carries
   // the seed's content for that id. Without a local row to check, it
-  // cannot be proven seed — so it is not quarantined (a partial DB
+  // cannot be proven seed â so it is not quarantined (a partial DB
   // that simply omits the students array must never be treated as
-  // seed evidence — v39 guard test).
+  // seed evidence â v39 guard test).
   if (!sbIsSeedLocalId('ss_students', id)) return false;
   var dbx = d || (typeof db !== 'undefined' ? db : null);
   if (!dbx) return false;
@@ -1833,7 +1833,7 @@ function sbIsSeedProfileParts(p) {
 }
 function sbIsSeedProfile(d) {
   if (!d || !sbIsSeedProfileParts(d.profile)) return false;
-  // A real school could share the name — the seed rows prove it is the
+  // A real school could share the name â the seed rows prove it is the
   // demo set, not a coincidence.
   function anySeed(table, arr) { return (arr || []).some(function (r) { return sbIsSeedRow(table, r); }); }
   return anySeed('ss_students', d.students) || anySeed('ss_teachers', d.teachers) || anySeed('ss_exams', d.exams)
@@ -1844,7 +1844,7 @@ function sbIsSeedProfile(d) {
 // parsed (attendance 'date|cls|studentId', marks 'examId|studentId';
 // a receipt resolves through the local receipt of that number). The
 // students/exams upload steps use this to decide whether a
-// snapshot-filtered parent must still upload — a parent the server
+// snapshot-filtered parent must still upload â a parent the server
 // lacks but a pending child references is an unconfirmed upload, not
 // a delete elsewhere.
 function sbOutboxReferencedParents(sbUid, d) {
@@ -1885,10 +1885,10 @@ function sbSyncUploadMissing(account, sbUid, token) {
   var byId = {};
   (d.students || []).forEach(function (s) { byId[s.id] = s; });
   var snap = sbSnapLoad(account.uid);
-  // v52: read once per pass — the outbox does not change while the
+  // v52: read once per pass â the outbox does not change while the
   // upload runs (only the flush touches it, and it runs after).
   var outboxParents52 = sbOutboxReferencedParents(sbUid, d);
-  function notSynced(table, key) { if (sbTombHas(sbUid, table, key)) return false; return !(snap[table] && snap[table][key] !== undefined); } // v105: a tombstoned row is never "fresh" — it was deleted, not new
+  function notSynced(table, key) { if (sbTombHas(sbUid, table, key)) return false; return !(snap[table] && snap[table][key] !== undefined); } // v105: a tombstoned row is never "fresh" â it was deleted, not new
   function freshRows(table, rows, keyFn) {
     return rows.filter(function (row) { return notSynced(table, keyFn(row)); });
   }
@@ -1899,14 +1899,14 @@ function sbSyncUploadMissing(account, sbUid, token) {
   // with the remaining tables; the pass reports the first failed
   // table in its detail, and the status line shows it (see
   // sbStatusText). A failed students step leaves stuMap empty, so
-  // dependent rows are skipped by their own student_id filters —
+  // dependent rows are skipped by their own student_id filters â
   // nothing uploads with a dangling foreign key.
-  // v47: EVERY upload step uses the v39/v46 bypass — a row the server
+  // v47: EVERY upload step uses the v39/v46 bypass â a row the server
   // lacks uploads even when a stale snapshot entry says it already
   // synced. The trap is structural, not table-specific: the snapshot
   // is only rebuilt after a pull, the pull only runs after a
   // successful verify, and the verify fails exactly when a row the
-  // snapshot claims is missing from the server — so one stale entry
+  // snapshot claims is missing from the server â so one stale entry
   // stalls the cycle forever (v39 receipts, v46 fee records, v47
   // attendance, each on the next table in the chain). sbUploadMissing
   // dedupes against the server's actual rows, so an already-uploaded
@@ -1928,7 +1928,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
   }
   // v39: the server school row this device knew BEFORE this pass.
   // If sbEnsureServerSchool returns a DIFFERENT id, the school row
-  // was recreated (a full server wipe) — the receipts snapshot
+  // was recreated (a full server wipe) â the receipts snapshot
   // bypass below is then skipped, so a wiped school's receipts are
   // not resurrected on this device.
   var prevServerSchoolId = (sbServerSchoolMap()[account.uid]) || null;
@@ -1958,21 +1958,21 @@ function sbSyncUploadMissing(account, sbUid, token) {
   }
   function stepStudents() {
     return step('ss_students', function () {
-      // v47: students deliberately KEEP the snapshot filter — they are
+      // v47: students deliberately KEEP the snapshot filter â they are
       // the anchor rows, and the filter is what implements the designed
       // server-wins delete (v31: a student deleted on the server drops
       // locally instead of resurrecting). The bypass would re-upload a
-      // deleted student and, through stuMap, its fee records too — the
+      // deleted student and, through stuMap, its fee records too â the
       // v31 test proves it. No live stale-student stall exists (the V21
       // row IS on the server; the v44 failure was the stored id map,
       // already fixed), and the onInserted GET below still fills stuMap
       // when nothing is fresh, so dependent rows keep resolving.
-      // v52: NARROWED bypass — a student the snapshot claims is synced
+      // v52: NARROWED bypass â a student the snapshot claims is synced
       // but the server lacks still uploads when a pending outbox entry
       // references it (itself, or a child attendance/mark/fee/receipt
       // row). Without this the child entry keeps forever: the parent
       // never uploads, the map never resolves, the flush never drains
-      // and the status stays pending (live v51 — the v51 fix only
+      // and the status stays pending (live v51 â the v51 fix only
       // dropped entries whose local row is GONE; here the row exists).
       // A student deleted on the server with NO pending reference
       // still drops (v31): the bypass fires only on outbox evidence.
@@ -1984,7 +1984,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
       return sbUploadMissing(token, schoolId, 'ss_students', 'local_id,id',
         stuBase,
         function (row) { return row.local_id; },
-        // v44: persist the id map too — the old code only kept it in
+        // v44: persist the id map too â the old code only kept it in
         // memory, so a row uploaded (or re-created) by this pass left
         // the stored map pointing at a deleted id, and every later
         // push trusted that stale id and 409'd on admission_no.
@@ -2004,7 +2004,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
     });
   }
   function stepStaff() {
-    // v90 (Phase 4): staff members upload like teachers — Phase A (no
+    // v90 (Phase 4): staff members upload like teachers â Phase A (no
     // id map needed). A staff row with no login account yet (created by
     // an older build) still uploads the name/role/classes; the login
     // lands when the account is created.
@@ -2019,7 +2019,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
     });
   }
   function stepClasses() {
-    // v119 (Phase 5, Module 5): class rows upload like teachers — Phase A (no id map needed). local_id is the class name itself.
+    // v119 (Phase 5, Module 5): class rows upload like teachers â Phase A (no id map needed). local_id is the class name itself.
     return step('ss_classes', function () {
       var clRows = (d.classes || []).filter(function (c) { return !sbIsSeedRow('ss_classes', c, d); }).map(function (c) { return sbMapClass(c, schoolId); });
       var clUpload = schoolRecreated
@@ -2034,7 +2034,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
     return step('ss_exams', function () {
       var exRows = (d.exams || []).filter(function (e) { return !sbIsSeedRow('ss_exams', e, d); }).map(function (e) { return sbMapExam(e, schoolId); });
       // v47: the bypass (see the note above step()).
-      // v52: the same narrowed bypass as students — an exam the
+      // v52: the same narrowed bypass as students â an exam the
       // snapshot claims is synced but the server lacks still uploads
       // when a pending marks entry references it, or the marks keep
       // forever with it.
@@ -2047,7 +2047,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
       return sbUploadMissing(token, schoolId, 'ss_exams', 'local_id,id',
         exUpload,
         function (row) { return row.local_id; },
-        // v44: same map persist as students — a row uploaded by this
+        // v44: same map persist as students â a row uploaded by this
         // pass must not leave a stale stored id behind.
         function (rows) { rows.forEach(function (r) { if (r.local_id) { examMap[r.local_id] = r.id; sbSrvIdSet(sbUid, 'ss_exams', r.local_id, r.id); } }); });
     });
@@ -2056,8 +2056,8 @@ function sbSyncUploadMissing(account, sbUid, token) {
     return step('ss_fee_records', function () {
       var feeRows = (d.feeRecords || []).filter(function (r) { return !sbIsSeedRow('ss_fee_records', r, d); }).map(function (r) { return sbMapFeeRecord(r, schoolId, stuMap); }).filter(function (p) { return !!p.student_id; });
       // v46: a fee record the server lacks uploads even when a stale
-      // snapshot entry says it already synced — the live test account
-      // proved the trap (10 Nov 2026: "Backup failed … (ss_fee_records
+      // snapshot entry says it already synced â the live test account
+      // proved the trap (10 Nov 2026: "Backup failed â¦ (ss_fee_records
       // 0/3)" every cycle, although the upload pass reported done:true).
       // This is the v39 receipts bypass, extended to fee records:
       // sbUploadMissing dedupes against the server's actual rows by
@@ -2076,10 +2076,10 @@ function sbSyncUploadMissing(account, sbUid, token) {
   function stepAttendance() {
     return step('ss_attendance', function () {
       var attRows = sbFlattenAttendance(d).filter(function (a) { return !!stuMap[a.studentId] && !sbIsSeedStudentId(a.studentId, d); });
-      // v47: THE fix — the v39/v46 bypass, applied here at last. The
+      // v47: THE fix â the v39/v46 bypass, applied here at last. The
       // step used to drop rows through an inline notSynced() filter,
       // so a stale snapshot entry hid the real V21 mark forever and
-      // every cycle failed at the verify ("Backup failed …
+      // every cycle failed at the verify ("Backup failed â¦
       // (ss_attendance 0/1)"). The filter now runs only when the
       // school row itself was recreated (a full server wipe). The
       // quarantine does not flag the real row: its student id is
@@ -2100,14 +2100,14 @@ function sbSyncUploadMissing(account, sbUid, token) {
       // snapshot entry says it already synced. The live test account
       // proved the trap: RCP-2026-003 was minted by the server RPC
       // (receipt_counter 4) yet never landed in ss_receipts (0 rows),
-      // and the snapshot filter made every cycle skip it — then the
+      // and the snapshot filter made every cycle skip it â then the
       // migration guard failed the cycle forever ("Backup failed").
       // sbUploadMissing dedupes against the server's actual rows by
       // receipt_no, so an already-uploaded receipt is never re-POSTed.
       // Skipped only when the school row itself was recreated (a full
       // server wipe): then the snapshot still means "deleted
       // elsewhere" and the pull drops the row instead of resurrecting
-      // it. Numberless offline receipts are excluded here as before —
+      // it. Numberless offline receipts are excluded here as before â
       // the repair pass mints their numbers first.
       var rcUpload = schoolRecreated
         ? freshRows('ss_receipts', rcRows, function (row) { return row.receipt_no; })
@@ -2119,7 +2119,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
   function stepMarks() {
     return step('ss_marks', function () {
       var markRows = (d.marks || []).filter(function (m) { return examMap[m.examId] && stuMap[m.studentId] && !sbIsSeedExamId(m.examId, d) && !sbIsSeedStudentId(m.studentId, d); });
-      // v47: the bypass (see the note above step()) — the marks step
+      // v47: the bypass (see the note above step()) â the marks step
       // carried the same inline notSynced() trap as attendance.
       var markUpload = schoolRecreated
         ? markRows.filter(function (m) { return notSynced('ss_marks', m.examId + '|' + m.studentId); })
@@ -2155,7 +2155,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
     });
   }
   function stepHolidays() {
-    // v100: holidays upload like notices (SQL 38) — INSERT-only, the
+    // v100: holidays upload like notices (SQL 38) â INSERT-only, the
     // fetch-filter inside sbUploadMissing skips rows the server has.
     return step('ss_holidays', function () {
       var hRows = (d.holidays || []).filter(function (h) { return !sbIsSeedRow('ss_holidays', h, d); }).map(function (h) { return sbMapHoliday(h, schoolId); });
@@ -2206,16 +2206,16 @@ function sbSyncUploadMissing(account, sbUid, token) {
       serverAdmCounter = row.adm_counter || 1;
       serverReceiptCounter = row.receipt_counter || 1;
     }
-    // v52: the 12 table steps ran SEQUENTIALLY — each step waited for
+    // v52: the 12 table steps ran SEQUENTIALLY â each step waited for
     // the previous table's GET + POST before starting, so one upload
     // pass was ~12 sequential round-trips (plus ensure + precheck) and
     // one cycle was ~17 + 2E round-trips (E = outbox entries). At real
-    // browser→Supabase latency that is 60–120s: the 90s+ "Syncing…"
-    // stall (live v51). The steps split into two dependency phases —
+    // browserâSupabase latency that is 60â120s: the 90s+ "Syncingâ¦"
+    // stall (live v51). The steps split into two dependency phases â
     // Phase A needs no id map (fee structure, students, teachers,
     // exams, notices, audit log, activities) and Phase B needs the
     // maps Phase A fills (fee records, attendance, receipts, marks,
-    // homework) — and each phase fires in one parallel batch, so the
+    // homework) â and each phase fires in one parallel batch, so the
     // pass is ~2 round-trips of tables instead of ~12. The school-row
     // PATCH stays last, after the tables. Per-table error handling is
     // unchanged: step() still records a failure per table and the
@@ -2226,16 +2226,16 @@ function sbSyncUploadMissing(account, sbUid, token) {
   }).then(function () {
     // School profile + counters, last in the chain so a failure here
     // can never block the table uploads. Two cases:
-    // - Server school is EMPTY (no students yet — e.g. created by
+    // - Server school is EMPTY (no students yet â e.g. created by
     //   another device logging in first): push the full local profile
     //   and counters, so the next pull does not reset them (an admission
     //   counter reset to 1 would mint a duplicate admission number).
     // - Server school already holds real data: push ONLY the counters,
-    //   and only upwards (max of local/server) — never clobber the
+    //   and only upwards (max of local/server) â never clobber the
     //   populated server row's profile with this device's stale one.
     // Runs only when this device never synced the school row (no
     // ss_schools entry in the snapshot) and the local profile has a
-    // name — a fresh device with an empty profile must never blank the
+    // name â a fresh device with an empty profile must never blank the
     // server row's name.
     if ((!snap.ss_schools || snap.ss_schools.school === undefined) && d.profile && d.profile.name && !sbIsSeedProfile(d)) {
       var payload = serverHasStudents
@@ -2273,7 +2273,7 @@ function sbMaybeMigrate(account, sbUid, token, force) {
   if (!sbIsOnline()) { sbSetStatus('offline'); return Promise.resolve({ done: false, reason: 'offline' }); }
   sbSetStatus('uploading');
   var d = db; // the account's DB is loaded by loginAs before this runs
-  // v45: verify against the REAL rows only — the seed never uploads,
+  // v45: verify against the REAL rows only â the seed never uploads,
   // so requiring it on the server would fail the migration forever.
   var counts = sbLocalCountsReal(d);
   return sbSyncUploadMissing(account, sbUid, token).then(function (up) {
@@ -2300,13 +2300,13 @@ function sbMaybeMigrate(account, sbUid, token, force) {
 function sbRetryMigration(btn) {
   if (!state.user || state.user.role !== 'school') { toast(t('sbStatusNotSchool')); return; }
   if (!state.sb || !state.sb.uid) { toast(t('sbStatusPending')); return; }
-  var restoreBtn = setBtnLoading(btn, '⏳ ' + t('sbBackupNow')); // L-18 loading state
+  var restoreBtn = setBtnLoading(btn, 'â³ ' + t('sbBackupNow')); // L-18 loading state
   toast(t('sbStatusUploading'));
   sbGetValidToken().then(function (tok) {
     if (!tok) { sbSetStatus(sbSessionExpired ? 'session-expired' : 'offline'); toast(t(sbSessionExpired ? 'sbStatusSessionExpired' : 'sbStatusOffline')); renderApp(); return; }
     return sbMaybeMigrate(state.user, state.sb.uid, tok, true).then(function (r) {
       if (!r.done) { toast(t('sbBackupFailed')); renderApp(); return; }
-      // v44: the migration only covers the upload pass — it never
+      // v44: the migration only covers the upload pass â it never
       // flushes the outbox, so a queued entry could still be failing
       // (live: the students 409) while this toast claimed success.
       // "Backup complete." only when the outbox is actually empty
@@ -2319,11 +2319,11 @@ function sbRetryMigration(btn) {
     });
   }).catch(function () { toast(t('sbBackupFailed')); }).then(restoreBtn, restoreBtn);
 }
-// v30: second-device download — the inverse of sbMaybeMigrate. A school
+// v30: second-device download â the inverse of sbMaybeMigrate. A school
 // signing in on a new phone has its data on the server but an empty local
 // workspace; this pulls it down. SAFETY FIRST: the local store is filled
 // ONLY when it is completely empty (no students AND no fee records AND no
-// teachers). If ANY local data exists the download is skipped entirely —
+// teachers). If ANY local data exists the download is skipped entirely â
 // upload wins, local data is never overwritten and never deleted.
 // Download never blocks login (fire-and-forget, like migration) and never
 // sets the migration flag, so new local rows still upload later via
@@ -2344,7 +2344,7 @@ function sbRowToStudent(row) {
     previousSchool: row.previous_school || '', previousClass: row.previous_class || '',
     admissionNo: row.admission_no || '', admissionDate: row.admission_date || '',
     session: row.session || '', status: row.status || 'Active', result: (row.result === undefined || row.result === null) ? null : row.result,
-    parentPin: undefined, // Phase 1 (H-3): a server PIN is NEVER stored as plaintext locally. A missing PIN leaves the field unset (v55: never null — a null used to land here and migrateV12 only refilled `undefined`, the live V21/2108 loss, v54).
+    parentPin: undefined, // Phase 1 (H-3): a server PIN is NEVER stored as plaintext locally. A missing PIN leaves the field unset (v55: never null â a null used to land here and migrateV12 only refilled `undefined`, the live V21/2108 loss, v54).
     parentPinHash: (!row.parent_pin ? undefined : ((String(row.parent_pin).indexOf('s256$') === 0 || String(row.parent_pin).indexOf('bcrypt$') === 0) ? String(row.parent_pin) : hashPin(row.parent_pin))), // Phase 1 (H-3): a hash arrives as-is; a legacy PLAINTEXT server PIN is hashed immediately on pull (hashPin is sync, so this is safe in the pull path). The hash uploads on the next sync and heals the server row; until then one pull may re-hash with a fresh salt, exactly like the old migrateV54 flow. Dropping the value instead would have locked those students out until an admin reset each PIN.
     photo: row.photo_data_url || row.photo_url || null, photoUrl: row.photo_url || null, // Phase 3 (v78): Storage URL first-class; the data URL still displays when present (offline-safe)
     documents: row.documents || { birthCert: false, tc: false, tcNumber: '', other: '' },
@@ -2357,7 +2357,7 @@ function sbRowToFeeRecord(row, stuMap) {
 }
 // v31: apply a full set of server rows onto a local DB (server wins).
 // Shared by the v30 empty-store download and the v31 server-first pull.
-// Replaces every synced list wholesale — callers must have passed the
+// Replaces every synced list wholesale â callers must have passed the
 // safety guards first (empty store, or the pull guard + outbox). Returns
 // the server->local id maps (students, exams) so callers can rebuild the
 // local->server map. Admission requests are included here: the download
@@ -2380,14 +2380,14 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // Phase 3 (v79) + Phase 5 (v113): keep an un-synced local profile.
   // Content tables keep un-synced rows via the v33/v46 merge below;
   // the profile had no such keep, so a pull between a settings save
-  // and the flush wiped the new value — live v78: a school logo saved
+  // and the flush wiped the new value â live v78: a school logo saved
   // at 12:38 UTC was wiped by the pull, the next diff re-queued the
   // school row with an empty logo (sbOutboxAdd replaces the older
   // entry for the same row), and the flush sent both logo fields as
   // null, so the logo was lost on the server although its Storage
   // object had uploaded fine. v79 kept only the logo; v113 keeps the
   // whole profile (name/city/principal/phone/email/session/address/
-  // logo/logoUrl + feeExtras) under the same gate — a pending
+  // logo/logoUrl + feeExtras) under the same gate â a pending
   // ss_schools upsert proves the edit has not reached the server yet.
   // With no pending upsert the download/pull server-wins behaviour
   // (v30/v31) is unchanged, and the counters always come from the
@@ -2397,7 +2397,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // entry for the school row. The upsert alone is not proof of an
   // edit: on a first sync the catch-up diff queues the local default
   // profile (account name, fees 0) as an upsert, and keeping it would
-  // wipe the server's real fees — the v30 download regression (the
+  // wipe the server's real fees â the v30 download regression (the
   // local profile was kept, admission fee stayed 0 instead of 100).
   // The snapshot entry proves this device has synced the profile
   // before, so a pending upsert after that is a genuine edit since
@@ -2418,7 +2418,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   } catch (e113) {}
   if (schoolRow) {
     if (!keepProfile113 || !d.profile) {
-      d.profile = { name: schoolRow.name || (d.profile && d.profile.name) || '', city: schoolRow.city || '', principal: schoolRow.principal || '', phone: schoolRow.phone || '', email: schoolRow.email || '', session: schoolRow.session || '2025–26', address: schoolRow.address || '' };
+      d.profile = { name: schoolRow.name || (d.profile && d.profile.name) || '', city: schoolRow.city || '', principal: schoolRow.principal || '', phone: schoolRow.phone || '', email: schoolRow.email || '', session: schoolRow.session || '2025â26', address: schoolRow.address || '' };
       if (schoolRow.logo_data_url || schoolRow.logo_url) d.profile.logo = schoolRow.logo_data_url || schoolRow.logo_url;
       d.profile.logoUrl = schoolRow.logo_url || null; // Phase 3 (v78)
       d.feeExtras = { admissionFee: schoolRow.admission_fee || 0, cautionMoney: schoolRow.caution_money || 0, annualCharges: schoolRow.annual_charges || 0, transportFee: schoolRow.transport_fee || 0 };
@@ -2427,12 +2427,12 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     d.receiptCounter = schoolRow.receipt_counter || 1;
     if (account) sbSaveServerSchool(account.uid, sid);
   }
-  // Fee structure is merged below (after the snapshot helpers) — a
+  // Fee structure is merged below (after the snapshot helpers) â a
   // locally-added row that has not uploaded yet must survive the pull
   // (v34, P1-1); the old wholesale replacement wiped it.
   // v33: MERGE, never replace wholesale. A local row that has NOT
-  // reached the server yet — not on the server AND not in the last
-  // synced snapshot — is KEPT, and the caller keeps it out of the
+  // reached the server yet â not on the server AND not in the last
+  // synced snapshot â is KEPT, and the caller keeps it out of the
   // snapshot so the next cycle still uploads it. A failed upload must
   // never delete local data (9 Nov 2026, VM School: a colliding laptop
   // student was wiped by a server-wins pull and existed nowhere).
@@ -2446,7 +2446,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   var kept = {};
   function keep(table, key) { if (!kept[table]) kept[table] = {}; kept[table][key] = true; }
   // v45: snapshot the seed student/exam ids BEFORE the merges below
-  // drop the seed rows — the dependent merges (fee records, attendance,
+  // drop the seed rows â the dependent merges (fee records, attendance,
   // marks, receipts) prove a row is seed by its student/exam, and that
   // proof vanishes once the student/exam row is gone (the live v44
   // flood: the first pull dropped the 40 students but kept their seed
@@ -2458,7 +2458,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   (d.students || []).forEach(function (s) { if (sbIsSeedStudentId(s.id, d)) seedStudentIds[s.id] = true; });
   var seedExamIds = {};
   (d.exams || []).forEach(function (e) { if (sbIsSeedExamId(e.id, d)) seedExamIds[e.id] = true; });
-  // v46: pending outbox upserts, keyed by the SUPABASE uid — the
+  // v46: pending outbox upserts, keyed by the SUPABASE uid â the
   // outbox is stored per Supabase uid (see SB_OUTBOX_KEY), not per
   // local account uid, so the merge must load it with the session
   // uid (the account's sbUid, falling back to the live session).
@@ -2468,12 +2468,12 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // synced although it never landed, and the next pull wiped the
   // local row). A row deleted elsewhere has no pending upsert, so it
   // still drops. Shared by mergeById (fee records) and the receipts
-  // keep-loop below — the v39 receipts load read the local account
+  // keep-loop below â the v39 receipts load read the local account
   // uid and so always saw an empty outbox; the keep never fired.
   // v47 extends the same keep to attendance and marks, whose merges
   // used to drop a queued row on snapshot grounds with no outbox
   // check at all.
-  var outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {}, teachers: {}, staff: {}, classes: {}, notices: {} }; // v127: notices join the merge-keep — a locally edited notice must survive the pull like a fee record does
+  var outboxUpsert46 = { feeRecords: {}, receipts: {}, attendance: {}, marks: {}, students: {}, exams: {}, teachers: {}, staff: {}, classes: {}, notices: {} }; // v127: notices join the merge-keep â a locally edited notice must survive the pull like a fee record does
   try {
     var uid46 = (account && account.sbUid) || (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
     if (uid46) {
@@ -2495,13 +2495,13 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   } catch (e46) {}
   // v102: pending outbox DELETEs, same uid rule as the upserts above.
   // A row the user deleted on THIS device (delete op queued, flush not
-  // run yet) must NOT be pulled back by the cycle's pull — the pull runs
+  // run yet) must NOT be pulled back by the cycle's pull â the pull runs
   // BEFORE the flush, so without this the server row is restored locally
   // and the post-flush pull then keeps it as local-only and re-uploads
   // it: a delete can never stick (the pull-before-flush resurrection,
   // reproduced in the harness as v101c). Live 12 Nov the delete op
-  // never even queued (Pending uploads stayed 0) — a separate fault
-  // the v103 diagnostics below are built to expose — but this skip is
+  // never even queued (Pending uploads stayed 0) â a separate fault
+  // the v103 diagnostics below are built to expose â but this skip is
   // still required: once the op IS queued, the pull must not undo it.
   // the same key the diff/flush use (local id for mergeById tables,
   // cls|type for fee structure, date|cls|studentId for attendance,
@@ -2520,7 +2520,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   } catch (e102) {}
   // v105: delete tombstones, same uid rule as outboxDelete102. A local
   // row whose delete already PUSHED (the entry left the outbox) must
-  // drop here, not be kept as local-only — the other tab's stale copy
+  // drop here, not be kept as local-only â the other tab's stale copy
   // is exactly that row, and keeping it lets its next cycle re-upload
   // it (live 12 Nov: the holiday came back with a new server uuid).
   var tomb105 = {};
@@ -2529,7 +2529,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     if (uid105) tomb105 = sbTombPrune(sbTombLoad(uid105));
   } catch (e105) {}
   function tombRequeue106(table, key) {
-    // v106: a server row whose delete is tombstoned is a zombie — a stale
+    // v106: a server row whose delete is tombstoned is a zombie â a stale
     // tab re-created it after the delete pushed (live 12 Nov: the v104
     // tab re-POSTed the holiday at 12:58:28 IST, minutes after the v105
     // tab's flush deleted it). Skipping it is not enough: the row would
@@ -2546,7 +2546,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   }
   function mergeById(table, localArr, serverRows, mapFn) {
     // v47: the server can hold two rows for one local id (live: the v46
-    // verification POSTed each of the 3 fee records twice — 6 server
+    // verification POSTed each of the 3 fee records twice â 6 server
     // rows, 3 local ids). The mirror keeps ONE row per id: the first
     // server row wins, the later duplicate is dropped. Without this
     // the pull doubles the local list (and the Fee Collected total).
@@ -2554,8 +2554,8 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     var onServer = {};
     (serverRows || []).forEach(function (row) {
       var r = mapFn(row);
-      if (r.id && outboxDelete102[table] && outboxDelete102[table][r.id]) return; // v102: pending delete wins — do not pull the row back
-      if (r.id && tomb105[table] && tomb105[table][r.id]) { var upMap131 = { ss_fee_records: outboxUpsert46.feeRecords, ss_receipts: outboxUpsert46.receipts, ss_students: outboxUpsert46.students, ss_exams: outboxUpsert46.exams, ss_teachers: outboxUpsert46.teachers, ss_staff: outboxUpsert46.staff, ss_classes: outboxUpsert46.classes, ss_notices: outboxUpsert46.notices }[table]; var localHas131 = (localArr || []).some(function (lr) { return lr && lr.id === r.id; }) || !!(upMap131 && upMap131[r.id]); if (localHas131) { sbTombRemove(uid105, table, r.id); if (tomb105[table]) delete tomb105[table][r.id]; } else { tombRequeue106(table, r.id); return; } } // v106: a tombstoned server row is a zombie — skip it and re-queue its delete; v131: unless THIS device still has the row locally (or a pending upsert for it) — a deliberate re-creation by this device, not a zombie — then clear the tombstone and keep the row. A timestamp alone cannot tell them apart (a stale tab's re-POST is also created after the tombstone), so local presence is the signal, not created_at.
+      if (r.id && outboxDelete102[table] && outboxDelete102[table][r.id]) return; // v102: pending delete wins â do not pull the row back
+      if (r.id && tomb105[table] && tomb105[table][r.id]) { var upMap131 = { ss_fee_records: outboxUpsert46.feeRecords, ss_receipts: outboxUpsert46.receipts, ss_students: outboxUpsert46.students, ss_exams: outboxUpsert46.exams, ss_teachers: outboxUpsert46.teachers, ss_staff: outboxUpsert46.staff, ss_classes: outboxUpsert46.classes, ss_notices: outboxUpsert46.notices }[table]; var localHas131 = (localArr || []).some(function (lr) { return lr && lr.id === r.id; }) || !!(upMap131 && upMap131[r.id]); if (localHas131) { sbTombRemove(uid105, table, r.id); if (tomb105[table]) delete tomb105[table][r.id]; } else { tombRequeue106(table, r.id); return; } } // v106: a tombstoned server row is a zombie â skip it and re-queue its delete; v131: unless THIS device still has the row locally (or a pending upsert for it) â a deliberate re-creation by this device, not a zombie â then clear the tombstone and keep the row. A timestamp alone cannot tell them apart (a stale tab's re-POST is also created after the tombstone), so local presence is the signal, not created_at.
       if (r.id && onServer[r.id]) return;
       if (r.id) onServer[r.id] = true;
       serverList.push(r);
@@ -2563,22 +2563,22 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     var merged = serverList.slice();
     (localArr || []).forEach(function (r) {
       if (!r.id || onServer[r.id]) return;
-      if (tomb105[table] && tomb105[table][r.id]) return; // v105: deleted (tombstoned) — drop, never keep as local-only
+      if (tomb105[table] && tomb105[table][r.id]) return; // v105: deleted (tombstoned) â drop, never keep as local-only
       if (snapHas(table, r.id)) {
         // v46: a fee record whose upload is still unconfirmed (a
         // pending outbox upsert) is KEPT, never dropped on snapshot
-        // grounds — the snapshot entry is stale, not proof of a delete
+        // grounds â the snapshot entry is stale, not proof of a delete
         // elsewhere. v132: a Collected fee record is kept the same way
-        // even with no pending upsert — a Collected record is the
+        // even with no pending upsert â a Collected record is the
         // payment's evidence and is never legitimately deleted (the UI
         // only deletes PENDING records), so a missing server row for it
         // is an unconfirmed upload or a stale delete elsewhere, never a
         // deliberate delete; a PENDING fee still drops here.
-        if ((table === 'ss_fee_records' && outboxUpsert46.feeRecords[r.id]) || (table === 'ss_notices' && outboxUpsert46.notices[r.id]) || (table === 'ss_fee_records' && r.status === 'Collected')) { merged.push(r); keep(table, r.id); } // v127: a notice with a pending upsert is kept like a fee record — the pull must not overwrite the edit the flush is about to push; v132: a Collected fee record is never dropped on snapshot grounds — it is the payment's evidence, and the snapshot only proves this device pushed it once, not that the server still has it (a stale delete elsewhere leaves exactly this state); keep() excludes it from the snapshot refresh, so the next diff re-queues its upsert and the flush re-POSTs it
+        if ((table === 'ss_fee_records' && outboxUpsert46.feeRecords[r.id]) || (table === 'ss_notices' && outboxUpsert46.notices[r.id]) || (table === 'ss_fee_records' && r.status === 'Collected')) { merged.push(r); keep(table, r.id); } // v127: a notice with a pending upsert is kept like a fee record â the pull must not overwrite the edit the flush is about to push; v132: a Collected fee record is never dropped on snapshot grounds â it is the payment's evidence, and the snapshot only proves this device pushed it once, not that the server still has it (a stale delete elsewhere leaves exactly this state); keep() excludes it from the snapshot refresh, so the next diff re-queues its upsert and the flush re-POSTs it
         return;
       }
       // v45: a local demo-seed row the server no longer has is dropped,
-      // never kept — it was never the account's data, so dropping it
+      // never kept â it was never the account's data, so dropping it
       // cannot lose anything the account created (the 9 Nov never-lose
       // rule protects user rows only; a real local-only row is still
       // kept exactly as before). This is what returns a flooded device
@@ -2596,7 +2596,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // still drops. When the server has no structure at all, the local
   // defaults stay.
   if ((byTable.ss_fee_structure || []).length) {
-    var srvFs = byTable.ss_fee_structure.map(function (row) { return { cls: row.cls || '', type: row.fee_type || 'Tuition', amount: row.amount || 0 }; }).filter(function (f) { var k = (f.cls || '') + '|' + (f.type || 'Tuition'); if (outboxDelete102.ss_fee_structure && outboxDelete102.ss_fee_structure[k]) return false; if (tomb105.ss_fee_structure && tomb105.ss_fee_structure[k]) { tombRequeue106('ss_fee_structure', k); return false; } return true; }); // v102: pending delete wins — do not pull the row back; v106: a tombstoned row is a zombie — skip it and re-queue its delete
+    var srvFs = byTable.ss_fee_structure.map(function (row) { return { cls: row.cls || '', type: row.fee_type || 'Tuition', amount: row.amount || 0 }; }).filter(function (f) { var k = (f.cls || '') + '|' + (f.type || 'Tuition'); if (outboxDelete102.ss_fee_structure && outboxDelete102.ss_fee_structure[k]) return false; if (tomb105.ss_fee_structure && tomb105.ss_fee_structure[k]) { tombRequeue106('ss_fee_structure', k); return false; } return true; }); // v102: pending delete wins â do not pull the row back; v106: a tombstoned row is a zombie â skip it and re-queue its delete
     var srvFsKeys = {};
     srvFs.forEach(function (f) { srvFsKeys[(f.cls || '') + '|' + (f.type || 'Tuition')] = true; });
     var mergedFs = srvFs.slice();
@@ -2613,12 +2613,12 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   var stuMap = {}, examMap = {};
   var oldStudents = d.students || [];
   d.students = mergeById('ss_students', oldStudents, byTable.ss_students || [], function (row) { var s = sbRowToStudent(row); stuMap[row.id] = s.id; return s; });
-  // v56: a student with a pending outbox upsert keeps its LOCAL row through the pull —
+  // v56: a student with a pending outbox upsert keeps its LOCAL row through the pull â
   // the server row is the pre-change version, and letting it win wipes the unconfirmed
   // local change. Live v55: the admin re-set the PIN to 2108 (queued), the pull replaced
   // the local hash(2108) with the server's stale hash(0000), the flush pushed 2108, and
   // the pass-1 tail re-diff then re-queued the stale local row (0000) and pass 2
-  // re-uploaded it — undoing the push in the same flush, so the login kept failing.
+  // re-uploaded it â undoing the push in the same flush, so the login kept failing.
   // Same class as the v46/v47 keeps for fee records, receipts, attendance and marks;
   // students were the one table without it. A row deleted elsewhere has no pending
   // upsert, so it still drops; a seed row never carries a pending upsert (the diff
@@ -2636,13 +2636,13 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
       return s;
     });
   })();
-  // v55: merge-keep for the student PIN — a server row carrying no PIN
+  // v55: merge-keep for the student PIN â a server row carrying no PIN
   // must never wipe the local PIN/hash. The pull replaces the row
   // wholesale (server wins), so when the server has no parent_pin,
   // restore the local PIN fields from the pre-merge row (same class as
   // the v47 merge-keeps). A cleared PIN (parentPin === '') stays
   // cleared; a stripped record (null/undefined, no hash) is left for
-  // the v55 repair — the live V21/2108 loss was exactly this: the pull
+  // the v55 repair â the live V21/2108 loss was exactly this: the pull
   // overwrote the local PIN with the server's null on every cycle.
   (function () {
     var srvPinById = {};
@@ -2650,7 +2650,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     var oldById = {};
     oldStudents.forEach(function (s) { oldById[s.id] = s; });
     d.students.forEach(function (s) {
-      if (srvPinById[s.id]) return; // the server carries a PIN — server wins
+      if (srvPinById[s.id]) return; // the server carries a PIN â server wins
       var old = oldById[s.id];
       if (!old) return;
       if (old.parentPinHash) s.parentPinHash = old.parentPinHash;
@@ -2658,11 +2658,11 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
       else if (typeof old.parentPin === 'string' && old.parentPin) s.parentPinHash = hashPin(old.parentPin); // Phase 1 (H-3): a legacy plaintext PIN is hashed, never kept as plaintext (loadDB normally hashes it before the sync runs, so this is a backstop, not the main path)
     });
   })();
-  // v81 (Phase 3): photo heal — a local student with NO photo takes the
+  // v81 (Phase 3): photo heal â a local student with NO photo takes the
   // server's photo when the server has one. A missing local photo is
   // never a deliberate delete (a delete queues an upsert that clears
   // the server fields too), so a server photo here means the local row
-  // is stale — a pull that ran before the photo uploaded, or a v56 keep
+  // is stale â a pull that ran before the photo uploaded, or a v56 keep
   // that returned the pre-photo local row. This only FILLS a missing
   // photo; it never overwrites a local photo.
   (function () {
@@ -2683,7 +2683,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   sbRefreshSignedPhotos(); // v137: re-mint signed URLs for any photos this pull filled
   var oldTeachers = d.teachers || [];
   d.teachers = mergeById('ss_teachers', d.teachers || [], byTable.ss_teachers || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [], deleted: !!row.deleted }; });
-  // v117 (Module 4): merge-keep for a removed teacher — a local removal
+  // v117 (Module 4): merge-keep for a removed teacher â a local removal
   // with a pending upsert must survive the pull (the server still says
   // deleted=false until the flush lands), exactly like the student
   // (v56) and exam (v58) keeps. A removal made elsewhere has no
@@ -2703,10 +2703,10 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // v90 (Phase 4): the staff list mirrors the server. The pull never
   // carries a password hash (the accounts store is the source of truth)
   // and never overwrites a local-only staff row that has not uploaded
-  // yet — mergeById keeps un-synced rows, like it does for teachers.
+  // yet â mergeById keeps un-synced rows, like it does for teachers.
   var oldStaff = d.staff || [];
   d.staff = mergeById('ss_staff', d.staff || [], byTable.ss_staff || [], function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', role: row.role || 'staff', classes: Array.isArray(row.classes) ? row.classes.slice() : [], deleted: !!row.deleted }; });
-  // v117 (Module 4): merge-keep for removed staff — same as teachers above.
+  // v117 (Module 4): merge-keep for removed staff â same as teachers above.
   (function () {
     var oldById117s = {};
     oldStaff.forEach(function (st) { oldById117s[st.id] = st; });
@@ -2721,10 +2721,10 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   })();
   // v119 (Phase 5, Module 5): the class list mirrors the server. The
   // pull never overwrites a local-only class that has not uploaded
-  // yet — mergeById keeps un-synced rows, like it does for teachers.
+  // yet â mergeById keeps un-synced rows, like it does for teachers.
   var oldClasses = d.classes || [];
   d.classes = mergeById('ss_classes', d.classes || [], byTable.ss_classes || [], function (row) { return { id: row.local_id || row.cls || '', cls: row.cls || row.local_id || '', subjects: Array.isArray(row.subjects) ? row.subjects.slice() : [] }; });
-  // v119: merge-keep for a class with a pending upsert — same as teachers (v117).
+  // v119: merge-keep for a class with a pending upsert â same as teachers (v117).
   (function () {
     var oldById119 = {};
     oldClasses.forEach(function (c) { oldById119[c.cls] = c; });
@@ -2740,19 +2740,19 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   var oldExams = d.exams || [];
   d.exams = mergeById('ss_exams', d.exams || [], byTable.ss_exams || [], function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100, deleted: !!row.deleted }; examMap[row.id] = e.id; return e; });
   // v67 (SQL 20): the server row now carries the deleted flag, so the
-  // pull above reads it — a delete from another device applies, and a
+  // pull above reads it â a delete from another device applies, and a
   // restore from another device applies too. The old B6 unconditional
   // keep (which forced the local flag back on every cycle) is GONE:
   // it would have blocked exactly that restore. The only local
-  // override left is the v58 pending-upsert keep below — a delete or
+  // override left is the v58 pending-upsert keep below â a delete or
   // restore queued on THIS device but not yet flushed still holds its
   // local flag through a pull, keyed on the outbox entry.
-  // v58: a pending exam upsert keeps its LOCAL row through the pull —
+  // v58: a pending exam upsert keeps its LOCAL row through the pull â
   // the same class as the v56 students keep. Live v57 (10 Nov 2026):
   // the admin edited an exam name, the pull replaced the local edit
   // with the server's stale row before the flush could PATCH it, the
   // flush pushed the edit, and the pass-1 tail re-diff re-queued the
-  // stale local row and pass 2 re-uploaded it — undoing the push in
+  // stale local row and pass 2 re-uploaded it â undoing the push in
   // the same flush, so the edit reverted on reload. A soft-deleted
   // exam queued the same way (see sbQueueExamChange58) keeps its
   // deleted flag through the pull as well. A row deleted elsewhere
@@ -2775,7 +2775,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   })();
   d.feeRecords = mergeById('ss_fee_records', d.feeRecords || [], byTable.ss_fee_records || [], function (row) { return sbRowToFeeRecord(row, stuMap); });
   // Attendance: server rows fold back into the 'date|cls' map, then
-  // local attendance that has NOT uploaded yet is kept — for ANY
+  // local attendance that has NOT uploaded yet is kept â for ANY
   // student, not just kept students (v34, P1-1: an offline mark for an
   // already-synced student was wiped because the old code kept only
   // marks of kept students). A mark that IS in the snapshot but absent
@@ -2785,8 +2785,8 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   (byTable.ss_attendance || []).forEach(function (row) {
     var localId = stuMap[row.student_id];
     if (!localId) return;
-    if (outboxDelete102.ss_attendance && outboxDelete102.ss_attendance[(row.att_date || '') + '|' + (row.cls || '') + '|' + localId]) return; // v102: pending delete wins — do not pull the mark back
-    if (tomb105.ss_attendance && tomb105.ss_attendance[(row.att_date || '') + '|' + (row.cls || '') + '|' + localId]) { var attKey131 = (row.att_date || '') + '|' + (row.cls || '') + '|' + localId; var attSlot131 = (row.att_date || '') + '|' + (row.cls || ''); var attLocal131 = !!(oldAtt[attSlot131] && oldAtt[attSlot131][localId] !== undefined) || !!outboxUpsert46.attendance[attKey131]; if (attLocal131) { sbTombRemove(uid105, 'ss_attendance', attKey131); delete tomb105.ss_attendance[attKey131]; } else { tombRequeue106('ss_attendance', attKey131); return; } } // v106: tombstoned — zombie, skip + re-queue its delete; v131: unless THIS device still has the mark locally (or a pending upsert for it) — a deliberate re-mark by this device — then clear the tombstone and keep the mark
+    if (outboxDelete102.ss_attendance && outboxDelete102.ss_attendance[(row.att_date || '') + '|' + (row.cls || '') + '|' + localId]) return; // v102: pending delete wins â do not pull the mark back
+    if (tomb105.ss_attendance && tomb105.ss_attendance[(row.att_date || '') + '|' + (row.cls || '') + '|' + localId]) { var attKey131 = (row.att_date || '') + '|' + (row.cls || '') + '|' + localId; var attSlot131 = (row.att_date || '') + '|' + (row.cls || ''); var attLocal131 = !!(oldAtt[attSlot131] && oldAtt[attSlot131][localId] !== undefined) || !!outboxUpsert46.attendance[attKey131]; if (attLocal131) { sbTombRemove(uid105, 'ss_attendance', attKey131); delete tomb105.ss_attendance[attKey131]; } else { tombRequeue106('ss_attendance', attKey131); return; } } // v106: tombstoned â zombie, skip + re-queue its delete; v131: unless THIS device still has the mark locally (or a pending upsert for it) â a deliberate re-mark by this device â then clear the tombstone and keep the mark
     var key = (row.att_date || '') + '|' + (row.cls || '');
     if (!d.attendance[key]) d.attendance[key] = {};
     d.attendance[key][localId] = row.status || 'Present';
@@ -2797,7 +2797,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
       var parts = key.split('|');
       var snapKey = parts[0] + '|' + parts[1] + '|' + sid;
       // v47: a mark whose upload is still unconfirmed (a pending
-      // outbox upsert) is KEPT, never dropped on snapshot grounds —
+      // outbox upsert) is KEPT, never dropped on snapshot grounds â
       // the v46 fee-records keep, extended to attendance.
       if (snapHas('ss_attendance', snapKey)) {
         if (outboxUpsert46.attendance[snapKey]) {
@@ -2819,15 +2819,15 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   // wins); same number + different content = a collision, kept for the
   // repair pass; no number yet (offline) = always kept.
   // v39: a receipt whose upload was never confirmed must not be
-  // dropped on snapshot grounds alone — a stale snapshot entry (marked
+  // dropped on snapshot grounds alone â a stale snapshot entry (marked
   // synced although the row never landed) used to wipe the local
   // receipt on the next pull, so the receipt view vanished after its
   // first render. A pending outbox upsert for the number is proof the
   // upload is still unconfirmed: keep the row (and out of the
   // snapshot) so the next cycle re-attempts it. A receipt with no
-  // pending upload still drops — it was deleted elsewhere.
+  // pending upload still drops â it was deleted elsewhere.
   // v46: the receipts keep uses the shared outbox set built above
-  // (keyed by the Supabase uid) — the v39 load read the local
+  // (keyed by the Supabase uid) â the v39 load read the local
   // account uid and always saw an empty outbox, so the keep never
   // fired. Same trap as the fee records above.
   var outboxRc = outboxUpsert46.receipts;
@@ -2836,7 +2836,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     return { receiptNo: row.receipt_no || '', studentId: stuMap[row.student_id] || '', admissionNo: row.admission_no || '', name: row.student_name || '', cls: row.cls || '', session: row.session || '', date: row.receipt_date || '', month: row.month || '', counterNo: row.counter_no || 0, lines: row.lines || [], payMode: row.pay_mode || 'Cash', payDate: row.pay_date || '', bank: row.bank || '', number: row.number || '', total: row.total || 0, totalWords: row.total_words || '', collector: row.collector || '' };
   });
   // v42: the server may hold duplicate rows for one collection (a past
-  // cycle minted a new number for the same fee and uploaded it — live:
+  // cycle minted a new number for the same fee and uploaded it â live:
   // 192 rows for 3 collections). The local mirror keeps only the
   // EARLIEST number per collection so the display shows the original
   // 001/002/003, not the latest duplicate, and the mirror never holds
@@ -2856,7 +2856,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
         if (idx !== -1) deduped[idx] = r;
         earliestByContent[k] = r;
       }
-      // else: a later duplicate of the same collection — drop it.
+      // else: a later duplicate of the same collection â drop it.
     });
     d.receipts = deduped;
   })();
@@ -2865,7 +2865,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   oldReceipts.forEach(function (rc) {
     if (!rc.receiptNo) { d.receipts.push(rc); return; }
     // v45: a receipt for a demo-seed student is seed data, not a
-    // collection — it drops with the seed row.
+    // collection â it drops with the seed row.
     if (seedStudentIds[rc.studentId]) return;
     var srv = serverRcByNo[rc.receiptNo];
     if (!srv) {
@@ -2887,8 +2887,8 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   (byTable.ss_marks || []).forEach(function (row) {
     if (!examMap[row.exam_id] || !stuMap[row.student_id]) return;
     var m = { examId: examMap[row.exam_id], studentId: stuMap[row.student_id], marks: row.marks };
-    if (outboxDelete102.ss_marks && outboxDelete102.ss_marks[m.examId + '|' + m.studentId]) return; // v102: pending delete wins — do not pull the mark back
-    if (tomb105.ss_marks && tomb105.ss_marks[m.examId + '|' + m.studentId]) { tombRequeue106('ss_marks', m.examId + '|' + m.studentId); return; } // v106: tombstoned — zombie, skip + re-queue its delete
+    if (outboxDelete102.ss_marks && outboxDelete102.ss_marks[m.examId + '|' + m.studentId]) return; // v102: pending delete wins â do not pull the mark back
+    if (tomb105.ss_marks && tomb105.ss_marks[m.examId + '|' + m.studentId]) { tombRequeue106('ss_marks', m.examId + '|' + m.studentId); return; } // v106: tombstoned â zombie, skip + re-queue its delete
     d.marks.push(m);
     serverMarkKeys[m.examId + '|' + m.studentId] = true;
   });
@@ -2896,7 +2896,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     var key = m.examId + '|' + m.studentId;
     if (serverMarkKeys[key]) return;
     // v47: a mark whose upload is still unconfirmed (a pending outbox
-    // upsert) is KEPT, never dropped on snapshot grounds — same keep
+    // upsert) is KEPT, never dropped on snapshot grounds â same keep
     // as attendance above (v46 fee-records pattern).
     if (snapHas('ss_marks', key)) {
       if (outboxUpsert46.marks[key]) { d.marks.push(m); keep('ss_marks', key); }
@@ -2920,10 +2920,10 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
 function sbRetryDownload(btn) {
   if (!state.user || state.user.role !== 'school') { toast(t('sbStatusNotSchool')); return; }
   if (!state.sb || !state.sb.uid) { toast(t('sbStatusPending')); return; }
-  var restoreBtn = setBtnLoading(btn, '⏳ ' + t('sbDownloadNow')); // L-18 loading state
-  // v31: the Download button is now the manual refresh — a server-wins
+  var restoreBtn = setBtnLoading(btn, 'â³ ' + t('sbDownloadNow')); // L-18 loading state
+  // v31: the Download button is now the manual refresh â a server-wins
   // pull (same guards as login) followed by an outbox flush.
-  // Phase D (L-6): the old empty-store-only download was removed —
+  // Phase D (L-6): the old empty-store-only download was removed â
   // it had zero callers.
   toast(t('sbDownloadStart'));
   sbSyncStart(state.user, state.sb.uid, null).then(function (r) {
@@ -2941,7 +2941,7 @@ function sbRetryDownload(btn) {
    them, and offline changes flush on reconnect. Local-only accounts (no
    server session) never call the server and behave exactly as v30.
    Safety: the pull NEVER wipes local data when the school has never
-   migrated and the server is empty for a table that has local rows — it
+   migrated and the server is empty for a table that has local rows â it
    runs the migration upload instead. A row that disappears locally is
    only deleted on the server for fee records, fee structure, attendance,
    marks and holidays (the ones the app hard-deletes); anything else is restored
@@ -2955,12 +2955,12 @@ function sbRetryDownload(btn) {
    interleave. The outbox carries the full local row (not just a key), so
    a pull that replaces the mirror mid-flight cannot lose an offline edit:
    the flush pushes the queued row, then a second pull restores it.
-   v32: FULLY AUTOMATIC — one serialized cycle (upload-missing -> pull
+   v32: FULLY AUTOMATIC â one serialized cycle (upload-missing -> pull
    -> flush) on login, app start, focus / visibilitychange, the online
    event, a 30s interval while open, and after every local save's push.
    The upload pass runs on every cycle (never blocked by the migration
    flag, never skipped because a server school row exists) into the
-   existing school row — the v31 login fired the migration and the pull
+   existing school row â the v31 login fired the migration and the pull
    in parallel, so a laptop-first login left the phone's student stranded
    until the user pressed Back Up Now. That manual step is gone: the
    buttons in Settings stay as manual overrides only. At most one cycle
@@ -2968,7 +2968,7 @@ function sbRetryDownload(btn) {
    v33: atomic server-side numbering + never-lose pull. Admission and
    receipt numbers for server accounts come from the ss_next_adm_no /
    ss_next_receipt_no RPCs (mint-until-free against the server's taken
-   set — the live counter can sit behind the highest used number, so
+   set â the live counter can sit behind the highest used number, so
    the RPC alone re-mints a taken number); the repair pass re-numbers
    colliding rows and mints numbers for offline-saved rows BEFORE the
    upload in every cycle; the pull MERGES instead of replacing, so a
@@ -3013,12 +3013,12 @@ function sbOutboxSave(uid, list) { try { localStorage.setItem(sbOutboxKey(uid), 
 function sbOutboxAdd(uid, entry) {
   // One pending entry per (table, key): a newer change to the same row
   // replaces the older one, so the outbox never replays stale payloads.
-  // The `at` timestamp keeps the EARLIEST queue time — but ONLY for an
+  // The `at` timestamp keeps the EARLIEST queue time â but ONLY for an
   // unchanged re-queue (the same edit re-diffed, e.g. an offline edit
   // on reconnect: its conflict judgment still uses when the edit was
   // first made). A CHANGED row is a genuinely newer edit and carries
   // its own at. Keeping the old at for a changed row made the flush's
-  // last-write-wins check drop it as stale — live 13 Nov (v118): a
+  // last-write-wins check drop it as stale â live 13 Nov (v118): a
   // teacher created 01:36:12 and deleted 01:36:19 inherited at
   // 01:36:12, but the server row's updated_at (set by the create's own
   // INSERT, 01:36:14) is newer, so the delete was dropped as a
@@ -3029,7 +3029,7 @@ function sbOutboxAdd(uid, entry) {
     if (list[i].table === entry.table && list[i].key === entry.key) {
       var sameRow118 = JSON.stringify(list[i].row || null) === JSON.stringify(entry.row || null);
       if (sameRow118 && list[i].at && (!entry.at || list[i].at < entry.at)) entry.at = list[i].at;
-      // v33: a failure reason survives a re-queue — the entry keeps
+      // v33: a failure reason survives a re-queue â the entry keeps
       // retrying, and the reason says why the last attempt failed.
       if (list[i].failReason && !entry.failReason) entry.failReason = list[i].failReason;
       list[i] = entry; done = true; break;
@@ -3045,12 +3045,12 @@ function sbOutboxRemove(uid, entry) {
   return list;
 }
 function sbOutboxClear(uid) { try { localStorage.removeItem(sbOutboxKey(uid)); } catch (e) {} }
-// v105: delete tombstones — a row the user deleted must stay deleted
+// v105: delete tombstones â a row the user deleted must stay deleted
 // across TABS. The outbox is shared (localStorage) but a pushed delete
 // leaves it, so a second tab holding a STALE in-memory copy of the row
 // would re-upload it on its next cycle (live 12 Nov: the holiday delete
 // pushed, and a stale tab re-POSTed the holiday with a NEW server uuid
-// minutes later — the new row's created_at proved it). A tombstone is
+// minutes later â the new row's created_at proved it). A tombstone is
 // written when a delete is queued AND when it pushes; the upload pass
 // refuses to POST a tombstoned row, and the pull drops a tombstoned
 // local row instead of keeping it as local-only. 24h TTL: long enough
@@ -3083,7 +3083,7 @@ function sbSyncResetMemory() {
   if (sbSyncTimer) { clearTimeout(sbSyncTimer); sbSyncTimer = null; }
   sbSyncSnapshot = null; sbSyncSnapUid = null;
 }
-/* v32: automatic pull — no button, no refresh, no logout/login. While
+/* v32: automatic pull â no button, no refresh, no logout/login. While
    the app is open and a school is logged in, the full cycle runs on a
    30s interval plus every foreground event (focus / visibilitychange /
    online) and after every local save's push. The cycle itself re-checks
@@ -3095,10 +3095,10 @@ var sbSyncIntervalId = null;
 function sbSyncBackgroundTick() {
   // v53: background triggers (the 30s timer, online, tab visible,
   // window focus) SKIP entirely when a cycle is already in flight or a
-  // follow-up is already queued — they never queue a second cycle
-  // behind the first. A cycle takes 60–75s live on a legacy outbox, so
+  // follow-up is already queued â they never queue a second cycle
+  // behind the first. A cycle takes 60â75s live on a legacy outbox, so
   // the 30s timer used to queue a follow-up behind every in-flight
-  // cycle and the status line showed "Syncing…" almost continuously.
+  // cycle and the status line showed "Syncingâ¦" almost continuously.
   // Manual Back Up Now and the post-save debounce keep the existing
   // join/queue behaviour (explicit user work).
   if (sbSyncPromise || sbSyncCyclePending) return;
@@ -3146,7 +3146,7 @@ function sbSyncSchoolPayloadFromParts(profile, feeExtras, admCounter, receiptCou
   var p = profile || {};
   var e = feeExtras || {};
   return { name: p.name || '', city: p.city || '', principal: p.principal || '', phone: p.phone || '',
-    email: p.email || '', session: p.session || '2025–26', address: p.address || '',
+    email: p.email || '', session: p.session || '2025â26', address: p.address || '',
     logo_url: p.logoUrl || null, logo_data_url: p.logoUrl ? null : (p.logo || null), // Phase 3 (v78): a Storage URL replaces the data URL on the server; the data URL is sent only when no URL exists
     adm_counter: admCounter || 1, receipt_counter: receiptCounter || 1,
     admission_fee: e.admissionFee || 0, caution_money: e.cautionMoney || 0,
@@ -3158,14 +3158,14 @@ function sbSyncSchoolPayload(d) {
 // v53: is the payload already on the server, field for field? A legacy
 // outbox holds entries whose rows landed on the server in an earlier
 // session (the flush never drained them), so every cycle re-PATCHed
-// them — one GET + one PATCH per entry, per cycle, forever. When the
+// them â one GET + one PATCH per entry, per cycle, forever. When the
 // server row already carries this exact content the entry resolves
 // WITHOUT a write. Only used with a full server row (the batched
 // select=* fetch); the partial find rows (id/updated_at only) can
 // never prove identity, so they skip this check and PATCH as before.
 // Normalisation: null/undefined/'' are equal; numbers equal numeric
 // strings; arrays/objects compare by JSON; id/updated_at/created_at
-// are skipped. Any doubt returns false (PATCH) — never skip a write
+// are skipped. Any doubt returns false (PATCH) â never skip a write
 // on an uncertain comparison.
 function sbSyncSameValue(a, b) {
   var na = (a === undefined || a === null || a === '') ? null : a;
@@ -3189,7 +3189,7 @@ function sbSyncRowSameAsServer(payload, serverRow) {
   }
   return true;
 }
-// v53: the batched twin of sbSyncFindServerRow — look the entry up in
+// v53: the batched twin of sbSyncFindServerRow â look the entry up in
 // the per-table rows fetched once per flush pass (select=*) instead of
 // a GET per entry. Same lookup rules: stored server id first (with
 // fall-through when the row is gone), then the natural key, then the
@@ -3217,7 +3217,7 @@ function sbSyncFindFromBatch(batch, table, entry, schoolId, maps, uid) {
     return null;
   }
   if (table === 'ss_attendance') {
-    // v110: a delete entry carries no row — parse its key (date|cls|studentId).
+    // v110: a delete entry carries no row â parse its key (date|cls|studentId).
     var a = entry.row;
     var aDate = a ? a.date : (entry.key || '').split('|')[0];
     var aCls = a ? a.cls : (entry.key || '').split('|')[1];
@@ -3228,7 +3228,7 @@ function sbSyncFindFromBatch(batch, table, entry, schoolId, maps, uid) {
     return null;
   }
   if (table === 'ss_marks') {
-    // v110: a delete entry carries no row — parse its key (examId|studentId).
+    // v110: a delete entry carries no row â parse its key (examId|studentId).
     var m = entry.row;
     var mExam = m ? m.examId : (entry.key || '').split('|')[0];
     var mStu = m ? m.studentId : (entry.key || '').split('|')[1];
@@ -3312,10 +3312,10 @@ function sbSyncTableHashes(d, schoolId, maps) {
     (d[cfg.local] || []).forEach(function (row) {
       var key = row[cfg.key];
       if (key === undefined || key === null || key === '') return;
-      // v45: a demo-seed row is never hashed — the diff never queues
+      // v45: a demo-seed row is never hashed â the diff never queues
       // it and the snapshot never marks it synced (quarantine rule 1).
       if (sbIsSeedRow(table, row, d)) return;
-      // v33: a row saved while offline has no server number yet — it
+      // v33: a row saved while offline has no server number yet â it
       // must not be queued or snapshotted until the repair pass mints
       // one for it. (A pending receipt has no receiptNo, so the
       // empty-key check above already covers it.)
@@ -3358,7 +3358,7 @@ function sbSyncTableHashes(d, schoolId, maps) {
     ac[key] = { hash: JSON.stringify(sbMapActivity(a, schoolId)), row: a };
   });
   out.ss_activities = ac;
-  // v45: a seed profile (St. Xavier demo set) has no school-row hash —
+  // v45: a seed profile (St. Xavier demo set) has no school-row hash â
   // the diff never queues it and the upload pass never pushes it (the
   // pull replaces it with the server's real profile on the next cycle).
   out.ss_schools = sbIsSeedProfile(d) ? {} : { school: { hash: JSON.stringify(sbSyncSchoolPayload(d)), row: { profile: d.profile, feeExtras: d.feeExtras, admCounter: d.admCounter, receiptCounter: d.receiptCounter } } };
@@ -3386,7 +3386,7 @@ function sbSyncSnapshotRefresh(d, account, applied) {
     Object.keys(hashes[table]).forEach(function (key) { snap[table][key] = hashes[table][key].hash; });
   });
   // v33: rows the merge kept (never reached the server) must NOT be
-  // snapshotted as synced — otherwise the diff and the upload-missing
+  // snapshotted as synced â otherwise the diff and the upload-missing
   // pass would both skip them forever and the row would be stranded.
   if (applied && applied.kept) {
     Object.keys(applied.kept).forEach(function (table) {
@@ -3413,7 +3413,7 @@ function sbSyncSnapDelete(accountUid, table, key) {
 }
 function sbSyncSnapSetFromLocalRow(accountUid, entry, schoolId, maps) {
   // After a last-write-wins conflict, the local row still differs from
-  // the snapshot — without this the next diff would re-queue the losing
+  // the snapshot â without this the next diff would re-queue the losing
   // change forever. Mark the row quiet at its current local hash: the
   // next pull restores the server version (and refreshes the snapshot
   // properly), and any NEW local edit still queues because its hash
@@ -3428,7 +3428,7 @@ function sbSyncSnapSetFromLocalRow(accountUid, entry, schoolId, maps) {
 function sbSyncRecordConflict(act, entry, r) {
   // v107: a sync conflict is no longer silent. Record it in
   // db.syncConflicts (per-account; saveDB persists it, so it survives
-  // reloads) and the school admin resolves it in Settings — Keep mine /
+  // reloads) and the school admin resolves it in Settings â Keep mine /
   // Use server. The snapshot is still re-based to the local row right
   // after this (the "Use server" default), so recording changes nothing
   // about what the next pull does until the admin chooses.
@@ -3447,7 +3447,7 @@ function sbSyncQueueDiff() {
   // Compare the local DB against the last synced snapshot and queue
   // every new/changed row into the outbox (with its full local row, so
   // a later pull cannot lose the edit). Runs synchronously on every
-  // saveDB — even offline, so the outbox is complete when the device
+  // saveDB â even offline, so the outbox is complete when the device
   // reconnects. A first run after the v31 upgrade has an empty snapshot,
   // so every pre-v31 row is queued once (the push dedupes by local_id).
   var act = sbSyncActive();
@@ -3470,7 +3470,7 @@ function sbSyncQueueDiff() {
       if (snapTable[key] !== cur[key].hash) {
         var rowCopy = table === 'ss_schools' ? cur[key].row : JSON.parse(JSON.stringify(cur[key].row));
         sbOutboxAdd(uid, { table: table, key: key, op: 'upsert', row: rowCopy, at: new Date().toISOString() });
-        // v128: the diff must NOT clear a tombstone here — a stale copy of a
+        // v128: the diff must NOT clear a tombstone here â a stale copy of a
         // deleted row sitting in this tab's local db looks identical to a
         // deliberate re-creation, and clearing on any upsert resurrects it
         // (v105 regression, green run 14 Nov 19:5x IST: the tombstoned holiday
@@ -3494,7 +3494,7 @@ function sbSyncQueueDiff() {
   });
   return queued;
 }
-var sbSyncDiffSkipped = false; // B22 (M-16): offline saves skipped the diff — the next online cycle re-runs it
+var sbSyncDiffSkipped = false; // B22 (M-16): offline saves skipped the diff â the next online cycle re-runs it
 function sbSyncCatchUpDiff() {
   // B22 (M-16): run the full diff that offline saves skipped, so the
   // outbox is complete before anything uploads. The flag is cleared
@@ -3513,7 +3513,7 @@ function sbSyncOnSave() {
   sbHealSchoolSession(); // v104: adopt a session stored after restore
   if (!sbSyncActive()) return;
   try {
-    // B22 (M-16): offline saves skip the full re-hash entirely —
+    // B22 (M-16): offline saves skip the full re-hash entirely â
     // hashing every row (with ~120KB base64 photos) on every tap while
     // offline is pure cost with no server to send to. The change is
     // NOT lost: sbSyncCatchUpDiff re-runs the full diff at the start
@@ -3562,12 +3562,12 @@ function sbSyncLocalRow(entry) {
   return arr.filter(function (r) { return String(r[cfg.key]) === entry.key; })[0] || null;
 }
 function sbSyncSetLocalRow(table, key, row) {
-  // v108: the mirror of sbSyncLocalRow — write a row into the local db.
+  // v108: the mirror of sbSyncLocalRow â write a row into the local db.
   // Keep mine uses it: the pull already overwrote the local row with
   // the server version, so after re-queueing the kept copy the local
   // row must ALSO become the kept version. Without this, the flush's
   // end-of-pass re-diff sees local != snapshot (the push just set the
-  // snapshot to the kept payload) and re-queues the server version —
+  // snapshot to the kept payload) and re-queues the server version â
   // pass 2 of the same flush pushes it back over the server and Keep
   // mine silently loses (harness, 12 Nov: pass 1 PATCHed the local
   // name, pass 2 PATCHed the server name right back).
@@ -3629,17 +3629,17 @@ function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
   var known = sbSrvIdGet(uid, table, entry.key);
   // v105: the find's select must only name columns the table HAS.
   // ss_holidays has NO updated_at (SQL 38 created it with created_at
-  // only) — selecting it 42703s the find, so every holiday delete fell
+  // only) â selecting it 42703s the find, so every holiday delete fell
   // through to "row not found" and was silently skipped (live 12 Nov:
   // the live find returned the 42703 error for the exact query the app
   // sends). Any future table without updated_at must be added here.
   var findCols105 = table === 'ss_receipts' ? 'id,updated_at,student_id,total,receipt_date,student_name,month' : (table === 'ss_holidays' ? 'id' : 'id,updated_at');
-  // v44: a stored server id is only a hint — the row may have been
+  // v44: a stored server id is only a hint â the row may have been
   // deleted and re-created under a new id (live: the V21 student row
   // was re-created 9 Nov 12:37 UTC with a new uuid but the same
   // local_id, while the stored map still pointed at the deleted row).
   // A miss there must fall through to the lookups below, never return
-  // null outright — the old early return made every push POST a
+  // null outright â the old early return made every push POST a
   // duplicate and 409 on the unique admission_no index, every cycle.
   function byNaturalKey() {
   if (table === 'ss_schools') {
@@ -3654,7 +3654,7 @@ function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
     var p = entry.key.split('|');
     filter = 'school_id=eq.' + encodeURIComponent(schoolId) + '&cls=eq.' + encodeURIComponent(p[0]) + '&fee_type=eq.' + encodeURIComponent(p[1] || 'Tuition');
   } else if (table === 'ss_attendance') {
-    // v110: a delete entry carries no row — parse its key (date|cls|studentId).
+    // v110: a delete entry carries no row â parse its key (date|cls|studentId).
     var a = entry.row;
     var aDate = a ? a.date : (entry.key || '').split('|')[0];
     var aCls = a ? a.cls : (entry.key || '').split('|')[1];
@@ -3663,7 +3663,7 @@ function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
     if (!sid || !aDate) return Promise.resolve(null);
     filter = 'school_id=eq.' + encodeURIComponent(schoolId) + '&att_date=eq.' + encodeURIComponent(aDate) + '&cls=eq.' + encodeURIComponent(aCls) + '&student_id=eq.' + encodeURIComponent(sid);
   } else if (table === 'ss_marks') {
-    // v110: a delete entry carries no row — parse its key (examId|studentId).
+    // v110: a delete entry carries no row â parse its key (examId|studentId).
     var m = entry.row;
     var mExam = m ? m.examId : (entry.key || '').split('|')[0];
     var mStu = m ? m.studentId : (entry.key || '').split('|')[1];
@@ -3676,16 +3676,16 @@ function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
     filter = 'school_id=eq.' + encodeURIComponent(schoolId) + '&local_id=eq.' + encodeURIComponent(entry.key);
   }
   // v33: receipts carry no local_id, so a row found by receipt_no is
-  // only THIS receipt when its content matches — the push entry checks
+  // only THIS receipt when its content matches â the push entry checks
   // that before patching, so a same-number collision can never
   // overwrite another device's receipt.
-  var cols = findCols105; // v105: ss_holidays has no updated_at — see findCols105 above
+  var cols = findCols105; // v105: ss_holidays has no updated_at â see findCols105 above
   // v44: the push guard below must never rename a server row's
   // local_id, so the students lookup also selects the server local_id.
   if (table === 'ss_students') cols = 'id,updated_at,local_id';
   return sbRest('GET', table + '?select=' + cols + '&' + filter, token).then(function (r) {
     if (r.ok && Array.isArray(r.data) && r.data.length) return r.data[0];
-    // v44: students have natural unique keys — a row that exists under
+    // v44: students have natural unique keys â a row that exists under
     // a different local_id (same admission_no/enr, same school) is THIS
     // student, not a new one. Without this fallback the push POSTs a
     // duplicate and 409s on ss_students_school_id_admission_no_key.
@@ -3707,7 +3707,7 @@ function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
 // sends local_id, so the server row keeps its own identity.
 function sbSyncFindStudentByNumber(entry, token, schoolId) {
   var row = entry.row || {};
-  // v45: a demo-seed row is never adopted — the live flood renamed the
+  // v45: a demo-seed row is never adopted â the live flood renamed the
   // real V21 Test Kumar row to the seed name "Aarav Verma" exactly
   // here, by adopting the server row under the seed row's admission_no
   // and PATCHing the seed name onto it.
@@ -3732,7 +3732,7 @@ function sbSyncFindStudentByNumber(entry, token, schoolId) {
 }
 // v133: an attendance delete fires only for a deliberate clear. The sync
 // diff infers a delete whenever the local row is missing while the snapshot
-// still holds the key — but a mark can be locally missing for non-deliberate
+// still holds the key â but a mark can be locally missing for non-deliberate
 // reasons (a previous pull dropped it on snapshot grounds, a stale tab's
 // in-memory db, a login that loaded a db from before the mark was saved),
 // and the flush then deletes the live server row (live 15 Nov 2026: both
@@ -3744,7 +3744,7 @@ function sbSyncFindStudentByNumber(entry, token, schoolId) {
 // v128 shape) so the stale entry and its queue-time tombstone are cleared
 // and the next pull restores the mark. Failure mode is safe: if the audit
 // row was pruned (logAudit caps at 200 rows) the clear simply does not
-// stick and the mark comes back — the user clears it again.
+// stick and the mark comes back â the user clears it again.
 function sbSyncAttendanceDeleteAllowed(key) {
   var parts = String(key || '').split('|');
   if (parts.length !== 3) return false;
@@ -3755,7 +3755,7 @@ function sbSyncAttendanceDeleteAllowed(key) {
     var det133 = String(a133.details || '');
     if (a133.action === 'Attendance mark removed') {
       // v134: match on action + class + date, not the exact details
-      // string — the recorded name can drift from the current student
+      // string â the recorded name can drift from the current student
       // name (a rename, or a stale local copy), and an exact-name
       // mismatch must not veto a deliberate clear (live 15 Nov: three
       // clears were logged yet the mark kept coming back). The
@@ -3770,17 +3770,17 @@ function sbSyncAttendanceDeleteAllowed(key) {
 }
 function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
   // Pushes ONE outbox entry. Returns {pushed, conflict, skipped, keep, hash}.
-  // conflict: the server copy is newer — the entry is dropped and the
+  // conflict: the server copy is newer â the entry is dropped and the
   // next pull restores the server version. keep: the row cannot be
-  // pushed yet (a parent has no server id) — it stays queued.
+  // pushed yet (a parent has no server id) â it stays queued.
   // v53: batch is the per-table server rows fetched once per flush pass
   // (select=*). When provided, the find runs in memory instead of a GET
   // per entry, and a row whose content is already on the server
   // resolves WITHOUT a write. When the batch has no row the live
   // sbSyncFindServerRow still runs (a row created mid-pass is not in
-  // the batch). The 5-arg call shape is unchanged — the v51 harness
+  // the batch). The 5-arg call shape is unchanged â the v51 harness
   // tests call this directly without batch.
-  // v45: a queued demo-seed entry is dropped as skipped, never pushed —
+  // v45: a queued demo-seed entry is dropped as skipped, never pushed â
   // the live flood's outbox held one entry per seed row and the flush
   // POSTed them one by one for minutes. Skipped (not kept) so the
   // outbox drains and the cycle can reach synced.
@@ -3789,7 +3789,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
   if (entry.op === 'delete') {
     // v128: a delete whose server row is already gone IS a success, not a skip.
     // The old `skipped` return removed the outbox entry but left the queue-time
-    // tombstone in place (added when the delete was queued, v105 guard) — so any
+    // tombstone in place (added when the delete was queued, v105 guard) â so any
     // row that later appeared under the same key was re-deleted via tombRequeue106
     // (live 14 Nov: the restored Dec fee record and both attendance rows were
     // deleted within ~75s of being re-created, while a fresh Nov fee record
@@ -3798,11 +3798,11 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
     // and, via the noOpDelete128 flag, removes the queue-time tombstone: a phantom
     // delete must not block a later legitimate re-creation under the same key.
     // Only when the find cannot even run (attendance/marks with an unmapped parent
-    // id) is it still a skip — the row may still exist, so the snapshot key must stay.
+    // id) is it still a skip â the row may still exist, so the snapshot key must stay.
     var delResolvable128 = true;
     if (table === 'ss_attendance') { var ak128 = String(entry.key || '').split('|'); if (!ak128[0] || !ak128[2] || !maps.stu[ak128[2]]) delResolvable128 = false; }
     if (table === 'ss_marks') { var mk128 = String(entry.key || '').split('|'); if (!mk128[0] || !maps.exam[mk128[0]] || !mk128[1] || !maps.stu[mk128[1]]) delResolvable128 = false; }
-    // v131: a delete is stale when the local db still has the row — it was
+    // v131: a delete is stale when the local db still has the row â it was
     // re-created locally (or never actually deleted) after the entry was
     // queued. A legitimate delete has no local row, so it still runs.
     // Return the v128 no-op shape so the flush clears the snapshot key
@@ -3813,32 +3813,32 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
     return delP.then(function (row) {
       if (!row) return delResolvable128 ? { pushed: true, noOpDelete128: true } : { pushed: false, skipped: true };
       // v132: a Collected fee record is the payment's evidence (tied to a
-      // receipt) — the UI (deleteFeeRecord) only ever deletes PENDING
+      // receipt) â the UI (deleteFeeRecord) only ever deletes PENDING
       // records, so a sync delete entry for a Collected fee is necessarily
       // stale/spurious (a stale tab's diff, or a pull that dropped the
       // local row). Never delete it from the server; same v128 no-op
       // shape (clears the snapshot key + removes the queue-time
       // tombstone). Only when the status is available (the batch path,
       // select=*); the non-batch find (findCols105 = id,updated_at) has
-      // no status, so the guard is skipped there — same limitation as
+      // no status, so the guard is skipped there â same limitation as
       // the v131 created_at guard.
       if (table === 'ss_fee_records' && row.status === 'Collected') return { pushed: true, noOpDelete128: true };
-      // v134: the v133 audit check runs FIRST — a delete the audit log
+      // v134: the v133 audit check runs FIRST â a delete the audit log
       // proves deliberate (a clearAttMark / clearAttDay / class-rename
       // row for this class+date) skips the v131 timestamp veto below.
       // The veto exists for STALE deletes, but a delete entry re-queued
       // over an older one inherits the EARLIEST `at` (sbOutboxAdd: a
       // row-less delete always looks "unchanged"), so a stale entry in
-      // a long-lived outbox made the veto fire on a legitimate clear —
+      // a long-lived outbox made the veto fire on a legitimate clear â
       // live 15 Nov: three logged clears never deleted the server row
       // and the mark kept coming back. A proven-deliberate delete is
       // not stale by construction. When the audit does NOT prove it,
       // the v131 veto still applies first, then the v133 block.
       var attAllowed134 = (table === 'ss_attendance') && sbSyncAttendanceDeleteAllowed(entry.key);
       // v131: a delete is stale when the server row was created AFTER the
-      // delete entry was queued (row.created_at > entry.at, STRICT — no
+      // delete entry was queued (row.created_at > entry.at, STRICT â no
       // tolerance: a stale tab's re-POST sits seconds before the re-queued
-      // delete's `at`, so any tolerance would spare the v106 zombie) — the
+      // delete's `at`, so any tolerance would spare the v106 zombie) â the
       // row is a re-creation, not the deleted original. Only when
       // created_at is available (the batch path, select=*); the non-batch
       // find path (findCols105 = id,updated_at) has no created_at, so the
@@ -3846,7 +3846,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
       // audit-proven delete (attAllowed134, v134 above).
       if (row.created_at && entry.at && !attAllowed134) { var created131 = Date.parse(row.created_at); var queued131 = Date.parse(entry.at); if (!isNaN(created131) && !isNaN(queued131) && created131 > queued131) return { pushed: true, noOpDelete128: true }; }
       // v133: an attendance delete fires only for a deliberate clear
-      // (sbSyncAttendanceDeleteAllowed) — a mark that is locally missing
+      // (sbSyncAttendanceDeleteAllowed) â a mark that is locally missing
       // for any other reason must not delete the live server row. Same
       // v128 no-op shape (clears the snapshot key + removes the
       // queue-time tombstone) so the next pull restores the mark.
@@ -3862,8 +3862,8 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
     var logRow = sbSyncMapRow(table, entry.row, schoolId, maps, db);
     var cols = table === 'ss_audit_log' ? 'ts,actor,action,details,local_id' : 'title,sub,local_id';
     var keyFn = table === 'ss_audit_log' ? sbAuditKey : sbActivityKey;
-    // v53: with a batch, dedupe against the already-fetched rows — no
-    // GET per log entry — and POST only when the row is missing.
+    // v53: with a batch, dedupe against the already-fetched rows â no
+    // GET per log entry â and POST only when the row is missing.
     if (batch) {
       var bRows53 = batch[table] || [];
       var logKey53 = keyFn(logRow);
@@ -3885,7 +3885,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
     return schP.then(function (row) {
       if (row && row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true, serverRow: row }; // v107: the record needs the server row for the conflicts view
       // v53: the school row is re-queued on every profile/counter
-      // change, but its content is usually already on the server —
+      // change, but its content is usually already on the server â
       // skip the PATCH when the full batch row matches.
       if (schRow && sbSyncRowSameAsServer(payload, schRow)) return { pushed: true, hash: JSON.stringify(payload) };
       return sbRest('PATCH', 'ss_schools?id=eq.' + encodeURIComponent(schoolId), token, payload, 'return=minimal').then(function (r) {
@@ -3899,17 +3899,17 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
   // already has its server id.
   var payload2 = sbSyncMapRow(table, entry.row, schoolId, maps, db);
   if (!payload2) return Promise.resolve({ pushed: false, skipped: true });
-  // v51: a row whose parent has no server id yet waits — but ONLY
+  // v51: a row whose parent has no server id yet waits â but ONLY
   // while its local row still exists. Once the local row is gone the
   // parent can never resolve (a fresh student/exam never reuses a
   // dead local id), so waiting keeps the entry queued forever and
-  // the flush can never write 'synced' — live v50: the status stayed
+  // the flush can never write 'synced' â live v50: the status stayed
   // 'Backup pending' for 6 minutes although every upload succeeded,
   // because the flush ends sbSetStatus(left ? 'pending' : 'synced')
   // and the cycle tail only writes 'synced' on an empty outbox. A
   // vanished local row drops as skipped: the row is already gone,
   // so nothing is lost by dropping its entry. The quarantine cannot
-  // save such an entry either — sbIsSeedStudentId needs the local
+  // save such an entry either â sbIsSeedStudentId needs the local
   // row to prove seedness, and the row is gone.
   if (!sbSyncPayloadReady(table, payload2)) {
     if (!sbSyncLocalRow(entry)) return Promise.resolve({ pushed: false, skipped: true });
@@ -3924,19 +3924,19 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
   return findP53.then(function (row) {
     if (row) {
       // v33: a receipt found by number is only patched when its content
-      // matches this receipt — same number, different receipt is a
+      // matches this receipt â same number, different receipt is a
       // collision, and the entry stays queued for the repair pass.
       // v51: the repair pass can only re-number a receipt that still
       // exists locally. When the local receipt is gone the server row
-      // wins — drop the entry instead of keeping it forever (the same
+      // wins â drop the entry instead of keeping it forever (the same
       // stuck-outbox trap as the zombie attendance above: the flush
       // never drains, so the status never reaches 'synced').
       if (table === 'ss_receipts' && !sbReceiptSameServer(row, payload2)) {
         // v51: the repair pass can only re-number a receipt that
         // still exists locally AND still carries this entry's content.
-        // A queued entry for a number whose local row is gone — or
+        // A queued entry for a number whose local row is gone â or
         // whose local row is a DIFFERENT receipt sharing the number
-        // (the server's row, pulled down into the mirror) — is a
+        // (the server's row, pulled down into the mirror) â is a
         // phantom the repair can never see: drop it instead of
         // keeping it forever. Only a live local receipt with matching
         // content keeps waiting for the repair pass.
@@ -3946,7 +3946,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
       }
       // Last-write-wins: a newer server copy beats this local change.
       if (row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true, serverRow: row }; // v107: the record needs the server row for the conflicts view
-      // v53: identical content already on the server — resolve WITHOUT
+      // v53: identical content already on the server â resolve WITHOUT
       // a PATCH. The receipt collision check above still runs first,
       // so a same-number different receipt never resolves as
       // identical. The id map is set exactly as the PATCH branch sets
@@ -3957,7 +3957,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
         return { pushed: true, hash: JSON.stringify(payload2), serverRow: batchRow53 }; // v127: the flush needs the server row to guard the local-row sync
       }
       // v44: a student found by admission_no/enr (not by local_id) is
-      // THIS student under a stale local id — PATCH it, but never send
+      // THIS student under a stale local id â PATCH it, but never send
       // local_id: overwriting the server row's local_id with the stale
       // one would rename the server identity, and the next pull would
       // bring the row back as a second local student. The hash stays
@@ -3968,7 +3968,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
         patchPayload = Object.assign({}, payload2);
         delete patchPayload.local_id;
       }
-      // v127: snapshot the pre-push server row BEFORE the PATCH — the
+      // v127: snapshot the pre-push server row BEFORE the PATCH â the
       // row object may be a live reference to the store (the harness mock
       // mutates it in place on PATCH), so returning it directly would hand
       // the flush a post-push row and the guard below would compare the
@@ -3997,12 +3997,12 @@ function sbSyncFlushWithToken(act, tok) {
   // A failed entry stops the pass; the rest stays queued for the next
   // login / reconnect. Nothing is ever dropped except pushed, skipped
   // (already gone / superseded) and conflict (server wins) entries.
-  // v53: the pass is BATCHED — one select=* GET per table that has
+  // v53: the pass is BATCHED â one select=* GET per table that has
   // entries, all in parallel, then the entries' writes run in parallel
   // chunks of 6. The old sequential shape cost 2 round-trips per entry
   // (find GET + POST/PATCH): a legacy outbox of ~30 entries was ~60
-  // round-trips per pass, up to 3 passes — 45–75s at 250–400ms per
-  // round-trip, which is exactly the live v52 "Syncing…" minute. The
+  // round-trips per pass, up to 3 passes â 45â75s at 250â400ms per
+  // round-trip, which is exactly the live v52 "Syncingâ¦" minute. The
   // batched pass costs ~1 round-trip for the finds + ~1 for the writes.
   var passes = 0;
   var pushedTotal = 0, conflicts = 0;
@@ -4012,14 +4012,14 @@ function sbSyncFlushWithToken(act, tok) {
     passes++;
     var outbox = sbOutboxLoad(act.uid);
     if (!outbox.length) return Promise.resolve({ done: true, pushed: pushedTotal, conflicts: conflicts });
-    // B10: passes exhausted with entries still queued is NOT done — the
+    // B10: passes exhausted with entries still queued is NOT done â the
     // outbox still has work. Callers (and the status line) must see
     // done:false with the leftover count, never done:true.
     if (passes > 3) return Promise.resolve({ done: false, reason: 'passes-exhausted', pushed: pushedTotal, conflicts: conflicts, leftover: outbox.length });
     var schoolId = (sbServerSchoolMap()[act.account.uid]) || null;
     if (!schoolId) return Promise.resolve({ done: false, reason: 'no-server-school' });
     var maps = sbSyncBuildMaps(db, act.uid);
-    // One find GET per table, in parallel — the batch for this pass.
+    // One find GET per table, in parallel â the batch for this pass.
     // Phase 3 (v64 follow-up): the batch fetch used to be a single
     // unpaged GET, so a table over the server's default row cap came
     // back truncated and every missing row fell through to a per-entry
@@ -4050,7 +4050,7 @@ function sbSyncFlushWithToken(act, tok) {
             // The row vanished locally since it was queued and its table
             // never propagates deletes: drop the stale entry (the next pull
             // restores the row from the server). v34 (P1-1): the entry's own
-            // queued copy is good enough — a pull that wiped the local row
+            // queued copy is good enough â a pull that wiped the local row
             // (e.g. an upload failure) must NOT also drop the queued entry
             // that would have re-uploaded it.
             if (entry.op === 'upsert' && !sbSyncLocalRow(entry) && !entry.row) { sbOutboxRemove(act.uid, entry); return null; }
@@ -4068,7 +4068,7 @@ function sbSyncFlushWithToken(act, tok) {
                 pushedThisPass++; pushedTotal++;
                 if (r.hash) sbSyncSnapSet(act.account.uid, entry.table, entry.key, r.hash);
                 // v127: the push just put entry.row on the server, so the
-                // local mirror must become entry.row too — but ONLY when
+                // local mirror must become entry.row too â but ONLY when
                 // the local row is still the old server version the pull
                 // overwrote it with. A newer local edit (made mid-pass)
                 // differs from the old server row, so the guard skips
@@ -4085,12 +4085,12 @@ function sbSyncFlushWithToken(act, tok) {
                     if (curPayload127 && sbSyncRowSameAsServer(curPayload127, r.serverRow)) sbSyncSetLocalRow(entry.table, entry.key, entry.row);
                   }
                 }
-                if (entry.op === 'delete') { sbSyncSnapDelete(act.account.uid, entry.table, entry.key); if (r.noOpDelete128) sbTombRemove(act.uid, entry.table, entry.key); else sbTombAdd(act.uid, entry.table, entry.key); } // v105: the delete leaves the outbox here — the tombstone is what stops another tab re-uploading it; v128: a no-op delete (the row was already gone) clears the snapshot key and REMOVES the queue-time tombstone (added when the delete was queued) — a phantom delete must not block a later legitimate re-creation under the same key
+                if (entry.op === 'delete') { sbSyncSnapDelete(act.account.uid, entry.table, entry.key); if (r.noOpDelete128) sbTombRemove(act.uid, entry.table, entry.key); else sbTombAdd(act.uid, entry.table, entry.key); } // v105: the delete leaves the outbox here â the tombstone is what stops another tab re-uploading it; v128: a no-op delete (the row was already gone) clears the snapshot key and REMOVES the queue-time tombstone (added when the delete was queued) â a phantom delete must not block a later legitimate re-creation under the same key
                 sbOutboxRemove(act.uid, entry);
                 maps = sbSyncBuildMaps(db, act.uid); // fresh ids for the next chunk
               } else if (r.conflict) {
                 conflicts++;
-                sbSyncRecordConflict(act, entry, r); // v107: record it — the admin resolves it in Settings
+                sbSyncRecordConflict(act, entry, r); // v107: record it â the admin resolves it in Settings
                 sbSyncSnapSetFromLocalRow(act.account.uid, entry, schoolId, maps);
                 sbOutboxRemove(act.uid, entry);
               } else if (r.skipped && !r.keep) {
@@ -4111,7 +4111,7 @@ function sbSyncFlushWithToken(act, tok) {
           return { done: false, reason: 'error', detail: (failed53.err && failed53.err.message) || 'error', pushed: pushedTotal };
         }
         // B10: a pass that pushed nothing and resolved no conflicts made
-        // no progress — the entries left are still waiting (e.g. a parent
+        // no progress â the entries left are still waiting (e.g. a parent
         // with no server id yet). done:true only when the outbox is
         // really empty; otherwise report the stall with the leftover.
         if (!pushedThisPass && !conflicts) {
@@ -4122,7 +4122,7 @@ function sbSyncFlushWithToken(act, tok) {
         // New rows may have become mappable: re-diff and loop.
         var n = sbSyncQueueDiff();
         if (n) return pass();
-        // B10: same outbox-empty guard as the stalled path — the re-diff
+        // B10: same outbox-empty guard as the stalled path â the re-diff
         // should have looped while anything remained, but done:true must
         // never be returned with entries still queued.
         var leftFinal = sbOutboxLoad(act.uid).length;
@@ -4141,7 +4141,7 @@ function sbSyncFlushWithToken(act, tok) {
     if (r.done) {
       sbSetStatus(left ? 'pending' : 'synced');
     } else if (r.reason === 'passes-exhausted' || r.reason === 'stalled') {
-      // B10: a stalled flush is not a failure — entries are still waiting
+      // B10: a stalled flush is not a failure â entries are still waiting
       // (nothing errored), so the line stays "pending", never "failed".
       sbSetStatus(left ? 'pending' : 'synced');
     } else {
@@ -4172,7 +4172,7 @@ function sbSyncGuardHit(d, byTable) {
   // table that has local rows. Returns the first such table, or null.
   // Fee structure is excluded: local defaults always exist and are not
   // user data, so an empty server structure is normal for a fresh school.
-  // v45: the counts are the REAL rows only (sbLocalCountsReal) — demo
+  // v45: the counts are the REAL rows only (sbLocalCountsReal) â demo
   // seed rows must never trip the guard, or the migration it demands
   // can never complete and the pull never runs.
   var rc45 = sbLocalCountsReal(d);
@@ -4180,7 +4180,7 @@ function sbSyncGuardHit(d, byTable) {
     ['ss_students', rc45.students], ['ss_teachers', rc45.teachers],
     ['ss_exams', rc45.exams], ['ss_fee_records', rc45.feeRecords],
     ['ss_attendance', rc45.attendance],
-    // v39: only numbered receipts — a numberless offline receipt can
+    // v39: only numbered receipts â a numberless offline receipt can
     // never be on the server and must not trip the migration guard.
     ['ss_receipts', rc45.receipts],
     ['ss_marks', rc45.marks], ['ss_homework', rc45.homework],
@@ -4193,7 +4193,7 @@ function sbSyncGuardHit(d, byTable) {
 }
 function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
   // v33 merge pull: server rows come in, but a local row that has not
-  // reached the server yet is KEPT (never wiped by the pull) — see
+  // reached the server yet is KEPT (never wiped by the pull) â see
   // sbApplyServerRows. The guard refuses the pull when the school never
   // migrated and the server is empty for a table with local rows (the
   // caller then runs the migration upload instead). Audit log /
@@ -4232,7 +4232,7 @@ function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
       saveDB(d);
       // v43: a pull that changed nothing must not re-render the page.
       // Every 30s tick / focus event ran a pull, and every pull called
-      // renderApp() unconditionally — a tap landing on a node the
+      // renderApp() unconditionally â a tap landing on a node the
       // re-render replaces between touchstart and click is swallowed
       // (live v42: the Dec receipt link's first tap did nothing, the
       // second opened it). The snapshot hashes are content-based, so
@@ -4252,17 +4252,17 @@ function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
    minted ADM-2025-001 / ENR-001 for a new student too. The server
    rejected the laptop's POST (unique (school_id, admission_no) and
    unique (school_id, enr)), the student never reached the server, and
-   a server-wins pull then WIPED the laptop-only student — the record
+   a server-wins pull then WIPED the laptop-only student â the record
    existed nowhere. Two fixes, both in this version:
    (1) NUMBERING: for a school logged in via Supabase, admission and
    receipt numbers come from the server, through the existing atomic
    RPCs ss_next_adm_no / ss_next_receipt_no (01_schema.sql; both
    SECURITY DEFINER, ownership-checked, granted to authenticated in
-   02_rls.sql — no new SQL file is needed). The local counters stay
+   02_rls.sql â no new SQL file is needed). The local counters stay
    only for local-only accounts and as a display fallback. The RPC
    alone is not enough: the live server counter (1) sat BEHIND the
    highest used number (001 taken), so the RPC re-mints a taken number
-   first — every candidate is checked against the server's taken set
+   first â every candidate is checked against the server's taken set
    and the RPC is retried until a free number comes back (mint-until-
    free). ENR has no server counter; it is derived from the ADM
    sequence (ENR-002 for ADM-2025-002), matching the live data.
@@ -4273,7 +4273,7 @@ function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
    reached the server is kept, and the outbox keeps failed entries
    with their reason instead of dropping them.
    Offline: a student/receipt added while offline is saved WITHOUT a
-   number (numPending) and minted on the next online cycle — never a
+   number (numPending) and minted on the next online cycle â never a
    locally guessed number for a server account, because a guess can
    collide. Local-only accounts keep minting locally, exactly as now,
    and make zero server calls. */
@@ -4292,11 +4292,11 @@ function sbReceiptSame(a, b) {
 }
 function sbReceiptSameServer(row, payload) {
   // The server row found by receipt_no is THIS receipt only when its
-  // content matches the push payload — same number, different receipt
+  // content matches the push payload â same number, different receipt
   // is a collision, and patching it would overwrite another device's
   // receipt.
   if (!row || !payload) return false;
-  // v41: an UNKNOWN student_id (no id-map entry yet — the repair runs
+  // v41: an UNKNOWN student_id (no id-map entry yet â the repair runs
   // before the pull that would save the map) is not a DIFFERENT
   // student. Every other field matching means this is the same
   // receipt; treating null as a mismatch minted a new server number
@@ -4312,7 +4312,7 @@ function sbReceiptSameServer(row, payload) {
 }
 function sbReceiptContentMatches(srvRow, rc, stuMap, byId) {
   // Does this server receipt hold the same collection as the local
-  // receipt — same student, month, total, date and name, and (where
+  // receipt â same student, month, total, date and name, and (where
   // both sides carry lines) the same fee type? Used by the
   // adopt-before-mint step: a receipt whose content already exists on
   // the server under another number links to that number instead of
@@ -4323,7 +4323,7 @@ function sbReceiptContentMatches(srvRow, rc, stuMap, byId) {
   // collections of the SAME fee type apart (Tuition 800 paid twice).
   // When both sides carry Collected fee-record ids on their lines
   // (receipts made after the fix stamp them in finishCollectFee),
-  // the id sets must agree — two different collections never share
+  // the id sets must agree â two different collections never share
   // a fee record. When either side has no ids (a receipt made
   // before the fix), the field comparison below decides, exactly
   // as before, so old receipts still adopt and merge as they did.
@@ -4366,14 +4366,14 @@ function sbReceiptContentKey(rc) {
   // v42: canonical identity of one collection, for collapsing
   // duplicate server rows in the pull mirror: student + month +
   // total + date + name + fee types (when lines exist). Two rows
-  // with the same key are the same collection minted twice — the
+  // with the same key are the same collection minted twice â the
   // earliest number wins. A genuinely different collection
   // (different total, date or fee type) has a different key and
   // keeps its own row.
   // B2: the fields above cannot tell two genuinely different
   // same-day same-amount collections of the same fee type apart
   // (Tuition 800 paid twice in one day for the same student and
-  // month) — they shared one key and collapsed into one receipt.
+  // month) â they shared one key and collapsed into one receipt.
   // The key now also carries the Collected fee-record ids stamped
   // on the receipt's lines (finishCollectFee): two different
   // collections always paid different fee records, so they never
@@ -4506,7 +4506,7 @@ function sbSyncRepairNumbers(account, sbUid, token) {
   // before the upload-missing pass:
   // (1) a local student whose admission_no/enr collides with a
   //     DIFFERENT server row (same number, different local_id) is
-  //     re-numbered from the server and re-queued — no manual step;
+  //     re-numbered from the server and re-queued â no manual step;
   // (2) a local receipt whose receipt_no collides with a DIFFERENT
   //     server receipt (same number, different content) is re-numbered;
   // (3) rows saved while offline (numPending, no number yet) are minted.
@@ -4537,11 +4537,11 @@ function sbSyncRepairNumbers(account, sbUid, token) {
     // blocks minting (the loop still walks past taken numbers).
     var highestAdm = taken.maxAdm, highestRcp = taken.maxRcp;
     (d.students || []).forEach(function (s) {
-      // v45: seed numbers are not the account's numbers — the demo
+      // v45: seed numbers are not the account's numbers â the demo
       // set's ADM-2025-001..040 must never lift the server counter.
       if (sbIsSeedRow('ss_students', s, d)) return;
       // A row the pull is about to drop (deleted elsewhere) does not
-      // count as used — its number is free again.
+      // count as used â its number is free again.
       if (snap.ss_students && snap.ss_students[s.id] !== undefined && !serverByLocal[s.id]) return;
       highestAdm = Math.max(highestAdm, sbNumSeq(s.admissionNo));
     });
@@ -4566,11 +4566,11 @@ function sbSyncRepairNumbers(account, sbUid, token) {
           if (serverByLocal[s.id]) return; // already on the server: its numbers are the server's
           // v45: a demo-seed student never gets a server number. The
           // live flood's stu1 (ADM-2025-001) collides with the real V21
-          // row — minting it a fresh number would upload it as a 41st
+          // row â minting it a fresh number would upload it as a 41st
           // student instead of dropping it.
           if (sbIsSeedRow('ss_students', s, d)) return;
           // Deleted elsewhere (in the snapshot but absent on the server):
-          // the pull drops this row — never spend a server number on it.
+          // the pull drops this row â never spend a server number on it.
           if (snap.ss_students && snap.ss_students[s.id] !== undefined) return;
           var collides = (s.admissionNo && taken.adm[s.admissionNo] && taken.adm[s.admissionNo] !== s.id)
             || (s.enr && taken.enr[s.enr] && taken.enr[s.enr] !== s.id);
@@ -4594,8 +4594,8 @@ function sbSyncRepairNumbers(account, sbUid, token) {
   }).then(function () {
     var chain2 = Promise.resolve();
     var maps = sbSyncBuildMaps(d, act.uid);
-    // v41: the repair runs FIRST in the cycle — before the pull that
-    // would save the id map — so the stored map is legitimately empty
+    // v41: the repair runs FIRST in the cycle â before the pull that
+    // would save the id map â so the stored map is legitimately empty
     // on the first cycle after login (fresh device, cleared map). The
     // repair already fetched the server's students (taken.students,
     // with local_id), so resolve student ids from THAT fresh data;
@@ -4603,7 +4603,7 @@ function sbSyncRepairNumbers(account, sbUid, token) {
     // payload carried student_id null, the same-number comparison
     // always failed, and the repair minted a new server number for
     // every receipt on every cycle (live: 192 duplicate receipts, the
-    // counter climbing 3 per render). Students were safe already —
+    // counter climbing 3 per render). Students were safe already â
     // their chain uses the fresh serverByLocal map, not the stored one.
     var stuFromServer = {};
     taken.students.forEach(function (r) { if (r.local_id) stuFromServer[r.local_id] = r.id; });
@@ -4613,10 +4613,10 @@ function sbSyncRepairNumbers(account, sbUid, token) {
     (d.receipts || []).forEach(function (rc) {
       chain2 = chain2.then(function () {
         // v45: a receipt for a demo-seed student is never minted or
-        // re-linked — it is seed data, not a collection.
+        // re-linked â it is seed data, not a collection.
         if (sbIsSeedStudentId(rc.studentId, d)) return;
         // Deleted elsewhere (in the snapshot, no such number on the
-        // server): the pull drops this receipt — never re-number it.
+        // server): the pull drops this receipt â never re-number it.
         if (rc.receiptNo && snap.ss_receipts && snap.ss_receipts[rc.receiptNo] !== undefined && !taken.rcp[rc.receiptNo]) return;
         var srv = rc.receiptNo ? (taken.rcp[rc.receiptNo] || null) : null;
         var collides = false;
@@ -4630,7 +4630,7 @@ function sbSyncRepairNumbers(account, sbUid, token) {
         if (!collides && !rc.numPending && rc.receiptNo) {
           // v42: the number may be on the server (srv) AND an EARLIER
           // number with the same content may also exist (a previous
-          // cycle minted a duplicate for the same collection — live
+          // cycle minted a duplicate for the same collection â live
           // v41: local receipts were 193/194/195 while the originals
           // 001/002/003 sat on the server, and the v41 adopt never
           // fired because it only ran when the number was NOT on the
@@ -4649,7 +4649,7 @@ function sbSyncRepairNumbers(account, sbUid, token) {
           return;
         }
         if (!rc.numPending && rc.receiptNo) {
-          // v41: same-number collision — the content may still exist
+          // v41: same-number collision â the content may still exist
           // under another number; adopt it instead of minting a
           // duplicate.
           var adoptNo2 = sbFindReceiptByContent(taken.receipts, rc, maps.stu, byId);
@@ -4686,7 +4686,7 @@ function sbSyncRepairNumbers(account, sbUid, token) {
   });
 }
 function sbSyncCycleRun(account, sbUid, token) {
-  // v32: ONE serialized cycle — upload-missing first, then pull, then
+  // v32: ONE serialized cycle â upload-missing first, then pull, then
   // flush. Never run the upload and the pull in parallel again: v31
   // login fired sbMaybeMigrate and sbSyncStart side by side, and a
   // laptop-first login left the phone's student stranded (the pull saw
@@ -4710,24 +4710,24 @@ function sbSyncCycleRun(account, sbUid, token) {
   var tokP = token ? Promise.resolve(token) : sbGetValidToken();
   return tokP.then(function (tok) {
     if (!tok) { sbSetStatus(sbSessionExpired ? 'session-expired' : 'offline'); return { done: false, reason: 'no-token' }; } // v34 (P1-3)
-    // v33: repair FIRST — re-number colliding rows and mint numbers
-    // for offline-saved rows — so the upload pass below never hits a
+    // v33: repair FIRST â re-number colliding rows and mint numbers
+    // for offline-saved rows â so the upload pass below never hits a
     // unique-constraint failure on a number another device already owns.
     return sbSyncRepairNumbers(account, sbUid, tok).then(function () {
-      // v43: a cycle with nothing to upload runs QUIET — it must not
+      // v43: a cycle with nothing to upload runs QUIET â it must not
       // write 'syncing'. Live v42: the 30s tick plus focus/visibility
       // events started a new cycle (or queued a follow-up) every few
       // seconds, each writing 'syncing' at its start, so the 'synced'
       // the previous cycle had written was clobbered before any
-      // observation could see it — the Settings line never showed
+      // observation could see it â the Settings line never showed
       // 'Backed up to the server.' in ~150s even though every cycle
       // completed (and one manual Back Up Now proved the backup
       // itself works). The decision comes AFTER the repair pass: a
       // repair can mint numbers / re-link receipts, which IS upload
-      // work. The pull still runs in quiet mode — other devices'
-      // changes must arrive — but the status line stays 'synced'
+      // work. The pull still runs in quiet mode â other devices'
+      // changes must arrive â but the status line stays 'synced'
       // (re-confirmed at the end of the cycle) instead of flashing
-      // 'Syncing…'. No mapped server school yet also counts as work:
+      // 'Syncingâ¦'. No mapped server school yet also counts as work:
       // the upload pass is about to create/link the school and push
       // the first rows.
       var hasWork43 = !((sbServerSchoolMap()[account.uid]) || null) || sbOutboxLoad(sbUid).length > 0;
@@ -4736,7 +4736,7 @@ function sbSyncCycleRun(account, sbUid, token) {
       return sbSyncUploadMissing(account, sbUid, tok);
     }).then(function (up) {
       if (!up.done) {
-        // v34 (P1-1): the upload failed — the local rows are not on the
+        // v34 (P1-1): the upload failed â the local rows are not on the
         // server yet. Skipping the pull keeps them safe (the v33 merge
         // keeps students, but fee structure is replaced wholesale and
         // attendance is rebuilt from server rows + kept-student cells
@@ -4766,7 +4766,7 @@ function sbSyncCycleRun(account, sbUid, token) {
       }
       return sbSyncFlushWithToken(act, tok).then(function (fl) {
         // B10: the pull after a push does not need the flush to be fully
-        // done — done now means "outbox empty", which a partial flush
+        // done â done now means "outbox empty", which a partial flush
         // never is. Pushes alone warrant a pull.
         if (fl.pushed) return sbSyncPullRun(account, sbUid, tok, null);
         return pull;
@@ -4784,7 +4784,7 @@ function sbSyncCycleRun(account, sbUid, token) {
       // are still queued must not claim to be synced).
       if (!sbOutboxLoad(sbUid).length) {
         sbSetStatus('synced');
-        sbSyncFailToasted = false; // B6: only a TRULY synced cycle ends the failure episode — a done pull with entries still queued does not
+        sbSyncFailToasted = false; // B6: only a TRULY synced cycle ends the failure episode â a done pull with entries still queued does not
       }
     } else if (r.reason === 'no-server-school' || r.reason === 'upload-failed') {
       // The only failure paths where the flush never ran (or the upload
@@ -4804,7 +4804,7 @@ function sbSyncCycleRun(account, sbUid, token) {
     // sbLoadStatus() is read here (not sbSetStatus's node update) so
     // the record survives a logout and the next verifier can read it.
     // B5 (M-19): "synced" ONLY when the pull is done AND the flush is
-    // done AND the outbox is empty — a done pull with entries still
+    // done AND the outbox is empty â a done pull with entries still
     // queued reports pending with the leftover count (the status line
     // above already guards the same way; the diagnostic used to lie).
     var leftCycle = sbOutboxLoad(sbUid).length;
@@ -4814,8 +4814,8 @@ function sbSyncCycleRun(account, sbUid, token) {
     return r;
   });
 }
-// B6 (M-22): background sync failures toast ONCE per failure episode —
-// the first failure shows "Backup failed — will retry on next login"
+// B6 (M-22): background sync failures toast ONCE per failure episode â
+// the first failure shows "Backup failed â will retry on next login"
 // (t('sbStatusFailed')); repeats stay silent until a cycle succeeds.
 // Never toasts while logging out (sbLoggingOut): a logout-time flush
 // failure is not the user's problem anymore.
@@ -4894,7 +4894,7 @@ function sbPostAdmission(serverSchoolId, req) {
 // v30: support request -> server (authenticated, best-effort). The local
 // save already happened before this is called, so a failure here (offline,
 // no session, no server school yet) never blocks the confirmation and
-// never shows a scary error — the request simply stays local until the
+// never shows a scary error â the request simply stays local until the
 // next successful login/backup. return=minimal so a missing SELECT on the
 // table can never fail the insert (same lesson as the anon Apply form).
 // v34 (P1-7): support requests are retried, not fire-and-forget. A
@@ -4929,7 +4929,7 @@ function sbFlushSupportQueue() {
 }
 function sbPostSupportRequest(req) {
   // Returns a promise of true when the request reached the server.
-  // A failure (offline, no session, no school row yet) resolves false —
+  // A failure (offline, no session, no school row yet) resolves false â
   // the caller queues it for the next cycle instead of dropping it.
   if (!state.user || state.user.role !== 'school' || !state.sb || !state.sb.uid) return Promise.resolve(false);
   return sbGetValidToken().then(function (tok) {
@@ -4951,28 +4951,28 @@ function sbPostSupportRequest(req) {
 
 /* ================= shared lookup data ================= */
 // CLASSES / FEE_TYPES / MONTHS_ACAD / SUBJECTS and the helpers below are
-// production data used by the fee/exam forms and charts — they stay.
+// production data used by the fee/exam forms and charts â they stay.
 // Phase D (L-8): the test-only seed fixtures (SCHOOL_NAMES, FIRST,
 // LAST, GIRL_NAMES, SEED_CLASSES and seedDB()) moved to
 // scripts/seed-fixtures.js. They never run on boot and must never
 // populate a real school. The v45 demo-seed quarantine still works:
 // its fingerprints are the precomputed SB_SEED_FINGERPRINTS table
 // (next to sbSeedFingerprints, near the sync code), generated from
-// seedDB() — regenerate it if the fixtures ever change.
+// seedDB() â regenerate it if the fixtures ever change.
 var CLASSES = ['Nursery-A','Nursery-B','LKG-A','LKG-B','UKG-A','UKG-B','1st-A','1st-B','2nd-A','2nd-B','3rd-A','3rd-B','4th-A','4th-B','5th-A','5th-B','6th-A','6th-B','7th-A','7th-B','8th-A','8th-B','9th-A','9th-B','10th-A','10th-B','11th-A','11th-B','12th-A','12th-B'];
 var FEE_TYPES = ['Tuition', 'Admission', 'Transport', 'Exam', 'Library', 'Activity', 'Computer Lab', 'Other'];
 var MONTHS_ACAD = ['Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar'];
 var MONTH_NUM = { Apr: 4, May: 5, Jun: 6, Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12, Jan: 1, Feb: 2, Mar: 3 };
 var FEE_TYPE_KEYS = { 'Tuition': 'feeTypeTuition', 'Admission': 'feeTypeAdmission', 'Transport': 'feeTypeTransport', 'Exam': 'feeTypeExam', 'Library': 'feeTypeLibrary', 'Activity': 'feeTypeActivity', 'Computer Lab': 'feeTypeComputer', 'Other': 'feeTypeOther' };
 function defaultFeeStructure() {
-  // Monthly tuition by class part. 6th–10th amounts are unchanged from
+  // Monthly tuition by class part. 6thâ10th amounts are unchanged from
   // before v37 (800/900/1000/1200/1500); the new classes get sensible
   // defaults the admin can edit in the Fee Structure editor.
   return CLASSES.map(function (c) { return { cls: c, type: 'Tuition', amount: defaultTuitionAmt(classPartOf(c)) }; });
 }
 function monthStartDate(m) { // B7: 1st of the month, in the profile session's academic year
-  // (Apr–Dec = session start year, Jan–Mar = start year + 1). Was hardcoded
-  // 2026/2027 although the profile session is 2025–26 — fee dates landed
+  // (AprâDec = session start year, JanâMar = start year + 1). Was hardcoded
+  // 2026/2027 although the profile session is 2025â26 â fee dates landed
   // in the NEXT academic year. admYear() is the existing session-year
   // helper (profile session, '2025' fallback).
   var n = MONTH_NUM[m] || 4, y0 = parseInt(admYear(), 10), y = n >= 4 ? y0 : y0 + 1;
@@ -4980,8 +4980,8 @@ function monthStartDate(m) { // B7: 1st of the month, in the profile session's a
 }
 var SUBJECTS = ['Mathematics','Science','English','Hindi','Social Science'];
 // v119 (Phase 5, Module 5): classes and subjects are SCHOOL data now,
-// not globals. db.classes is the school's class list — one row per
-// class-section { cls, subjects } — seeded from the old globals, so an
+// not globals. db.classes is the school's class list â one row per
+// class-section { cls, subjects } â seeded from the old globals, so an
 // existing school keeps exactly the 30 sections it already had. The
 // globals stay as the seed/default only; every dropdown, filter, chart
 // and sort reads schoolClasses() / schoolSubjects() instead.
@@ -5023,18 +5023,18 @@ function defaultTuitionAmt(part) {
    behind: NOTHING but the school's identity and its fee-structure
    settings. No demo students, teachers, fees, attendance, exams,
    marks, homework, notices, receipts or audit entries. The seed
-   function lives in scripts/seed-fixtures.js (TESTS ONLY — harness fixtures).
+   function lives in scripts/seed-fixtures.js (TESTS ONLY â harness fixtures).
    In v36 no real account path may call it to populate a school, and
-   the boot path no longer seeds it either — a fresh device starts
+   the boot path no longer seeds it either â a fresh device starts
    empty (audit item 17). */
 function emptyDb(profile, schools) {
-  var p = profile || { name: '', city: '', principal: '', phone: '', email: '', session: '2025–26', address: '' };
+  var p = profile || { name: '', city: '', principal: '', phone: '', email: '', session: '2025â26', address: '' };
   return {
     v: 2,
     schools: schools || [],
     students: [],
     teachers: [],
-    staff: [], // v90 (Phase 4): staff members (Principal, Accountant, Staff) — created by the school admin, synced to ss_staff
+    staff: [], // v90 (Phase 4): staff members (Principal, Accountant, Staff) â created by the school admin, synced to ss_staff
     classes: defaultClasses(), // v119 (Phase 5, Module 5): the school's class list, seeded from the old globals
     feeRecords: [],
     feeStructure: defaultFeeStructure(),
@@ -5051,7 +5051,7 @@ function emptyDb(profile, schools) {
     homework: [],
     notices: [],
     holidays: [],
-    syncConflicts: [], // v107: unresolved sync conflicts {table, key, localRow, serverRow, at} — school admin resolves them in Settings
+    syncConflicts: [], // v107: unresolved sync conflicts {table, key, localRow, serverRow, at} â school admin resolves them in Settings
     activities: [],
     profile: p,
     feeClsAlignedV9: true
@@ -5083,7 +5083,7 @@ function migrateFeesV7(d) {
 function migrateStudentsV9(d) {
   // Phase 1 (Student Management) migration for existing v2 DBs: admission numbers,
   // status, session, documents checklist, audit log. Idempotent; never changes
-  // existing values, amounts or statuses. Admission dates are NOT fabricated —
+  // existing values, amounts or statuses. Admission dates are NOT fabricated â
   // old records keep admissionDate blank until edited.
   var maxAdm = 0;
   (d.students || []).forEach(function (s) {
@@ -5095,7 +5095,7 @@ function migrateStudentsV9(d) {
   (d.students || []).forEach(function (s) {
     if (!s.admissionNo) { s.admissionNo = 'ADM-' + year + '-' + String(next).padStart(3, '0'); next++; }
     if (!s.status) s.status = 'Active';
-    if (!s.session) s.session = (d.profile && d.profile.session) || '2025–26';
+    if (!s.session) s.session = (d.profile && d.profile.session) || '2025â26';
     if (!s.documents) s.documents = { birthCert: false, tc: false, tcNumber: '', other: '' };
     if (s.documents.birthCert == null) s.documents.birthCert = false;
     if (s.documents.tc == null) s.documents.tc = false;
@@ -5103,7 +5103,7 @@ function migrateStudentsV9(d) {
   // One-time repair (v9): align feeRecord.cls to the owning student's cls. All
   // current records are seed records, so this fixes the Riya 9th-A/10th-A
   // mismatch on existing DBs (incl. the user's phone). Guarded by a flag so
-  // later class transfers keep OLD fee records under their historical cls —
+  // later class transfers keep OLD fee records under their historical cls â
   // the migration runs on every load, so an unconditional align would undo that.
   if (!d.feeClsAlignedV9) {
     (d.feeRecords || []).forEach(function (r) {
@@ -5119,29 +5119,29 @@ function migrateStudentsV9(d) {
 
 /* ================= Phase 4: parent portal + admission requests =================
    Static scope: no server. A parent logs in with Admission No. + PIN on the
-   device where the school's data lives. (v35: the parent portal is gone —
+   device where the school's data lives. (v35: the parent portal is gone â
    student login replaced it. The PIN now belongs to the STUDENT login.)
    Phase 1 (H-3): a PIN is NEVER derived from the phone number anymore.
    The phone number sits in the same record (and in CSV exports), so a
    phone-last-4 PIN was guessable. Records with no PIN at all get a fresh
    RANDOM PIN, stored only as a salted hash (same as new students in
-   saveStudent / import) — the value is never shown anywhere; the admin
+   saveStudent / import) â the value is never shown anywhere; the admin
    sets a known PIN via the profile when the student needs to log in. */
 function migrateV12(d) {
   // Phase 4 migration for existing v2 DBs: parent PINs + admission requests.
   // Idempotent; never changes existing values, amounts or statuses.
   // Phase 1 (H-3): a PIN-less record (no hash, parentPin undefined/null)
-  // gets a fresh RANDOM PIN hash — never the phone's last 4 digits, never
+  // gets a fresh RANDOM PIN hash â never the phone's last 4 digits, never
   // plaintext. '' stays cleared: the admin deliberately removed the PIN.
   (d.students || []).forEach(function (s) {
     if ((s.parentPin === undefined || s.parentPin === null) && !s.parentPinHash) s.parentPinHash = hashPin(randomPin());
   });
   if (!Array.isArray(d.admissionRequests)) d.admissionRequests = [];
-  if (!Array.isArray(d.staff)) d.staff = []; // v90 (Phase 4): staff members — old DBs have no staff list yet
+  if (!Array.isArray(d.staff)) d.staff = []; // v90 (Phase 4): staff members â old DBs have no staff list yet
   return d;
 }
 function migrateV100(d) {
-  // v100: holidays list — older DBs predate it. Idempotent: only adds
+  // v100: holidays list â older DBs predate it. Idempotent: only adds
   // the list when missing, and dedupes by date|cls (a double-mark from
   // two devices collapses to one row on load).
   if (!Array.isArray(d.holidays)) d.holidays = [];
@@ -5157,7 +5157,7 @@ function migrateV100(d) {
 }
 function migrateV54(d) {
   // v54 (A1): hash every plaintext student PIN once, then drop the
-  // plaintext field. Idempotent — a second run finds no plaintext left
+  // plaintext field. Idempotent â a second run finds no plaintext left
   // (a stored hash is never re-hashed). A student with no PIN at all
   // already got a random one from migrateV12/migrateV55 earlier in the
   // chain; only the '' cleared-PIN sentinel keeps none. Only a NON-EMPTY
@@ -5171,14 +5171,14 @@ function migrateV54(d) {
   return d;
 }
 function migrateV55(d) {
-  // v55: one-time repair for the records v54 (and earlier pulls) stripped —
+  // v55: one-time repair for the records v54 (and earlier pulls) stripped â
   // no hash, parentPin null/undefined. Phase 1 (H-3): the repair gives a
   // fresh RANDOM PIN hash, never the phone-derived PIN (the old repair
   // re-derived the PIN from the phone, which made it guessable). Idempotent:
-  // once a hash exists the record is untouched. '' is NOT repaired — it is
+  // once a hash exists the record is untouched. '' is NOT repaired â it is
   // the cleared-PIN sentinel and must stay cleared. (migrateV12 above now
   // refills nulls too, so the repair also holds as a permanent guard; the
-  // two steps overlap deliberately — the repair names the incident, the
+  // two steps overlap deliberately â the repair names the incident, the
   // guard keeps it from recurring.)
   (d.students || []).forEach(function (s) {
     if (!s.parentPinHash && (s.parentPin === undefined || s.parentPin === null)) s.parentPinHash = hashPin(randomPin());
@@ -5187,7 +5187,7 @@ function migrateV55(d) {
 }
 function migrateV16(d) {
   // v36: strip any stored full Aadhaar down to its last 4 digits.
-  // Idempotent — a second run finds nothing over 4 digits. The audit
+  // Idempotent â a second run finds nothing over 4 digits. The audit
   // entry records the COUNT, never the numbers.
   var n = 0;
   (d.students || []).forEach(function (s) {
@@ -5202,7 +5202,7 @@ function migrateV16(d) {
 }
 function migrateV119(d) {
   // v119 (Phase 5, Module 5): the school's class list. Older DBs have
-  // no db.classes — seed it from the old hardcoded globals, so the
+  // no db.classes â seed it from the old hardcoded globals, so the
   // school keeps exactly the 30 sections it already had. Idempotent;
   // never changes an existing list, and never invents a section.
   if (!Array.isArray(d.classes) || !d.classes.length) d.classes = defaultClasses();
@@ -5211,7 +5211,7 @@ function migrateV119(d) {
 }
 function migrateV15(d) {
   // v35: teacher class assignments. Older teacher rows carry a single
-  // cls — the assignment list starts from it. Idempotent; never changes
+  // cls â the assignment list starts from it. Idempotent; never changes
   // existing values.
   (d.teachers || []).forEach(function (te) {
     if (!Array.isArray(te.classes)) te.classes = te.cls ? [te.cls] : [];
@@ -5224,7 +5224,7 @@ function migrateV13(d) {
   // Phase 5 (fee collection receipt) migration for existing v2 DBs: one-time /
   // annual fee amounts, saved receipts, receipt counter. Idempotent; never
   // changes existing values, amounts or statuses. All extra amounts default
-  // to 0 — the school sets its own amounts, nothing is invented.
+  // to 0 â the school sets its own amounts, nothing is invented.
   if (!d.feeExtras || typeof d.feeExtras !== 'object') d.feeExtras = defaultFeeExtras();
   ['admissionFee', 'cautionMoney', 'annualCharges', 'transportFee'].forEach(function (k) {
     if (typeof d.feeExtras[k] !== 'number' || isNaN(d.feeExtras[k]) || d.feeExtras[k] < 0) d.feeExtras[k] = 0;
@@ -5271,17 +5271,17 @@ function loadDB(override) {
         try { toast(t('sbDataCorrupt')); } catch (eT2) {}
       }
     }
-  } catch (e) { /* storage unavailable — fall back to memory */ }
-  // v36: a fresh device starts EMPTY — the demo DB no longer seeds on
+  } catch (e) { /* storage unavailable â fall back to memory */ }
+  // v36: a fresh device starts EMPTY â the demo DB no longer seeds on
   // boot (audit item 17). The seed function stays in the code for TESTS
   // ONLY (harness fixtures); no account path may call it to populate a
   // school, and no UI reaches the boot DB anymore (every account opens
-  // its own DB key). Existing stored DBs are untouched — only devices
+  // its own DB key). Existing stored DBs are untouched â only devices
   // that never stored anything get the empty start.
   var fresh = emptyDb();
   if (override) applySchoolProfile(fresh, override);
   saveDB(fresh);
-  // The fresh save rewrote .bak with the empty DB — restore the
+  // The fresh save rewrote .bak with the empty DB â restore the
   // unknown-version backup on top of it (it is the only copy left).
   if (pendingBak) { try { localStorage.setItem(DB_KEY + '.bak', pendingBak); } catch (eB) {} }
   return fresh;
@@ -5321,16 +5321,16 @@ function saveDB(db) {
   } catch (e) {
     MEM_FALLBACK = db;
     // B18 (H-9): a full device must never fall back to memory-only
-    // silently — raise a sticky warning with a way out.
+    // silently â raise a sticky warning with a way out.
     if (sbIsQuotaError(e)) sbStorageWarnSet('quota');
   }
   MEM_FALLBACK = db;
   // A successful save means the device is no longer full (photos were
-  // removed or space was freed elsewhere) — clear the quota warning.
+  // removed or space was freed elsewhere) â clear the quota warning.
   // A 'corrupt' warning is NOT cleared here: it is only resolved by a
   // backup restore (restoreFullBackup) or a session dismiss.
   if (ok) sbStorageWarnClear('quota');
-  sbSyncOnSave(); // v31: server-first — queue + push local changes (no-op for local-only accounts)
+  sbSyncOnSave(); // v31: server-first â queue + push local changes (no-op for local-only accounts)
   return ok;
 }
 
@@ -5340,7 +5340,7 @@ function saveDB(db) {
 // "your data did not save" or "your data was corrupt". The marker
 // lives in localStorage; the bar is rendered by renderApp().
 var SB_STORAGE_WARN_KEY = 'schoolSaathiStorageWarn';
-var sbStorageWarnCur = null; // in-memory current warning — the source of truth for this session (on a quota-full device even the marker write can fail, so the bar must not depend on it)
+var sbStorageWarnCur = null; // in-memory current warning â the source of truth for this session (on a quota-full device even the marker write can fail, so the bar must not depend on it)
 var sbStorageWarnDismissed = false; // session-only: a dismiss hides the bar until the next reload
 function sbStorageWarnLoad() {
   if (sbStorageWarnCur) return sbStorageWarnCur;
@@ -5389,7 +5389,7 @@ function sbStorageWarnRender() {
 function sbStorageOpenRestore() {
   // B17: the corrupt-data bar sends the user to Settings, where the
   // backup-restore file picker lives (restoring also clears the
-  // warning — see restoreFullBackup).
+  // warning â see restoreFullBackup).
   try { if (state && state.user) go('settings'); } catch (e) {}
 }
 function sbStorageFreePhotos() {
@@ -5413,7 +5413,7 @@ function sbStorageFreePhotos() {
       return removed;
     }
   }
-  // No photos left (or none at all) — the sticky warning stays up.
+  // No photos left (or none at all) â the sticky warning stays up.
   return 0;
 }
 var db = loadDB();
@@ -5430,7 +5430,7 @@ var collectDraft = null; // in-memory draft of the receipt being collected (neve
 /* ================= utils ================= */
 function $(id) { return document.getElementById(id); }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
-// v135 (audit fix): jsAttr — a value for use as a JS string argument INSIDE an
+// v135 (audit fix): jsAttr â a value for use as a JS string argument INSIDE an
 // HTML handler attribute, e.g. onclick="fn(" + jsAttr(x) + ")". esc() alone is
 // wrong there: the HTML parser decodes &#39; back to a quote BEFORE the JS
 // runs, so an apostrophe in a user-entered class/subject name still broke the
@@ -5470,7 +5470,7 @@ function compressAttempts(w, h, opts) {
 var PHOTO_MAX = 512, PHOTO_CAP = 120 * 1024, LOGO_MAX = 256, LOGO_CAP = 250 * 1024;
 var pendingPhoto = null, pendingLogo = null;
 function compressImageFile(file, opts, cb) {
-  // v82: the guard must NOT require Image — the small-file fast path
+  // v82: the guard must NOT require Image â the small-file fast path
   // (FileReader only) is the whole point of v82, and it must work even
   // where Image/canvas is unavailable. Image is required only by the
   // large-file down-size branch below.
@@ -5479,7 +5479,7 @@ function compressImageFile(file, opts, cb) {
   var reader = new FileReader();
   reader.onerror = function () { cb(null, 'read-failed'); };
   reader.onload = function () {
-    // v82 (Phase 3): a file already under the cap needs no canvas work —
+    // v82 (Phase 3): a file already under the cap needs no canvas work â
     // use its data URL directly. The Image/canvas path is only for
     // down-sizing large files, and it can stall (a hung Image load
     // leaves the preview blank and the save with no photo). A small
@@ -5517,7 +5517,7 @@ function onStudentPhoto(input) {
   var file = input && input.files && input.files[0];
   if (!file) return;
   // v82 (Phase 3): the preview must update as soon as a file is chosen,
-  // even before compression finishes — show the raw file immediately via
+  // even before compression finishes â show the raw file immediately via
   // an object URL, then replace it with the compressed data URL when
   // compression completes. This also makes a stalled compression visible
   // (the raw preview shows) instead of leaving a bare placeholder.
@@ -5540,20 +5540,20 @@ function clearStudentPhoto() {
 function onSchoolLogo(input) {
   var file = input && input.files && input.files[0];
   if (!file) return;
-  // v82: same immediate-preview rule as the student photo — show the raw
+  // v82: same immediate-preview rule as the student photo â show the raw
   // file at once via an object URL, then the compressed data URL.
   var prev = $('fPfLogoPrev');
   var rawUrl = null;
   try { if (typeof URL !== 'undefined' && URL.createObjectURL) rawUrl = URL.createObjectURL(file); } catch (e) {}
   if (rawUrl && prev) prev.innerHTML = '<img class="photo-prev" src="' + esc(rawUrl) + '" alt="">';
   compressImageFile(file, { max: LOGO_MAX, cap: LOGO_CAP, format: 'png' }, function (url, err) {
-    if (!url) { toast(err === 'too-big' ? t('tLogoTooBig') : t('tPhotoError')); input.value = ''; if (prev) prev.innerHTML = '<span class="photo-prev">🎓</span>'; return; }
+    if (!url) { toast(err === 'too-big' ? t('tLogoTooBig') : t('tPhotoError')); input.value = ''; if (prev) prev.innerHTML = '<span class="photo-prev">ð</span>'; return; }
     pendingLogo = url;
     if (prev) prev.innerHTML = '<img class="photo-prev" src="' + esc(url) + '" alt="">';
   });
 }
 /* v83 (Phase 3): the file input's `change` event is the ONLY trigger for
-   onStudentPhoto — and in the cloud browser it does not always fire when
+   onStudentPhoto â and in the cloud browser it does not always fire when
    a file is set (v81/v82: the file name showed but the preview never
    updated, so the photo was never read). A short poll watches the input
    while the Edit Student form is open and processes a newly-selected
@@ -5585,15 +5585,15 @@ function clearSchoolLogo() {
   pendingLogo = '';
   var inp = $('fPfLogo'); if (inp) inp.value = '';
   var prev = $('fPfLogoPrev');
-  if (prev) prev.innerHTML = '<span class="photo-prev">🎓</span>';
+  if (prev) prev.innerHTML = '<span class="photo-prev">ð</span>';
 }
-function inr(n) { return '₹' + Number(n).toLocaleString('en-IN'); }
+function inr(n) { return 'â¹' + Number(n).toLocaleString('en-IN'); }
 function num(n) { return Number(n).toLocaleString('en-IN'); }
 function todayIST() { // IST calendar date, in ANY runtime timezone.
   // IST is always UTC+5:30, so the IST date is just the UTC date of
   // (now + 5.5h). The old formula added getTimezoneOffset() too, which
   // cancelled the shift in IST itself: on an IST phone it returned the
-  // UTC date, i.e. yesterday before 05:30 IST — and it shifted the other
+  // UTC date, i.e. yesterday before 05:30 IST â and it shifted the other
   // way on a UTC runner (v115: CI failed two v100 tests on exactly this).
   return new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
 }
@@ -5610,7 +5610,7 @@ function toast(msg) {
 // Minimal loading state for async flows (L-18): disables a button and
 // swaps its label to a busy text while the work runs; call the returned
 // restore() when done. Safe when the button is gone (re-rendered) or
-// null — restore() then does nothing.
+// null â restore() then does nothing.
 function setBtnLoading(btn, busyText) {
   if (!btn) return function () {};
   var prev = { disabled: btn.disabled, text: btn.textContent };
@@ -5667,9 +5667,9 @@ function feeRecordsDeduped() {
   // v52: the local DB can hold two rows for one fee id (live: the v46
   // verification double-POSTed each of the 3 collections, and a legacy
   // pull merged 6 server rows into the local list). Every total, chart,
-  // list and export must sum the deduped view — first row per id wins,
-  // the same rule the pull's mergeById uses — so the first pre-pull
-  // render is already right (live v51: ₹4,800 on first login, ₹2,400
+  // list and export must sum the deduped view â first row per id wins,
+  // the same rule the pull's mergeById uses â so the first pre-pull
+  // render is already right (live v51: â¹4,800 on first login, â¹2,400
   // after the pull deduped to 3).
   var seen = {}, out = [];
   (db.feeRecords || []).forEach(function (r) {
@@ -5684,8 +5684,8 @@ function feeTotals() {
   return { collected: c, pending: p };
 }
 function feeMonthsUsed() {
-  // v37: the FULL academic year Apr–Mar, always all 12 months in
-  // academic order — months with no collections show as zero in the
+  // v37: the FULL academic year AprâMar, always all 12 months in
+  // academic order â months with no collections show as zero in the
   // trend (feeChartData), never as a missing bar. A month found in
   // feeRecords that is not in MONTHS_ACAD (bad data) is appended
   // after the year, still sorted by month number.
@@ -5698,7 +5698,7 @@ function feeMonthsUsed() {
 }
 function feeRangeLabel() {
   var ms = feeMonthsUsed();
-  return ms.length ? ms[0] + '–' + ms[ms.length - 1] : '';
+  return ms.length ? ms[0] + 'â' + ms[ms.length - 1] : '';
 }
 function feeChartData() {
   // Month-wise totals computed LIVE from feeRecords, not the static seed ledger.
@@ -5750,7 +5750,7 @@ function feeFiltered() {
   });
 }
 function filterFees(q) {
-  // Client-side row filter only — the page is NOT re-rendered, so the search
+  // Client-side row filter only â the page is NOT re-rendered, so the search
   // input keeps focus and the typed text (same pattern as the fees search filter).
   state.feeLimit = 120; // a new search starts from the first page again
   q = (q || '').toLowerCase();
@@ -5783,7 +5783,7 @@ function studentFeeStatus(id) {
 var GENDERS = ['Boy', 'Girl', 'Other'];
 var BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
 var CATEGORIES = ['General', 'OBC', 'SC', 'ST', 'Other'];
-// Session options derive from the current academic year (Apr–Mar via
+// Session options derive from the current academic year (AprâMar via
 // sessionOfDate/todayIST), so the list never goes stale: the two past
 // sessions, the current one, and next year. (Was a hardcoded 3-item list.)
 function dynamicSessions() {
@@ -5792,7 +5792,7 @@ function dynamicSessions() {
   var y = m ? parseInt(m[1], 10) : 2025;
   var out = [];
   [y - 2, y - 1, y, y + 1].forEach(function (yy) {
-    out.push(yy + '–' + String((yy + 1) % 100).padStart(2, '0'));
+    out.push(yy + 'â' + String((yy + 1) % 100).padStart(2, '0'));
   });
   return out;
 }
@@ -5808,7 +5808,7 @@ function sessionSelectOpts(cur) {
 var SECTIONS = ['A', 'B', 'C'];
 var STU_PAGE_SIZE = 10;
 var STU_STATUSES = ['Active', 'Inactive', 'Draft', 'Cancelled'];
-// v34 (P0-3/P1-10): the roster rule — dues, attendance and marks are only
+// v34 (P0-3/P1-10): the roster rule â dues, attendance and marks are only
 // for enrolled students. Draft (admission not finished) and Cancelled
 // never get dues and never appear on a roster. Inactive students DO keep
 // dues (they are still enrolled; only their attendance/marks stop).
@@ -5828,7 +5828,7 @@ function maskAadhaar(a) {
   var d = digitsOnly(a);
   if (d.length === 4) return '**** **** ' + d; // v36: only the last 4 are stored
   if (d.length === 12) return '**** **** ' + d.slice(8); // legacy in-memory value
-  return '—';
+  return 'â';
 }
 // Session containing a YYYY-MM-DD date (Apr-Mar academic year). Timezone-proof:
 // parses the ISO date directly instead of new Date(), whose UTC-midnight parse
@@ -5837,12 +5837,12 @@ function sessionOfDate(ds) {
   var m = /^(\d{4})-(\d{2})-\d{2}$/.exec(String(ds || ''));
   if (!m) return '';
   var y = parseInt(m[1], 10), mo = parseInt(m[2], 10);
-  if (mo >= 4) return y + '–' + String((y + 1) % 100).padStart(2, '0');
-  return (y - 1) + '–' + String(y % 100).padStart(2, '0');
+  if (mo >= 4) return y + 'â' + String((y + 1) % 100).padStart(2, '0');
+  return (y - 1) + 'â' + String(y % 100).padStart(2, '0');
 }
 function currentSession() { return sessionOfDate(todayIST()); }
 function admYear() {
-  var m = String(db.profile.session || '2025–26').match(/\d{4}/);
+  var m = String(db.profile.session || '2025â26').match(/\d{4}/);
   return m ? m[0] : '2025';
 }
 function ensureAdmCounter() {
@@ -5881,7 +5881,7 @@ function findDupStudent(data, excludeId) {
     if (data.dob && s.dob && s.dob === data.dob && s.name.trim().toLowerCase() === String(data.name || '').trim().toLowerCase()) { d = s; return true; }
     if (data.phone && s.phone && digitsOnly(s.phone) === digitsOnly(data.phone) && s.name.trim().toLowerCase() === String(data.name || '').trim().toLowerCase()) { d = s; return true; }
     // v116 (Module 3): a roll number is unique inside one class. Only an
-    // enrolled student (Active/Inactive) holds a roll — a Draft or a
+    // enrolled student (Active/Inactive) holds a roll â a Draft or a
     // Cancelled record frees it, and editing a student never clashes
     // with itself (excludeId is filtered above).
     if (data.roll && s.cls === data.cls && Number(s.roll) === Number(data.roll) && isEnrolledStudent(s)) { d = s; return true; }
@@ -6006,23 +6006,23 @@ function downloadStudentCSV(id) {
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
   downloadCSV('school-saathi-student-' + (s.admissionNo || s.id) + '.csv', [STU_CSV_HEAD, studentCSVRow(s)]);
-  toast('✓ ' + t('tStuCsvOne'));
+  toast('â ' + t('tStuCsvOne'));
 }
 function exportStudentsCSV() {
   var list = stuSorted(stuFiltered());
   downloadCSV('school-saathi-students-' + todayIST() + '.csv', [STU_CSV_HEAD].concat(list.map(studentCSVRow)));
-  toast('✓ ' + t('tCsvExported'));
+  toast('â ' + t('tCsvExported'));
 }
 
 /* ================= Phase 2: bulk CSV import =================
-   CSV only — Excel (.xlsx) is a zipped binary format and cannot be parsed
+   CSV only â Excel (.xlsx) is a zipped binary format and cannot be parsed
    without a library; this static build has zero external dependencies, so the
    template and the import are CSV. The UI says so (impTemplateSub). */
 var IMPORT_CSV_HEAD = ['name', 'dob', 'gender', 'bloodGroup', 'category', 'address', 'state', 'district', 'pin', 'admissionDate', 'session', 'class', 'section', 'roll', 'previousSchool', 'previousClass', 'fatherName', 'motherName', 'guardianName', 'mobile', 'mobile2', 'parentEmail', 'occupation', 'birthCert', 'tc', 'tcNumber', 'aadhaar'];
 function buildImportTemplate() {
   return [IMPORT_CSV_HEAD,
-    ['Aarav Kumar', '2014-05-12', 'Boy', 'O+', 'OBC', 'Ward 4, Manikpur', 'Bihar', 'Gopalganj', '841428', '2026-04-01', '2026–27', '6th', 'A', '1', '', '', 'Ramesh Kumar', 'Sunita Devi', 'Ramesh Kumar', '9812345678', '', 'ramesh@example.com', 'Farmer', 'Yes', 'No', '', ''],
-    ['Sneha Kumari', '2013-11-03', 'Girl', 'B+', 'General', 'Boring Road', 'Bihar', 'Patna', '800001', '2026-04-01', '2026–27', '6th', 'A', '2', 'Sunrise Academy', '5th', 'Anil Sharma', 'Pooja Sharma', 'Anil Sharma', '9812345679', '9812345680', '', 'Teacher', 'Yes', 'Yes', 'TC-2041', '']];
+    ['Aarav Kumar', '2014-05-12', 'Boy', 'O+', 'OBC', 'Ward 4, Manikpur', 'Bihar', 'Gopalganj', '841428', '2026-04-01', '2026â27', '6th', 'A', '1', '', '', 'Ramesh Kumar', 'Sunita Devi', 'Ramesh Kumar', '9812345678', '', 'ramesh@example.com', 'Farmer', 'Yes', 'No', '', ''],
+    ['Sneha Kumari', '2013-11-03', 'Girl', 'B+', 'General', 'Boring Road', 'Bihar', 'Patna', '800001', '2026-04-01', '2026â27', '6th', 'A', '2', 'Sunrise Academy', '5th', 'Anil Sharma', 'Pooja Sharma', 'Anil Sharma', '9812345679', '9812345680', '', 'Teacher', 'Yes', 'Yes', 'TC-2041', '']];
 }
 function downloadImportTemplate() {
   downloadCSV('school-saathi-import-template.csv', buildImportTemplate());
@@ -6079,8 +6079,8 @@ function isValidDateStr(ds) {
   return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === d;
 }
 function normSession(v) {
-  var s = String(v || '').trim().replace(/(\d{4})-(\d{2})/, '$1–$2');
-  return /^\d{4}–\d{2}$/.test(s) ? s : '';
+  var s = String(v || '').trim().replace(/(\d{4})-(\d{2})/, '$1â$2');
+  return /^\d{4}â\d{2}$/.test(s) ? s : '';
 }
 function normBool(v) {
   var s = String(v || '').trim().toLowerCase();
@@ -6153,7 +6153,7 @@ function validateImportRow(row, seenValid) {
   var cls = clsPart + '-' + sec;
   var data = null;
   if (!errors.length) {
-    data = { name: name, cls: cls, roll: roll, guardian: String(row.guardianName || '').trim() || String(row.fatherName || '').trim() || '—',
+    data = { name: name, cls: cls, roll: roll, guardian: String(row.guardianName || '').trim() || String(row.fatherName || '').trim() || 'â',
       phone: phone, dob: dob, gender: gender, bloodGroup: blood, category: cat,
       address: String(row.address || '').trim(), state: String(row.state || '').trim(), district: String(row.district || '').trim(), pin: pin,
       session: session || db.profile.session, admissionDate: admDate || todayIST(),
@@ -6162,13 +6162,13 @@ function validateImportRow(row, seenValid) {
       mobile2: phone2, parentEmail: email, occupation: String(row.occupation || '').trim(), aadhaar: aadhaarLast4(aadhaar),
       documents: { birthCert: !!bc, tc: !!tcB, tcNumber: String(row.tcNumber || '').trim(), other: '' } };
     var dup = findDupStudent(data, null); // same rules as the admission form
-    if (dup) return { ok: false, status: 'duplicate', errors: [t('impErrDup') + ' ' + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' • ' + dup.cls + ')'], data: null };
+    if (dup) return { ok: false, status: 'duplicate', errors: [t('impErrDup') + ' ' + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' â¢ ' + dup.cls + ')'], data: null };
     var dupIn = null;
     (seenValid || []).some(function (v) {
       if (v.name.trim().toLowerCase() === name.toLowerCase() && ((dob && v.dob === dob) || (phone && digitsOnly(v.phone) === phone))) { dupIn = v; return true; }
       return false;
     });
-    if (dupIn) return { ok: false, status: 'duplicate', errors: [t('impErrDupFile') + ' (' + dupIn.name + ' • ' + dupIn.cls + ')'], data: null };
+    if (dupIn) return { ok: false, status: 'duplicate', errors: [t('impErrDupFile') + ' (' + dupIn.name + ' â¢ ' + dupIn.cls + ')'], data: null };
   }
   return { ok: errors.length === 0, status: errors.length ? 'error' : 'valid', errors: errors, data: data };
 }
@@ -6209,16 +6209,16 @@ function importPreviewHTML() {
   var trs = rows.map(function (r, i) {
     var badgeCls = (r.status === 'valid' || r.status === 'imported') ? 'green' : r.status === 'duplicate' ? 'orange' : 'red';
     var label = r.status === 'valid' ? t('impValid') : r.status === 'imported' ? t('impImported') : r.status === 'duplicate' ? t('impDuplicate') : t('impError');
-    return '<tr><td>' + (r.row.__line || i + 2) + '</td><td><b>' + esc(r.row.name || '—') + '</b></td><td>' + esc((r.row.class || '') + (r.row.section ? '-' + r.row.section : '')) + '</td><td>' + esc(r.row.mobile || '') + '</td>' +
-      '<td><span class="badge ' + badgeCls + '">' + label + '</span></td><td>' + esc(r.errors.join('; ') || '—') + '</td></tr>';
+    return '<tr><td>' + (r.row.__line || i + 2) + '</td><td><b>' + esc(r.row.name || 'â') + '</b></td><td>' + esc((r.row.class || '') + (r.row.section ? '-' + r.row.section : '')) + '</td><td>' + esc(r.row.mobile || '') + '</td>' +
+      '<td><span class="badge ' + badgeCls + '">' + label + '</span></td><td>' + esc(r.errors.join('; ') || 'â') + '</td></tr>';
   }).join('');
   var res = '';
   if (importState.result) {
     var rs = importState.result;
-    res = '<div class="card" style="margin-top:12px"><h3>' + t('impSummary') + '</h3><p>' + rs.imported + ' ' + t('impImported') + ' • ' + rs.skipped + ' ' + t('impSkipped') + '</p></div>';
+    res = '<div class="card" style="margin-top:12px"><h3>' + t('impSummary') + '</h3><p>' + rs.imported + ' ' + t('impImported') + ' â¢ ' + rs.skipped + ' ' + t('impSkipped') + '</p></div>';
   }
-  return '<h3 style="margin-top:14px">' + t('impPreview') + ' — ' + rows.length + ' ' + t('recordsWord') + '</h3>' +
-    '<p class="muted">' + valid + ' ' + t('impValid') + ' • ' + errs + ' ' + t('impError') + ' • ' + dups + ' ' + t('impDuplicate') + (impd ? ' • ' + impd + ' ' + t('impImported') : '') + (importState.fileName ? ' • ' + esc(importState.fileName) : '') + '</p>' +
+  return '<h3 style="margin-top:14px">' + t('impPreview') + ' â ' + rows.length + ' ' + t('recordsWord') + '</h3>' +
+    '<p class="muted">' + valid + ' ' + t('impValid') + ' â¢ ' + errs + ' ' + t('impError') + ' â¢ ' + dups + ' ' + t('impDuplicate') + (impd ? ' â¢ ' + impd + ' ' + t('impImported') : '') + (importState.fileName ? ' â¢ ' + esc(importState.fileName) : '') + '</p>' +
     '<div class="tbl-wrap imp-scroll"><table><thead><tr><th>#</th><th>' + t('thName') + '</th><th>' + t('thClass') + '</th><th>' + t('thPhone') + '</th><th>' + t('thStatus') + '</th><th>' + t('impReason') + '</th></tr></thead><tbody>' +
     (trs || '<tr><td colspan="6"><div class="empty">' + t('impNoRows') + '</div></td></tr>') + '</tbody></table></div>' +
     '<div class="actions" style="justify-content:flex-start">' +
@@ -6228,7 +6228,7 @@ function importPreviewHTML() {
 function openImportModal() {
   openModal('<h3>' + t('impTitle') + '</h3>' +
     '<p class="muted">' + t('impTemplateSub') + '</p>' +
-    '<div class="toolbar" style="margin:12px 0"><button class="btn ghost sm" onclick="downloadImportTemplate()">⬇ ' + t('impTemplate') + '</button>' +
+    '<div class="toolbar" style="margin:12px 0"><button class="btn ghost sm" onclick="downloadImportTemplate()">â¬ ' + t('impTemplate') + '</button>' +
     '<input type="file" id="impFile" accept=".csv,text/csv" onchange="onImportFile(this)" style="flex:1;min-width:180px"></div>' +
     '<div id="impPreviewWrap">' + (importState.rows ? importPreviewHTML() : '') + '</div>' +
     '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('closeW') + '</button></div>', true);
@@ -6264,23 +6264,23 @@ function confirmImportRun(rows, numberSource) {
     // Re-check duplicates at import time, so a second Confirm (or data that
     // changed since the preview) can never import the same student twice.
     var dup = findDupStudent(r.data, null);
-    if (dup) { r.status = 'duplicate'; r.errors = [t('impErrDup') + ' ' + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' • ' + dup.cls + ')']; skipped++; return; }
+    if (dup) { r.status = 'duplicate'; r.errors = [t('impErrDup') + ' ' + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' â¢ ' + dup.cls + ')']; skipped++; return; }
     var d = r.data;
     var nums;
     if (Array.isArray(numberSource)) nums = numberSource[numIdx++] || { admissionNo: '', enr: '' };
     else if (numberSource === 'pending') nums = { admissionNo: '', enr: '', numPending: true };
     else nums = { admissionNo: nextAdmNo(), enr: nextEnr() };
     var admNo = nums.admissionNo;
-    var rec = { id: uniqueId('stu'), att: 100, result: 0, fee: '—', enr: nums.enr, admissionNo: admNo, status: 'Active' };
+    var rec = { id: uniqueId('stu'), att: 100, result: 0, fee: 'â', enr: nums.enr, admissionNo: admNo, status: 'Active' };
     if (nums.numPending) rec.numPending = true;
     Object.keys(d).forEach(function (k) { rec[k] = d[k]; });
-    rec.parentPinHash = hashPin(randomPin()); // v54 (A1): imported students get a random PIN stored as a salted hash — never the phone's last 4 digits, never plaintext, and the value is never shown
+    rec.parentPinHash = hashPin(randomPin()); // v54 (A1): imported students get a random PIN stored as a salted hash â never the phone's last 4 digits, never plaintext, and the value is never shown
     rec.roll = d.roll || nextRoll(d.cls);
     // No fee record is created on import: dues are created by Generate Fees.
-    // (The single-admission form adds a ₹6,000 placeholder record; a bulk
+    // (The single-admission form adds a â¹6,000 placeholder record; a bulk
     // import of many students must not silently inflate the fee totals.)
     db.students.push(rec);
-    logAudit('Bulk import', rec.name + ' • ' + (admNo || 'pending') + ' • ' + rec.cls);
+    logAudit('Bulk import', rec.name + ' â¢ ' + (admNo || 'pending') + ' â¢ ' + rec.cls);
     r.status = 'imported';
     imported++;
   });
@@ -6303,9 +6303,9 @@ function todayAtt() {
   // per-student attendance records (db.attendance, keyed 'YYYY-MM-DD|Class').
   // The old aggregate (seeded 1,150 present of 1,250) described a
   // 1,250-student school, not this one, and was only ever delta-updated from
-  // that wrong baseline — so the donut showed fake numbers. 0 of 0 when
+  // that wrong baseline â so the donut showed fake numbers. 0 of 0 when
   // nothing is marked today yet.
-  // v24: soft-deleted (Cancelled) students never count — their old marks
+  // v24: soft-deleted (Cancelled) students never count â their old marks
   // stay in the register, but they are not today's students anymore.
   var t = todayIST(), p = 0, a = 0, l = 0;
   var cancelled = {};
@@ -6326,11 +6326,11 @@ function todayAtt() {
 }
 function studentAttPct(s) {
   // v24: a student's attendance % is computed LIVE from the actual marked
-  // records in db.attendance — so the figure moves the moment attendance
+  // records in db.attendance â so the figure moves the moment attendance
   // is marked. Present and Late both count as attended (the student was
   // there); Absent does not. Only when the student has NO marked days at
   // all do we fall back to the stored s.att (the seed / import / admission
-  // value). Never write the computed value back into s.att — the stored
+  // value). Never write the computed value back into s.att â the stored
   // value stays the fallback.
   var total = 0, attended = 0;
   Object.keys(db.attendance || {}).forEach(function (k) {
@@ -6345,7 +6345,7 @@ function studentAttPct(s) {
   return total ? Math.round(attended / total * 100) : (s.att || 0);
 }
 /* v26: real relative time from an ISO timestamp. Returns '' when the
-   entry has no timestamp — old entries that predate timestamps show
+   entry has no timestamp â old entries that predate timestamps show
    no time rather than a fabricated one. */
 function relTime(ts) {
   if (!ts) return '';
@@ -6446,11 +6446,11 @@ function animateBars(root) {
   });
 }
 /* v26: the line chart + its animation removed with the fake growth
-   chart — schools carry no created-date, so no time series can be
+   chart â schools carry no created-date, so no time series can be
    computed honestly. Fee trend still uses barChartSVG. */
 
 /* ================= i18n ================= */
-/* Phase 2 (v77): I18N strings table + t() moved to js/modules/i18n.js — loaded before app.js. */
+/* Phase 2 (v77): I18N strings table + t() moved to js/modules/i18n.js â loaded before app.js. */
 function applyI18n() {
   document.querySelectorAll('[data-i18n]').forEach(function (el) {
     var v = t(el.getAttribute('data-i18n'));
@@ -6468,9 +6468,9 @@ function setLang(l) {
   state.lang = l;
   $('langEn').classList.toggle('on', l === 'en');
   $('langHi').classList.toggle('on', l === 'hi');
-  var lo = $('langOne'); if (lo) lo.textContent = l === 'en' ? 'EN' : 'हिं';
+  var lo = $('langOne'); if (lo) lo.textContent = l === 'en' ? 'EN' : 'à¤¹à¤¿à¤';
   // v96: the login screen has its own toggle (the topbar is hidden
-  // until login) — keep it in sync too.
+  // until login) â keep it in sync too.
   var lle = $('loginLangEn'); if (lle) lle.classList.toggle('on', l === 'en');
   var llh = $('loginLangHi'); if (llh) llh.classList.toggle('on', l === 'hi');
   applyI18n();
@@ -6494,7 +6494,7 @@ function showLogin() { showView('login'); try { $('sbStatus').textContent = sbSt
 function persistSession() {
   // The session lives in localStorage so it survives closing and reopening
   // the app (sessionStorage died with the tab/PWA, forcing a fresh login).
-  // Phase 1 (CR-1/H-1): the stored session carries `at` — the time of
+  // Phase 1 (CR-1/H-1): the stored session carries `at` â the time of
   // the interactive login. The 30-day max age is ABSOLUTE: re-persisting
   // (view changes, restores) keeps the original `at` when the account
   // is unchanged, so using the app never extends the lifetime. A fresh
@@ -6509,10 +6509,10 @@ function persistSession() {
       } catch (e) {}
       localStorage.setItem(SESSION_KEY, JSON.stringify({ role: state.role, email: state.user.email, view: state.view, at: at }));
     } else localStorage.removeItem(SESSION_KEY);
-  } catch (e) { /* private mode — session just won't survive */ }
+  } catch (e) { /* private mode â session just won't survive */ }
 }
 function clearStoredSession() {
-  // Phase 1 (CR-1/H-1): drop every trace of the stored session — the
+  // Phase 1 (CR-1/H-1): drop every trace of the stored session â the
   // local session key (both storages) and the Supabase tokens.
   try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
   try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
@@ -6527,10 +6527,10 @@ function loginAs(a, opts) {
   showView('app'); renderApp();
   persistSession();
   lastBackAt = 0; histExiting = false;
-  histArmGuard(); // fresh history for this account: [dashboard, guard] — back from the dashboard warns first, it never re-enters another account
+  histArmGuard(); // fresh history for this account: [dashboard, guard] â back from the dashboard warns first, it never re-enters another account
   if (!opts || !opts.silent) toast(t('tLoggedIn') + ' ' + a.name);
 }
-// Phase 1 (CR-1/H-1): restoreSession is ASYNC now — it returns
+// Phase 1 (CR-1/H-1): restoreSession is ASYNC now â it returns
 // Promise<boolean>. A server-linked school session is validated against
 // the server before loginAs when the device is online; offline boot is
 // unchanged (no validation attempt, no forced logout).
@@ -6556,7 +6556,7 @@ function restoreSession() {
     // interactive login (persistSession never refreshes `at`). A session
     // stored before this change has no timestamp and is treated as
     // expired, so every pre-fix session needs one fresh login after the
-    // update. `at` is not a signature — anyone who can edit localStorage
+    // update. `at` is not a signature â anyone who can edit localStorage
     // can forge it; the server check below is the real boundary for
     // online school accounts.
     if (typeof sv.at !== 'number' || isNaN(sv.at) || Date.now() - sv.at > SESSION_MAX_AGE_MS) {
@@ -6623,7 +6623,7 @@ function restoreSession() {
     if ((sv.role === 'principal' || sv.role === 'accountant' || sv.role === 'staff') && typeof sv.email === 'string' && sv.email.indexOf('cloud-staff:') === 0) {
       // v130: a cloud staff session restores from its stored snapshot
       // (the school's data was never on this device). Before v130 there
-      // was NO cloud-staff branch — a reload signed the staff member out
+      // was NO cloud-staff branch â a reload signed the staff member out
       // (the v129 live check reproduced this for the principal, 15 Nov).
       // No password is stored; the token rides with the snapshot and is
       // re-checked by the server on every write, so a missing snapshot
@@ -6655,7 +6655,7 @@ function restoreSession() {
       var stu = (stuDb.students || []).find(function (x) { return x.id === parts[2]; });
       if (stu && (stu.parentPinHash || stu.parentPin)) {
         DB_KEY = stuKey;
-        loginAs({ role: 'student', name: stu.name, sub: t('stuSub') + ' • ' + stu.name, email: sv.email, uid: 'student-' + stu.id, studentId: stu.id, schoolUid: parts[1] }, { silent: true });
+        loginAs({ role: 'student', name: stu.name, sub: t('stuSub') + ' â¢ ' + stu.name, email: sv.email, uid: 'student-' + stu.id, studentId: stu.id, schoolUid: parts[1] }, { silent: true });
         state.view = 'dashboard';
         renderApp();
         return Promise.resolve(true);
@@ -6664,7 +6664,7 @@ function restoreSession() {
     }
     var a = findAccount(sv.email);
     if (!a || a.role !== sv.role) return Promise.resolve(false);
-    if (a.role === 'teacher' && !readDbByKey(dbKeyFor(a))) return Promise.resolve(false); // the school's data left this device — no DB to open
+    if (a.role === 'teacher' && !readDbByKey(dbKeyFor(a))) return Promise.resolve(false); // the school's data left this device â no DB to open
     // Shared tail for school + teacher restores (loginAs + view).
     function finishRestore() {
       loginAs(a, { silent: true });
@@ -6673,11 +6673,11 @@ function restoreSession() {
       state.view = (NAV[a.role] || []).some(function (n) { return n[0] === sv.view; }) ? sv.view : 'dashboard';
       if (state.view !== 'dashboard') histReplaceTop({ view: state.view }); // drop the guard: the restored view sits on top
       renderApp();
-      persistSession(); // re-persist AFTER applying the view — the stored view must match what the user sees (`at` is preserved, see persistSession)
+      persistSession(); // re-persist AFTER applying the view â the stored view must match what the user sees (`at` is preserved, see persistSession)
       return true;
     }
     // Phase 1 (CR-1/H-1): a server-linked school session is validated
-    // before loginAs — but ONLY when online. Offline boot never attempts
+    // before loginAs â but ONLY when online. Offline boot never attempts
     // validation and never forces a logout. Local-only schools and
     // teachers keep the old local-only restore path.
     if (a.role === 'school' && sbIsOnline() && (a.sbUid || sbLoadSession())) {
@@ -6689,7 +6689,7 @@ function restoreSession() {
         }
         // BAT review fix: finishRestore runs outside restoreSession's
         // try/catch (it is inside this .then), so a render/load error
-        // here used to reject the boot promise with no handler — blank
+        // here used to reject the boot promise with no handler â blank
         // app, no login screen, no sbBoot. Fail safe instead: false
         // shows the login screen, exactly like the sync path below.
         try { return finishRestore(); } catch (e2) { return false; }
@@ -6712,7 +6712,7 @@ function switchAuth(tab) {
   // v47: "Forgot password?" only on the Log In tab (signup/student/teacher have their own flows).
   var fr47 = $('forgotRow');
   if (fr47) fr47.classList.toggle('hidden', tab !== 'login');
-  // v35: the student form picks the school first — every school's first
+  // v35: the student form picks the school first â every school's first
   // student is ADM-2025-001, so a bare admission number matches the
   // wrong school (the same trap the v34 parent picker fixed).
   if (tab === 'student') fillSchoolPicker('studentSchool');
@@ -6727,7 +6727,7 @@ function togglePw(id, btn) {
   if (!el) return;
   var show = el.type === 'password';
   el.type = show ? 'text' : 'password';
-  if (btn) { btn.textContent = show ? '🙈' : '👁'; btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password'); }
+  if (btn) { btn.textContent = show ? 'ð' : 'ð'; btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password'); }
   el.focus();
 }
 function fillSchoolPicker(selId, opts) {
@@ -6740,7 +6740,7 @@ function fillSchoolPicker(selId, opts) {
   var neutral = opts && opts.neutral ? '<option value="">' + esc(t('tchrNoSchoolPick')) + '</option>' : '';
   sel.innerHTML = neutral + schools.map(function (a) { return '<option value="' + esc(a.uid) + '">' + esc(a.school) + '</option>'; }).join('');
   if (cur && schools.some(function (a) { return a.uid === cur; })) sel.value = cur;
-  // v61: cloud schools — on the server but not on this device. A school
+  // v61: cloud schools â on the server but not on this device. A school
   // already local is listed once (local wins: it works offline too).
   if (typeof fetch !== 'function') return;
   var localServerIds = {};
@@ -6753,7 +6753,7 @@ function fillSchoolPicker(selId, opts) {
     if ($(selId) !== sel) return; // the login view re-rendered meanwhile
     var cur2 = sel.value;
     var opts = list.filter(function (s) { return s && s.id && !localServerIds[s.id]; }).map(function (s) {
-      return '<option value="cloud:' + esc(s.id) + '">' + esc(s.name) + (s.city ? ' • ' + esc(s.city) : '') + esc(t('cloudSuffix')) + '</option>';
+      return '<option value="cloud:' + esc(s.id) + '">' + esc(s.name) + (s.city ? ' â¢ ' + esc(s.city) : '') + esc(t('cloudSuffix')) + '</option>';
     }).join('');
     if (!opts) return;
     sel.innerHTML = sel.innerHTML + opts;
@@ -6808,7 +6808,7 @@ function findStudentByAdmNoInSchool(admNo, accountUid) {
 }
 /* v54 (A1): local rate limit on student PIN guesses. 5 wrong attempts
    lock that student's login on this device for 15 minutes. The record
-   lives in localStorage, so it survives reloads — but clearing
+   lives in localStorage, so it survives reloads â but clearing
    localStorage resets it. This stops casual guessing, not a determined
    local attacker with device access (stated honestly, per the triage). */
 var PIN_FAIL_KEY = 'schoolSaathiPinFails';
@@ -6825,10 +6825,10 @@ function pinFailRecord(schoolUid, studentId) {
   m[k] = r; pinFailsSave(m); return r.lockedUntil;
 }
 function pinFailClear(schoolUid, studentId) { var m = pinFailsLoad(); var k = pinFailKey(schoolUid, studentId); if (m[k]) { delete m[k]; pinFailsSave(m); } }
-/* v59 (H-4): local rate limit on school/teacher password guesses — the
+/* v59 (H-4): local rate limit on school/teacher password guesses â the
    same pattern as the student PIN lockout above. 5 wrong attempts lock
    that email's LOCAL login on this device for 15 minutes. The record
-   lives in localStorage, so it survives reloads — but clearing
+   lives in localStorage, so it survives reloads â but clearing
    localStorage resets it. This stops casual guessing, not a determined
    local attacker with device access (stated honestly, per the triage).
    It never blocks a server login: the lock only gates the local
@@ -6853,7 +6853,7 @@ function doStudentLogin(e) {
   var pin = $('studentPin').value.trim();
   var err = $('studentErr');
   var schoolUid = $('studentSchool') ? $('studentSchool').value : '';
-  // v61: a "cloud:<server-uuid>" school is not on this device — the PIN
+  // v61: a "cloud:<server-uuid>" school is not on this device â the PIN
   // is verified on the server. The async call returns nothing to the
   // form (a Promise return would submit it), so return false here.
   if (schoolUid && schoolUid.indexOf('cloud:') === 0) {
@@ -6877,12 +6877,12 @@ function doStudentLogin(e) {
     // (findStudentByAdmNoInSchool normally upgrades it via migrateV54
     // before this compare, so this branch rarely fires). It verifies
     // once here, and the hash upgrade is persisted by loginAs, which
-    // reloads the DB through loadDB -> migrateV54 -> saveDB — so after
+    // reloads the DB through loadDB -> migrateV54 -> saveDB â so after
     // a successful legacy login no plaintext PIN is left in localStorage.
     else if (stu.parentPin) ok = digitsOnly(pin) === digitsOnly(stu.parentPin);
   }
   // v95 (hash sweep): a successful login upgrades a legacy PIN hash
-  // (s256$ or djb2) to bcrypt — the same upgrade-on-login the password
+  // (s256$ or djb2) to bcrypt â the same upgrade-on-login the password
   // paths already do. The upgraded hash syncs to the server on the next
   // cycle, healing the server row too. writeDbByKey targets the
   // SCHOOL's key (saveDB would write to the pre-login DB_KEY, which is
@@ -6892,7 +6892,7 @@ function doStudentLogin(e) {
     try { writeDbByKey(found.dbKey, found.db); } catch (e) {}
   }
   if (!found || !ok) {
-    // Only a real student WITH a PIN counts toward the lockout — an
+    // Only a real student WITH a PIN counts toward the lockout â an
     // unknown admission number never locks anything.
     if (stu && pinHasPin(stu)) pinFailRecord(schoolUid, stu.id);
     err.textContent = t('tInvalidStudent');
@@ -6901,12 +6901,12 @@ function doStudentLogin(e) {
   }
   pinFailClear(schoolUid, stu.id);
   DB_KEY = found.dbKey;
-  var acct = { role: 'student', name: found.student.name, sub: t('stuSub') + ' • ' + found.student.name, email: 'student:' + schoolUid + ':' + found.student.id, uid: 'student-' + found.student.id, studentId: found.student.id, schoolUid: schoolUid };
+  var acct = { role: 'student', name: found.student.name, sub: t('stuSub') + ' â¢ ' + found.student.name, email: 'student:' + schoolUid + ':' + found.student.id, uid: 'student-' + found.student.id, studentId: found.student.id, schoolUid: schoolUid };
   err.classList.add('hidden');
   loginAs(acct);
   return false;
 }
-// v61: Student cloud login — the school's data is NOT on this device.
+// v61: Student cloud login â the school's data is NOT on this device.
 // The PIN is verified on the server (SQL 17: ss_student_cloud_login,
 // with server-side rate limiting) and the student's dashboard data comes
 // back in one payload. The payload is mapped through the SAME row
@@ -6923,11 +6923,11 @@ function sbStudentCloudLogin(serverId, adm, pin) {
   }).catch(function () { return null; });
 }
 // v63: server-side rate limit for the SCHOOL login (SQL 19). The school
-// password is verified by GoTrue, which only rate-limits per IP — it has
+// password is verified by GoTrue, which only rate-limits per IP â it has
 // no per-account attempt counter. These RPCs hold the per-account lock:
 // 5 wrong passwords lock the email for 15 minutes, on the server, on
 // every device. The RPCs only ever lock emails that HAVE a Supabase Auth
-// account — a local-only school (no server account) is never locked out
+// account â a local-only school (no server account) is never locked out
 // of its local login, and an unknown email never creates a row.
 function sbSchoolLoginPrecheck(email) {
   return sbRest('POST', 'rpc/ss_school_login_precheck', SB_ANON_KEY, { p_email: email }).then(function (r) {
@@ -6941,18 +6941,18 @@ function sbSchoolLoginFailed(email) {
   }).catch(function () { return null; });
 }
 function sbSchoolLoginOk(email, token) {
-  // v68 (audit P0-1): the reset RPC is auth-bound (SQL 21) — it only
+  // v68 (audit P0-1): the reset RPC is auth-bound (SQL 21) â it only
   // clears the counter for the caller's own email, and anon is revoked
   // on it. Call it with the fresh GoTrue access token from the
   // just-completed sign-in, never with the anon key. No token means no
-  // reset (the counter simply is not cleared that once — login itself
+  // reset (the counter simply is not cleared that once â login itself
   // is unaffected, and the old call already swallowed its errors).
   if (!token) return Promise.resolve(null);
   return sbRest('POST', 'rpc/ss_school_login_ok', token, { p_email: email }).catch(function () {});
 }
 // v99 (cons fix): server-side rate limit for the LOCAL parent-PIN login
 // (SQL 36). Mirrors the school-login RPCs above: precheck before the
-// PIN is tried, failed on a wrong PIN, ok on a success — all
+// PIN is tried, failed on a wrong PIN, ok on a success â all
 // best-effort and fail-open, so offline login keeps working. The cloud
 // parent login already gets server lockout through ss_student_cloud_login.
 function sbParentPinPrecheck(serverId, admNo) {
@@ -6985,7 +6985,7 @@ function sbParentPinOk(serverId, admNo, pin, dob) {
     return (r && r.data) || null;
   }).catch(function () { return null; });
 }
-// v99 (cons fix): parent PIN self-service (SQL 37) — admission number +
+// v99 (cons fix): parent PIN self-service (SQL 37) â admission number +
 // date of birth, verified on the server. The new PIN is hashed
 // server-side; the plaintext is never stored.
 function sbParentPinResetByDob(serverId, admNo, dob, pin) {
@@ -7010,8 +7010,8 @@ function sbPublicSchools() {
 function mapCloudStudentPayload(p) {
   // Build a db-shaped slice from the server payload. The student views
   // (dashboard, profile, homework, notices) read `db`, so the slice
-  // mirrors the local db shape exactly — only the student's own rows.
-  var d = emptyDb({ name: (p.school && p.school.name) || '', city: (p.school && p.school.city) || '', principal: '', phone: '', email: '', session: '2025–26', address: '' }, []);
+  // mirrors the local db shape exactly â only the student's own rows.
+  var d = emptyDb({ name: (p.school && p.school.name) || '', city: (p.school && p.school.city) || '', principal: '', phone: '', email: '', session: '2025â26', address: '' }, []);
   var stuMap = {};
   var stu = sbRowToStudent(p.student || {});
   if (p.student && p.student.id) { stuMap[p.student.id] = stu.id; stu.srvId = p.student.id; } // v142: photo re-mint needs the server id
@@ -7039,10 +7039,10 @@ function mapCloudStudentPayload(p) {
   return d;
 }
 function loginCloudStudent(acct, slice, opts) {
-  // Like loginAs, but the db IS the cloud slice — no local school DB is
+  // Like loginAs, but the db IS the cloud slice â no local school DB is
   // loaded, and DB_KEY points at a dedicated cloud key so an accidental
   // saveDB could never land in a school's data.
-  // v86: opts.role lets a parent log in through the same cloud slice —
+  // v86: opts.role lets a parent log in through the same cloud slice â
   // the role comes from the account, never from the payload.
   state.role = (opts && opts.role) || acct.role || 'student'; state.user = acct; state.cloudDb = slice; state.view = 'dashboard'; state.profileStudent = null;
   state.cloudParentToken = (opts && opts.token) || null; // v141: photo re-mint token (SQL 52), sessionStorage only
@@ -7073,14 +7073,14 @@ function doStudentCloudLogin(serverId, adm, pin, err) {
     var slice = mapCloudStudentPayload(res);
     var me = slice.students[0];
     sbPrefetchCloudPhoto(res, serverId, adm, pin);
-    var acct = { role: 'student', name: me.name, sub: t('stuSub') + ' • ' + me.name, email: 'cloud-student:' + serverId + ':' + me.id, uid: 'cloud-student-' + me.id, studentId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
+    var acct = { role: 'student', name: me.name, sub: t('stuSub') + ' â¢ ' + me.name, email: 'cloud-student:' + serverId + ':' + me.id, uid: 'cloud-student-' + me.id, studentId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
     err.classList.add('hidden');
     loginCloudStudent(acct, slice, { token: res.token });
   });
 }
 // v86 (Phase 4): the Parent role returns as its OWN role. A parent logs
-// in with the child's admission number + PIN — the same credentials and
-// the same server check as the student login (ss_student_cloud_login) —
+// in with the child's admission number + PIN â the same credentials and
+// the same server check as the student login (ss_student_cloud_login) â
 // but the session role is 'parent', so the portal is view-only: the
 // child's attendance, fees, results, homework and notices, and nothing
 // else. The parent never edits, never sees other students, and never
@@ -7088,7 +7088,7 @@ function doStudentCloudLogin(serverId, adm, pin, err) {
 var parentResetMode = false;
 function doParentLogin(e) {
   e.preventDefault();
-  // In reset mode the Enter key submits this form too — route it to the
+  // In reset mode the Enter key submits this form too â route it to the
   // reset handler instead of the login.
   if (parentResetMode) return doParentPinReset(e);
   var adm = $('parentAdmNo').value.trim();
@@ -7153,12 +7153,12 @@ function doParentLocalLogin(schoolUid, srvId, adm, pin, err) {
   // PIN just verified as proof).
   if (srvId) sbParentPinOk(srvId, adm, pin);
   DB_KEY = found.dbKey;
-  var acct = { role: 'parent', name: found.student.name, sub: t('parentSub') + ' • ' + found.student.name, email: 'parent:' + schoolUid + ':' + found.student.id, uid: 'parent-' + found.student.id, studentId: found.student.id, schoolUid: schoolUid };
+  var acct = { role: 'parent', name: found.student.name, sub: t('parentSub') + ' â¢ ' + found.student.name, email: 'parent:' + schoolUid + ':' + found.student.id, uid: 'parent-' + found.student.id, studentId: found.student.id, schoolUid: schoolUid };
   err.classList.add('hidden');
   loginAs(acct);
   return false;
 }
-// v99 (cons fix): parent PIN self-service — admission number + date of
+// v99 (cons fix): parent PIN self-service â admission number + date of
 // birth, the two facts already on file. No SMS/email route exists, and
 // the admin's Set PIN stays the fallback for students with no DOB on
 // record. The cloud path verifies the DOB on the server (SQL 37); the
@@ -7203,7 +7203,7 @@ function doParentPinReset(e) {
     sbParentPinResetByDob(schoolUid.slice(6), adm, dob, pin1).then(function (res) {
       if (!res || !res.ok) {
         // One generic error: never reveal whether the number or the DOB
-        // was the problem — except the lock itself, which the user must
+        // was the problem â except the lock itself, which the user must
         // wait out, and no-DOB, which needs the admin.
         if (res && res.locked) err.textContent = t('tPinLocked');
         else if (res && res.error === 'no_dob') err.textContent = t('tPinResetNoDob');
@@ -7235,7 +7235,7 @@ function doParentPinReset(e) {
   }
   var srvId = null;
   try { srvId = schoolUid ? (sbServerSchoolMap()[schoolUid] || null) : null; } catch (e2) { srvId = null; }
-  // v99: a server lock binds the local reset too — a locked parent must
+  // v99: a server lock binds the local reset too â a locked parent must
   // not keep guessing DOBs on this device. Fail-open as usual.
   if (srvId && sbIsOnline()) {
     sbParentPinPrecheck(srvId, adm).then(function (pre) {
@@ -7261,11 +7261,11 @@ function doParentPinResetLocal(schoolUid, srvId, found, stu, dob, pin1, err) {
   }
   stu.parentPinHash = hashPin(pin1);
   delete stu.parentPin;
-  // Audit row on the school's own copy, so the admin sees the reset —
+  // Audit row on the school's own copy, so the admin sees the reset â
   // the actor is the parent, not whoever happens to be logged in.
   try {
     if (!Array.isArray(found.db.auditLog)) found.db.auditLog = [];
-    found.db.auditLog.unshift({ ts: new Date().toISOString(), actor: stu.name + ' (parent)', action: 'Parent PIN reset', details: 'Admission ' + (stu.admissionNo || '') + ' • ' + (stu.cls || '') });
+    found.db.auditLog.unshift({ ts: new Date().toISOString(), actor: stu.name + ' (parent)', action: 'Parent PIN reset', details: 'Admission ' + (stu.admissionNo || '') + ' â¢ ' + (stu.cls || '') });
     if (found.db.auditLog.length > 200) found.db.auditLog.length = 200;
   } catch (e3) {}
   try { writeDbByKey(found.dbKey, found.db); } catch (e4) {}
@@ -7292,7 +7292,7 @@ function doParentCloudLogin(serverId, adm, pin, err) {
     var slice = mapCloudStudentPayload(res);
     var me = slice.students[0];
     sbPrefetchCloudPhoto(res, serverId, adm, pin);
-    var acct = { role: 'parent', name: me.name, sub: t('parentSub') + ' • ' + me.name, email: 'cloud-parent:' + serverId + ':' + me.id, uid: 'cloud-parent-' + me.id, studentId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
+    var acct = { role: 'parent', name: me.name, sub: t('parentSub') + ' â¢ ' + me.name, email: 'cloud-parent:' + serverId + ':' + me.id, uid: 'cloud-parent-' + me.id, studentId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
     err.classList.add('hidden');
     // v114: a cloud success clears the server counter too (with the PIN
     // just verified as proof) - the cloud path never did this before.
@@ -7300,7 +7300,7 @@ function doParentCloudLogin(serverId, adm, pin, err) {
     loginCloudStudent(acct, slice, { role: 'parent', token: res.token });
   });
 }
-// v62: teacher cloud login (SQL 18). Unlike students, teachers WRITE —
+// v62: teacher cloud login (SQL 18). Unlike students, teachers WRITE â
 // attendance, homework and marks go through token-authenticated RPCs,
 // so their work lands on the server directly. The login returns a
 // 30-day session token; every write RPC re-checks the token and that
@@ -7333,10 +7333,10 @@ function sbTeacherRevokeSession(token) {
   }).catch(function () { return false; });
 }
 function sbTeacherStudentPhoto(token, studentServerId) {
-  // v74 (P1-2): on-demand student photo for a cloud teacher — the login
+  // v74 (P1-2): on-demand student photo for a cloud teacher â the login
   // payload no longer ships photos (SQL 24). Returns the photo data URL
   // string, or null when there is none / the call fails.
-  // Phase 3 (v80): SQL 29 also returns photo_url — after the v78 Storage
+  // Phase 3 (v80): SQL 29 also returns photo_url â after the v78 Storage
   // migration a synced photo lives in photo_url and photo_data_url is
   // null, so the data URL alone returned nothing. Prefer the data URL
   // (offline-safe) and fall back to the Storage URL.
@@ -7356,7 +7356,7 @@ function sbTeacherStudentPhoto(token, studentServerId) {
 }
 // v97 (cons fix): audit rows for cloud writes. A cloud teacher's
 // attendance, homework and marks go through RPCs, so no local audit row
-// ever existed for them — the school admin's Activity Log never saw
+// ever existed for them â the school admin's Activity Log never saw
 // their work. This posts the row to the server directly (SQL 34
 // ss_log_audit); the actor name + role and the school come from the
 // session token ON THE SERVER, never from the caller. Fire-and-forget:
@@ -7377,7 +7377,7 @@ function sbLogAuditCloud(token, action, details, title, sub, icon, bg) {
 }
 // v98 (cons fix): staff cloud writes (SQL 35). Mirror the teacher RPCs
 // (SQL 18); the staff token resolves via ss_staff_token_owner, role +
-// classes enforced server-side. The revoke RPC is SQL 30's — it already
+// classes enforced server-side. The revoke RPC is SQL 30's â it already
 // existed, the app just never called it (wired up in logoutClear below).
 function sbStaffMarkAttendance(token, date, cls, studentServerId, status) {
   var _markBody = {};
@@ -7429,10 +7429,10 @@ function sbParentRevokeSession(token) {
 function mapCloudTeacherPayload(p) {
   // Build a db-shaped slice from the server payload. The teacher views
   // (dashboard, attendance, homework, exams) read `db`, so the slice
-  // mirrors the local db shape exactly — only the teacher's own classes.
+  // mirrors the local db shape exactly â only the teacher's own classes.
   // Mapped students and exams carry srvId (the server uuid) so the
   // write RPCs can address them; local-only rows have no srvId.
-  var d = emptyDb({ name: (p.school && p.school.name) || '', city: (p.school && p.school.city) || '', principal: '', phone: '', email: '', session: '2025–26', address: '' }, []);
+  var d = emptyDb({ name: (p.school && p.school.name) || '', city: (p.school && p.school.city) || '', principal: '', phone: '', email: '', session: '2025â26', address: '' }, []);
   // The server already filters by the teacher's classes; the mapper
   // re-checks it, so a stray row in the payload can never leak a student
   // from another class into the teacher's slice.
@@ -7493,7 +7493,7 @@ function doTeacherCloudLogin(serverId, email, pw, err) {
     }
     var slice = mapCloudTeacherPayload(res);
     var me = slice.teachers[0];
-    var acct = { role: 'teacher', name: me.name, sub: t('tchrSub') + ' • ' + me.name, email: 'cloud-teacher:' + serverId + ':' + me.id, uid: 'cloud-teacher-' + me.id, teacherId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
+    var acct = { role: 'teacher', name: me.name, sub: t('tchrSub') + ' â¢ ' + me.name, email: 'cloud-teacher:' + serverId + ':' + me.id, uid: 'cloud-teacher-' + me.id, teacherId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
     err.classList.add('hidden');
     loginCloudTeacher(acct, slice, res.token);
   });
@@ -7503,7 +7503,7 @@ function doTeacherLogin(e) {
   var id = $('teacherEmail').value.trim().toLowerCase(), pw = $('teacherPw').value;
   var err = $('teacherErr');
   var schoolSel = $('teacherSchool') ? $('teacherSchool').value : '';
-  // v62: a "cloud:<server-uuid>" school is not on this device — the
+  // v62: a "cloud:<server-uuid>" school is not on this device â the
   // password is verified on the server, and the teacher works through
   // token-authenticated RPCs.
   if (schoolSel && schoolSel.indexOf('cloud:') === 0) {
@@ -7511,9 +7511,9 @@ function doTeacherLogin(e) {
     return false;
   }
   // Local-only login (v35): teacher accounts live in schoolSaathiAccounts
-  // on this device, with no server account — no Supabase attempt.
+  // on this device, with no server account â no Supabase attempt.
   var a = findAccount(id);
-  // v73: cloud fallback — a teacher whose school is on this device but
+  // v73: cloud fallback â a teacher whose school is on this device but
   // who has no login account here (e.g. the account was created on
   // another device) used to hit "Invalid email or password" without the
   // server ever being asked, because the local school hides the cloud
@@ -7526,7 +7526,7 @@ function doTeacherLogin(e) {
     try { srvId = sbServerSchoolMap()[schoolSel] || null; } catch (e2) { srvId = null; }
     if (srvId) { doTeacherCloudLogin(srvId, id, pw, err); return false; }
   }
-  // v59 (H-4): same device-local rate limit as the school login — 5 wrong
+  // v59 (H-4): same device-local rate limit as the school login â 5 wrong
   // guesses lock this email's local login on this device for 15 minutes.
   // Only a real account counts; an unknown email never locks anything.
   if (a && loginLockUntil(id)) {
@@ -7544,14 +7544,14 @@ function doTeacherLogin(e) {
     return false;
   }
   if (a) loginFailClear(id);
-  // v62: if a local school was picked, the account must belong to it —
+  // v62: if a local school was picked, the account must belong to it â
   // otherwise the picker would silently open another school's data.
   if (schoolSel && a && a.schoolUid !== schoolSel) {
     err.textContent = t('tInvalidCreds');
     err.classList.remove('hidden');
     return false;
   }
-  // The teacher opens the SCHOOL's DB — if it is not on this device
+  // The teacher opens the SCHOOL's DB â if it is not on this device
   // there is nothing to open (loginAs would seed a demo DB instead).
   if (!readDbByKey(dbKeyFor(a))) {
     err.textContent = t('tchrNoDb');
@@ -7565,7 +7565,7 @@ function doTeacherLogin(e) {
 // v88 (Phase 4): staff cloud login (SQL 30). A staff member (Principal,
 // Accountant, Staff) logs in from ANY device with school + email +
 // password, without the school's data being on that device. The role
-// comes from the server row — the login never trusts a role the caller
+// comes from the server row â the login never trusts a role the caller
 // claims. The payload is scoped by role (SQL 30): a principal sees the
 // whole school, an accountant sees fees only, a staff member sees only
 // their own classes.
@@ -7578,22 +7578,22 @@ function sbStaffCloudLogin(serverId, email, pw) {
 }
 function mapCloudStaffPayload(p) {
   // Build a db-shaped slice from the server payload. The staff views
-  // read `db`, so the slice mirrors the local db shape — scoped by the
+  // read `db`, so the slice mirrors the local db shape â scoped by the
   // staff member's role (the server already filtered it; the mapper
   // re-checks class scoping for staff, like mapCloudTeacherPayload).
   var data = (p.data && typeof p.data === 'object') ? p.data : {};
   var role = (p.staff && p.staff.role) || 'staff';
-  var d = emptyDb({ name: (p.school && p.school.name) || '', city: (p.school && p.school.city) || '', principal: '', phone: '', email: '', session: '2025–26', address: '' }, []);
+  var d = emptyDb({ name: (p.school && p.school.name) || '', city: (p.school && p.school.city) || '', principal: '', phone: '', email: '', session: '2025â26', address: '' }, []);
   var stuMap = {};
   d.students = (data.students || []).map(function (row) { var s = sbRowToStudent(row); if (row.id) { stuMap[row.id] = s.id; s.srvId = row.id; } return s; });
   d.teachers = (data.teachers || []).map(function (row) { return { id: row.local_id || ('srv-' + row.id), name: row.name || '', subject: row.subject || '', cls: row.cls || '', classes: Array.isArray(row.classes) ? row.classes.slice() : [], deleted: !!row.deleted }; });
   // v130: the cloud slice carries the school's audit log (SQL 44 adds the
-  // 'audit_log' key to the principal payload) — before v130 a cloud principal
+  // 'audit_log' key to the principal payload) â before v130 a cloud principal
   // saw an empty Activity Log ("Showing 0 of 0 records") even though the
   // school has audit rows. Rows are already {ts, actor, action, details}.
   d.auditLog = (data.audit_log || []).map(function (row) { return { ts: row.ts || '', actor: row.actor || 'system', action: row.action || '', details: row.details || '' }; });
   // v98: the slice carries the signed-in staff member's OWN record, so
-  // staffRecord()/staffClasses()/roleClasses() resolve — before v98 the
+  // staffRecord()/staffClasses()/roleClasses() resolve â before v98 the
   // slice had no db.staff row, roleClasses() returned [] and every cloud
   // staff write was refused at the gate before it could reach any RPC.
   // (Mirrors the teacher slice, which carries the logged-in teacher.)
@@ -7654,7 +7654,7 @@ function doStaffCloudLogin(serverId, email, pw, err) {
     var slice = mapCloudStaffPayload(res);
     var me = res.staff;
     var roleSub = { principal: 'Principal', accountant: 'Accountant', staff: 'Staff' }[me.role] || 'Staff';
-    var acct = { role: me.role, name: me.name, sub: roleSub + ' • ' + me.name, email: 'cloud-staff:' + serverId + ':' + me.id, uid: 'cloud-staff-' + me.id, staffId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
+    var acct = { role: me.role, name: me.name, sub: roleSub + ' â¢ ' + me.name, email: 'cloud-staff:' + serverId + ':' + me.id, uid: 'cloud-staff-' + me.id, staffId: me.id, schoolUid: serverId, cloud: true, schoolServerId: serverId };
     err.classList.add('hidden');
     loginCloudStaff(acct, slice, res.token);
   });
@@ -7664,7 +7664,7 @@ function doStaffLogin(e) {
   var id = $('staffEmail').value.trim().toLowerCase(), pw = $('staffPw').value;
   var err = $('staffErr');
   var schoolSel = $('staffSchool') ? $('staffSchool').value : '';
-  // v88: a "cloud:<server-uuid>" school is not on this device — the
+  // v88: a "cloud:<server-uuid>" school is not on this device â the
   // password is verified on the server (SQL 30), and the staff member
   // works from the role-scoped payload.
   if (schoolSel && schoolSel.indexOf('cloud:') === 0) {
@@ -7672,7 +7672,7 @@ function doStaffLogin(e) {
     return false;
   }
   // Local-only login: staff accounts live in schoolSaathiAccounts on
-  // this device, with no server account — no Supabase attempt.
+  // this device, with no server account â no Supabase attempt.
   var a = findAccount(id);
   // v73-style cloud fallback (mirrors the teacher login): a staff member
   // whose school is on this device but who has no login account here
@@ -7743,7 +7743,7 @@ function roleClasses() {
   return schoolClasses();
 }
 function openTeacherClass(cls) {
-  // v84: a dashboard tile opens the Students list — a class tile filters
+  // v84: a dashboard tile opens the Students list â a class tile filters
   // to that class, the "My Students" tile shows all of the teacher's
   // classes. Only the teacher's own classes are ever offered (the class
   // filter itself is restricted), so a crafted cls cannot leak another
@@ -7758,9 +7758,9 @@ function openTeacherClass(cls) {
 function canViewStudent(id) {
   // School: everything. Student: ONLY their own profile. Teacher: only
   // students in the classes they teach. Parent: only their own child
-  // (v88 — the v86 parent dashboard's View button hit "own profile only"
+  // (v88 â the v86 parent dashboard's View button hit "own profile only"
   // until this). Principal: everything, read-only. Accountant: everything
-  // (v92 — they collect fees, so the collect screen must open). Anyone
+  // (v92 â they collect fees, so the collect screen must open). Anyone
   // else: nothing.
   if (state.role === 'school') return true;
   if (state.role === 'principal') return true;
@@ -7780,7 +7780,7 @@ function visibleStudents() {
   // another class's students, their fees, or the school totals).
   // Student: only themself (the list view is never opened by a student,
   // but the helper keeps the rule in one place).
-  // Parent: only their own child (v111 — Phase 7 review C2: without this
+  // Parent: only their own child (v111 â Phase 7 review C2: without this
   // branch a parent fell through to the whole school).
   if (state.role === 'teacher') {
     var tc = teacherClasses();
@@ -7795,7 +7795,7 @@ function visibleStudents() {
   return db.students;
 }
 function principalDashboard() {
-  // v88 (Phase 4): the Principal's dashboard — a read-only school
+  // v88 (Phase 4): the Principal's dashboard â a read-only school
   // overview. It shows totals only (students, teachers, fee collected /
   // pending, today's attendance, latest notices) and never offers an
   // edit: no Add, no Collect, no marks entry. The tiles link to the
@@ -7806,15 +7806,15 @@ function principalDashboard() {
   var notices = (db.notices || []).slice(0, 2).map(function (n) {
     return '<div class="notice"><b>' + esc(n.title) + '</b><span>' + esc(n.date) + '</span><p>' + esc(n.body) + '</p></div>';
   }).join('');
-  return '<div class="card"><h3>' + esc(u.name || '') + '</h3><p>Principal • ' + esc(db.profile.name || '') + ', ' + esc(db.profile.city || '') + '</p>' +
-    '<p class="card-sub">Read-only overview — you can view the whole school, but nothing can be changed from this login.</p></div>' +
+  return '<div class="card"><h3>' + esc(u.name || '') + '</h3><p>Principal â¢ ' + esc(db.profile.name || '') + ', ' + esc(db.profile.city || '') + '</p>' +
+    '<p class="card-sub">Read-only overview â you can view the whole school, but nothing can be changed from this login.</p></div>' +
     '<div class="tile-grid">' +
     '<div class="tile blue" style="cursor:pointer" onclick="go(\'students\')"><div class="n">' + db.students.length + '</div><div class="l">' + t('totalStudents') + '</div></div>' +
     '<div class="tile green" style="cursor:pointer" onclick="go(\'teachers\')"><div class="n">' + db.teachers.filter(function (t) { return !t.deleted; }).length + '</div><div class="l">' + t('totalTeachers') + '</div></div>' +
-    '<div class="tile orange"><div class="n">₹' + ft.collected + '</div><div class="l">' + t('feeCollected') + '</div></div>' +
-    '<div class="tile red"><div class="n">₹' + ft.pending + '</div><div class="l">' + t('pendingFee') + '</div></div>' +
+    '<div class="tile orange"><div class="n">â¹' + ft.collected + '</div><div class="l">' + t('feeCollected') + '</div></div>' +
+    '<div class="tile red"><div class="n">â¹' + ft.pending + '</div><div class="l">' + t('pendingFee') + '</div></div>' +
     '</div>' +
-    '<div class="card" style="margin-top:16px"><h3>' + t('todayAtt') + '</h3><p class="card-sub">' + (ta.total ? donutPct(ta.present, ta.total) + '% ' + t('presBtn') : t('attNotMarked')) + ' • ' + db.students.length + ' ' + t('studentsW') + '</p>' + // v139: subtitle matches the donut (today), not the all-time average — the old avgAtt subtitle contradicted the donut centre whenever today differed from the average
+    '<div class="card" style="margin-top:16px"><h3>' + t('todayAtt') + '</h3><p class="card-sub">' + (ta.total ? donutPct(ta.present, ta.total) + '% ' + t('presBtn') : t('attNotMarked')) + ' â¢ ' + db.students.length + ' ' + t('studentsW') + '</p>' + // v139: subtitle matches the donut (today), not the all-time average â the old avgAtt subtitle contradicted the donut centre whenever today differed from the average
     donutSVG([{ value: ta.present, color: GREEN, label: t('presBtn'), pct: donutPct(ta.present, ta.total) }, { value: ta.absent, color: RED, label: t('absBtn'), pct: donutPct(ta.absent, ta.total) }, { value: ta.late, color: ORANGE, label: t('lateBtn'), pct: donutPct(ta.late, ta.total) }], 190, donutPct(ta.present, ta.total) + '%', t('todayAtt')) + '</div>' +
     '<div class="card" style="margin-top:16px"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div>';
 }
@@ -7830,10 +7830,10 @@ function roleDashboard() {
   var links = allowed.map(function (v) {
     return '<button class="btn ghost" onclick="go(\'' + v + '\')">' + esc(t(v)) + '</button>';
   }).join('');
-  // v94: a super admin has no school of their own — the local DB profile
+  // v94: a super admin has no school of their own â the local DB profile
   // name would be the demo school, so show the platform name instead.
   var schoolName = state.role === 'superadmin' ? 'School Saathi Platform' : (db.profile.name || '');
-  return '<div class="card"><h3>' + esc(u.name || '') + '</h3><p>' + esc(roleLabel) + ' • ' + esc(schoolName) + '</p>' +
+  return '<div class="card"><h3>' + esc(u.name || '') + '</h3><p>' + esc(roleLabel) + ' â¢ ' + esc(schoolName) + '</p>' +
     '<p class="card-sub">Your modules arrive in the next steps of Phase 4. For now you can open:</p>' +
     '<div style="display:flex;gap:8px;flex-wrap:wrap">' + links + '</div></div>';
 }
@@ -7857,7 +7857,7 @@ function teacherDashboard() {
     return '<div class="tile blue" style="cursor:pointer" onclick="openTeacherClass(' + jsAttr(c) + ')"><div class="n">' + n + '</div><div class="l">' + esc(c) + '</div></div>';
   }).join('');
   return '<div class="phone"><div class="card"><div class="stu-hero">' + avatarHTML(null, te.name, 'avatar') + '</div>' +
-    '<h3>' + esc(te.name) + '</h3><p>' + esc(te.subject || '') + ' • ' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div>' +
+    '<h3>' + esc(te.name) + '</h3><p>' + esc(te.subject || '') + ' â¢ ' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div>' +
     '<div class="tile-grid">' +
     '<div class="tile green"><div class="n">' + myClasses.length + '</div><div class="l">' + t('tchrMyClasses') + '</div></div>' +
     '<div class="tile yellow" style="cursor:pointer" onclick="openTeacherClass(\'\')"><div class="n">' + myStudents.length + '</div><div class="l">' + t('tchrStudents') + '</div></div>' +
@@ -7881,10 +7881,10 @@ function doLogin(e) {
     // while the server round-trip runs; restored on every exit path.
     var loginBtn = null;
     try { loginBtn = e.target && e.target.querySelector ? e.target.querySelector('button[type="submit"]') : null; } catch (e2) {}
-    var restoreLoginBtn = setBtnLoading(loginBtn, '⏳ ' + t('loginBtn'));
+    var restoreLoginBtn = setBtnLoading(loginBtn, 'â³ ' + t('loginBtn'));
     // Server first when we can reach it. The device account is the
     // fallback ONLY when the server cannot be reached at all (a network
-    // failure, .catch below) — or when this device account has NO server
+    // failure, .catch below) â or when this device account has NO server
     // account at all (local-only school, no sbUid): the server has
     // nothing to reject, so a 400 there means "no such server user",
     // not "wrong password", and the local login still runs. The
@@ -7894,10 +7894,10 @@ function doLogin(e) {
     // silently off. A local-only login says so out loud (sbLocalOnlyLogin
     // toast), and the v34 background link inside sbLocalLogin tries to
     // create the server account.
-    // NOTE: this returns false synchronously — the promise chain runs in the
+    // NOTE: this returns false synchronously â the promise chain runs in the
     // background. Never return the promise: onsubmit treats a truthy
     // return as "submit the form" and the page would reload.
-    // v63: server-side rate limit (SQL 19) — check the per-account lock
+    // v63: server-side rate limit (SQL 19) â check the per-account lock
     // BEFORE GoTrue sees the password. A locked email never reaches
     // sbSignIn. A failed precheck (network/RPC error) fails OPEN: GoTrue
     // still checks the password, only the lock is not enforced that once.
@@ -7910,21 +7910,21 @@ function doLogin(e) {
       }
       sbSignIn(id, pw).then(function (res) {
       if (res.ok && res.data && res.data.access_token) { sbSchoolLoginOk(id, res.data.access_token); sbFinishSupabaseLogin(res.data, id, pw); return; }
-      // v63: record a wrong-password failure BEFORE any branch — even
+      // v63: record a wrong-password failure BEFORE any branch â even
       // when this device has no local account for the email (a fresh
       // device must still count attempts, or the lock would never engage
       // for an attacker who never logged in here). The RPC itself no-ops
       // for emails with no server account, so unknown emails never
-      // create a row. Only a 400 counts — never a 429 (GoTrue already
+      // create a row. Only a 400 counts â never a 429 (GoTrue already
       // throttled) or a network failure.
       if (res.status === 400) sbSchoolLoginFailed(id);
       var acct = findAccount(id);
       // Local-only school (no server account): fall back to the local
       // login even while online. sbLocalLogin shows the generic error
-      // when the LOCAL password is wrong — never "Wrong password for
+      // when the LOCAL password is wrong â never "Wrong password for
       // the server account", because there is no server account.
       if (acct && !acct.sbUid) {
-        // v99: the server lock binds the local login too — check it
+        // v99: the server lock binds the local login too â check it
         // before the local password is tried. Fail-open: a failed
         // precheck (network/RPC error) returns null and the local login
         // still runs. The promise is returned so the login button
@@ -7939,14 +7939,14 @@ function doLogin(e) {
         });
       }
       // No local account at all: nothing to fall back to. Generic
-      // error — do not claim a server password is wrong.
+      // error â do not claim a server password is wrong.
       if (!acct) {
         err.textContent = t('tInvalidCreds');
         err.classList.remove('hidden');
         return;
       }
       // Server-linked account: the server is reachable and did NOT
-      // accept these credentials — never fall back to the local
+      // accept these credentials â never fall back to the local
       // account (v59 H-2).
       if (res.status === 429) {
         err.textContent = t('sbTooMany');
@@ -7979,7 +7979,7 @@ function doSignup(e) {
   if (pw !== pw2) return failInto(err, t('tPwMismatch'));
   if (findAccount(email)) return failInto(err, t('tEmailTaken'));
   var pwH = hashPwNew(pw);
-  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: pwH, hashScheme: hashSchemeOf(pwH), role: 'school', sub: 'School Admin • ' + school, created: todayIST(), sbUid: null };
+  var a = { uid: uniqueId('u'), name: name, school: school, email: email, pwHash: pwH, hashScheme: hashSchemeOf(pwH), role: 'school', sub: 'School Admin â¢ ' + school, created: todayIST(), sbUid: null };
   var list = loadAccounts(); list.push(a); saveAccounts(list);
   err.classList.add('hidden');
   toast(t('tAccountCreated') + name);
@@ -7996,7 +7996,7 @@ function doSignup(e) {
       saveAccounts(l2);
       if (res.data.access_token) { sbStoreSession(res.data); state.sb = { uid: res.data.user.id, email: email }; }
       else toast(t('sbEmailConfirm'));
-    }).catch(function () { sbSetStatus('not-linked', 'offline'); /* offline mid-flight — local account stands */ });
+    }).catch(function () { sbSetStatus('not-linked', 'offline'); /* offline mid-flight â local account stands */ });
   }
   loginAs(a, { silent: true });
   return false;
@@ -8004,12 +8004,12 @@ function doSignup(e) {
 var SB_LOGOUT_FLUSH_TIMEOUT_MS = 5000; // B3 (M-4): longest a logout ever waits for the outbox flush
 var sbLoggingOut = false; // B3: a second logout tap while one is in flight is ignored
 function logout(opts) {
-  // B3 (M-4): best-effort outbox flush BEFORE any state is cleared — a
+  // B3 (M-4): best-effort outbox flush BEFORE any state is cleared â a
   // logout is a "backed up" point. The flush needs the live session
-  // (sbSyncActive + the stored token), so the clear waits for it — but
+  // (sbSyncActive + the stored token), so the clear waits for it â but
   // NEVER longer than the short timeout above, and never on failure:
   // the clear always runs. The delete-account flow passes
-  // { skipFlush: true } — its data + outbox are already gone, so
+  // { skipFlush: true } â its data + outbox are already gone, so
   // there is nothing to flush.
   if (sbLoggingOut) return;
   sbLoggingOut = true;
@@ -8030,15 +8030,15 @@ function logout(opts) {
 function logoutClear() {
   sbLoggingOut = false; // the clear below is synchronous from here on
   var sbUidBefore = state.sb && state.sb.uid; // v36: needed for the outbox check below, before the session is cleared
-  var wasLocalOnlySchool = sbIsLocalOnlySchool(); // v37: captured before state is cleared — a local-only school logs out to the local-only line, never "Backed up"
+  var wasLocalOnlySchool = sbIsLocalOnlySchool(); // v37: captured before state is cleared â a local-only school logs out to the local-only line, never "Backed up"
   state.role = null; state.user = null; state.view = 'dashboard';
   state.cloudDb = null; // v61: drop the cloud student slice with the session
   // v62: revoke a cloud teacher session on the server (best-effort) and
-  // drop its token with the session — a logged-out token stops working.
+  // drop its token with the session â a logged-out token stops working.
   if (state.cloudTeacherToken) { try { sbTeacherRevokeSession(state.cloudTeacherToken); } catch (e9) {} }
   state.cloudTeacherToken = null;
   // v98: revoke a cloud staff session too (SQL 30 already had the RPC;
-  // the app never called it) and drop its token — before v98 a staff
+  // the app never called it) and drop its token â before v98 a staff
   // logout left a live 30-day token on the server.
   if (state.cloudStaffToken) { try { sbStaffRevokeSession(state.cloudStaffToken); } catch (e9) {} }
   state.cloudStaffToken = null;
@@ -8062,15 +8062,15 @@ function logoutClear() {
   sbClearSession();
   state.sb = null;
   sbSyncResetMemory(); // v31: drop the in-memory snapshot + pending flush timer (the persisted outbox/snapshot stay for the next login)
-  sbSyncFailToasted = false; // B6: a fresh login starts a fresh failure episode — the next failure toasts again
+  sbSyncFailToasted = false; // B6: a fresh login starts a fresh failure episode â the next failure toasts again
   sbSyncAutoStop(); // v32: stop the auto-pull interval (restarts on the next login)
   // v36 (logout-backup race): a cycle killed mid-flight by this logout
-  // must not leave a transient "Syncing…" status on the login screen.
+  // must not leave a transient "Syncingâ¦" status on the login screen.
   // Pending outbox rows mean the backup will run on the next login; an
   // empty outbox means the cycle died after flushing, so "Backed up" is
   // the truthful state.
   // v70: the logout's own flush can also write 'pending' (offline / no
-  // fetch) or 'offline' (no token) before the clear runs — with an
+  // fetch) or 'offline' (no token) before the clear runs â with an
   // empty outbox those are the same lie as a killed 'syncing', so they
   // settle to 'synced' too. With rows still queued, 'syncing' /
   // 'uploading' / 'pending' settle to 'pending' as before; a persisted
@@ -8079,7 +8079,7 @@ function logoutClear() {
   // 'failed' / 'not-linked' / 'session-expired' status is left exactly
   // as it was.
   try {
-    // v37: a local-only school logs out to the local-only line — the
+    // v37: a local-only school logs out to the local-only line â the
     // "Backed up" / "Pending" settle below is for server-linked schools
     // only. Forced unconditionally (not just from syncing/uploading):
     // a stale pre-v37 "Backed up" must not survive the logout.
@@ -8105,38 +8105,38 @@ function logoutClear() {
 
 var NAV = {
   school: [
-    ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['teachers', '👩‍🏫', 'teachers'], ['staff', '👔', 'staff'], ['classes', '🏫', 'classes'], ['admissions', '📋', 'admissions'], ['attendance', '✅', 'attendance'],
-    ['fees', '💰', 'fees'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'],
-    ['notices', '📢', 'notices'], ['reports', '📄', 'reports'], ['activityLog', '📜', 'activityLog'], ['settings', '⚙️', 'settings']
+    ['dashboard', 'ð ', 'dashboard'], ['students', 'ð', 'students'], ['teachers', 'ð©âð«', 'teachers'], ['staff', 'ð', 'staff'], ['classes', 'ð«', 'classes'], ['admissions', 'ð', 'admissions'], ['attendance', 'â', 'attendance'],
+    ['fees', 'ð°', 'fees'], ['exams', 'ð', 'exams'], ['homework', 'ð', 'homework'],
+    ['notices', 'ð¢', 'notices'], ['reports', 'ð', 'reports'], ['activityLog', 'ð', 'activityLog'], ['settings', 'âï¸', 'settings']
   ],
   student: [
-    ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['fees', '💰', 'fees'], ['results', '📊', 'results'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
+    ['dashboard', 'ð ', 'dashboard'], ['attendance', 'â', 'attendance'], ['fees', 'ð°', 'fees'], ['results', 'ð', 'results'], ['homework', 'ð', 'homework'], ['notices', 'ð¢', 'notices']
   ],
   teacher: [
-    ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['attendance', '✅', 'attendance'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
+    ['dashboard', 'ð ', 'dashboard'], ['students', 'ð', 'students'], ['attendance', 'â', 'attendance'], ['exams', 'ð', 'exams'], ['homework', 'ð', 'homework'], ['notices', 'ð¢', 'notices']
   ],
   // v85 (Phase 4): the five new roles. Each starts with dashboard +
   // notices only; their own views land in their step (parent v86,
   // principal v87, accountant v88, staff v89, superadmin v90). The
   // NAV is the visible menu; PERMS below is the enforcement.
   principal: [
-    ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['teachers', '👩‍🏫', 'teachers'], ['attendance', '✅', 'attendance'],
-    ['fees', '💰', 'fees'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices'], ['reports', '📄', 'reports'], ['activityLog', '📜', 'activityLog']
+    ['dashboard', 'ð ', 'dashboard'], ['students', 'ð', 'students'], ['teachers', 'ð©âð«', 'teachers'], ['attendance', 'â', 'attendance'],
+    ['fees', 'ð°', 'fees'], ['exams', 'ð', 'exams'], ['homework', 'ð', 'homework'], ['notices', 'ð¢', 'notices'], ['reports', 'ð', 'reports'], ['activityLog', 'ð', 'activityLog']
   ],
   accountant: [
-    ['dashboard', '🏠', 'dashboard'], ['fees', '💰', 'fees'], ['reports', '📄', 'reports'], ['notices', '📢', 'notices'] // v92: fees-focused nav — no students, no settings
+    ['dashboard', 'ð ', 'dashboard'], ['fees', 'ð°', 'fees'], ['reports', 'ð', 'reports'], ['notices', 'ð¢', 'notices'] // v92: fees-focused nav â no students, no settings
   ],
   staff: [
-    ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices'] // v93: attendance + homework for their own classes only
+    ['dashboard', 'ð ', 'dashboard'], ['attendance', 'â', 'attendance'], ['homework', 'ð', 'homework'], ['notices', 'ð¢', 'notices'] // v93: attendance + homework for their own classes only
   ],
   parent: [
-    ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['fees', '💰', 'fees'], ['results', '📊', 'results'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
+    ['dashboard', 'ð ', 'dashboard'], ['attendance', 'â', 'attendance'], ['fees', 'ð°', 'fees'], ['results', 'ð', 'results'], ['homework', 'ð', 'homework'], ['notices', 'ð¢', 'notices']
   ],
   superadmin: [
-    ['dashboard', '🏠', 'dashboard'], ['schools', '🏫', 'schools'], ['notices', '📢', 'notices'] // v94: the schools list is the super admin's first real module
+    ['dashboard', 'ð ', 'dashboard'], ['schools', 'ð«', 'schools'], ['notices', 'ð¢', 'notices'] // v94: the schools list is the super admin's first real module
   ]
 };
-// v85 (Phase 4): the permission matrix — the single source of truth
+// v85 (Phase 4): the permission matrix â the single source of truth
 // for which views a role may open. go() enforces it; renderPage() has
 // the PAGE-map check as a second layer. The three existing roles keep
 // exactly their current views; the five new roles start with dashboard
@@ -8149,13 +8149,13 @@ var PERMS = {
   accountant: ['dashboard', 'fees', 'reports', 'notices'], // v92: the accountant works fees + reports (receipts ride the fees page)
   staff: ['dashboard', 'attendance', 'homework', 'notices'], // v93: a staff member works attendance + homework for their own classes
   parent: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'], // v86: the parent portal reuses the student views, view-only
-  superadmin: ['dashboard', 'schools', 'notices'], // v94: the super admin's first UI — the schools list
+  superadmin: ['dashboard', 'schools', 'notices'], // v94: the super admin's first UI â the schools list
 };
 function canAccessView(role, view) {
   var allowed = PERMS[role];
   return !!allowed && allowed.indexOf(view) !== -1;
 }
-function isPrincipal() { return state.role === 'principal'; } // v88: the Principal is read-only — they view the whole school but change nothing
+function isPrincipal() { return state.role === 'principal'; } // v88: the Principal is read-only â they view the whole school but change nothing
 var VIEW_TITLES = {
   dashboard: ['Dashboard', ''],
   settings: ['Settings', 'School settings'], reports: ['Reports', 'Download CSV reports'],
@@ -8168,8 +8168,8 @@ var VIEW_TITLES = {
 };
 /* ================= in-app history (Android back button) =================
    Views are swapped in place, so without history entries the Android back
-   button exits the PWA at once. Every screen — top-level views AND sub-views
-   (student profile, fee profile, collect page, saved receipt, promotion) —
+   button exits the PWA at once. Every screen â top-level views AND sub-views
+   (student profile, fee profile, collect page, saved receipt, promotion) â
    gets its own entry, so Back walks back through the screens actually seen.
    Entries are full states {view, sub?, guard?}; dedupe compares the whole
    state, never the view alone.
@@ -8317,7 +8317,7 @@ function onPopState(ev) {
   applyHistState(v, sub);
 }
 function histBack() {
-  // In-page "← back" button: follow the history entry if this screen has
+  // In-page "â back" button: follow the history entry if this screen has
   // one, so Android Back and the on-screen back never disagree afterwards.
   // Returns true when a history back was triggered.
   if (histSupported() && histCur && histCur.sub) {
@@ -8329,7 +8329,7 @@ function backFromProfile() { if (histBack()) return; state.profileStudent = null
 function backFromFeeProfile() { if (histBack()) return; state.feeStudent = null; renderPage(); }
 function backFromReceipt() { if (histBack()) return; state.savedReceiptId = null; state.collectStudent = null; renderPage(); }
 function go(view) {
-  // v85 (Phase 4): PERMS is the enforcement — a view a role may not
+  // v85 (Phase 4): PERMS is the enforcement â a view a role may not
   // open refuses here, before any render. NAV is only the visible menu.
   var ok = canAccessView(state.role, view);
   if (!ok) { toast(t('tNotAllowed')); state.view = 'dashboard'; }
@@ -8350,7 +8350,7 @@ function toggleSidebar(open) {
 }
 function renderApp() {
   // v70 (logout race): a save's async mint can resolve after a logout
-  // clears the session — rendering with no user crashes on u.name
+  // clears the session â rendering with no user crashes on u.name
   // below. A render with no logged-in user is always stale (the login
   // screen already stands), so there is nothing to draw.
   if (!state.user) return;
@@ -8370,7 +8370,7 @@ function renderApp() {
   $('whoRole').textContent = u.sub;
   var prof = db.profile;
   var bc = $('sideBrandCap');
-  if (bc) bc.innerHTML = prof.logo ? '<img class="side-logo" src="' + esc(sbDisplayPhoto(prof.logo)) + '" alt="">' : '🎓'; // v139: signed-URL cache
+  if (bc) bc.innerHTML = prof.logo ? '<img class="side-logo" src="' + esc(sbDisplayPhoto(prof.logo)) + '" alt="">' : 'ð'; // v139: signed-URL cache
   $('sideSchoolInfo').innerHTML = '<b style="color:#fff">' + esc(prof.name) + '</b><br>' + esc(prof.city) + ', Bihar';
   var sess = $('sessionSel');
   if (!sess.options.length) {
@@ -8400,7 +8400,7 @@ function renderPage() {
   var fn = pages[state.view];
   if (!fn) {
     // A view this role may not open refuses with a clear message instead
-    // of rendering another role's data (go() normally prevents this —
+    // of rendering another role's data (go() normally prevents this â
     // this is the direct state.view path).
     p.innerHTML = '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
     return;
@@ -8433,7 +8433,7 @@ document.addEventListener('pointerout', function (e) {
 /* ================= shared cards (used by the school dashboard too) ================= */
 function statCard(ic, cls, label, value, chg, chgCls, countOpts) {
   var co = countOpts || {};
-  // v26: every stat card renders its final value as plain text — no
+  // v26: every stat card renders its final value as plain text â no
   // count-up animation anywhere. A count-up card shows intermediate
   // values while it animates, so a read taken mid-animation disagrees
   // with the same figure elsewhere (the Student Management Average
@@ -8456,13 +8456,13 @@ function resetPwCheck(pw) {
 }
 function resetAllData() {
   if (!state.role || !state.user || state.role !== 'school') return;
-  // v34 (P1-5): on a server account the old wording lied — the data
+  // v34 (P1-5): on a server account the old wording lied â the data
   // returns on the next sync. Say so, and offer the server wipe after
   // the double gate.
   var onServer = !!(state.sb && state.sb.uid);
   openModal('<h3>' + t('resetPwTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t(onServer ? 'resetPwHintServer' : 'resetPwHint') + '</p>' +
     '<form onsubmit="return submitResetPw(event)"><div class="form-grid"><div class="full"><label>' + t('resetPwLabel') + '</label>' +
-    '<input id="resetPwInput" type="password" autocomplete="current-password" placeholder="••••••••"></div></div>' +
+    '<input id="resetPwInput" type="password" autocomplete="current-password" placeholder="â¢â¢â¢â¢â¢â¢â¢â¢"></div></div>' +
     '<div id="resetPwErr" class="err hidden"></div>' +
     '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
     '<button class="btn danger" type="submit">' + t('resetPwGo') + '</button></div></form>');
@@ -8481,7 +8481,7 @@ function submitResetPw(e) {
   return false;
 }
 // v30: second gate for Reset All Data. The password alone is too easy to
-// tap through — after it passes, the school must type its EXACT name.
+// tap through â after it passes, the school must type its EXACT name.
 // A mismatch aborts with a clear message and deletes nothing. The name
 // is never shown in the prompt (typing it from memory is the point).
 function openResetNamePrompt() {
@@ -8502,7 +8502,7 @@ function submitResetName(e) {
     return false;
   }
   closeModal();
-  // v34 (P1-5): a server account gets a choice — wipe this device only
+  // v34 (P1-5): a server account gets a choice â wipe this device only
   // (the server copy returns on the next sync) or wipe the server too.
   if (state.sb && state.sb.uid) { openResetServerChoice(); return false; }
   confirmModal(t('resetConfirmMsg'), resetAllConfirmed);
@@ -8522,7 +8522,7 @@ function sbClearServerSchool(localUid) {
 function sbWipeServerSchool(token) {
   // v34 (P1-5): the server-side wipe for Reset All Data. Calls the
   // SECURITY DEFINER ss_wipe_school RPC (the owner cannot DELETE the
-  // ss_schools row directly — that policy is admin-only). Resolves
+  // ss_schools row directly â that policy is admin-only). Resolves
   // { done: true } when there is nothing on the server to wipe either.
   var act = sbSyncActive();
   if (!act) return Promise.resolve({ done: false, reason: 'no-session' });
@@ -8565,10 +8565,10 @@ function resetAllServerWipe() {
   });
 }
 function resetAllConfirmed() {
-  // v20: reset means a REAL reset — wipe EVERYTHING to zero. What survives:
+  // v20: reset means a REAL reset â wipe EVERYTHING to zero. What survives:
   // the school profile (name/city/principal/phone/email/address/session/
-  // logo — the school's identity and login are untouched) and the
-  // fee-structure defaults (6th ₹800 … 10th ₹1500, which Generate needs).
+  // logo â the school's identity and login are untouched) and the
+  // fee-structure defaults (6th â¹800 â¦ 10th â¹1500, which Generate needs).
   // One-time fee amounts (Admission/Caution/Annual/Bus) go back to 0 and
   // must be re-entered in Fee Structure.
   var keepProfile = db.profile;
@@ -8578,7 +8578,7 @@ function resetAllConfirmed() {
   // changes cannot re-upload the deleted data. The server copy is NOT
   // wiped by this path: the next sync (server wins) restores it. A
   // server-side wipe is offered separately (resetAllServerWipe) behind
-  // the same double gate — it runs first and only then calls this.
+  // the same double gate â it runs first and only then calls this.
   if (state.sb && state.sb.uid) { sbOutboxClear(state.sb.uid); sbSrvIdsClear(state.sb.uid); }
   if (state.user) sbSnapClear(state.user.uid);
   sbSyncResetMemory();
@@ -8593,13 +8593,13 @@ function resetAllConfirmed() {
   persistSession();
   toast(t('tAllReset'));
   // v34 (P1-5): the server-wipe path stops the auto interval before
-  // wiping — restart it here so the 30s auto-pull keeps running.
+  // wiping â restart it here so the 30s auto-pull keeps running.
   if (state.sb && state.sb.uid) sbSyncAutoStart();
 }
 // v75 (P1-3): remove this school's data from THIS device only. The account
-// itself stays — it can log in again and re-download from the server (if it
+// itself stays â it can log in again and re-download from the server (if it
 // was linked). Used by the Settings action and by Delete Account (which
-// also removes the account row). Only this account's keys are touched —
+// also removes the account row). Only this account's keys are touched â
 // the DB, its .bak/.quarantine copies, the outbox, the server-id map, the
 // sync snapshot, the server-school map entry and the cloud snapshots.
 function removeSchoolDataFromDevice(a) {
@@ -8617,7 +8617,7 @@ function removeSchoolDataFromDevice(a) {
   sessRemove(CLOUD_TEACHER_KEY);
   sessRemove(CLOUD_STUDENT_KEY);
 }
-// v75 (P1-3): Settings action — remove this school's data from this device.
+// v75 (P1-3): Settings action â remove this school's data from this device.
 // The account stays; the user is logged out (the in-memory data is gone).
 function removeSchoolData() {
   if (!state.role || !state.user || state.role !== 'school') return;
@@ -8629,17 +8629,17 @@ function removeSchoolData() {
     toast(t('removeDeviceDataDone'));
   });
 }
-// v60: Delete Account — removes THIS school account from THIS device only.
+// v60: Delete Account â removes THIS school account from THIS device only.
 // The server copy (if any) is NOT deleted: a server-linked school comes
 // back on the next login with the same email; a local-only school is gone
 // for good. Same double gate as Reset All Data (password + exact school
-// name). Only this account's keys are removed — every other account on
+// name). Only this account's keys are removed â every other account on
 // the device, and every other app on this origin, is untouched.
 function deleteAccount() {
   if (!state.role || !state.user || state.role !== 'school') return;
   openModal('<h3>' + t('delPwTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('delPwHint') + '</p>' +
     '<form onsubmit="return submitDeletePw(event)"><div class="form-grid"><div class="full"><label>' + t('resetPwLabel') + '</label>' +
-    '<input id="delPwInput" type="password" autocomplete="current-password" placeholder="••••••••"></div></div>' +
+    '<input id="delPwInput" type="password" autocomplete="current-password" placeholder="â¢â¢â¢â¢â¢â¢â¢â¢"></div></div>' +
     '<div id="delPwErr" class="err hidden"></div>' +
     '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
     '<button class="btn danger" type="submit">' + t('resetPwGo') + '</button></div></form>');
@@ -8676,7 +8676,7 @@ function submitDeleteName(e) {
   }
   closeModal();
   // Phase D (CR-6): a server-linked school that is online gets a real
-  // choice — delete from this device only (the v60 behaviour, unchanged)
+  // choice â delete from this device only (the v60 behaviour, unchanged)
   // or delete from the server too. Offline or local-only schools keep
   // exactly the old device-only confirm.
   if (state.sb && state.sb.uid && sbIsOnline()) { openDeleteServerChoice(); return false; }
@@ -8700,10 +8700,10 @@ function sbCallDeleteAccountFunction(token) {
 function deleteAccountOnServer() {
   // Phase D (CR-6): server-side Delete Account. The server delete runs
   // FIRST: if it fails (other than "not deployed" / "no school"), nothing
-  // is deleted locally either, so the two copies never disagree — the
+  // is deleted locally either, so the two copies never disagree â the
   // same fail-closed rule as resetAllServerWipe. The two honest
   // exceptions: the function is not deployed yet (404 with no function
-  // body) or the server has no school for this account — then the
+  // body) or the server has no school for this account â then the
   // device-only deletion still runs, but the toast says exactly that and
   // never claims the server delete happened.
   if (!state.sb || !state.sb.uid) { deleteAccountConfirmed(); return; }
@@ -8742,16 +8742,16 @@ function deleteAccountConfirmed(serverDeleted) {
   // Best-effort server sign-out (clears the server session, deletes nothing).
   try { var s = sbLoadSession(); if (s && s.access_token) sbSignOut(s.access_token).catch(function () {}); } catch (e2) {}
   sbClearSession();
-  // Remove the account from the device list — other accounts untouched.
+  // Remove the account from the device list â other accounts untouched.
   var list = loadAccounts().filter(function (x) { return (x.email || '').toLowerCase() !== email; });
   saveAccounts(list);
-  // Remove this account's data + sync state — keyed by its own uids only.
+  // Remove this account's data + sync state â keyed by its own uids only.
   removeSchoolDataFromDevice(a);
   // Log out to the login screen (clears session keys + form fields).
-  // B3: skipFlush — this account's data + outbox are already deleted
+  // B3: skipFlush â this account's data + outbox are already deleted
   // above, so there is nothing to flush; the logout clears at once.
   logout({ skipFlush: true });
-  // logout() settles a status line for the deleted account — drop it:
+  // logout() settles a status line for the deleted account â drop it:
   // there is no account left for it to describe.
   try { localStorage.removeItem(SB_STATUS_KEY); } catch (e6) {}
   toast(t(serverDeleted ? 'delServerDone' : 'delDone'));
@@ -8773,7 +8773,7 @@ function submitSupportRequest(e) {
   // v30: the request is stored on this device first, always. When the
   // school has a server session it is ALSO posted to ss_support_requests.
   // v34 (P1-7): a failed or offline post is QUEUED and retried on the
-  // next cycle — the user is told it will send when online, not that it
+  // next cycle â the user is told it will send when online, not that it
   // was "noted". There is still no Super Admin list or dashboard card in
   // the app; the owner reads the requests on the server until the Play
   // Store admin UI.
@@ -8801,23 +8801,23 @@ function submitSupportRequest(e) {
 function schoolDashboard() {
   var ft = feeTotals(), ta = todayAtt();
   // v129 (Module 16): Recent Activities reads the real audit trail (db.auditLog,
-  // top 6 newest) instead of db.activities — the old feed only held actions
+  // top 6 newest) instead of db.activities â the old feed only held actions
   // that also called addActivity, so fee deletions, PIN changes and class
   // changes never appeared here (the v120 cosmetic gap). Teacher/staff cloud
   // rows reach db.auditLog through the pull, so they show up too.
   var acts = (db.auditLog || []).slice().sort(function (a, b) { return a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0; }).slice(0, 6).map(function (a) {
     var ic = auditIconFor(a.action || '');
     var when = relTime(a.ts);
-    return '<div class="act"><div class="ic" style="background:var(--' + ic.bg + '-soft)">' + ic.icon + '</div><div><b>' + esc(a.action) + '</b><span>' + esc(a.details || '') + ' • ' + esc(a.actor || '') + (when ? ' • ' + esc(when) : '') + '</span></div></div>';
+    return '<div class="act"><div class="ic" style="background:var(--' + ic.bg + '-soft)">' + ic.icon + '</div><div><b>' + esc(a.action) + '</b><span>' + esc(a.details || '') + ' â¢ ' + esc(a.actor || '') + (when ? ' â¢ ' + esc(when) : '') + '</span></div></div>';
   }).join('');
   var logoHtml = db.profile.logo ? '<img class="dash-logo" src="' + esc(db.profile.logo) + '" alt="">' : '';
   return '<div class="page-head"><div class="prof-head">' + logoHtml + '<div><h2>' + t('schoolDashboard') + '</h2><p>' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div></div>' +
-    '<div class="toolbar"><button class="btn sm" onclick="downloadReportCSV(\'fees\')">⬇ ' + t('downloadReport') + '</button></div></div>' +
+    '<div class="toolbar"><button class="btn sm" onclick="downloadReportCSV(\'fees\')">â¬ ' + t('downloadReport') + '</button></div></div>' +
   '<div class="stats">' +
-    statCard('🎒', 'blue', t('totalStudents'), db.students.length, '', 'up') +
-    statCard('👩‍🏫', 'green', t('totalTeachers'), db.teachers.filter(function (t) { return !t.deleted; }).length, '', 'up') +
-    statCard('💰', 'orange', t('feeCollected'), ft.collected, '', 'up', { prefix: '₹' }) +
-    statCard('⏰', 'red', t('pendingFee'), ft.pending, '', 'down', { prefix: '₹' }) +
+    statCard('ð', 'blue', t('totalStudents'), db.students.length, '', 'up') +
+    statCard('ð©âð«', 'green', t('totalTeachers'), db.teachers.filter(function (t) { return !t.deleted; }).length, '', 'up') +
+    statCard('ð°', 'orange', t('feeCollected'), ft.collected, '', 'up', { prefix: 'â¹' }) +
+    statCard('â°', 'red', t('pendingFee'), ft.pending, '', 'down', { prefix: 'â¹' }) +
   '</div>' +
   '<div class="grid2"><div class="card"><h3>' + t('attOverview') + '</h3><p class="card-sub">' + t('todayAtt') + '</p><div class="donut-wrap">' +
     donutSVG([{ value: ta.present, color: GREEN, label: t('presBtn'), pct: donutPct(ta.present, ta.total) }, { value: ta.absent, color: RED, label: t('absBtn'), pct: donutPct(ta.absent, ta.total) }, { value: ta.late, color: ORANGE, label: t('lateBtn'), pct: donutPct(ta.late, ta.total) }], 190, donutPct(ta.present, ta.total) + '%', t('todayAtt')) +
@@ -8825,24 +8825,24 @@ function schoolDashboard() {
     '<div class="row"><span class="dot" style="background:' + RED + '"></span>' + t('absBtn') + '<b>' + num(ta.absent) + '</b></div>' +
     '<div class="row"><span class="dot" style="background:' + ORANGE + '"></span>' + t('lateBtn') + '<b>' + num(ta.late) + '</b></div></div>' +
   '</div></div>' +
-  '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted" style="margin-top:8px"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div></div>' +
+  '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted" style="margin-top:8px"><span style="color:' + BLUE + '">â </span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">â </span> ' + t('pendingW') + '</p></div></div>' +
   '<div class="grid2"><div class="card"><div class="head-row"><div><h3>' + t('recentAct') + '</h3></div><a href="#" onclick="go(\'activityLog\');return false">' + t('viewAll') + '</a></div><div class="act-list">' + acts + '</div></div>' +
   '<div class="card"><h3>' + t('quickLinks') + '</h3><p class="card-sub">' + t('jumpTask') + '</p><div class="qa-grid">' +
-    '<div class="qa" onclick="go(\'students\')"><div class="ic">🎒</div><b>' + t('qaAddStudent') + '</b><span>' + t('qaAddStudentD') + '</span></div>' +
-    '<div class="qa" onclick="go(\'attendance\')"><div class="ic">✅</div><b>' + t('qaMarkAtt') + '</b><span>' + t('qaMarkAttD') + '</span></div>' +
-    '<div class="qa" onclick="go(\'exams\')"><div class="ic">📝</div><b>' + t('qaEnterMarks') + '</b><span>' + t('qaEnterMarksD') + '</span></div>' +
-    '<div class="qa" onclick="go(\'reports\')"><div class="ic">📄</div><b>' + t('qaGenReport') + '</b><span>' + t('qaGenReportD') + '</span></div>' +
+    '<div class="qa" onclick="go(\'students\')"><div class="ic">ð</div><b>' + t('qaAddStudent') + '</b><span>' + t('qaAddStudentD') + '</span></div>' +
+    '<div class="qa" onclick="go(\'attendance\')"><div class="ic">â</div><b>' + t('qaMarkAtt') + '</b><span>' + t('qaMarkAttD') + '</span></div>' +
+    '<div class="qa" onclick="go(\'exams\')"><div class="ic">ð</div><b>' + t('qaEnterMarks') + '</b><span>' + t('qaEnterMarksD') + '</span></div>' +
+    '<div class="qa" onclick="go(\'reports\')"><div class="ic">ð</div><b>' + t('qaGenReport') + '</b><span>' + t('qaGenReportD') + '</span></div>' +
   '</div></div></div>';
 }
 /* ================= Activity / Audit Log (v24, v129) =================
    The dashboard "Recent Activities" card reads the real audit trail
-   (db.auditLog, top 6 newest) since v129 — before that it showed the
+   (db.auditLog, top 6 newest) since v129 â before that it showed the
    smaller db.activities feed, so fee deletions and PIN changes never
    appeared there. This page lists every audit entry (newest first) so
-   nothing — including a fee deletion — is invisible, with text /
+   nothing â including a fee deletion â is invisible, with text /
    action / actor / date filters, a CSV export and Load more (v129). */
 function auditFiltered() {
-  // v129 (Module 16): the Activity Log filters — text + action + actor + date range.
+  // v129 (Module 16): the Activity Log filters â text + action + actor + date range.
   // Returns the rows newest-first. Pure (no DOM), so the harness can call it directly.
   var rows = (db.auditLog || []).slice().sort(function (a, b) { return a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0; });
   var q = (state.actSearch || '').trim().toLowerCase();
@@ -8863,7 +8863,7 @@ function auditFiltered() {
   });
 }
 function auditCSVRows() {
-  // v129: the CSV rows for the (filtered) audit log — header + one row per entry.
+  // v129: the CSV rows for the (filtered) audit log â header + one row per entry.
   var head = ['Date', 'Action', 'Details', 'By'];
   return [head].concat(auditFiltered().map(function (a) {
     return [(a.ts || '').replace('T', ' ').slice(0, 19), a.action || '', a.details || '', a.actor || ''];
@@ -8871,7 +8871,7 @@ function auditCSVRows() {
 }
 function exportAuditCSV() {
   downloadCSV('school-saathi-audit-log-' + todayIST() + '.csv', auditCSVRows());
-  toast('✓ ' + t('tAuditCsv'));
+  toast('â ' + t('tAuditCsv'));
 }
 function onActSearch(el) {
   state.actSearch = el.value;
@@ -8933,9 +8933,9 @@ function activityLogPage() {
 function studentsPage() {
   if (state.profileStudent) return studentProfilePage(state.profileStudent);
   if (promoState) return promotionPage();
-  // v84: a teacher sees this page read-only — only their own classes,
+  // v84: a teacher sees this page read-only â only their own classes,
   // no fees, no checkboxes, no actions, no Add/Import/Promote.
-  // v88: a principal sees the whole school read-only — the fee column
+  // v88: a principal sees the whole school read-only â the fee column
   // stays (oversight), but no checkboxes, no Actions, no Add/Import/Promote.
   var isTeacher = state.role === 'teacher';
   var isPrincipal = state.role === 'principal';
@@ -8943,16 +8943,16 @@ function studentsPage() {
   var list = stuSorted(stuFiltered());
   var pages = stuPageCount(list);
   var rows = stuPageRows(list);
-  var sortArrow = function (col) { return state.stuSort === col ? (state.stuSortDir === 1 ? ' ▲' : ' ▼') : ''; };
+  var sortArrow = function (col) { return state.stuSort === col ? (state.stuSortDir === 1 ? ' â²' : ' â¼') : ''; };
   var trs = rows.map(function (s) {
     var fs = studentFeeStatus(s.id);
     var stt = s.status || 'Active';
     var badgeCls = stt === 'Active' ? 'green' : stt === 'Inactive' ? 'grey' : stt === 'Draft' ? 'blue' : 'red';
     return '<tr>' + ((isTeacher || isPrincipal) ? '' : '<td class="sel-col"><input type="checkbox" ' + ((state.stuSel || {})[s.id] ? 'checked' : '') + ' onchange="toggleStuSel(\'' + s.id + '\', this.checked)" aria-label="' + esc(s.name) + '"></td>') + '<td>' + avatarHTML(s.photo, s.name, 'mini-avatar') + '<button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td>' +
-      '<td>' + esc(s.numPending ? t('sbNumAssigning') : (s.admissionNo || '—')) + '</td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.fatherName || s.guardian) + '</td><td>' + esc(s.phone) + '</td><td>' + studentAttPct(s) + '%</td>' +
+      '<td>' + esc(s.numPending ? t('sbNumAssigning') : (s.admissionNo || 'â')) + '</td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.fatherName || s.guardian) + '</td><td>' + esc(s.phone) + '</td><td>' + studentAttPct(s) + '%</td>' +
       (isTeacher ? '' : '<td><span class="badge ' + (fs === 'Paid' ? 'green' : fs === 'Pending' ? 'orange' : 'grey') + '">' + fs + '</span></td>') +
       '<td><span class="badge ' + badgeCls + '">' + stt + '</span></td>' +
-      ((isTeacher || isPrincipal) ? '' : '<td><button class="btn ghost sm" onclick="stuActions(\'' + s.id + '\')">⋮ ' + t('actionsW') + '</button></td>') + '</tr>';
+      ((isTeacher || isPrincipal) ? '' : '<td><button class="btn ghost sm" onclick="stuActions(\'' + s.id + '\')">â® ' + t('actionsW') + '</button></td>') + '</tr>';
   }).join('');
   var opt = function (vals, cur, allLabel) {
     return ['All'].concat(vals).map(function (v) {
@@ -8969,19 +8969,19 @@ function studentsPage() {
     '<select onchange="state.stuSection=this.value;state.stuPage=1;renderPage()">' + opt(SECTIONS, state.stuSection, t('allSections')) + '</select>' +
     '<select onchange="state.stuSession=this.value;state.stuPage=1;renderPage()">' + opt(sessionOptions(), state.stuSession, t('allSessions')) + '</select>' +
     '<select onchange="state.stuGender=this.value;state.stuPage=1;renderPage()">' + opt(GENDERS, state.stuGender, t('allGenders')) + '</select>' +
-    (isTeacher ? '' : '<select onchange="state.stuFee=this.value;state.stuPage=1;renderPage()">' + opt(['Paid', 'Pending', '—'], state.stuFee, t('allFeeSt')) + '</select>') +
+    (isTeacher ? '' : '<select onchange="state.stuFee=this.value;state.stuPage=1;renderPage()">' + opt(['Paid', 'Pending', 'â'], state.stuFee, t('allFeeSt')) + '</select>') +
     '<select onchange="state.stuStatus=this.value;state.stuPage=1;renderPage()">' + opt(STU_STATUSES, state.stuStatus, t('allStatus')) + '</select>' +
-    '<button class="btn ghost" onclick="exportStudentsCSV()">⬇ ' + t('exportCsv') + '</button>' +
-    ((isTeacher || isPrincipal) ? '' : '<button class="btn ghost" onclick="openImportModal()">📥 ' + t('impImportBtn') + '</button>' +
-    '<button class="btn ghost" onclick="openPromotion()">⬆️ ' + t('promoBtn') + '</button>' +
+    '<button class="btn ghost" onclick="exportStudentsCSV()">â¬ ' + t('exportCsv') + '</button>' +
+    ((isTeacher || isPrincipal) ? '' : '<button class="btn ghost" onclick="openImportModal()">ð¥ ' + t('impImportBtn') + '</button>' +
+    '<button class="btn ghost" onclick="openPromotion()">â¬ï¸ ' + t('promoBtn') + '</button>' +
     '<button class="btn" onclick="studentForm()">+ ' + t('addStudent') + '</button>') + '</div></div>' +
     '<div class="stats">' +
-    statCard('👥', 'blue', t('stTotal'), st.total, '', 'up') +
-    statCard('✅', 'green', t('stActive'), st.active, '', 'up') +
-    statCard('⏸️', 'blue', t('stInactive'), st.inactive, '', 'up') +
-    statCard('🆕', 'orange', t('stNewAdm'), st.newAdm, '', 'up') +
-    (isTeacher ? '' : statCard('⏰', 'red', t('stPendFee'), st.pendFee, '', 'down')) +
-    statCard('📊', 'blue', t('stAvgAtt'), st.avgAtt, '', 'up', { suffix: '%' }) +
+    statCard('ð¥', 'blue', t('stTotal'), st.total, '', 'up') +
+    statCard('â', 'green', t('stActive'), st.active, '', 'up') +
+    statCard('â¸ï¸', 'blue', t('stInactive'), st.inactive, '', 'up') +
+    statCard('ð', 'orange', t('stNewAdm'), st.newAdm, '', 'up') +
+    (isTeacher ? '' : statCard('â°', 'red', t('stPendFee'), st.pendFee, '', 'down')) +
+    statCard('ð', 'blue', t('stAvgAtt'), st.avgAtt, '', 'up', { suffix: '%' }) +
     '</div>' +
     '<div class="grid2" style="margin-top:16px"><div class="card"><h3>' + t('stByClass') + '</h3><p class="muted">' + t('stByClassSub') + '</p><div style="margin-top:10px">' + classBarsHTML(st.byClass) + '</div></div>' +
     '<div class="card"><h3>' + t('stGenderDist') + '</h3><p class="muted">' + t('stGenderSub') + '</p><div style="display:flex;align-items:center;gap:16px;margin-top:10px">' +
@@ -8989,7 +8989,7 @@ function studentsPage() {
     '<div><div class="type-row"><b>' + t('stBoys') + '</b><span>' + st.boys + '</span></div>' +
     '<div class="type-row"><b>' + t('stGirls') + '</b><span>' + st.girls + '</span></div>' +
     '<div class="type-row"><b>' + t('stNotSpec') + '</b><span>' + st.unspec + '</span></div></div></div></div></div>' +
-    ((selCount && !isTeacher) ? '<div class="card id-bulk-bar"><span><b>' + selCount + '</b> ' + t('promoSelected') + '</span><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" onclick="printIdCardsBulk()">🪪 ' + t('idcPrintCards') + ' (' + selCount + ')</button><button class="btn ghost sm" onclick="clearStuSel()">' + t('idcClearSel') + '</button></span></div>' : '') +
+    ((selCount && !isTeacher) ? '<div class="card id-bulk-bar"><span><b>' + selCount + '</b> ' + t('promoSelected') + '</span><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" onclick="printIdCardsBulk()">ðªª ' + t('idcPrintCards') + ' (' + selCount + ')</button><button class="btn ghost sm" onclick="clearStuSel()">' + t('idcClearSel') + '</button></span></div>' : '') +
     '<div class="card" style="margin-top:16px"><div class="tbl-wrap"><table><thead><tr>' +
     (isTeacher || isPrincipal ? '' : '<th class="sel-col"><input type="checkbox" ' + (allPageSel ? 'checked' : '') + ' onchange="toggleStuSelAll(this.checked)" aria-label="' + t('idcSelectAll') + '"></th>') + // v88: the select-all checkbox hides for a principal too
     '<th onclick="sortStu(\'name\')" style="cursor:pointer">' + t('thName') + sortArrow('name') + '</th>' +
@@ -8999,15 +8999,15 @@ function studentsPage() {
     '<th onclick="sortStu(\'att\')" style="cursor:pointer">' + t('thAtt') + sortArrow('att') + '</th>' +
     (isTeacher ? '' : '<th>' + t('thFee') + '</th>') + '<th>' + t('thStatus') + '</th>' + ((isTeacher || isPrincipal) ? '' : '<th>' + t('actionsW') + '</th>') + '</tr></thead><tbody>' + // v88b: the ACTIONS header hides for a principal too (the cells were already empty)
     (trs || '<tr><td colspan="' + (isTeacher ? 8 : isPrincipal ? 9 : 11) + '"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '</tbody></table></div>' + // v88b: the principal has 9 columns (no select-all, no actions)
-    '<div class="toolbar" style="margin-top:12px;justify-content:space-between"><span class="muted">' + t('showingRec') + ' ' + from + '–' + to + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('studentsW') + '</span>' +
-    '<span><button class="btn ghost sm" ' + (state.stuPage <= 1 ? 'disabled' : '') + ' onclick="state.stuPage--;renderPage()">← ' + t('prevW') + '</button> ' +
+    '<div class="toolbar" style="margin-top:12px;justify-content:space-between"><span class="muted">' + t('showingRec') + ' ' + from + 'â' + to + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('studentsW') + '</span>' +
+    '<span><button class="btn ghost sm" ' + (state.stuPage <= 1 ? 'disabled' : '') + ' onclick="state.stuPage--;renderPage()">â ' + t('prevW') + '</button> ' +
     '<span class="muted">' + t('pgPage') + ' ' + state.stuPage + ' ' + t('pgOf') + ' ' + pages + '</span> ' +
-    '<button class="btn ghost sm" ' + (state.stuPage >= pages ? 'disabled' : '') + ' onclick="state.stuPage++;renderPage()">' + t('nextW') + ' →</button></span></div></div>';
+    '<button class="btn ghost sm" ' + (state.stuPage >= pages ? 'disabled' : '') + ' onclick="state.stuPage++;renderPage()">' + t('nextW') + ' â</button></span></div></div>';
 }
 var admEditingId = null;
 function suggestRoll() {
   if (admEditingId) return;
-  // v119: the section list follows the chosen class part — a part with
+  // v119: the section list follows the chosen class part â a part with
   // only A/B must not leave C selected (that would admit the student
   // to a class the school does not have).
   var secSel = $('fStSec');
@@ -9035,15 +9035,15 @@ function studentForm(id) {
   var clsOpts = classParts().map(function (c) { return '<option ' + (c === clsPart ? 'selected' : '') + '>' + c + '</option>'; }).join('');
   var secOpts = sectionsFor(clsPart).map(function (x) { return '<option ' + (x === secPart ? 'selected' : '') + '>' + x + '</option>'; }).join('');
   var sessOpts = SESSIONS.map(function (x) { return '<option ' + ((s ? s.session : db.profile.session) === x ? 'selected' : '') + '>' + x + '</option>'; }).join('');
-  var genOpts = [''].concat(GENDERS).map(function (g) { return '<option value="' + g + '" ' + (((s && s.gender === g) || (pf && pf.gender === g)) ? 'selected' : '') + '>' + (g || '—') + '</option>'; }).join('');
-  var bloodOpts = [''].concat(BLOOD_GROUPS).map(function (b) { return '<option value="' + b + '" ' + ((s && s.bloodGroup === b) ? 'selected' : '') + '>' + (b || '—') + '</option>'; }).join('');
-  var catOpts = [''].concat(CATEGORIES).map(function (c) { return '<option value="' + c + '" ' + ((s && s.category === c) ? 'selected' : '') + '>' + (c || '—') + '</option>'; }).join('');
+  var genOpts = [''].concat(GENDERS).map(function (g) { return '<option value="' + g + '" ' + (((s && s.gender === g) || (pf && pf.gender === g)) ? 'selected' : '') + '>' + (g || 'â') + '</option>'; }).join('');
+  var bloodOpts = [''].concat(BLOOD_GROUPS).map(function (b) { return '<option value="' + b + '" ' + ((s && s.bloodGroup === b) ? 'selected' : '') + '>' + (b || 'â') + '</option>'; }).join('');
+  var catOpts = [''].concat(CATEGORIES).map(function (c) { return '<option value="' + c + '" ' + ((s && s.category === c) ? 'selected' : '') + '>' + (c || 'â') + '</option>'; }).join('');
   if (pf) {
     clsPart = pf.classApply || clsPart;
     admPrefill = null; // consumed into the form; the link now lives in fStAdmReq
   }
   // v33: for a server account the number is minted from the server on
-  // save — the local peek could show a number another device already
+  // save â the local peek could show a number another device already
   // owns, so the form shows Auto-generated instead.
   var admNo = s ? (s.numPending ? t('sbNumAssigning') : (s.admissionNo || '')) : (sbSyncActive() ? t('admNoAuto') : nextAdmNo(true));
   var admDate = s ? (s.admissionDate || '') : todayIST();
@@ -9125,7 +9125,7 @@ function saveStudent(e, id, mode) {
   var admDateVal = fval('fStAdmDate');
   var dob = fval('fStDob');
   var data = { name: name, cls: cls, roll: parseInt(fval('fStRoll'), 10) || 1,
-    guardian: fval('fStG').trim() || '—', phone: phone,
+    guardian: fval('fStG').trim() || 'â', phone: phone,
     dob: dob, gender: fval('fStGender'), bloodGroup: fval('fStBlood'),
     category: fval('fStCategory'), address: fval('fStAddress').trim(),
     state: fval('fStState').trim(), district: fval('fStDistrict').trim(), pin: pin,
@@ -9146,7 +9146,7 @@ function saveStudent(e, id, mode) {
   // Edit with a blank date field keeps the stored date (never fabricate one on edit).
   if (id && !admDateVal) { var ex0 = db.students.find(function (x) { return x.id === id; }); if (ex0) data.admissionDate = ex0.admissionDate || ''; }
   var dup = findDupStudent(data, id || null);
-  if (dup) return failInto(errEl, t('tDupFound') + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' • ' + dup.cls + ')', true);
+  if (dup) return failInto(errEl, t('tDupFound') + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' â¢ ' + dup.cls + ')', true);
   function finishSave() {
     pendingPhoto = null;
     stopPhotoWatch();
@@ -9169,7 +9169,7 @@ function saveStudent(e, id, mode) {
       if (pendingPhoto) { s.photo = pendingPhoto; sbUploadStudentPhotoBg(s.id, pendingPhoto); }
       else { delete s.photo; delete s.photoUrl; }
     }
-    logAudit('Student updated', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
+    logAudit('Student updated', s.name + ' â¢ ' + (s.admissionNo || '') + ' â¢ ' + s.cls);
     toast(t('tStudentUpdated'));
     finishSave();
     return false;
@@ -9177,7 +9177,7 @@ function saveStudent(e, id, mode) {
   var nid = uniqueId('stu');
   // v54 (A1/A2): a blank PIN field no longer defaults to the phone's
   // last 4 digits (guessable). The admin types a PIN, or a random
-  // 4-digit PIN is generated — its value is NEVER shown (not in the
+  // 4-digit PIN is generated â its value is NEVER shown (not in the
   // toast, not on the profile), so if the PIN must be shared with the
   // student, the admin types it explicitly instead.
   var newPin = pinLogin || randomPin();
@@ -9191,16 +9191,16 @@ function saveStudent(e, id, mode) {
       var rq = (db.admissionRequests || []).find(function (x) { return x.id === reqId; });
       if (rq && rq.status === 'Pending') {
         rq.status = 'Approved'; rq.studentId = nid;
-        logAudit('Admission request approved', rq.name + ' • ' + (admNo || 'pending') + ' • ' + cls);
+        logAudit('Admission request approved', rq.name + ' â¢ ' + (admNo || 'pending') + ' â¢ ' + cls);
       }
     }
-    logAudit(mode === 'draft' ? 'Admission saved as draft' : 'Admission created', name + ' • ' + (admNo || 'pending') + ' • ' + cls);
+    logAudit(mode === 'draft' ? 'Admission saved as draft' : 'Admission created', name + ' â¢ ' + (admNo || 'pending') + ' â¢ ' + cls);
     if (numPending) toast(t('sbNumPending'));
     else toast(mode === 'draft' ? t('tDraftSaved') : t('tAdmCreated') + admNo);
     finishSave();
   }
   // v33: for a server account the number comes from the server, never
-  // from the local counter — a locally guessed number is exactly what
+  // from the local counter â a locally guessed number is exactly what
   // collided on 9 Nov 2026. Offline the student is saved WITHOUT a
   // number (numPending) and minted on the next sync. Local-only
   // accounts mint locally, exactly as before.
@@ -9215,7 +9215,7 @@ function saveStudent(e, id, mode) {
   return false;
 }
 function stuActions(id) {
-  if (state.role !== 'school') { toast(t('tNotAllowed')); return; } // v84: teachers are read-only — the Actions button is hidden for them; this is the backstop
+  if (state.role !== 'school') { toast(t('tNotAllowed')); return; } // v84: teachers are read-only â the Actions button is hidden for them; this is the backstop
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
   var stt = s.status || 'Active';
@@ -9223,16 +9223,16 @@ function stuActions(id) {
     ? '<button class="btn ghost" onclick="closeModal();deactivateStudent(\'' + s.id + '\')">' + t('actDeactivate') + '</button>'
     : (stt === 'Inactive'
       ? '<button class="btn ghost" onclick="closeModal();deactivateStudent(\'' + s.id + '\')">' + t('actActivate') + '</button>' : '');
-  openModal('<h3>' + esc(s.name) + ' • ' + esc(s.cls) + '</h3><div class="menu-list">' +
+  openModal('<h3>' + esc(s.name) + ' â¢ ' + esc(s.cls) + '</h3><div class="menu-list">' +
     '<button class="btn ghost" onclick="closeModal();openStudentProfile(\'' + s.id + '\')">' + t('actView') + '</button>' +
     '<button class="btn ghost" onclick="closeModal();studentForm(\'' + s.id + '\')">' + t('actEdit') + '</button>' +
     '<button class="btn ghost" onclick="closeModal();viewStudentAttendance(\'' + s.id + '\')">' + t('actAtt') + '</button>' +
     '<button class="btn ghost" onclick="closeModal();viewStudentFees(\'' + s.id + '\')">' + t('actFees') + '</button>' +
     '<button class="btn ghost" onclick="closeModal();viewStudentResults(\'' + s.id + '\')">' + t('actResults') + '</button>' +
-    '<button class="btn ghost" onclick="closeModal();printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button>' +
+    '<button class="btn ghost" onclick="closeModal();printIdCard(\'' + s.id + '\')">ðªª ' + t('actIdCard') + '</button>' +
     '<button class="btn ghost" onclick="closeModal();downloadStudentCSV(\'' + s.id + '\')">' + t('actDownload') + '</button>' +
     '<button class="btn ghost" onclick="closeModal();transferStudent(\'' + s.id + '\')">' + t('actTransfer') + '</button>' +
-    ((stt === 'Active' || stt === 'Inactive') ? '<button class="btn ghost" onclick="closeModal();promoteSingle(\'' + s.id + '\')">⬆️ ' + t('promoSingle') + '</button>' : '') +
+    ((stt === 'Active' || stt === 'Inactive') ? '<button class="btn ghost" onclick="closeModal();promoteSingle(\'' + s.id + '\')">â¬ï¸ ' + t('promoSingle') + '</button>' : '') +
     toggleBtn +
     '<button class="btn danger" onclick="closeModal();deleteStudent(\'' + s.id + '\')">' + t('deleteBtn') + '</button>' +
     '</div>');
@@ -9264,7 +9264,7 @@ function transferStudent(id) {
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
   var clsOpts = schoolClasses().map(function (c) { return '<option ' + (c === s.cls ? 'selected' : '') + '>' + c + '</option>'; }).join('');
-  openModal('<h3>' + t('transferTitle') + ' — ' + esc(s.name) + '</h3><form onsubmit="return doTransfer(event,\'' + s.id + '\')"><div class="form-grid">' +
+  openModal('<h3>' + t('transferTitle') + ' â ' + esc(s.name) + '</h3><form onsubmit="return doTransfer(event,\'' + s.id + '\')"><div class="form-grid">' +
     '<div class="full"><label>' + t('transferTo') + '</label><select id="fTrCls" onchange="suggestTransferRoll()">' + clsOpts + '</select></div>' +
     '<div><label>' + t('fRoll') + '</label><input id="fTrRoll" type="number" min="1" value="' + nextRoll(s.cls) + '"></div>' +
     '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + t('transferTitle') + '</button></div></form>');
@@ -9285,7 +9285,7 @@ function doTransfer(e, id) {
   // NOTE: fee records keep their historical cls (the fee belonged to the old
   // class); only the student's cls changes. The v9 migration's one-time
   // fee-cls alignment is flag-guarded so it never rewrites these either.
-  logAudit('Student transferred', s.name + ' • ' + (s.admissionNo || '') + ' • ' + fromCls + ' → ' + toCls);
+  logAudit('Student transferred', s.name + ' â¢ ' + (s.admissionNo || '') + ' â¢ ' + fromCls + ' â ' + toCls);
   saveDB(db); closeModal(); renderApp();
   toast(t('tTransferred'));
   return false;
@@ -9293,13 +9293,13 @@ function doTransfer(e, id) {
 
 /* ================= Phase 2: promotion =================
    History is preserved by design: fee records keep their historical cls,
-   marks stay keyed by exam, attendance stays keyed by date|old class — so a
+   marks stay keyed by exam, attendance stays keyed by date|old class â so a
    promoted student's whole history stays visible in the profile tabs. */
 function nextSession(sess) {
-  var m = /^(\d{4})–(\d{2})$/.exec(String(sess || '').trim());
+  var m = /^(\d{4})â(\d{2})$/.exec(String(sess || '').trim());
   if (!m) return '';
   var y = parseInt(m[1], 10) + 1;
-  return y + '–' + String((y + 1) % 100).padStart(2, '0');
+  return y + 'â' + String((y + 1) % 100).padStart(2, '0');
 }
 function nextClassPart(cp) {
   var parts = classParts();
@@ -9328,7 +9328,7 @@ function runPromotion(sel) {
     if (sel.mode === 'retain') {
       if (fromSess === sel.toSession) { out.skipped.push({ id: id, reason: t('promoNoopRetain') }); return; }
       s.session = sel.toSession;
-      logAudit('Student retained', s.name + ' • ' + (s.admissionNo || '') + ' • ' + 'Retained in ' + fromCls + ', session ' + fromSess + ' → ' + sel.toSession);
+      logAudit('Student retained', s.name + ' â¢ ' + (s.admissionNo || '') + ' â¢ ' + 'Retained in ' + fromCls + ', session ' + fromSess + ' â ' + sel.toSession);
       out.retained++;
     } else {
       if (fromCls === sel.toCls && fromSess === sel.toSession) { out.skipped.push({ id: id, reason: t('promoNoop') }); return; }
@@ -9336,7 +9336,7 @@ function runPromotion(sel) {
       s.cls = sel.toCls;
       s.roll = nextRoll(sel.toCls); // next free roll in the TARGET class, in order
       s.session = sel.toSession;
-      logAudit('Student promoted', s.name + ' • ' + (s.admissionNo || '') + ' • ' + fromCls + ' → ' + sel.toCls + ', session ' + fromSess + ' → ' + sel.toSession);
+      logAudit('Student promoted', s.name + ' â¢ ' + (s.admissionNo || '') + ' â¢ ' + fromCls + ' â ' + sel.toCls + ', session ' + fromSess + ' â ' + sel.toSession);
       out.promoted++;
     }
   });
@@ -9434,15 +9434,15 @@ function promotionPage() {
   var rows = list.map(function (s) {
     var checked = !!p.selected[s.id];
     return '<label class="promo-row"><input type="checkbox" ' + (checked ? 'checked' : '') + ' ' + (p.mode === 'single' ? 'disabled' : '') + ' onchange="togglePromo(\'' + s.id + '\', this.checked)">' +
-      '<span style="flex:1"><b>' + esc(s.name) + '</b> <span class="muted">• ' + esc(s.cls) + ' • ' + t('thAdmNo') + ' ' + esc(s.admissionNo || '—') + ' • ' + t('thRoll') + ' ' + s.roll + '</span></span>' +
+      '<span style="flex:1"><b>' + esc(s.name) + '</b> <span class="muted">â¢ ' + esc(s.cls) + ' â¢ ' + t('thAdmNo') + ' ' + esc(s.admissionNo || 'â') + ' â¢ ' + t('thRoll') + ' ' + s.roll + '</span></span>' +
       '<span class="badge ' + ((s.status || 'Active') === 'Active' ? 'green' : 'grey') + '">' + (s.status || 'Active') + '</span></label>';
   }).join('');
   var resHtml = '';
   if (p.result) {
-    resHtml = '<div class="card" style="margin-top:16px"><h3>' + t('promoDone') + '</h3><p>' + p.result.promoted + ' ' + t('promoPromoted') + ' • ' + p.result.retained + ' ' + t('promoRetained') + ' • ' + p.result.skipped + ' ' + t('impSkipped') + '</p></div>';
+    resHtml = '<div class="card" style="margin-top:16px"><h3>' + t('promoDone') + '</h3><p>' + p.result.promoted + ' ' + t('promoPromoted') + ' â¢ ' + p.result.retained + ' ' + t('promoRetained') + ' â¢ ' + p.result.skipped + ' ' + t('impSkipped') + '</p></div>';
   }
   return '<div class="page-head"><div><h2>' + t('promoTitle') + '</h2><p>' + t('promoNote') + '</p></div>' +
-    '<div class="toolbar"><button class="btn ghost" onclick="promoState=null;renderPage()">← ' + t('backDir') + '</button></div></div>' +
+    '<div class="toolbar"><button class="btn ghost" onclick="promoState=null;renderPage()">â ' + t('backDir') + '</button></div></div>' +
     (p.mode === 'single' ? '<p class="muted" style="margin-bottom:12px">' + t('promoSingleNote') + '</p>' : '') +
     '<div class="card"><div class="form-grid">' +
     '<div><label>' + t('promoFromSession') + '</label><select id="promoFromSession" onchange="onPromoFromChange()">' + sessOpts(p.fromSession) + '</select></div>' +
@@ -9463,9 +9463,9 @@ function deactivateStudent(id) {
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s) return;
   var toInactive = (s.status || 'Active') === 'Active';
-  confirmModal((toInactive ? t('tDeactMsg') : t('tActMsg')) + ' — ' + s.name + '?', function () {
+  confirmModal((toInactive ? t('tDeactMsg') : t('tActMsg')) + ' â ' + s.name + '?', function () {
     s.status = toInactive ? 'Inactive' : 'Active';
-    logAudit(toInactive ? 'Student deactivated' : 'Student activated', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
+    logAudit(toInactive ? 'Student deactivated' : 'Student activated', s.name + ' â¢ ' + (s.admissionNo || '') + ' â¢ ' + s.cls);
     saveDB(db); renderApp();
     toast(toInactive ? t('tDeactivated') : t('tActivated'));
   });
@@ -9476,7 +9476,7 @@ function cancelAdmission(id) {
   if (!s) return;
   confirmModal(t('cancelAdmMsg'), function () {
     s.status = 'Cancelled';
-    logAudit('Admission cancelled', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
+    logAudit('Admission cancelled', s.name + ' â¢ ' + (s.admissionNo || '') + ' â¢ ' + s.cls);
     saveDB(db); closeModal(); renderApp();
     toast(t('tAdmCancelled'));
   });
@@ -9488,7 +9488,7 @@ function openStudentProfile(id) {
   persistSession();
   histPush({ view: 'students', sub: 'profile:' + id });
   renderPage();
-  // v74 (P1-2): the cloud login no longer ships student photos — a cloud
+  // v74 (P1-2): the cloud login no longer ships student photos â a cloud
   // teacher fetches the photo on demand when opening a profile.
   maybeLoadCloudStudentPhoto(id);
 }
@@ -9533,15 +9533,15 @@ function studentProfilePage(id) {
     return '<button class="tab-btn' + (state.profileTab === tb[0] ? ' on' : '') + '" onclick="setProfileTab(\'' + tb[0] + '\')">' + t(tb[1]) + '</button>';
   }).join('') + '</div>';
   var toolbar = state.role === 'school'
-    ? '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">← ' + t('backDir') + '</button>' +
+    ? '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">â ' + t('backDir') + '</button>' +
     '<button class="btn" onclick="studentForm(\'' + s.id + '\')">' + t('editStudent') + '</button>' +
-    '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button>' + waChatBtn(s.id) +
-    ((stt === 'Active' || stt === 'Inactive') ? '<button class="btn ghost" onclick="promoteSingle(\'' + s.id + '\')">⬆️ ' + t('promoSingle') + '</button>' : '') + '</div>'
+    '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">ðªª ' + t('actIdCard') + '</button>' + waChatBtn(s.id) +
+    ((stt === 'Active' || stt === 'Inactive') ? '<button class="btn ghost" onclick="promoteSingle(\'' + s.id + '\')">â¬ï¸ ' + t('promoSingle') + '</button>' : '') + '</div>'
     : state.role === 'teacher'
-    ? '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">← ' + t('backDir') + '</button>' +
-    '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button>' + waChatBtn(s.id) + '</div>'
-    : '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">← ' + t('backDir') + '</button><button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button></div>';
-  return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + esc(s.cls) + ' • ' + t('thAdmNo') + ' ' + esc(s.admissionNo || '—') + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • <span class="badge ' + badgeCls + '">' + stt + '</span></p></div></div>' +
+    ? '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">â ' + t('backDir') + '</button>' +
+    '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">ðªª ' + t('actIdCard') + '</button>' + waChatBtn(s.id) + '</div>'
+    : '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">â ' + t('backDir') + '</button><button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">ðªª ' + t('actIdCard') + '</button></div>';
+  return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + esc(s.cls) + ' â¢ ' + t('thAdmNo') + ' ' + esc(s.admissionNo || 'â') + ' â¢ ' + t('thEnr') + ' ' + esc(s.enr || 'â') + ' â¢ <span class="badge ' + badgeCls + '">' + stt + '</span></p></div></div>' +
     toolbar + '</div>' +
     tabBar + '<div style="margin-top:16px">' + profileTabBody(s, state.profileTab || 'overview') + '</div>';
 }
@@ -9553,22 +9553,22 @@ function profileTabBody(s, tab) {
   if (tab === 'activity' && state.role !== 'school') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
   if (tab === 'fees' && state.role === 'teacher') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
   if (tab === 'personal') {
-    return '<div class="card">' + kv(t('fStudentName'), esc(s.name)) + kv(t('fDob'), esc(s.dob || '—')) + kv(t('fGender'), esc(s.gender || '—')) + kv(t('fBlood'), esc(s.bloodGroup || '—')) + kv(t('fCategory'), esc(s.category || '—')) + kv(t('fAddress'), esc(s.address || '—')) + kv(t('fState'), esc(s.state || '—')) + kv(t('fDistrict'), esc(s.district || '—')) + kv(t('fPin'), esc(s.pin || '—')) + kv(t('fAadhaar'), maskAadhaar(s.aadhaar)) + '</div>';
+    return '<div class="card">' + kv(t('fStudentName'), esc(s.name)) + kv(t('fDob'), esc(s.dob || 'â')) + kv(t('fGender'), esc(s.gender || 'â')) + kv(t('fBlood'), esc(s.bloodGroup || 'â')) + kv(t('fCategory'), esc(s.category || 'â')) + kv(t('fAddress'), esc(s.address || 'â')) + kv(t('fState'), esc(s.state || 'â')) + kv(t('fDistrict'), esc(s.district || 'â')) + kv(t('fPin'), esc(s.pin || 'â')) + kv(t('fAadhaar'), maskAadhaar(s.aadhaar)) + '</div>';
   }
   if (tab === 'parent') {
-    var base = '<div class="card">' + kv(t('fFather'), esc(s.fatherName || '—')) + kv(t('fMother'), esc(s.motherName || '—')) + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fPhone2'), esc(s.mobile2 || '—')) + kv(t('fParentEmail'), esc(s.parentEmail || '—')) + kv(t('fOccupation'), esc(s.occupation || '—')) + '</div>';
+    var base = '<div class="card">' + kv(t('fFather'), esc(s.fatherName || 'â')) + kv(t('fMother'), esc(s.motherName || 'â')) + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fPhone2'), esc(s.mobile2 || 'â')) + kv(t('fParentEmail'), esc(s.parentEmail || 'â')) + kv(t('fOccupation'), esc(s.occupation || 'â')) + '</div>';
     if (state.role !== 'school') return base;
-    var pinSet54 = pinHasPin(s); // v54 (A2): the PIN value is never rendered — at most "PIN set / not set"
+    var pinSet54 = pinHasPin(s); // v54 (A2): the PIN value is never rendered â at most "PIN set / not set"
     var pinBox = '<div class="card" style="margin-top:16px"><h3>' + t('stuPinTitle') + '</h3>' +
-      '<div class="kv"><b>' + t('stuPinNow') + '</b><span>' + (pinSet54 ? t('stuPinSet') : '—') + '</span></div>' +
+      '<div class="kv"><b>' + t('stuPinNow') + '</b><span>' + (pinSet54 ? t('stuPinSet') : 'â') + '</span></div>' +
       '<p class="muted" style="margin:8px 0">' + t('tPinAuto') + (pinSet54 ? '' : ' ' + t('stuPinNone')) + '</p>' +
-      '<div class="form-grid"><div><label>' + t('stuPinNew') + '</label><input id="fStuPinNew" type="password" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="4–6 digits"></div></div>' +
+      '<div class="form-grid"><div><label>' + t('stuPinNew') + '</label><input id="fStuPinNew" type="password" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="4â6 digits"></div></div>' +
       '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="setStudentPin(\'' + s.id + '\')">' + t('stuPinSetBtn') + '</button>' +
       '<button class="btn ghost" onclick="clearStudentPin(\'' + s.id + '\')">' + t('stuPinClear') + '</button></div></div>';
     return base + pinBox;
   }
   if (tab === 'academic') {
-    return '<div class="card">' + kv(t('fAdmNo'), esc(s.admissionNo || '—')) + kv(t('fAdmDate'), esc(s.admissionDate || '—')) + kv(t('fSession'), esc(s.session || '—')) + kv(t('fClass'), esc(classPartOf(s.cls))) + kv(t('fSection'), esc(sectionOf(s.cls))) + kv(t('fRoll'), String(s.roll)) + kv(t('fPrevSchool'), esc(s.previousSchool || '—')) + kv(t('fPrevClass'), esc(s.previousClass || '—')) + kv(t('thStatus'), esc(s.status || 'Active')) + '</div>';
+    return '<div class="card">' + kv(t('fAdmNo'), esc(s.admissionNo || 'â')) + kv(t('fAdmDate'), esc(s.admissionDate || 'â')) + kv(t('fSession'), esc(s.session || 'â')) + kv(t('fClass'), esc(classPartOf(s.cls))) + kv(t('fSection'), esc(sectionOf(s.cls))) + kv(t('fRoll'), String(s.roll)) + kv(t('fPrevSchool'), esc(s.previousSchool || 'â')) + kv(t('fPrevClass'), esc(s.previousClass || 'â')) + kv(t('thStatus'), esc(s.status || 'Active')) + '</div>';
   }
   if (tab === 'attendance') {
     var rows = [];
@@ -9581,18 +9581,18 @@ function profileTabBody(s, tab) {
     var trs = shown.map(function (r) {
       return '<tr><td>' + esc(r.date) + '</td><td>' + esc(r.cls) + '</td><td><span class="badge ' + (r.st === 'Present' ? 'green' : r.st === 'Absent' ? 'red' : 'orange') + '">' + r.st + '</span></td></tr>';
     }).join('');
-    return '<div class="card"><p class="muted">' + t('attPct') + ': <b>' + studentAttPct(s) + '%</b>' + (rows.length > 30 ? ' • ' + t('showingRec') + ' 30 ' + t('ofRec') + ' ' + rows.length : '') + '</p><div class="tbl-wrap"><table><thead><tr><th>' + t('thDate') + '</th><th>' + t('thClass') + '</th><th>' + t('thStatus') + '</th></tr></thead><tbody>' + (trs || '<tr><td colspan="3"><div class="empty">' + t('noAttRecs') + '</div></td></tr>') + '</tbody></table></div></div>';
+    return '<div class="card"><p class="muted">' + t('attPct') + ': <b>' + studentAttPct(s) + '%</b>' + (rows.length > 30 ? ' â¢ ' + t('showingRec') + ' 30 ' + t('ofRec') + ' ' + rows.length : '') + '</p><div class="tbl-wrap"><table><thead><tr><th>' + t('thDate') + '</th><th>' + t('thClass') + '</th><th>' + t('thStatus') + '</th></tr></thead><tbody>' + (trs || '<tr><td colspan="3"><div class="empty">' + t('noAttRecs') + '</div></td></tr>') + '</tbody></table></div></div>';
   }
   if (tab === 'fees') {
     var sum = feeSummaryFor(s.id);
     if (!sum) return '<div class="card"><div class="empty">' + t('tNoFeeRecs') + '</div></div>';
     var btRows = Object.keys(sum.byType).map(function (ty) {
-      return '<div class="type-row"><b>' + esc(feeTypeLabel(ty)) + '</b><span>' + t('collectedW') + ' ' + inr(sum.byType[ty].collected) + ' • ' + t('pendingW') + ' ' + inr(sum.byType[ty].pending) + '</span></div>';
+      return '<div class="type-row"><b>' + esc(feeTypeLabel(ty)) + '</b><span>' + t('collectedW') + ' ' + inr(sum.byType[ty].collected) + ' â¢ ' + t('pendingW') + ' ' + inr(sum.byType[ty].pending) + '</span></div>';
     }).join('');
     var frs = sum.recs.map(function (r) {
       return '<tr><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td><td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td><td>' + receiptCellForRecord(r) + '</td></tr>';
     }).join('');
-    return '<div class="stats">' + statCard('🧾', 'blue', t('totalBilled'), sum.billed, '', 'up', { prefix: '₹' }) + statCard('✅', 'green', t('totalPaid'), sum.paid, '', 'up', { prefix: '₹' }) + statCard('⏰', 'red', t('totalPending'), sum.pend, '', 'down', { prefix: '₹' }) + '</div>' +
+    return '<div class="stats">' + statCard('ð§¾', 'blue', t('totalBilled'), sum.billed, '', 'up', { prefix: 'â¹' }) + statCard('â', 'green', t('totalPaid'), sum.paid, '', 'up', { prefix: 'â¹' }) + statCard('â°', 'red', t('totalPending'), sum.pend, '', 'down', { prefix: 'â¹' }) + '</div>' +
       '<div class="card"><h3>' + t('feeByType') + '</h3>' + (btRows || '<p class="muted">' + t('tNoFeeRecs') + '</p>') + '</div>' +
       '<div class="card" style="margin-top:16px"><h3>' + t('feeRecsH') + '</h3><div class="tbl-wrap fee-hist-tbl"><table><thead><tr><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thReceipt') + '</th></tr></thead><tbody>' + (frs || '<tr><td colspan="6"><div class="empty">' + t('tNoFeeRecs') + '</div></td></tr>') + '</tbody></table></div>' +
       (state.role !== 'school' ? '' : '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="viewStudentFees(\'' + s.id + '\')">' + t('openFees') + '</button></div>') + '</div>';
@@ -9601,8 +9601,8 @@ function profileTabBody(s, tab) {
     var exs = db.exams.filter(function (e) { return e.cls === s.cls && isActiveExam(e); }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
     var rtrs = exs.map(function (ex) {
       var mk = db.marks.find(function (m) { return m.examId === ex.id && m.studentId === s.id; });
-      var pct = mk ? Math.round(mk.marks / ex.total * 100) + '%' : '—';
-      return '<tr><td>' + esc(ex.name) + '</td><td>' + esc(ex.subject) + '</td><td>' + esc(ex.date) + '</td><td>' + (mk ? mk.marks + ' / ' + ex.total : '—') + '</td><td>' + pct + '</td></tr>';
+      var pct = mk ? Math.round(mk.marks / ex.total * 100) + '%' : 'â';
+      return '<tr><td>' + esc(ex.name) + '</td><td>' + esc(ex.subject) + '</td><td>' + esc(ex.date) + '</td><td>' + (mk ? mk.marks + ' / ' + ex.total : 'â') + '</td><td>' + pct + '</td></tr>';
     }).join('');
     return '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thExam') + '</th><th>' + t('fSubject') + '</th><th>' + t('thDate') + '</th><th>' + t('thMarks') + '</th><th>' + t('thResult') + '</th></tr></thead><tbody>' + (rtrs || '<tr><td colspan="5"><div class="empty">' + t('noExamRecs') + '</div></td></tr>') + '</tbody></table></div></div>';
   }
@@ -9616,7 +9616,7 @@ function profileTabBody(s, tab) {
   }
   if (tab === 'docs') {
     var docRow = function (label, ok) { return '<div class="kv"><b>' + label + '</b><span class="badge ' + (ok ? 'green' : 'grey') + '">' + (ok ? t('docStatus') : t('docMissing')) + '</span></div>'; };
-    return '<div class="card">' + docRow(t('fBirthCert'), !!d.birthCert) + docRow(t('fTc'), !!d.tc) + kv(t('fTcNo'), esc(d.tcNumber || '—')) + kv(t('fDocsOther'), esc(d.other || '—')) + '<p class="muted" style="margin-top:10px">' + t('docsNote') + '</p></div>';
+    return '<div class="card">' + docRow(t('fBirthCert'), !!d.birthCert) + docRow(t('fTc'), !!d.tc) + kv(t('fTcNo'), esc(d.tcNumber || 'â')) + kv(t('fDocsOther'), esc(d.other || 'â')) + '<p class="muted" style="margin-top:10px">' + t('docsNote') + '</p></div>';
   }
   if (tab === 'activity') {
     var acts = (db.auditLog || []).filter(function (a) {
@@ -9625,7 +9625,7 @@ function profileTabBody(s, tab) {
       return det.indexOf(s.name) !== -1;
     });
     var arows = acts.map(function (a) {
-      return '<div class="act"><div><b>' + esc(a.action) + '</b><div class="muted">' + esc(a.details) + '</div><div class="muted">' + esc(a.ts) + ' • ' + esc(a.actor) + '</div></div></div>';
+      return '<div class="act"><div><b>' + esc(a.action) + '</b><div class="muted">' + esc(a.details) + '</div><div class="muted">' + esc(a.ts) + ' â¢ ' + esc(a.actor) + '</div></div></div>';
     }).join('');
     return '<div class="card">' + (arows || '<div class="empty">' + t('noActivity') + '</div>') + '</div>';
   }
@@ -9636,22 +9636,22 @@ function profileTabBody(s, tab) {
   var pendAmt = sum2 ? sum2.pend : 0;
   // v38: pending dues with a per-due WhatsApp reminder. This is also
   // the teacher's entry point for fee reminders (teachers cannot open
-  // the Fees page) — waReminderBtn enforces the assigned-class rule,
+  // the Fees page) â waReminderBtn enforces the assigned-class rule,
   // and a student never sees a button here.
   var pendRecs38 = (db.feeRecords || []).filter(function (r) { return r.studentId === s.id && r.status === 'Pending'; });
   var pendHtml38 = '';
   if (pendRecs38.length && state.role !== 'student') {
     pendHtml38 = '<div class="card" style="margin-top:16px"><h3>' + t('pendingW') + '</h3>' + pendRecs38.map(function (r) {
-      return '<div class="type-row"><b>' + esc(r.month) + ' • ' + esc(feeTypeLabel(feeTypeOf(r))) + '</b><span>' + inr(r.amount) + ' ' + waReminderBtn(r.id, s.id) + '</span></div>';
+      return '<div class="type-row"><b>' + esc(r.month) + ' â¢ ' + esc(feeTypeLabel(feeTypeOf(r))) + '</b><span>' + inr(r.amount) + ' ' + waReminderBtn(r.id, s.id) + '</span></div>';
     }).join('') + '</div>';
   }
   return '<div class="stats">' +
-    statCard('📊', 'blue', t('attPct'), studentAttPct(s), '', 'up', { suffix: '%' }) +
-    statCard('💰', 'green', t('feeSt'), pendAmt, '', pendAmt ? 'down' : 'up', { prefix: '₹' }) +
-    statCard('📝', 'orange', t('latestExam'), lex ? lex.pct : 0, lex ? lex.name : '', 'up', { suffix: '%' }) +
-    statCard('📚', 'red', t('hwPending'), hwPend, '', 'up') +
+    statCard('ð', 'blue', t('attPct'), studentAttPct(s), '', 'up', { suffix: '%' }) +
+    statCard('ð°', 'green', t('feeSt'), pendAmt, '', pendAmt ? 'down' : 'up', { prefix: 'â¹' }) +
+    statCard('ð', 'orange', t('latestExam'), lex ? lex.pct : 0, lex ? lex.name : '', 'up', { suffix: '%' }) +
+    statCard('ð', 'red', t('hwPending'), hwPend, '', 'up') +
     '</div>' +
-    '<div class="card">' + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fAdmNo'), esc(s.admissionNo || '—')) + kv(t('thEnr'), esc(s.enr || '—')) + kv(t('fAdmDate'), esc(s.admissionDate || '—')) + kv(t('fSession'), esc(s.session || '—')) + kv(t('thStatus'), esc(s.status || 'Active')) + '</div>' + pendHtml38;
+    '<div class="card">' + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fAdmNo'), esc(s.admissionNo || 'â')) + kv(t('thEnr'), esc(s.enr || 'â')) + kv(t('fAdmDate'), esc(s.admissionDate || 'â')) + kv(t('fSession'), esc(s.session || 'â')) + kv(t('thStatus'), esc(s.status || 'Active')) + '</div>' + pendHtml38;
 }
 function setStudentPin(id) {
   var s = db.students.find(function (x) { return x.id === id; });
@@ -9659,15 +9659,15 @@ function setStudentPin(id) {
   var v = digitsOnly($('fStuPinNew') ? $('fStuPinNew').value : '');
   if (v.length < 4 || v.length > 6) { toast(t('tPinLen')); return; }
   s.parentPinHash = hashPin(v); delete s.parentPin; // v54 (A1): stored as a salted hash, never plaintext
-  logAudit('Student PIN set', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
+  logAudit('Student PIN set', s.name + ' â¢ ' + (s.admissionNo || '') + ' â¢ ' + s.cls);
   saveDB(db); renderPage();
   toast(t('tPinSet'));
 }
 function clearStudentPin(id) {
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s || state.role !== 'school') return;
-  delete s.parentPinHash; s.parentPin = ''; // v54 (A1): clearing removes the hash and leaves the empty-string sentinel — deleting the field too would let migrateV12 assign a fresh random PIN hash on the next load (a cleared PIN would come back)
-  logAudit('Student PIN cleared', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
+  delete s.parentPinHash; s.parentPin = ''; // v54 (A1): clearing removes the hash and leaves the empty-string sentinel â deleting the field too would let migrateV12 assign a fresh random PIN hash on the next load (a cleared PIN would come back)
+  logAudit('Student PIN cleared', s.name + ' â¢ ' + (s.admissionNo || '') + ' â¢ ' + s.cls);
   saveDB(db); renderPage();
   toast(t('tPinCleared'));
 }
@@ -9677,27 +9677,27 @@ function deleteStudent(id) {
   if (!s) return;
   // Soft delete only: the record and ALL of its history (fees, marks,
   // attendance, homework) are kept. Nothing is ever hard-deleted here.
-  confirmModal(t('softDelMsg') + ' — ' + s.name + '?', function () {
+  confirmModal(t('softDelMsg') + ' â ' + s.name + '?', function () {
     s.status = 'Cancelled';
-    logAudit('Student removed', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls + ' (soft delete — record kept)');
+    logAudit('Student removed', s.name + ' â¢ ' + (s.admissionNo || '') + ' â¢ ' + s.cls + ' (soft delete â record kept)');
     saveDB(db); renderApp();
     toast(t('tStudentRemoved'));
   });
 }
 
 /* ================= v38: WhatsApp via wa.me links (MANUAL send only) =================
-   HARD RULES (the user's own decisions — never break these):
+   HARD RULES (the user's own decisions â never break these):
    - NO automation, NO WhatsApp API, NO unofficial bot/library, NO
      auto-send, NO bulk send. The app only OPENS a wa.me chat with the
      message prefilled; the user presses Send inside WhatsApp. Same
      safe pattern as the Target Academy fee-receipt wa.me button.
    - NEVER anything that could disconnect the school's WhatsApp
-     number: no WhatsApp login, no session, no QR — only wa.me links.
+     number: no WhatsApp login, no session, no QR â only wa.me links.
    - HONEST wording everywhere: the app opens WhatsApp, it cannot
-     know whether the user pressed Send — buttons and logs say
+     know whether the user pressed Send â buttons and logs say
      "Open WhatsApp" / "WhatsApp opened", never "Sent".
    - Templates never carry Aadhaar, PINs, passwords or any other
-     sensitive field — only school name, student name, class, month,
+     sensitive field â only school name, student name, class, month,
      amount and date. */
 function waNormalizePhone(raw) {
   // Indian mobiles only: 10-digit, 0-prefixed, +91-prefixed, spaces /
@@ -9724,19 +9724,19 @@ function waSchoolPhoneLine() {
 }
 function waOpenUrl(url) {
   // The ONE place that opens WhatsApp. wa.me only opens the chat with
-  // the message prefilled — nothing is sent by the app itself.
+  // the message prefilled â nothing is sent by the app itself.
   try { if (typeof window !== 'undefined' && window.open) window.open(url, '_blank'); } catch (e) {}
   return url;
 }
 function waLogOpen(kind, s) {
-  // "WhatsApp opened", never "sent" — the app cannot know whether the
+  // "WhatsApp opened", never "sent" â the app cannot know whether the
   // user pressed Send inside WhatsApp.
-  logAudit('WhatsApp opened', kind + ' • ' + s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
+  logAudit('WhatsApp opened', kind + ' â¢ ' + s.name + ' â¢ ' + (s.admissionNo || '') + ' â¢ ' + s.cls);
   saveDB(db);
 }
 function waCanUse(studentId) {
   // Shared role guard for every WhatsApp action (v35 roles): a student
-  // can never open one; a parent neither — the button would open wa.me
+  // can never open one; a parent neither â the button would open wa.me
   // to the child's own phone number (the parent messaging themself).
   // A teacher / staff member only for students in the classes they
   // work with; the accountant reminds too (v92: collects + reminds);
@@ -9790,7 +9790,7 @@ function waReceiptShare(receiptNo) {
   var rc = (db.receipts || []).find(function (x) { return x.receiptNo === receiptNo; });
   if (!rc) return false;
   // v47: the message names the student from the receipt itself (see
-  // receiptStudent) — a stale local seed row must never rename the
+  // receiptStudent) â a stale local seed row must never rename the
   // message. The phone still comes from the local row: the receipt
   // carries no phone number.
   var rs = receiptStudent(rc);
@@ -9818,7 +9818,7 @@ function waProfileChat(studentId) {
 }
 function waReminderBtn(recordId, studentId) {
   // The fee-reminder button for one pending due row. v125: it renders
-  // only when the action can work (waCanUse) — a parent or principal
+  // only when the action can work (waCanUse) â a parent or principal
   // used to see a button whose click only toasted 'Not allowed', and
   // the accountant's button was dead too (waCanUse never allowed the
   // role). A missing parent number still shows an honest DISABLED
@@ -9826,23 +9826,23 @@ function waReminderBtn(recordId, studentId) {
   var s = db.students.find(function (x) { return x.id === studentId; });
   if (!s) return '';
   if (!waCanUse(studentId)) return '';
-  if (!waNormalizePhone(s.phone)) return '<button class="btn ghost sm" disabled title="' + esc(t('waNoNumber')) + '">💬 ' + t('waReminderBtn') + '</button>';
-  return '<button class="btn ghost sm" onclick="waFeeReminder(\'' + recordId + '\')">💬 ' + t('waReminderBtn') + '</button>';
+  if (!waNormalizePhone(s.phone)) return '<button class="btn ghost sm" disabled title="' + esc(t('waNoNumber')) + '">ð¬ ' + t('waReminderBtn') + '</button>';
+  return '<button class="btn ghost sm" onclick="waFeeReminder(\'' + recordId + '\')">ð¬ ' + t('waReminderBtn') + '</button>';
 }
 function waChatBtn(studentId) {
-  // The profile WhatsApp button. v125: same rule as waReminderBtn —
+  // The profile WhatsApp button. v125: same rule as waReminderBtn â
   // render only when waCanUse allows it, so a parent or principal
   // never sees a button whose click only toasts 'Not allowed'.
   // Disabled with the reason when the parent number is unusable.
   var s = db.students.find(function (x) { return x.id === studentId; });
   if (!s) return '';
   if (!waCanUse(studentId)) return '';
-  if (!waNormalizePhone(s.phone)) return '<button class="btn ghost" disabled title="' + esc(t('waNoNumber')) + '">💬 ' + t('waChatBtn') + '</button>';
-  return '<button class="btn ghost" onclick="waProfileChat(\'' + studentId + '\')">💬 ' + t('waChatBtn') + '</button>';
+  if (!waNormalizePhone(s.phone)) return '<button class="btn ghost" disabled title="' + esc(t('waNoNumber')) + '">ð¬ ' + t('waChatBtn') + '</button>';
+  return '<button class="btn ghost" onclick="waProfileChat(\'' + studentId + '\')">ð¬ ' + t('waChatBtn') + '</button>';
 }
 function attendancePage() {
   if (!state.attDate) state.attDate = todayIST();
-  // v35: a teacher only ever sees their own assigned classes — the class
+  // v35: a teacher only ever sees their own assigned classes â the class
   // picker is restricted, and a stale attCls outside the assignment is
   // pulled back to the first assigned class.
   // v93: a staff member is restricted the same way (their own classes).
@@ -9852,7 +9852,7 @@ function attendancePage() {
     if (myCls35.indexOf(state.attCls) === -1) state.attCls = myCls35[0];
   }
   var cls = state.attCls;
-  // v34 (P1-10): rosters are enrolled students only — Cancelled/Draft
+  // v34 (P1-10): rosters are enrolled students only â Cancelled/Draft
   // never appear on the register.
   var roster = db.students.filter(function (s) { return s.cls === cls && isEnrolledStudent(s); });
   var key = state.attDate + '|' + cls;
@@ -9860,28 +9860,28 @@ function attendancePage() {
   var recs = db.attendance[key] || {};
   var rows = roster.map(function (s) {
     var cur = recs[s.id] || 'Present';
-    if (hol100) return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td><span class="badge orange">' + t('holidayWord') + '</span></td><td><span class="muted">—</span></td></tr>';
+    if (hol100) return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td><span class="badge orange">' + t('holidayWord') + '</span></td><td><span class="muted">â</span></td></tr>';
     // v38: an Absent/Late student can be notified on WhatsApp (manual
-    // wa.me chat, parent presses nothing here — the admin presses Send
+    // wa.me chat, parent presses nothing here â the admin presses Send
     // inside WhatsApp). The button appears only for Absent/Late marks.
-    // v88: a principal sees the status as text — no mark buttons, no
+    // v88: a principal sees the status as text â no mark buttons, no
     // WhatsApp button. v88b: an unmarked student shows "Not marked", not
-    // "Present" — the row used to default to Present while the header
+    // "Present" â the row used to default to Present while the header
     // counts (correctly) said Not marked.
     if (state.role === 'principal') {
       var curP = recs[s.id];
       var badgeP = curP ? '<span class="badge ' + (curP === 'Present' ? 'green' : curP === 'Absent' ? 'red' : 'orange') + '">' + curP + '</span>' : '<span class="badge grey">' + t('attNotMarked') + '</span>';
-      return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td>' + badgeP + '</td><td><span class="muted">—</span></td></tr>';
+      return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td>' + badgeP + '</td><td><span class="muted">â</span></td></tr>';
     }
     var notifyCell = (cur === 'Absent' || cur === 'Late')
-      ? '<button class="btn ghost sm" onclick="waAbsentAlert(\'' + s.id + '\')">💬 ' + t('waNotifyBtn') + '</button>'
-      : '<span class="muted">—</span>';
+      ? '<button class="btn ghost sm" onclick="waAbsentAlert(\'' + s.id + '\')">ð¬ ' + t('waNotifyBtn') + '</button>'
+      : '<span class="muted">â</span>';
     return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td><div class="mark-btns">' +
       ['Present', 'Absent', 'Late'].map(function (m) {
         return '<button class="' + m[0].toLowerCase() + (cur === m ? ' on' : '') + '" onclick="markAtt(\'' + s.id + '\',\'' + m + '\')">' + (m === 'Present' ? t('presBtn') : m === 'Absent' ? t('absBtn') : t('lateBtn')) + '</button>';
       }).join('') + (recs[s.id] ? '<button class="btn ghost sm" title="' + esc(t('attClear')) + '" onclick="clearAttMark(\'' + s.id + '\')">\u2715</button>' : '') + '</div></td><td>' + notifyCell + '</td></tr>';
   }).join('');
-  // v34 (P1-9): an unmarked student is "Not marked", not Present — the
+  // v34 (P1-9): an unmarked student is "Not marked", not Present â the
   // Present default lives only in the marking buttons above. Counting an
   // unmarked student as Present inflated the day's attendance.
   var counts = { Present: 0, Absent: 0, Late: 0, NotMarked: 0 };
@@ -9896,23 +9896,23 @@ function attendancePage() {
   var ta = todayAtt();
   // v100: mark-all + holiday tools. A principal sees none of them; a
   // teacher/staff member gets mark-all only (holidays are a school
-  // decision — a teacher's slice cannot sync them, so only the school
+  // decision â a teacher's slice cannot sync them, so only the school
   // role marks or removes a holiday). On a holiday day the only tool
   // is Remove Holiday (school only); there is nothing to save.
   var attTools = '';
   if (state.role !== 'principal') {
     if (hol100) { if (state.role === 'school') attTools = '<button class="btn ghost" onclick="removeHoliday()">' + t('removeHoliday') + '</button>'; }
     else {
-      if (state.role === 'school') attTools = '<button class="btn" onclick="markHoliday()">🎉 ' + t('markHoliday') + '</button>';
-      attTools += '<button class="btn" onclick="markAllAtt(\'Present\')">' + t('markAllPresent') + '</button><button class="btn" onclick="markAllAtt(\'Absent\')">' + t('markAllAbsent') + '</button><button class="btn green" onclick="saveAttendance()">✓ ' + t('saveAttendance') + '</button><button class="btn ghost" onclick="clearAttDay()">' + t('attClearDay') + '</button>';
+      if (state.role === 'school') attTools = '<button class="btn" onclick="markHoliday()">ð ' + t('markHoliday') + '</button>';
+      attTools += '<button class="btn" onclick="markAllAtt(\'Present\')">' + t('markAllPresent') + '</button><button class="btn" onclick="markAllAtt(\'Absent\')">' + t('markAllAbsent') + '</button><button class="btn green" onclick="saveAttendance()">â ' + t('saveAttendance') + '</button><button class="btn ghost" onclick="clearAttDay()">' + t('attClearDay') + '</button>';
     }
   }
-  return '<div class="page-head"><div><h2>' + t('attendance') + '</h2><p>Class ' + esc(cls) + ' • ' + esc(state.attDate) + ' — ' + (hol100 ? t('holidayWord') : counts.Present + ' ' + t('presBtn') + ', ' + counts.Absent + ' ' + t('absBtn') + ', ' + counts.Late + ' ' + t('lateBtn') + (counts.NotMarked ? ', ' + counts.NotMarked + ' ' + t('attNotMarked') : '')) + '</p></div>' +
+  return '<div class="page-head"><div><h2>' + t('attendance') + '</h2><p>Class ' + esc(cls) + ' â¢ ' + esc(state.attDate) + ' â ' + (hol100 ? t('holidayWord') : counts.Present + ' ' + t('presBtn') + ', ' + counts.Absent + ' ' + t('absBtn') + ', ' + counts.Late + ' ' + t('lateBtn') + (counts.NotMarked ? ', ' + counts.NotMarked + ' ' + t('attNotMarked') : '')) + '</p></div>' +
     '<div class="toolbar"><select onchange="state.attCls=this.value;renderPage()">' + clsOpts + '</select>' +
     '<input type="date" value="' + esc(state.attDate) + '" max="' + todayIST() + '" onchange="onAttDate(this.value)" style="min-width:160px">' +
     attTools + '</div></div>' + // v88b: a principal never sees the Save Attendance button; v100: mark-all + holiday tools live in attTools
     '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thStatus') + '</th><th>' + t('waNotifyCol') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
-    (state.role === 'teacher' ? '' : '<p class="muted" style="margin-top:12px">School-wide today: ' + num(ta.present) + ' Present • ' + num(ta.absent) + ' Absent • ' + num(ta.late) + ' Late (' + donutPct(ta.present, ta.total) + '% attendance).</p>') + '</div>' + holidaysCard100(cls);
+    (state.role === 'teacher' ? '' : '<p class="muted" style="margin-top:12px">School-wide today: ' + num(ta.present) + ' Present â¢ ' + num(ta.absent) + ' Absent â¢ ' + num(ta.late) + ' Late (' + donutPct(ta.present, ta.total) + '% attendance).</p>') + '</div>' + holidaysCard100(cls);
 }
 function onAttDate(v) {
   if (v > todayIST()) { toast(t('tFutureDate')); state.attDate = todayIST(); }
@@ -9923,7 +9923,7 @@ function markAtt(id, m) {
   // v35: a teacher marks only their own assigned class, and only a
   // student on this class's roster.
   // v93: a staff member marks only their own assigned class too.
-  // v88: a principal is read-only — they never mark attendance.
+  // v88: a principal is read-only â they never mark attendance.
   if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
   if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
   var stu = db.students.find(function (x) { return x.id === id; });
@@ -9932,7 +9932,7 @@ function markAtt(id, m) {
   // v121: a (re-)mark supersedes any prior delete of the same student-day.
   // The delete's tombstone would otherwise make the next pull treat the
   // re-created server row as a zombie (skip it + re-queue its delete),
-  // and the flush then marks the key synced — so the pull drops the local
+  // and the flush then marks the key synced â so the pull drops the local
   // mark too (live v120: a mark saved at 14:19:03 IST vanished by the
   // next cycle, and the server row was deleted by the re-queued delete).
   var tombUid121 = (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
@@ -9940,7 +9940,7 @@ function markAtt(id, m) {
   // v62: a cloud teacher writes through the server RPC, not the local
   // DB. Optimistic: the slice updates at once, and a failed call reverts
   // it. A dead token logs the teacher out (re-login mints a new one).
-  // v98: a cloud staff member writes through the STAFF RPCs (SQL 35) —
+  // v98: a cloud staff member writes through the STAFF RPCs (SQL 35) â
   // before v98 their taps only ever reached the local slice.
   var attToken98 = state.cloudTeacherToken || state.cloudStaffToken;
   var attFn98 = state.cloudTeacherToken ? sbTeacherMarkAttendance : sbStaffMarkAttendance;
@@ -9961,11 +9961,11 @@ function markAtt(id, m) {
   }
   if (!db.attendance[key]) db.attendance[key] = {};
   db.attendance[key][id] = m;
-  saveDB(db); // autosave — marks are never lost on page change
+  saveDB(db); // autosave â marks are never lost on page change
   renderPage();
 }
 function saveAttendance() {
-  // v88b: a principal is read-only — they never save attendance.
+  // v88b: a principal is read-only â they never save attendance.
   if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
   // v35: a teacher saves only their own assigned class.
   // v93: a staff member saves only their own assigned class too.
@@ -9974,12 +9974,12 @@ function saveAttendance() {
   var recs = db.attendance[key] || {};
   // v25: attendance saves go to the audit log too, so the full Activity
   // Log shows them. Recent Activities keeps its own db.activities entry
-  // (addActivity below) — one save = one entry in each list, never two
+  // (addActivity below) â one save = one entry in each list, never two
   // in either. v34 (P1-9): counts treat unmarked as "Not marked" (a
   // separate count), matching the page header; v34 (P1-10): Cancelled/
   // Draft students are not on the roster and not in the counts.
   // v97: the counts are computed BEFORE the cloud branch now, because
-  // both paths log the same summary — the local path to db.auditLog,
+  // both paths log the same summary â the local path to db.auditLog,
   // the cloud path to the server via sbLogAuditCloud (SQL 34).
   var counts = { Present: 0, Absent: 0, Late: 0, NotMarked: 0 };
   db.students.filter(function (s) { return s.cls === state.attCls && isEnrolledStudent(s); }).forEach(function (s) {
@@ -9989,30 +9989,30 @@ function saveAttendance() {
     else if (m === 'Absent') counts.Absent++;
     else counts.Late++;
   });
-  var attSummary = 'Class ' + state.attCls + ' • ' + state.attDate + ' • ' + counts.Present + ' Present, ' + counts.Absent + ' Absent, ' + counts.Late + ' Late' + (counts.NotMarked ? ', ' + counts.NotMarked + ' Not marked' : '');
-  // v62: a cloud teacher's taps already went to the server one by one —
+  var attSummary = 'Class ' + state.attCls + ' â¢ ' + state.attDate + ' â¢ ' + counts.Present + ' Present, ' + counts.Absent + ' Absent, ' + counts.Late + ' Late' + (counts.NotMarked ? ', ' + counts.NotMarked + ' Not marked' : '');
+  // v62: a cloud teacher's taps already went to the server one by one â
   // there is nothing local to save. v97: the save STILL writes an audit
-  // row — via the server RPC, never a local row (the v62 harness pins
+  // row â via the server RPC, never a local row (the v62 harness pins
   // that a cloud save leaves the local audit list untouched).
-  // v98: a cloud staff member's save logs the same way — the audit RPC
+  // v98: a cloud staff member's save logs the same way â the audit RPC
   // (SQL 34) already accepts staff tokens.
   var attSaveToken98 = state.cloudTeacherToken || state.cloudStaffToken;
   if (attSaveToken98) {
-    sbLogAuditCloud(attSaveToken98, 'Attendance updated', attSummary, 'Attendance updated', 'Class ' + state.attCls, '✅', 'blue');
-    toast('✓ ' + t('tAttSaved') + ' — Class ' + state.attCls + ' (' + state.attDate + ').');
+    sbLogAuditCloud(attSaveToken98, 'Attendance updated', attSummary, 'Attendance updated', 'Class ' + state.attCls, 'â', 'blue');
+    toast('â ' + t('tAttSaved') + ' â Class ' + state.attCls + ' (' + state.attDate + ').');
     return;
   }
   logAudit('Attendance updated', attSummary);
-  addActivity('✅', 'blue', 'Attendance updated', 'Class ' + state.attCls);
+  addActivity('â', 'blue', 'Attendance updated', 'Class ' + state.attCls);
   saveDB(db);
-  toast('✓ ' + t('tAttSaved') + ' — Class ' + state.attCls + ' (' + state.attDate + ').');
+  toast('â ' + t('tAttSaved') + ' â Class ' + state.attCls + ' (' + state.attDate + ').');
 }
 function markAllAtt(m) {
-  // v100: one tap marks the whole register Present or Absent — a
+  // v100: one tap marks the whole register Present or Absent â a
   // 40-student class no longer needs 40 taps. Same guards as markAtt:
   // a principal is read-only; a teacher/staff member only their own
   // assigned class. Local: one map write + one saveDB. Cloud: one RPC
-  // per student (the existing per-tap RPCs — no bulk RPC yet); a failed
+  // per student (the existing per-tap RPCs â no bulk RPC yet); a failed
   // call reverts only that student, the rest stay marked.
   if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
   if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
@@ -10021,7 +10021,7 @@ function markAllAtt(m) {
   var roster = db.students.filter(function (s) { return s.cls === state.attCls && isEnrolledStudent(s); });
   if (!roster.length) return;
   var key = state.attDate + '|' + state.attCls;
-  // v121: same tombstone clear as markAtt, for the whole roster at once —
+  // v121: same tombstone clear as markAtt, for the whole roster at once â
   // a re-marked day supersedes any prior delete of those keys.
   var tombUid121b = (typeof state !== 'undefined' && state.sb && state.sb.uid) || '';
   if (tombUid121b) roster.forEach(function (s) { sbTombRemove(tombUid121b, 'ss_attendance', state.attDate + '|' + state.attCls + '|' + s.id); });
@@ -10054,15 +10054,15 @@ function markAllAtt(m) {
   renderPage();
 }
 function clearAttMark(id) {
-  // v120: un-mark one student — a wrong tap goes back to "Not marked".
+  // v120: un-mark one student â a wrong tap goes back to "Not marked".
   // Same guards as markAtt: a principal is read-only; a teacher/staff
   // member only their own assigned class; the student must be on this
-  // class's roster. Unlike a tap, a removal IS audited at once — it is
+  // class's roster. Unlike a tap, a removal IS audited at once â it is
   // a destructive change, like deleteStudent/deleteTeacher (a mark tap
   // is only audited when the day is saved). Local: delete the mark,
   // saveDB, audit row. Cloud: optimistic delete + the mark RPC with
   // status 'Clear' (SQL 43); a failed call reverts the slice, a dead
-  // token logs the teacher out — the markAtt pattern.
+  // token logs the teacher out â the markAtt pattern.
   if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
   if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
   var stu = db.students.find(function (x) { return x.id === id; });
@@ -10093,12 +10093,12 @@ function clearAttMark(id) {
   toast('\u2713 ' + t('attMarkRemoved'));
 }
 function clearAttDay() {
-  // v120: clear the whole class-day register — e.g. the wrong date or
+  // v120: clear the whole class-day register â e.g. the wrong date or
   // class was marked. School + teacher/staff (own class); a principal
   // is read-only; a holiday day has no register to clear. A day with no
   // marks is a no-op (toast, no modal, no audit row). Otherwise a
   // confirm modal; the callback deletes the day (local) or one 'Clear'
-  // RPC per student (cloud, the markAllAtt pattern — a failed call
+  // RPC per student (cloud, the markAllAtt pattern â a failed call
   // keeps only that student marked).
   if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
   if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(state.attCls) === -1) { toast(t('tNotAllowed')); return; }
@@ -10139,10 +10139,10 @@ function clearAttDay() {
   });
 }
 function markHoliday() {
-  // v100: declare the viewed class-day a holiday — the register shows
+  // v100: declare the viewed class-day a holiday â the register shows
   // Holiday, no marking, and the day drops out of every attendance %.
   // SCHOOL ROLE ONLY: a holiday is a school decision, and a teacher's
-  // cloud slice cannot sync it (no sync cycle on slices — the v98
+  // cloud slice cannot sync it (no sync cycle on slices â the v98
   // lesson). One holiday per class per date; a second tap toasts
   // instead of duplicating. Syncs like a notice (SQL 38).
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
@@ -10150,22 +10150,22 @@ function markHoliday() {
   if (holidayFor(date, cls)) { toast(t('tHolidayExists')); return; }
   db.holidays = db.holidays || [];
   db.holidays.push({ id: uniqueId('hol-'), date: date, cls: cls, reason: '' });
-  logAudit('Holiday marked', 'Class ' + cls + ' • ' + date);
+  logAudit('Holiday marked', 'Class ' + cls + ' â¢ ' + date);
   saveDB(db);
-  toast('✓ ' + t('tHolidaySet') + ' — Class ' + cls + ' (' + date + ').');
+  toast('â ' + t('tHolidaySet') + ' â Class ' + cls + ' (' + date + ').');
   renderPage();
 }
 function removeHoliday(holId) {
-  // v100: un-declare a holiday — by id from the holidays card, or the
+  // v100: un-declare a holiday â by id from the holidays card, or the
   // viewed class-day when called from the toolbar with no id. School
   // role only, like marking.
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   var hol = holId ? (db.holidays || []).find(function (h) { return h.id === holId; }) : holidayFor(state.attDate, state.attCls);
   if (!hol) return;
   db.holidays = (db.holidays || []).filter(function (h) { return h.id !== hol.id; });
-  logAudit('Holiday removed', 'Class ' + hol.cls + ' • ' + hol.date);
+  logAudit('Holiday removed', 'Class ' + hol.cls + ' â¢ ' + hol.date);
   saveDB(db);
-  toast('✓ ' + t('tHolidayRemoved') + ' — Class ' + hol.cls + ' (' + hol.date + ').');
+  toast('â ' + t('tHolidayRemoved') + ' â Class ' + hol.cls + ' (' + hol.date + ').');
   renderPage();
 }
 function holidaysCard100(cls) {
@@ -10177,7 +10177,7 @@ function holidaysCard100(cls) {
     return '<div class="hw-item"><div><b>' + esc(h.date) + '</b><span>' + esc(h.reason || t('holidayWord')) + '</span></div>' +
       (state.role === 'school' ? '<button class="btn ghost sm" style="margin-left:auto" onclick="removeHoliday(\'' + h.id + '\')">' + t('removeHoliday') + '</button>' : '') + '</div>';
   }).join('');
-  return '<div class="card" style="margin-top:16px"><h3>' + t('holidaysH') + ' — Class ' + esc(cls) + '</h3>' + rows + '</div>';
+  return '<div class="card" style="margin-top:16px"><h3>' + t('holidaysH') + ' â Class ' + esc(cls) + '</h3>' + rows + '</div>';
 }
 function feesPage() {
   if (state.collectStudent) return collectFeePage(state.collectStudent);
@@ -10186,7 +10186,7 @@ function feesPage() {
   var list = feeFiltered();
   var bt = feeTypeTotals();
   var btRows = Object.keys(bt).sort(function (a, b) { return (bt[b].collected + bt[b].pending) - (bt[a].collected + bt[a].pending); }).map(function (ty2) {
-    return '<div class="type-row"><b>' + esc(feeTypeLabel(ty2)) + '</b><span>' + t('collectedW') + ' ' + inr(bt[ty2].collected) + ' • ' + t('pendingW') + ' ' + inr(bt[ty2].pending) + '</span></div>';
+    return '<div class="type-row"><b>' + esc(feeTypeLabel(ty2)) + '</b><span>' + t('collectedW') + ' ' + inr(bt[ty2].collected) + ' â¢ ' + t('pendingW') + ' ' + inr(bt[ty2].pending) + '</span></div>';
   }).join('');
   var typeOpts = ['All'].concat(feeAllTypes()).map(function (x) {
     return '<option value="' + esc(x) + '" ' + (ty === x ? 'selected' : '') + '>' + (x === 'All' ? t('allTypes') : esc(feeTypeLabel(x))) + '</option>';
@@ -10198,26 +10198,26 @@ function feesPage() {
     return '<tr><td><button class="linklike" onclick="return openFeeProfile(\'' + r.studentId + '\', event)">' + esc(r.student) + '</button></td><td>' + esc(enrOf(r.studentId)) + '</td><td>' + esc(r.cls) + '</td><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td>' +
       '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
       '<td>' + receiptCellForRecord(r) + '</td>' +
-      '<td>' + (r.status === 'Pending' ? (state.role === 'principal' ? '<span class="muted">—</span>' : state.role === 'accountant' ? '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, r.studentId) : '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, r.studentId) + ' <button class="btn ghost sm" onclick="openEditFee(\'' + r.id + '\')">' + t('editBtn') + '</button> <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>') : '<span class="muted">—</span>') + '</td></tr>'; // v88: a principal sees the fee list read-only — no Collect/Delete/WhatsApp; v92: an accountant collects + reminds but never deletes (deleteFeeRecord refuses non-school anyway)
+      '<td>' + (r.status === 'Pending' ? (state.role === 'principal' ? '<span class="muted">â</span>' : state.role === 'accountant' ? '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, r.studentId) : '<button class="btn green sm" onclick="openCollectFee(\'' + r.studentId + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, r.studentId) + ' <button class="btn ghost sm" onclick="openEditFee(\'' + r.id + '\')">' + t('editBtn') + '</button> <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>') : '<span class="muted">â</span>') + '</td></tr>'; // v88: a principal sees the fee list read-only â no Collect/Delete/WhatsApp; v92: an accountant collects + reminds but never deletes (deleteFeeRecord refuses non-school anyway)
   }).join('');
-  return '<div class="page-head"><div><h2>' + t('fees') + '</h2><p>' + t('collectedW') + ' ' + inr(ft.collected) + ' • ' + t('pendingW') + ' ' + inr(ft.pending) + ' (' + feeRangeLabel() + ')</p></div>' +
+  return '<div class="page-head"><div><h2>' + t('fees') + '</h2><p>' + t('collectedW') + ' ' + inr(ft.collected) + ' â¢ ' + t('pendingW') + ' ' + inr(ft.pending) + ' (' + feeRangeLabel() + ')</p></div>' +
     '<div class="toolbar"><div class="pill-tabs">' + ['All', 'Pending', 'Collected'].map(function (x) {
       return '<button class="' + (f === x ? 'on' : '') + '" onclick="state.feeFilter=\'' + x + '\';state.feeLimit=120;renderPage()">' + (x === 'All' ? t('allW') : x === 'Pending' ? t('pendingW') : t('collectedW')) + '</button>';
     }).join('') + '</div>' +
     '<select onchange="state.feeType=this.value;state.feeLimit=120;renderPage()" aria-label="Fee type">' + typeOpts + '</select>' +
     '<input id="feeSearchInput" placeholder="' + t('searchFee') + '" value="' + esc(state.feeSearch) + '" oninput="state.feeSearch=this.value;filterFees(this.value)" style="min-width:200px">' +
-    '<button class="btn ghost" onclick="printFeeList()">🖨 ' + t('printList') + '</button></div></div>' +
+    '<button class="btn ghost" onclick="printFeeList()">ð¨ ' + t('printList') + '</button></div></div>' +
     '<div class="stats">' +
-    statCard('💰', 'orange', t('feeCollected'), ft.collected, '', 'up', { prefix: '₹' }) +
-    statCard('⏰', 'red', t('pendingFee'), ft.pending, '', 'down', { prefix: '₹' }) +
+    statCard('ð°', 'orange', t('feeCollected'), ft.collected, '', 'up', { prefix: 'â¹' }) +
+    statCard('â°', 'red', t('pendingFee'), ft.pending, '', 'down', { prefix: 'â¹' }) +
     '</div>' +
     '<div class="card"><h3>' + t('feeByType') + '</h3><p class="card-sub">' + t('feeByTypeSub') + '</p><div class="type-rows">' + (btRows || '<div class="empty">' + t('tNoFeeRecs') + '</div>') + '</div></div>' +
-    '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted" style="margin-top:8px"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div>' +
+    '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted" style="margin-top:8px"><span style="color:' + BLUE + '">â </span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">â </span> ' + t('pendingW') + '</p></div>' +
     '<div class="card"><div class="tbl-wrap fee-list-tbl"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thEnr') + '</th><th>' + t('thClass') + '</th><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thReceipt') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody id="feeBody">' +
     (rows || '<tr><td colspan="10"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '<tr id="feeNoMatch" style="display:none"><td colspan="10"><div class="empty">' + t('tNoMatch') + '</div></td></tr></tbody></table></div>' +
     '<p class="muted" id="feeCount" style="margin-top:10px">' + t('showingRec') + ' ' + shown + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('recordsWord') + '</p>' +
     (list.length > shown ? '<div style="margin-top:10px"><button class="btn ghost" onclick="state.feeLimit=(state.feeLimit||120)+120;renderPage()">' + t('loadMore') + '</button></div>' : '') + '</div>' +
-    (state.role === 'school' ? feeFormCard() + feeStructureCard() : ''); // v88: the fee-entry + fee-structure cards are school-only — a principal never sees them; v92: an accountant never sees them either
+    (state.role === 'school' ? feeFormCard() + feeStructureCard() : ''); // v88: the fee-entry + fee-structure cards are school-only â a principal never sees them; v92: an accountant never sees them either
 }
 
 /* ================= student fee profile ================= */
@@ -10238,32 +10238,32 @@ function studentFeeProfile(sid) {
   if (!sum) { state.feeStudent = null; return feesPage(); }
   var s = sum.s, recs = sum.recs, billed = sum.billed, paid = sum.paid, pend = sum.pend, byType = sum.byType;
   var btRows = Object.keys(byType).map(function (ty2) {
-    return '<div class="type-row"><b>' + esc(feeTypeLabel(ty2)) + '</b><span>' + t('collectedW') + ' ' + inr(byType[ty2].collected) + ' • ' + t('pendingW') + ' ' + inr(byType[ty2].pending) + '</span></div>';
+    return '<div class="type-row"><b>' + esc(feeTypeLabel(ty2)) + '</b><span>' + t('collectedW') + ' ' + inr(byType[ty2].collected) + ' â¢ ' + t('pendingW') + ' ' + inr(byType[ty2].pending) + '</span></div>';
   }).join('');
   var rows = recs.map(function (r) {
     return '<tr><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td>' +
       '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
-      '<td>' + (r.status === 'Pending' ? (state.role === 'principal' ? '<span class="muted">—</span>' : state.role === 'accountant' ? '<button class="btn green sm" onclick="openCollectFee(\'' + s.id + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, s.id) : '<button class="btn green sm" onclick="openCollectFee(\'' + s.id + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, s.id) + ' <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>') : '<span class="muted">—</span>') + '</td></tr>'; // v92: the fee-profile rows follow the same rule as the fee list — principal read-only, accountant collects but never deletes
+      '<td>' + (r.status === 'Pending' ? (state.role === 'principal' ? '<span class="muted">â</span>' : state.role === 'accountant' ? '<button class="btn green sm" onclick="openCollectFee(\'' + s.id + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, s.id) : '<button class="btn green sm" onclick="openCollectFee(\'' + s.id + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, s.id) + ' <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>') : '<span class="muted">â</span>') + '</td></tr>'; // v92: the fee-profile rows follow the same rule as the fee list â principal read-only, accountant collects but never deletes
   }).join('');
-  return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • ' + t('thGuardian') + ' ' + esc(s.guardian) + ' • ' + t('thPhone') + ' ' + esc(s.phone) + '</p><p class="muted">' + t('feeProfileSub') + '</p></div></div>' +
-    '<div class="toolbar"><button class="btn ghost" onclick="backFromFeeProfile()">← ' + t('backFees') + '</button>' +
-    ((state.role === 'school' || state.role === 'accountant') ? '<button class="btn green" onclick="openCollectFee(\'' + s.id + '\')">💰 ' + t('collectFeeBtn') + '</button>' : '') + // v92: the fee-profile Collect button is school + accountant only — a principal never sees it
+  return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + t('thClass') + ' ' + esc(s.cls) + ' â¢ ' + t('thEnr') + ' ' + esc(s.enr || 'â') + ' â¢ ' + t('thGuardian') + ' ' + esc(s.guardian) + ' â¢ ' + t('thPhone') + ' ' + esc(s.phone) + '</p><p class="muted">' + t('feeProfileSub') + '</p></div></div>' +
+    '<div class="toolbar"><button class="btn ghost" onclick="backFromFeeProfile()">â ' + t('backFees') + '</button>' +
+    ((state.role === 'school' || state.role === 'accountant') ? '<button class="btn green" onclick="openCollectFee(\'' + s.id + '\')">ð° ' + t('collectFeeBtn') + '</button>' : '') + // v92: the fee-profile Collect button is school + accountant only â a principal never sees it
     (state.role === 'school' ? '<button class="btn" onclick="openAddFeeFor(\'' + s.id + '\')">+ ' + t('addFee') + '</button>' : '') + // v92: the Add Fee button is school-only (was visible to every role)
-    '<button class="btn ghost" onclick="printStudentStatement(\'' + s.id + '\')">🖨 ' + t('printStmt') + '</button></div></div>' +
+    '<button class="btn ghost" onclick="printStudentStatement(\'' + s.id + '\')">ð¨ ' + t('printStmt') + '</button></div></div>' +
     '<div class="stats">' +
-    statCard('🧾', 'blue', t('totalBilled'), billed, '', 'up', { prefix: '₹' }) +
-    statCard('✅', 'green', t('totalPaid'), paid, '', 'up', { prefix: '₹' }) +
-    statCard('⏰', 'red', t('totalPending'), pend, '', 'down', { prefix: '₹' }) +
+    statCard('ð§¾', 'blue', t('totalBilled'), billed, '', 'up', { prefix: 'â¹' }) +
+    statCard('â', 'green', t('totalPaid'), paid, '', 'up', { prefix: 'â¹' }) +
+    statCard('â°', 'red', t('totalPending'), pend, '', 'down', { prefix: 'â¹' }) +
     '</div>' +
     '<div class="card"><h3>' + t('feeByType') + '</h3><p class="card-sub">' + t('feeByTypeSub') + '</p><div class="type-rows">' + (btRows || '<div class="empty">' + t('tNoFeeRecs') + '</div>') + '</div></div>' +
     '<div class="card"><h3>' + t('feeRecsH') + '</h3><p class="card-sub">' + recs.length + ' ' + t('recordsWord') + '</p><div class="tbl-wrap fee-prof-tbl"><table><thead><tr><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6"><div class="empty">' + t('tNoFeeRecs') + '</div></td></tr>') + '</tbody></table></div></div>' +
     receiptListCard(sid);
 }
-// v39: the receipt for one fee record — same student, same month,
+// v39: the receipt for one fee record â same student, same month,
 // latest first; a receipt whose lines include the record's fee type
 // wins over one that merely shares the month. A fee record carries
 // no receipt id of its own, so the receipt view is found this way
-// from the Fees list and the profile Fee History tab — stable entry
+// from the Fees list and the profile Fee History tab â stable entry
 // points that do not depend on the fee profile's bottom card or on
 // the one-shot view right after collecting.
 function receiptForFeeRecord(r) {
@@ -10272,7 +10272,7 @@ function receiptForFeeRecord(r) {
   var ty = feeTypeOf(r);
   var typed = list.filter(function (rc) { return (rc.lines || []).some(function (ln) { return ln.type === ty; }); });
   var pick = typed.length ? typed : list;
-  // Latest date first; among same-date receipts the EARLIEST number —
+  // Latest date first; among same-date receipts the EARLIEST number â
   // a receipt re-numbered by a past repair cycle is a duplicate of the
   // original, and the original number is the stable one to show (v41:
   // the v40 loop left 64 copies of each receipt under ever-higher
@@ -10280,7 +10280,7 @@ function receiptForFeeRecord(r) {
   // every render).
   pick.sort(function (a, b) { return (a.date < b.date ? 1 : a.date > b.date ? -1 : (a.receiptNo < b.receiptNo ? -1 : 1)); });
   // v134: a receipt whose lines name THIS fee record (lines.recordId)
-  // is the one that paid it — several restores can leave several
+  // is the one that paid it â several restores can leave several
   // receipts for the same student+month+type on the same date, and the
   // earliest-number tie-break above then shows a stale number (live
   // 15 Nov: the Dec fee showed RCP-2026-006 although the collect
@@ -10290,13 +10290,13 @@ function receiptForFeeRecord(r) {
   return exact134.length ? exact134[0] : pick[0];
 }
 function receiptCellForRecord(r) {
-  // A receipt exists only for money already collected — a Pending
+  // A receipt exists only for money already collected â a Pending
   // row never shows one, even when another record for the same
   // student and month was already paid (partial payments split one
   // due into a Collected part and a Pending remainder).
-  if (r.status !== 'Collected') return '<span class="muted">—</span>';
+  if (r.status !== 'Collected') return '<span class="muted">â</span>';
   var rc = receiptForFeeRecord(r);
-  if (!rc) return '<span class="muted">—</span>';
+  if (!rc) return '<span class="muted">â</span>';
   return '<button class="linklike" onclick="openSavedReceipt(' + jsAttr(rc.receiptNo) + ')">' + esc(rc.receiptNo) + '</button>';
 }
 function receiptListCard(sid) {
@@ -10304,8 +10304,8 @@ function receiptListCard(sid) {
   var rcRows = rcs.map(function (r) {
     return '<tr><td>' + esc(r.receiptNo) + '</td><td>' + esc(r.date) + '</td><td>' + esc(payModeLabel(r.payMode)) + '</td><td>' + inr(r.total) + '</td>' +
       '<td><button class="btn sm" onclick="openSavedReceipt(' + jsAttr(r.receiptNo) + ')">' + t('rcptView') + '</button> ' +
-      '<button class="btn ghost sm" onclick="printReceipt(' + jsAttr(r.receiptNo) + ')">🖨 ' + t('rcptPrint') + '</button> ' +
-      '<button class="btn ghost sm" onclick="waReceiptShare(' + jsAttr(r.receiptNo) + ')">💬 ' + t('waShareReceiptBtn') + '</button></td></tr>';
+      '<button class="btn ghost sm" onclick="printReceipt(' + jsAttr(r.receiptNo) + ')">ð¨ ' + t('rcptPrint') + '</button> ' +
+      '<button class="btn ghost sm" onclick="waReceiptShare(' + jsAttr(r.receiptNo) + ')">ð¬ ' + t('waShareReceiptBtn') + '</button></td></tr>';
   }).join('');
   return '<div class="card"><h3>' + t('rcptReceipts') + '</h3><p class="card-sub">' + rcs.length + ' ' + t('recordsWord') + '</p><div class="tbl-wrap"><table><thead><tr><th>' + t('rcptReceiptNo') + '</th><th>' + t('rcptDate') + '</th><th>' + t('rcptPayMode') + '</th><th>' + t('rcptTotal') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody>' + (rcRows || '<tr><td colspan="5"><div class="empty">' + t('rcptNoReceipts') + '</div></td></tr>') + '</tbody></table></div></div>';
 }
@@ -10320,13 +10320,13 @@ function feeTypeSelectOpts(sel) {
   return FEE_TYPES.map(function (x) { return '<option value="' + esc(x) + '"' + (sel === x ? ' selected' : '') + '>' + esc(feeTypeLabel(x)) + '</option>'; }).join('') + '<option value="__custom"' + (sel === '__custom' ? ' selected' : '') + '>' + t('customType') + '</option>';
 }
 function feeFormCard() {
-  var btn = '<button class="btn ghost sm" onclick="toggleFeeForm()">' + (state.feeFormOpen ? '✕ ' + t('closeW') : '+ ' + t('addFee')) + '</button>';
+  var btn = '<button class="btn ghost sm" onclick="toggleFeeForm()">' + (state.feeFormOpen ? 'â ' + t('closeW') : '+ ' + t('addFee')) + '</button>';
   var body = '';
   if (state.feeFormOpen) {
     var er122 = state.feeEditId ? db.feeRecords.find(function (x) { return x.id === state.feeEditId; }) : null;
     var erCustom122 = !!er122 && FEE_TYPES.indexOf(er122.type) === -1;
     var stuOpts = db.students.map(function (s) {
-      return '<option value="' + s.id + '" ' + (state.feePreselect === s.id || (er122 && er122.studentId === s.id) ? 'selected' : '') + '>' + esc(s.name) + ' — ' + esc(s.cls) + ' (' + esc(s.enr || '') + ')</option>';
+      return '<option value="' + s.id + '" ' + (state.feePreselect === s.id || (er122 && er122.studentId === s.id) ? 'selected' : '') + '>' + esc(s.name) + ' â ' + esc(s.cls) + ' (' + esc(s.enr || '') + ')</option>';
     }).join('');
     var curM = new Date().toLocaleString('en', { month: 'short' });
     if (MONTHS_ACAD.indexOf(curM) === -1) curM = 'Sep';
@@ -10345,7 +10345,7 @@ function feeFormCard() {
 }
 function openEditFee(rid) {
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
-  // Only a Pending record can change — a Collected record is the
+  // Only a Pending record can change â a Collected record is the
   // payment's evidence (same rule as deleteFeeRecord).
   var r = db.feeRecords.find(function (x) { return x.id === rid; });
   if (!r || r.status !== 'Pending') { toast(t('tNotAllowed')); return; }
@@ -10374,19 +10374,19 @@ function saveFeeRecord(e) {
     er.studentId = sid; er.student = s.name; er.cls = s.cls;
     er.month = mo122; er.type = ty; er.amount = amt; er.status = st122; er.date = dt122;
     refreshStudentFee(sid);
-    logAudit('Fee record updated', s.name + ' • ' + mo122 + ' ' + feeTypeLabel(ty) + ' ' + inr(oldAmt122) + ' → ' + inr(amt));
+    logAudit('Fee record updated', s.name + ' â¢ ' + mo122 + ' ' + feeTypeLabel(ty) + ' ' + inr(oldAmt122) + ' â ' + inr(amt));
     state.feeEditId = null; state.feePreselect = null;
     saveDB(db); renderApp();
-    toast('✓ ' + t('tFeeUpdated'));
+    toast('â ' + t('tFeeUpdated'));
     return false;
   }
   db.feeRecords.push({ id: uniqueId('fee'), studentId: sid, student: s.name, cls: s.cls,
     month: mo122, type: ty, amount: amt, status: st122, date: dt122 });
   refreshStudentFee(sid);
-  logAudit('Fee added', s.name + ' • ' + mo122 + ' ' + feeTypeLabel(ty) + ' ' + inr(amt));
+  logAudit('Fee added', s.name + ' â¢ ' + mo122 + ' ' + feeTypeLabel(ty) + ' ' + inr(amt));
   state.feePreselect = null;
   saveDB(db); renderApp();
-  toast('✓ ' + t('tFeeAdded'));
+  toast('â ' + t('tFeeAdded'));
   return false;
 }
 function feeStructureCard() {
@@ -10401,10 +10401,10 @@ function feeStructureCard() {
   return '<div class="card"><div class="head-row"><div><h3>' + t('feeStruct') + '</h3><p class="card-sub">' + t('feeStructSub') + '</p></div><button class="btn sm" onclick="saveFeeStructure()">' + t('saveStruct') + '</button></div>' +
     '<div class="tbl-wrap"><table><thead><tr><th>' + t('thClass') + '</th><th>' + t('thType') + '</th><th>' + t('fAmount') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
     '<div class="rcpt-ex"><h4>' + t('rcptOtherFees') + '</h4><p class="card-sub">' + t('rcptAnnualHint') + '</p><div class="form-grid">' +
-    '<div><label>' + t('rcptAdmissionFee') + ' (₹)</label><input type="number" min="0" step="50" id="fsEx-admissionFee" value="' + ex.admissionFee + '"></div>' +
-    '<div><label>' + t('rcptCaution') + ' (₹)</label><input type="number" min="0" step="50" id="fsEx-cautionMoney" value="' + ex.cautionMoney + '"></div>' +
-    '<div><label>' + t('rcptAnnual') + ' (₹)</label><input type="number" min="0" step="50" id="fsEx-annualCharges" value="' + ex.annualCharges + '"></div>' +
-    '<div><label>' + t('rcptBusFee') + ' / ' + t('fMonth') + ' (₹)</label><input type="number" min="0" step="50" id="fsEx-transportFee" value="' + ex.transportFee + '"></div>' +
+    '<div><label>' + t('rcptAdmissionFee') + ' (â¹)</label><input type="number" min="0" step="50" id="fsEx-admissionFee" value="' + ex.admissionFee + '"></div>' +
+    '<div><label>' + t('rcptCaution') + ' (â¹)</label><input type="number" min="0" step="50" id="fsEx-cautionMoney" value="' + ex.cautionMoney + '"></div>' +
+    '<div><label>' + t('rcptAnnual') + ' (â¹)</label><input type="number" min="0" step="50" id="fsEx-annualCharges" value="' + ex.annualCharges + '"></div>' +
+    '<div><label>' + t('rcptBusFee') + ' / ' + t('fMonth') + ' (â¹)</label><input type="number" min="0" step="50" id="fsEx-transportFee" value="' + ex.transportFee + '"></div>' +
     '</div></div>' +
     '<div class="toolbar" style="margin-top:14px"><select id="fsNewCls">' + clsOpts + '</select>' +
     '<select id="fsNewType" onchange="toggleCustom(\'fsNewType\',\'fsNewCustomWrap\')">' + feeTypeSelectOpts() + '</select>' +
@@ -10446,10 +10446,10 @@ function saveFeeStructure() {
   var ex = feeExtras();
   Object.keys(exVals).forEach(function (kk) { ex[kk] = exVals[kk]; });
   if (JSON.stringify(db.feeStructure || []) + '|' + JSON.stringify(feeExtras()) !== beforeStruct122) {
-    logAudit('Fee structure updated', (db.feeStructure || []).length + ' rows • admission ₹' + ex.admissionFee + ' • caution ₹' + ex.cautionMoney + ' • annual ₹' + ex.annualCharges + ' • transport ₹' + ex.transportFee);
+    logAudit('Fee structure updated', (db.feeStructure || []).length + ' rows â¢ admission â¹' + ex.admissionFee + ' â¢ caution â¹' + ex.cautionMoney + ' â¢ annual â¹' + ex.annualCharges + ' â¢ transport â¹' + ex.transportFee);
   }
   saveDB(db); renderPage();
-  toast('✓ ' + t('tStructSaved'));
+  toast('â ' + t('tStructSaved'));
 }
 function addFeeStructureRow() {
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
@@ -10463,16 +10463,16 @@ function addFeeStructureRow() {
   if (isNaN(amt) || amt <= 0) { toast(t('tAmtPositive')); return; }
   if (!Array.isArray(db.feeStructure)) db.feeStructure = defaultFeeStructure();
   db.feeStructure.push({ cls: cls, type: ty, amount: amt });
-  logAudit('Fee structure row added', cls + ' • ' + feeTypeLabel(ty) + ' ₹' + amt);
+  logAudit('Fee structure row added', cls + ' â¢ ' + feeTypeLabel(ty) + ' â¹' + amt);
   saveDB(db); renderPage();
-  toast('✓ ' + t('tStructAdded'));
+  toast('â ' + t('tStructAdded'));
 }
 function deleteFeeStructureRow(i) {
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   if (!Array.isArray(db.feeStructure) || !db.feeStructure[i]) return;
   var row122 = db.feeStructure[i];
   db.feeStructure.splice(i, 1);
-  logAudit('Fee structure row removed', row122.cls + ' • ' + feeTypeLabel(row122.type) + ' ₹' + row122.amount);
+  logAudit('Fee structure row removed', row122.cls + ' â¢ ' + feeTypeLabel(row122.type) + ' â¹' + row122.amount);
   saveDB(db); renderPage();
   toast(t('tStructRemoved'));
 }
@@ -10483,13 +10483,13 @@ function deleteFeeRecord(rid) {
   var r = db.feeRecords.find(function (x) { return x.id === rid; });
   if (!r || r.status !== 'Pending') return;
   var s = db.students.find(function (x) { return x.id === r.studentId; });
-  confirmModal(t('delFeeMsg') + ' — ' + (s ? s.name + ' • ' : '') + r.month + ' • ' + feeTypeLabel(feeTypeOf(r)) + ' ' + inr(r.amount) + '?', function () {
+  confirmModal(t('delFeeMsg') + ' â ' + (s ? s.name + ' â¢ ' : '') + r.month + ' â¢ ' + feeTypeLabel(feeTypeOf(r)) + ' ' + inr(r.amount) + '?', function () {
     db.feeRecords = db.feeRecords.filter(function (x) { return x.id !== rid; });
     if (state.collectRecordId === rid) { state.collectStudent = null; state.collectRecordId = null; collectDraft = null; }
     if (s) refreshStudentFee(s.id);
-    logAudit('Fee record deleted', (s ? s.name + ' (' + (s.enr || '') + ') • ' : '') + r.month + ' ' + feeTypeLabel(feeTypeOf(r)) + ' ' + inr(r.amount));
+    logAudit('Fee record deleted', (s ? s.name + ' (' + (s.enr || '') + ') â¢ ' : '') + r.month + ' ' + feeTypeLabel(feeTypeOf(r)) + ' ' + inr(r.amount));
     saveDB(db); renderApp();
-    toast('✓ ' + t('tFeeDeleted'));
+    toast('â ' + t('tFeeDeleted'));
   });
 }
 function generateFees() {
@@ -10499,48 +10499,48 @@ function generateFees() {
   if (sel && sel.value) month = sel.value;
   state.feeGenMonth = month;
   // B3: 'YYYY-MM' of the month being billed (session-correct via B7's
-  // monthStartDate) — compared against each student's admission month.
+  // monthStartDate) â compared against each student's admission month.
   var monthKey = monthStartDate(month).slice(0, 7);
   var existing = {};
   db.feeRecords.forEach(function (r) { if (r.month === month) existing[r.studentId + '|' + feeTypeOf(r)] = 1; });
   var made = 0, skipped = 0, notYetAdm = 0;
   db.students.forEach(function (s) {
-    // v34 (P0-3): dues only for enrolled students — Draft (admission not
+    // v34 (P0-3): dues only for enrolled students â Draft (admission not
     // finished) and Cancelled never get a due.
     if (!isEnrolledStudent(s)) return;
     // B3: no bill for months before the student's admission month. A blank
     // admissionDate (old records) bills as before; the admission month
-    // itself is billed in full — there is no pro-rata billing.
+    // itself is billed in full â there is no pro-rata billing.
     var admMonth = String(s.admissionDate || '').slice(0, 7);
     if (admMonth && /^\d{4}-\d{2}$/.test(admMonth) && monthKey < admMonth) { notYetAdm++; return; }
     (db.feeStructure || []).forEach(function (row) {
       if (row.cls !== s.cls) return;
       var key = s.id + '|' + row.type;
       if (existing[key]) { skipped++; return; }
-      // v34 (P0-3): a deterministic id — 'fee-gen-<student>-<month>-<type>'.
+      // v34 (P0-3): a deterministic id â 'fee-gen-<student>-<month>-<type>'.
       // Two devices generating the same month create the SAME local_id, so
       // the upload pass dedupes by local_id and only one Pending row ever
       // lands on the server. (A unique constraint on ss_fee_records would
       // break partial payments, which create a second Collected record for
-      // the same student/month/type — so the dedupe is by id, not by
+      // the same student/month/type â so the dedupe is by id, not by
       // constraint.)
       db.feeRecords.push({ id: 'fee-gen-' + s.id + '-' + month + '-' + row.type, studentId: s.id, student: s.name, cls: s.cls,
         month: month, type: row.type, amount: row.amount, status: 'Pending', date: monthStartDate(month) });
       existing[key] = 1; made++;
     });
   });
-  if (made > 0) logAudit('Fees generated', made + ' records • ' + month);
+  if (made > 0) logAudit('Fees generated', made + ' records â¢ ' + month);
   db.students.forEach(function (s) { s.fee = studentFeeStatus(s.id); });
   saveDB(db); renderApp();
-  var msg = '✓ ' + made + ' ' + t('tGenRecords') + ' ' + month + ' • ' + skipped + ' ' + t('tGenSkipped');
-  if (notYetAdm) msg += ' • ' + notYetAdm + ' ' + t('tGenNotAdmitted');
+  var msg = 'â ' + made + ' ' + t('tGenRecords') + ' ' + month + ' â¢ ' + skipped + ' ' + t('tGenSkipped');
+  if (notYetAdm) msg += ' â¢ ' + notYetAdm + ' ' + t('tGenNotAdmitted');
   toast(msg + '.');
 }
 
 /* ================= print ================= */
 function printRowsToArea(title, sub, headHtml, bodyHtml, totalsHtml) {
   var printLogoHtml = db.profile.logo ? '<img class="print-logo" src="' + esc(db.profile.logo) + '" alt="">' : '';
-  $('printArea').innerHTML = '<div class="print-stmt"><div class="print-head">' + printLogoHtml + '<div><h1>' + esc(db.profile.name) + '</h1><p class="muted">' + esc(db.profile.address || '') + ' • ' + esc(db.profile.phone || '') + '</p></div></div>' +
+  $('printArea').innerHTML = '<div class="print-stmt"><div class="print-head">' + printLogoHtml + '<div><h1>' + esc(db.profile.name) + '</h1><p class="muted">' + esc(db.profile.address || '') + ' â¢ ' + esc(db.profile.phone || '') + '</p></div></div>' +
     '<h2>' + esc(title) + '</h2><p>' + sub + '</p><table><thead><tr>' + headHtml + '</tr></thead><tbody>' + bodyHtml + '</tbody></table>' + totalsHtml +
     '<p class="muted" style="margin-top:14px">' + t('printGenOn') + ' ' + todayIST() + '</p></div>';
   if (window.print) window.print();
@@ -10555,7 +10555,7 @@ function printStudentStatement(sid) {
   var body = recs.map(function (r) {
     return '<tr><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td><td>' + r.status + '</td></tr>';
   }).join('');
-  printRowsToArea(t('printTitle'), esc(s.name) + ' • ' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • ' + t('thGuardian') + ' ' + esc(s.guardian),
+  printRowsToArea(t('printTitle'), esc(s.name) + ' â¢ ' + t('thClass') + ' ' + esc(s.cls) + ' â¢ ' + t('thEnr') + ' ' + esc(s.enr || 'â') + ' â¢ ' + t('thGuardian') + ' ' + esc(s.guardian),
     '<th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th>',
     body,
     '<div class="tot"><span>' + t('totalBilled') + ': ' + inr(billed) + '</span><span>' + t('totalPaid') + ': ' + inr(paid) + '</span><span>' + t('totalPending') + ': ' + inr(pend) + '</span></div>');
@@ -10567,7 +10567,7 @@ function printFeeList() {
   var body = list.slice(0, 500).map(function (r) {
     return '<tr><td>' + esc(r.student) + '</td><td>' + esc(enrOf(r.studentId)) + '</td><td>' + esc(r.cls) + '</td><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td><td>' + r.status + '</td></tr>';
   }).join('');
-  var filt = t('fees') + ' — ' + (state.feeFilter === 'All' ? t('allW') : state.feeFilter) + ' • ' + (state.feeType === 'All' ? t('allTypes') : feeTypeLabel(state.feeType)) + (state.feeSearch ? ' • \u201c' + esc(state.feeSearch) + '\u201d' : '') + ' (' + feeRangeLabel() + ')';
+  var filt = t('fees') + ' â ' + (state.feeFilter === 'All' ? t('allW') : state.feeFilter) + ' â¢ ' + (state.feeType === 'All' ? t('allTypes') : feeTypeLabel(state.feeType)) + (state.feeSearch ? ' â¢ \u201c' + esc(state.feeSearch) + '\u201d' : '') + ' (' + feeRangeLabel() + ')';
   printRowsToArea(t('printListTitle'), filt,
     '<th>' + t('thStudent') + '</th><th>' + t('thEnr') + '</th><th>' + t('thClass') + '</th><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th>',
     body,
@@ -10582,7 +10582,7 @@ function idCardPayload(s) {
   return ['SCHOOL-SAATHI', (s.admissionNo || s.enr || ''), (s.name || ''), (s.cls || ''), (db.profile.name || ''), (s.phone || '')].join('|');
 }
 // Pure SVG render of the QR matrix (crisp at print size). Returns '' when the
-// encoder is unavailable or the text cannot be encoded — never a fake image.
+// encoder is unavailable or the text cannot be encoded â never a fake image.
 function qrSvgFor(text, px) {
   if (!String(text || '').trim()) return ''; // never render a QR for empty data
   if (typeof qrcodegen === 'undefined' || !qrcodegen.QrCode) return '';
@@ -10598,20 +10598,20 @@ function qrSvgFor(text, px) {
 }
 // One student's front + back, credit-card size (85.6 x 54 mm), navy + gold.
 function idCardHTML(s) {
-  var logoHtml = db.profile.logo ? '<img class="id-logo-img" src="' + esc(db.profile.logo) + '" alt="">' : '<span class="id-logo-cap">🎓</span>';
+  var logoHtml = db.profile.logo ? '<img class="id-logo-img" src="' + esc(db.profile.logo) + '" alt="">' : '<span class="id-logo-cap">ð</span>';
   var qr = qrSvgFor(idCardPayload(s), 150);
   var qrHtml = qr || '<div class="id-qr-missing">' + t('idcNoQr') + '</div>';
   var backLines = '';
   if (s.address) backLines += '<span><b>' + t('fAddress') + ':</b> ' + esc(s.address) + '</span>';
   if (s.bloodGroup) backLines += '<span><b>' + t('fBlood') + ':</b> ' + esc(s.bloodGroup) + '</span>';
-  backLines += '<span><b>' + t('idcEmergency') + ':</b> ' + esc(s.guardian || '') + ' • ' + esc(s.phone || '') + '</span>';
+  backLines += '<span><b>' + t('idcEmergency') + ':</b> ' + esc(s.guardian || '') + ' â¢ ' + esc(s.phone || '') + '</span>';
   return '<div class="id-sheet">' +
     '<div class="id-card id-front"><div class="id-head">' + logoHtml + '<span class="id-school">' + esc(db.profile.name) + '</span></div>' +
     '<div class="id-body">' + avatarHTML(s.photo, s.name, 'id-photo') + '<div class="id-info"><b class="id-name">' + esc(s.name) + '</b>' +
-    '<span>' + t('thAdmNo') + ' ' + esc(s.admissionNo || '—') + '</span>' +
-    '<span>' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('fRoll') + ' ' + s.roll + '</span>' +
-    '<span>' + t('fSession') + ' ' + esc(s.session || '—') + '</span></div></div>' +
-    '<div class="id-foot">' + t('fGuardian') + ': ' + esc(s.guardian || '') + ' • ' + esc(s.phone || '') + '</div></div>' +
+    '<span>' + t('thAdmNo') + ' ' + esc(s.admissionNo || 'â') + '</span>' +
+    '<span>' + t('thClass') + ' ' + esc(s.cls) + ' â¢ ' + t('fRoll') + ' ' + s.roll + '</span>' +
+    '<span>' + t('fSession') + ' ' + esc(s.session || 'â') + '</span></div></div>' +
+    '<div class="id-foot">' + t('fGuardian') + ': ' + esc(s.guardian || '') + ' â¢ ' + esc(s.phone || '') + '</div></div>' +
     '<div class="id-card id-back"><div class="id-qr-wrap">' + qrHtml + '</div><div class="id-back-info">' + backLines +
     '<span class="id-return">' + t('idcReturn') + ' ' + esc(db.profile.name) + '</span></div></div></div>';
 }
@@ -10631,7 +10631,7 @@ function openIdCardPreview(ids) {
   openModal('<h3>' + t('idcPreview') + '</h3><p class="muted">' + list.length + ' ' + t('idcReady') + '</p>' +
     '<div class="id-preview">' + list.map(function (s) { return idCardHTML(s); }).join('') + '</div>' +
     '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
-    '<button type="button" class="btn" onclick="printIdCardsNow()">🖨 ' + t('idcPrint') + '</button></div>', true);
+    '<button type="button" class="btn" onclick="printIdCardsNow()">ð¨ ' + t('idcPrint') + '</button></div>', true);
 }
 function printIdCardsNow() {
   if (!pendingIdPrint.length) { closeModal(); return; }
@@ -10666,7 +10666,7 @@ function stuSelCount() { return Object.keys(state.stuSel || {}).length; }
    Modelled on the DPS fee receipt the user sent: school header, FEE RECEIPT
    title, Receipt No / Date / Adm No / Session / Name / Class / Installment /
    CounterNo, lines table (Sl.No, Description, Due, Con, Paid), PAY MODE
-   INFORMATION, Total in Words, QR, computer-generated line, PARENT COPY —
+   INFORMATION, Total in Words, QR, computer-generated line, PARENT COPY â
    plus the student's photo and a Collector's Signature block (user's ask).
    Lines auto-fill from real data; every Due / Con / Paid cell is editable.
    Aadhaar is NEVER on the receipt. */
@@ -10740,13 +10740,13 @@ function buildCollectLines(sid, prefRecordId, month, includeBus) {
   db.feeRecords.filter(function (r) { return r.studentId === sid && r.status === 'Pending' && !linked[r.id]; })
     .sort(function (a, b) { return (MONTH_NUM[a.month] || 99) - (MONTH_NUM[b.month] || 99) || (a.date < b.date ? -1 : a.date > b.date ? 1 : 0); })
     .forEach(function (r) {
-      addLine('dues-' + r.id, t('rcptDues') + ' — ' + r.month + ' ' + feeTypeLabel(feeTypeOf(r)), feeTypeOf(r), r.month, r.amount, r.id, 'dues');
+      addLine('dues-' + r.id, t('rcptDues') + ' â ' + r.month + ' ' + feeTypeLabel(feeTypeOf(r)), feeTypeOf(r), r.month, r.amount, r.id, 'dues');
     });
   return lines;
 }
 // v34 (P0-2): a Paid amount above the net due (Due - Con) is never
 // taken. Cap it and report the excess, so the fee records and the
-// receipt total always agree — the old code stored rec.amount = net
+// receipt total always agree â the old code stored rec.amount = net
 // while the receipt total kept the full paid amount, so feeTotals()
 // undercounted against receipts. Returns the excess amount capped.
 function clampCollectLines(d) {
@@ -10772,7 +10772,7 @@ function newCollectDraft(sid, recordId) {
   return { studentId: sid, month: month, counterNo: 'COUNTER-1', payMode: 'Cash', payDate: todayIST(), bank: '', number: '', lines: buildCollectLines(sid, recordId, month), busIncluded: busDefault(sid) };
 }
 function openCollectFee(sid, recordId) {
-  // v92: the accountant collects fees too — the school admin and the
+  // v92: the accountant collects fees too â the school admin and the
   // accountant are the only roles that open the collect screen.
   if (state.role !== 'school' && state.role !== 'accountant') return;
   var s = db.students.find(function (x) { return x.id === sid; });
@@ -10791,7 +10791,7 @@ function cancelCollectFee() {
   renderPage();
 }
 // Read the on-screen inputs back into the draft. Missing / empty inputs
-// (e.g. harness stubs) keep the draft value — never wipe it.
+// (e.g. harness stubs) keep the draft value â never wipe it.
 function readCollectInputs() {
   var d = collectDraft; if (!d) return;
   var m = $('rcptMonth'); if (m && m.value) d.month = m.value;
@@ -10875,14 +10875,14 @@ function receiptViewFromDraft(d, s) {
   return { receiptNo: nextReceiptNo(true), date: todayIST(), month: d.month, session: s.session || currentSession(), counterNo: d.counterNo, lines: d.lines, payMode: d.payMode, payDate: d.payDate, bank: d.bank, number: d.number, total: tot, totalWords: numberToWords(tot), collector: state.user ? state.user.name : '' };
 }
 // v47: the display student for a saved receipt, resolved from the
-// receipt's own stored fields — never from a local-student lookup by
+// receipt's own stored fields â never from a local-student lookup by
 // id. A receipt carries its own student name, class and admission
 // number (student_name / admission_no on the server row, name /
 // admissionNo locally); the live test account proved why that
 // matters: the local list still holds the demo-seed "Aarav Verma"
 // under the same id (stu1794162292000) as the real V21 Test Kumar,
 // so every id lookup renamed the receipt to Aarav while the fee list
-// — which renders the fee record's own stored name — said V21. The
+// â which renders the fee record's own stored name â said V21. The
 // local row supplies only the photo (the receipt carries no photo);
 // name, class and admission number always come from the receipt
 // itself, so even a stale local seed can never rename one.
@@ -10895,12 +10895,12 @@ function receiptStudent(rc) {
 // One receipt renderer for the draft page, the saved view and print. Never
 // includes Aadhaar (the receipt has no field for it by design).
 function receiptHTML(rcpt, s, editable) {
-  var logoHtml = db.profile.logo ? '<img class="rcpt-logo" src="' + esc(db.profile.logo) + '" alt="">' : '<span class="rcpt-logo-cap">🎓</span>';
+  var logoHtml = db.profile.logo ? '<img class="rcpt-logo" src="' + esc(db.profile.logo) + '" alt="">' : '<span class="rcpt-logo-cap">ð</span>';
   var moOpts = MONTHS_ACAD.map(function (m) { return '<option value="' + m + '" ' + (m === rcpt.month ? 'selected' : '') + '>' + m + '</option>'; }).join('');
   var meta = '<div class="rcpt-meta"><div class="rcpt-meta-grid">' +
     '<span><b>' + t('rcptReceiptNo') + '</b> : ' + esc(rcpt.receiptNo) + (editable ? ' <span class="muted">(' + t('rcptDraft') + ')</span>' : '') + '</span>' +
     '<span><b>' + t('rcptDate') + '</b> : ' + esc(rcpt.date) + '</span>' +
-    '<span><b>' + t('rcptAdmNo') + '</b> : ' + esc(s.admissionNo || s.enr || '—') + '</span>' +
+    '<span><b>' + t('rcptAdmNo') + '</b> : ' + esc(s.admissionNo || s.enr || 'â') + '</span>' +
     '<span><b>' + t('rcptSession') + '</b> : ' + esc(rcpt.session || '') + '</span>' +
     '<span><b>' + t('rcptName') + '</b> : ' + esc(s.name) + '</span>' +
     '<span><b>' + t('rcptClass') + '</b> : ' + esc(s.cls) + '</span>' +
@@ -10925,8 +10925,8 @@ function receiptHTML(rcpt, s, editable) {
   var pay = '<div class="rcpt-band">' + t('rcptPayModeTitle') + '</div><div class="rcpt-pay-grid">' +
     '<span><b>' + t('rcptPayMode') + '</b> ' + (editable ? '<select id="rcptPayMode" onchange="collectPayModeChange(this)">' + payOpts + '</select>' : esc(payModeLabel(rcpt.payMode))) + '</span>' +
     '<span><b>' + t('rcptDate') + '</b> ' + (editable ? '<input type="date" id="rcptPayDate" value="' + esc(rcpt.payDate) + '">' : esc(rcpt.payDate)) + '</span>' +
-    '<span id="rcptBankRow" class="' + (showBank ? '' : 'hidden') + '"><b>' + t('rcptBank') + '</b> ' + (editable ? '<input id="rcptBank" value="' + esc(rcpt.bank || '') + '">' : esc(rcpt.bank || '—')) + '</span>' +
-    '<span><b>' + t('rcptNumber') + '</b> ' + (editable ? '<input id="rcptNumber" value="' + esc(rcpt.number || '') + '">' : esc(rcpt.number || '—')) + '</span>' +
+    '<span id="rcptBankRow" class="' + (showBank ? '' : 'hidden') + '"><b>' + t('rcptBank') + '</b> ' + (editable ? '<input id="rcptBank" value="' + esc(rcpt.bank || '') + '">' : esc(rcpt.bank || 'â')) + '</span>' +
+    '<span><b>' + t('rcptNumber') + '</b> ' + (editable ? '<input id="rcptNumber" value="' + esc(rcpt.number || '') + '">' : esc(rcpt.number || 'â')) + '</span>' +
     '<span><b>' + t('rcptTotal') + '</b> <b id="payModeTotal">' + inr(rcpt.total) + '</b></span></div>';
   var qr = qrSvgFor(receiptPayload(rcpt.receiptNo, s, rcpt.total), 120);
   return '<div class="rcpt">' +
@@ -10948,17 +10948,17 @@ function collectFeePage(sid) {
     var rc = (db.receipts || []).find(function (r) { return r.receiptNo === state.savedReceiptId; });
     if (rc) {
       // v47: the receipt resolves its student from its own stored
-      // fields (see receiptStudent) — a local row with the same id
+      // fields (see receiptStudent) â a local row with the same id
       // must never rename it (live: the seed "Aarav Verma" under the
       // V21 id renamed every receipt detail). v41's fallback survives
       // inside the helper: a missing local row still renders from the
       // receipt's own name, class and admission number.
       var s2 = receiptStudent(rc);
-      return '<div class="page-head"><div><h2>' + t('rcptTitle') + '</h2><p>' + esc(s2.name) + ' • ' + esc(s2.cls) + ' • ' + esc(s2.admissionNo || '') + '</p></div>' +
-        '<div class="toolbar"><button class="btn ghost" onclick="backFromReceipt()">← ' + t('backFees') + '</button></div></div>' +
+      return '<div class="page-head"><div><h2>' + t('rcptTitle') + '</h2><p>' + esc(s2.name) + ' â¢ ' + esc(s2.cls) + ' â¢ ' + esc(s2.admissionNo || '') + '</p></div>' +
+        '<div class="toolbar"><button class="btn ghost" onclick="backFromReceipt()">â ' + t('backFees') + '</button></div></div>' +
         receiptHTML(rc, s2, false) +
-        '<div class="actions"><button class="btn" onclick="printReceipt(' + jsAttr(rc.receiptNo) + ')">🖨 ' + t('rcptPrint') + '</button>' +
-        '<button class="btn" onclick="waReceiptShare(' + jsAttr(rc.receiptNo) + ')">💬 ' + t('waShareReceiptBtn') + '</button>' +
+        '<div class="actions"><button class="btn" onclick="printReceipt(' + jsAttr(rc.receiptNo) + ')">ð¨ ' + t('rcptPrint') + '</button>' +
+        '<button class="btn" onclick="waReceiptShare(' + jsAttr(rc.receiptNo) + ')">ð¬ ' + t('waShareReceiptBtn') + '</button>' +
         '<button class="btn green" onclick="openCollectFee(\'' + s2.id + '\')">' + t('rcptCollectAgain') + '</button></div>';
     }
     state.savedReceiptId = null;
@@ -10967,10 +10967,10 @@ function collectFeePage(sid) {
   var d = collectDraft;
   if (!d || d.studentId !== sid) { d = collectDraft = newCollectDraft(sid, state.collectRecordId); }
   var view = receiptViewFromDraft(d, s);
-  return '<div class="page-head"><div><h2>' + t('collectFeeBtn') + '</h2><p>' + esc(s.name) + ' • ' + esc(s.cls) + ' • ' + esc(s.admissionNo || '') + '</p></div>' +
-    '<div class="toolbar"><button class="btn ghost" onclick="cancelCollectFee()">← ' + t('backFees') + '</button></div></div>' +
+  return '<div class="page-head"><div><h2>' + t('collectFeeBtn') + '</h2><p>' + esc(s.name) + ' â¢ ' + esc(s.cls) + ' â¢ ' + esc(s.admissionNo || '') + '</p></div>' +
+    '<div class="toolbar"><button class="btn ghost" onclick="cancelCollectFee()">â ' + t('backFees') + '</button></div></div>' +
     receiptHTML(view, s, true) +
-    '<div class="actions"><button class="btn green" onclick="saveCollectFee(event)">💰 ' + t('rcptCollectSave') + '</button>' +
+    '<div class="actions"><button class="btn green" onclick="saveCollectFee(event)">ð° ' + t('rcptCollectSave') + '</button>' +
     '<button class="btn ghost" onclick="cancelCollectFee()">' + t('cancel') + '</button></div>';
 }
 function saveCollectFee(e) {
@@ -11040,8 +11040,8 @@ function finishCollectFee(d, s, total, receiptNo, numPending) {
   if (!Array.isArray(db.receipts)) db.receipts = [];
   db.receipts.push(rc);
   refreshStudentFee(s.id);
-  logAudit('Fee collected', s.name + ' • ' + (receiptNo || 'pending') + ' • ₹' + total);
-  addActivity('💰', 'green', 'Fee collected', s.name + ' • ' + (receiptNo || 'pending') + ' • ' + inr(total));
+  logAudit('Fee collected', s.name + ' â¢ ' + (receiptNo || 'pending') + ' â¢ â¹' + total);
+  addActivity('ð°', 'green', 'Fee collected', s.name + ' â¢ ' + (receiptNo || 'pending') + ' â¢ ' + inr(total));
   saveDB(db);
   if (numPending) {
     // No receipt number yet: show the student's fee profile instead of
@@ -11055,7 +11055,7 @@ function finishCollectFee(d, s, total, receiptNo, numPending) {
   state.savedReceiptId = receiptNo; collectDraft = null;
   histReplaceTop({ view: 'fees', sub: 'receipt:' + receiptNo }); // Back from the saved receipt goes to the fee profile, not the spent collect form
   renderApp();
-  toast('✓ ' + t('tCollectSaved') + receiptNo + ' • ' + inr(total) + (cappedExcess > 0 ? ' • ' + t('tCollectCapped') : ''));
+  toast('â ' + t('tCollectSaved') + receiptNo + ' â¢ ' + inr(total) + (cappedExcess > 0 ? ' â¢ ' + t('tCollectCapped') : ''));
   return false;
 }
 function openSavedReceipt(receiptNo) {
@@ -11069,7 +11069,7 @@ function openSavedReceipt(receiptNo) {
 function printReceipt(receiptNo) {
   var rc = (db.receipts || []).find(function (r) { return r.receiptNo === receiptNo; });
   if (!rc) return;
-  // v47: same receiptStudent resolution as the detail view — the print
+  // v47: same receiptStudent resolution as the detail view â the print
   // must never say Aarav when the receipt says V21, and a missing
   // local row must not blank the print (v41).
   var s = receiptStudent(rc);
@@ -11081,7 +11081,7 @@ var PAGE_SCHOOL = { dashboard: schoolDashboard, students: studentsPage, attendan
 
 /* ================= Phase 4: admission requests =================
    Public intake: anyone can apply from the auth screen. The request is
-   saved into the chosen school's own DB on this device (static scope — no
+   saved into the chosen school's own DB on this device (static scope â no
    server, so there is no cross-device inbox yet). The school admin reviews
    it; Approve prefills the admission form, Reject keeps it in history. */
 function validateAdmissionRequest(r) {
@@ -11112,7 +11112,7 @@ function admReqSchoolOptions() {
   var seenSrv = {};
   (admReqPublicCache || []).forEach(function (s) {
     seenSrv[s.id] = true;
-    opts += '<option value="srv:' + esc(s.id) + '">' + esc(s.name) + (s.city ? ' • ' + esc(s.city) : '') + '</option>';
+    opts += '<option value="srv:' + esc(s.id) + '">' + esc(s.name) + (s.city ? ' â¢ ' + esc(s.city) : '') + '</option>';
   });
   loadAccounts().filter(function (a) { return a.role === 'school'; }).filter(function (a) { return !!readDbByKey(dbKeyFor(a)); }).forEach(function (a) {
     var sid = map[a.uid];
@@ -11125,7 +11125,7 @@ function openAdmissionApply() {
   var schools = loadAccounts().filter(function (a) { return a.role === 'school'; }).filter(function (a) { return !!readDbByKey(dbKeyFor(a)); });
   var schOpts = admReqSchoolOptions();
   var clsOpts = classParts().map(function (c) { return '<option>' + esc(c) + '</option>'; }).join('');
-  var genOpts = [''].concat(GENDERS).map(function (g) { return '<option value="' + g + '">' + (g || '—') + '</option>'; }).join('');
+  var genOpts = [''].concat(GENDERS).map(function (g) { return '<option value="' + g + '">' + (g || 'â') + '</option>'; }).join('');
   openModal('<h3>' + t('admReqFormTitle') + '</h3>' +
     (schools.length ? '' : '<p class="err" id="admReqNoSchoolMsg">' + t('admReqNoSchool') + '</p>') +
     '<form onsubmit="return saveAdmissionRequest(event)"><div class="form-grid">' +
@@ -11140,7 +11140,7 @@ function openAdmissionApply() {
     '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
     '<button class="btn" type="submit" id="admReqSubmitBtn" ' + (schools.length ? '' : 'disabled') + '>' + t('admReqApply') + '</button></div></form>', true);
   // v34 (P1-8): the school list is not only the accounts on THIS device
-  // — fetch the public list from the server so any parent can apply to
+  // â fetch the public list from the server so any parent can apply to
   // any school. When it returns, refresh the picker and enable the form.
   if (sbIsOnline()) {
     sbRest('POST', 'rpc/ss_list_public_schools', SB_ANON_KEY, {}).then(function (r) {
@@ -11171,7 +11171,7 @@ function saveAdmissionRequest(e) {
   if (!sel) { toast(t('tAdmReqPickSchool')); return false; }
   if (sel.indexOf('srv:') === 0) {
     // A server school (chosen from the public list): the application
-    // lives on the server only — there is no local DB for it on this
+    // lives on the server only â there is no local DB for it on this
     // device. A failed post is queued and retried, never lost silently.
     var sid = sel.slice(4);
     sbPostAdmission(sid, req).then(function (r) {
@@ -11185,7 +11185,7 @@ function saveAdmissionRequest(e) {
   var key = sel.indexOf('local:') === 0 ? sel.slice(6) : sel;
   if (!key || !saveAdmissionRequestToSchool(key, req)) { toast(t('tAdmReqFailed')); return false; }
   // Also send to the server when this school is already backed up there.
-  // v34 (P1-8): a failed or offline post is QUEUED and retried — the
+  // v34 (P1-8): a failed or offline post is QUEUED and retried â the
   // local save above is the source of truth, so a failed server post
   // never blocks the application.
   try {
@@ -11212,7 +11212,7 @@ function admissionRequestsPage() {
   list.forEach(function (r) { if (counts[r.status] != null) counts[r.status]++; });
   var rows = shown.map(function (r) {
     var badge = r.status === 'Pending' ? 'orange' : r.status === 'Approved' ? 'green' : 'red';
-    return '<tr><td><b>' + esc(r.name) + '</b></td><td>' + esc(r.dob || '—') + '</td><td>' + esc(r.classApply) + '</td><td>' + esc(r.guardianName || '—') + '</td><td>' + esc(r.phone) + '</td><td>' + esc(r.submitted) + '</td>' +
+    return '<tr><td><b>' + esc(r.name) + '</b></td><td>' + esc(r.dob || 'â') + '</td><td>' + esc(r.classApply) + '</td><td>' + esc(r.guardianName || 'â') + '</td><td>' + esc(r.phone) + '</td><td>' + esc(r.submitted) + '</td>' +
       '<td><span class="badge ' + badge + '">' + t('admReq' + r.status) + '</span></td>' +
       '<td><div class="row-actions"><button class="btn ghost sm" onclick="viewAdmissionRequest(\'' + r.id + '\')">' + t('admReqView') + '</button>' +
       (r.status === 'Pending' ? '<button class="btn green sm" onclick="approveAdmissionRequest(\'' + r.id + '\')">' + t('admReqApprove') + '</button>' +
@@ -11223,7 +11223,7 @@ function admissionRequestsPage() {
     var lbl = x === 'All' ? t('admReqAll') : t('admReq' + x);
     return '<option value="' + x + '" ' + (f === x ? 'selected' : '') + '>' + lbl + '</option>';
   }).join('');
-  return '<div class="page-head"><div><h2>' + t('admissions') + '</h2><p>' + list.length + ' ' + t('admReqTitle') + ' — ' + counts.Pending + ' ' + t('admReqPending') + '</p></div>' +
+  return '<div class="page-head"><div><h2>' + t('admissions') + '</h2><p>' + list.length + ' ' + t('admReqTitle') + ' â ' + counts.Pending + ' ' + t('admReqPending') + '</p></div>' +
     '<div class="toolbar"><label>' + t('admReqStatus') + '</label><select onchange="state.admReqFilter=this.value;renderPage()">' + fOpts + '</select></div></div>' +
     '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('fStudentName') + '</th><th>' + t('fDob') + '</th><th>' + t('admReqClassApply') + '</th><th>' + t('fGuardian') + '</th><th>' + t('fPhone') + '</th><th>' + t('admReqSubmittedOn') + '</th><th>' + t('admReqStatus') + '</th><th>' + t('thAction') + '</th></tr></thead>' +
     '<tbody>' + (rows || '<tr><td colspan="8"><div class="empty">' + t('admReqEmpty') + '</div></td></tr>') + '</tbody></table></div></div>';
@@ -11233,13 +11233,13 @@ function viewAdmissionRequest(id) {
   if (!r) return;
   var kv = function (label, val) { return '<div class="kv"><b>' + label + '</b><span>' + val + '</span></div>'; };
   var badge = r.status === 'Pending' ? 'orange' : r.status === 'Approved' ? 'green' : 'red';
-  openModal('<h3>' + esc(r.name) + ' • ' + esc(r.classApply) + '</h3><div class="card">' +
-    kv(t('fStudentName'), esc(r.name)) + kv(t('fDob'), esc(r.dob || '—')) + kv(t('fGender'), esc(r.gender || '—')) +
-    kv(t('admReqClassApply'), esc(r.classApply)) + kv(t('fGuardian'), esc(r.guardianName || '—')) + kv(t('fPhone'), esc(r.phone)) +
-    kv(t('fPrevSchool'), esc(r.previousSchool || '—')) + kv(t('admReqSubmittedOn'), esc(r.submitted)) +
+  openModal('<h3>' + esc(r.name) + ' â¢ ' + esc(r.classApply) + '</h3><div class="card">' +
+    kv(t('fStudentName'), esc(r.name)) + kv(t('fDob'), esc(r.dob || 'â')) + kv(t('fGender'), esc(r.gender || 'â')) +
+    kv(t('admReqClassApply'), esc(r.classApply)) + kv(t('fGuardian'), esc(r.guardianName || 'â')) + kv(t('fPhone'), esc(r.phone)) +
+    kv(t('fPrevSchool'), esc(r.previousSchool || 'â')) + kv(t('admReqSubmittedOn'), esc(r.submitted)) +
     kv(t('admReqStatus'), '<span class="badge ' + badge + '">' + t('admReq' + r.status) + '</span>') +
     (r.status === 'Rejected' && r.reason ? kv(t('admReqReason'), esc(r.reason)) : '') +
-    (r.status === 'Approved' && r.studentId ? kv(t('fAdmNo'), esc((db.students.find(function (s) { return s.id === r.studentId; }) || {}).admissionNo || '—')) : '') +
+    (r.status === 'Approved' && r.studentId ? kv(t('fAdmNo'), esc((db.students.find(function (s) { return s.id === r.studentId; }) || {}).admissionNo || 'â')) : '') +
     '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
     (r.status === 'Pending' ? '<button type="button" class="btn danger" onclick="closeModal();rejectAdmissionRequest(\'' + r.id + '\')">' + t('admReqReject') + '</button>' +
     '<button type="button" class="btn green" onclick="closeModal();approveAdmissionRequest(\'' + r.id + '\')">' + t('admReqApprove') + '</button>' : '') +
@@ -11254,7 +11254,7 @@ function approveAdmissionRequest(id) {
 function rejectAdmissionRequest(id) {
   var r = (db.admissionRequests || []).find(function (x) { return x.id === id; });
   if (!r || r.status !== 'Pending') return;
-  openModal('<h3>' + t('admReqReject') + ' — ' + esc(r.name) + '</h3><form onsubmit="return doRejectAdmissionRequest(event,\'' + r.id + '\')"><div class="form-grid">' +
+  openModal('<h3>' + t('admReqReject') + ' â ' + esc(r.name) + '</h3><form onsubmit="return doRejectAdmissionRequest(event,\'' + r.id + '\')"><div class="form-grid">' +
     '<div class="full"><label>' + t('admReqReason') + '</label><textarea id="fArReason" rows="3" placeholder="e.g. Seats full for this class"></textarea></div>' +
     '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
     '<button class="btn danger" type="submit">' + t('admReqReject') + '</button></div></form>');
@@ -11265,7 +11265,7 @@ function doRejectAdmissionRequest(e, id) {
   if (!r) return false;
   r.status = 'Rejected';
   r.reason = ($('fArReason') ? $('fArReason').value : '').trim();
-  logAudit('Admission request rejected', r.name + ' • ' + r.classApply + (r.reason ? ' • ' + r.reason : ''));
+  logAudit('Admission request rejected', r.name + ' â¢ ' + r.classApply + (r.reason ? ' â¢ ' + r.reason : ''));
   saveDB(db); closeModal(); renderApp();
   toast(t('admReqRejected'));
   return false;
@@ -11273,13 +11273,13 @@ function doRejectAdmissionRequest(e, id) {
 /* ================= exams / homework / notices / reports / settings ================= */
 function examsPage() {
   // B6: deleted exams never appear in the picker, the list or the
-  // marks table — they live only in the "Deleted exams" card below
+  // marks table â they live only in the "Deleted exams" card below
   // (school only), where they can be restored.
   var activeExams = db.exams.filter(isActiveExam);
   var ex = activeExams.find(function (e) { return e.id === state.examId; }) || activeExams[0];
   // v35: a teacher only ever sees exams for their own assigned classes.
   // v37: a teacher WITH classes but no exams in them falls through to
-  // the "no exams yet" card below (with the Create button) — the old
+  // the "no exams yet" card below (with the Create button) â the old
   // code wrongly told them no classes were assigned at all.
   if (state.role === 'teacher') {
     var myClasses37 = teacherClasses();
@@ -11288,9 +11288,9 @@ function examsPage() {
     ex = myExams35.find(function (e) { return e.id === state.examId; }) || myExams35[0];
   }
   // v37: even with no exams yet, the school/teacher can create the first one.
-  // v88: a principal sees only the empty card — no Create button.
+  // v88: a principal sees only the empty card â no Create button.
   if (!ex) return '<div class="page-head"><div><h2>' + t('exams') + '</h2></div>' + (state.role === 'principal' ? '' : '<div class="toolbar"><button class="btn" onclick="examForm()">+ ' + t('createExam') + '</button></div>') + '</div><div class="card"><div class="empty">' + t('tNoExams') + '</div></div>' + deletedExamsSection();
-  // v34 (P1-10): marks roster is enrolled students only — Cancelled/
+  // v34 (P1-10): marks roster is enrolled students only â Cancelled/
   // Draft never get a marks row.
   var roster = db.students.filter(function (s) { return s.cls === ex.cls && isEnrolledStudent(s); });
   // One pass over db.marks (was a full scan per roster row for the mark
@@ -11305,21 +11305,21 @@ function examsPage() {
   });
   var rows = roster.map(function (s) {
     var mk = examMarks.get(s.id);
-    // v88: a principal sees the mark as text — no editable input.
-    var markCell = state.role === 'principal' ? '<td>' + (mk ? '<b>' + mk.marks + '</b>' : '<span class="muted">—</span>') + ' / ' + ex.total + '</td>'
-      : '<td><input type="number" min="0" step="0.5" max="' + ex.total + '" value="' + (mk ? mk.marks : '') + '" placeholder="—" style="width:90px" id="mk-' + s.id + '"> / ' + ex.total + '</td>';
+    // v88: a principal sees the mark as text â no editable input.
+    var markCell = state.role === 'principal' ? '<td>' + (mk ? '<b>' + mk.marks + '</b>' : '<span class="muted">â</span>') + ' / ' + ex.total + '</td>'
+      : '<td><input type="number" min="0" step="0.5" max="' + ex.total + '" value="' + (mk ? mk.marks : '') + '" placeholder="â" style="width:90px" id="mk-' + s.id + '"> / ' + ex.total + '</td>';
     return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td>' +
       markCell +
       '<td>' + (mk ? '<b>' + Math.round(mk.marks / ex.total * 100) + '%</b>' : '<span class="muted">' + t('tNotEntered') + '</span>') + '</td></tr>';
   }).join('');
   var examList35 = state.role === 'teacher' ? activeExams.filter(function (e) { return teacherClasses().indexOf(e.cls) !== -1; }) : activeExams;
-  var opts = examList35.map(function (e) { return '<option value="' + e.id + '" ' + (ex.id === e.id ? 'selected' : '') + '>' + esc(e.name) + ' — ' + esc(e.cls) + ' (' + esc(e.subject) + ')</option>'; }).join('');
-  return '<div class="page-head"><div><h2>' + t('exams') + '</h2><p>' + esc(ex.name) + ' • ' + esc(ex.cls) + ' • ' + esc(ex.subject) + ' • ' + esc(ex.date) + '</p></div>' +
+  var opts = examList35.map(function (e) { return '<option value="' + e.id + '" ' + (ex.id === e.id ? 'selected' : '') + '>' + esc(e.name) + ' â ' + esc(e.cls) + ' (' + esc(e.subject) + ')</option>'; }).join('');
+  return '<div class="page-head"><div><h2>' + t('exams') + '</h2><p>' + esc(ex.name) + ' â¢ ' + esc(ex.cls) + ' â¢ ' + esc(ex.subject) + ' â¢ ' + esc(ex.date) + '</p></div>' +
     '<div class="toolbar"><select onchange="state.examId=this.value;renderPage()">' + opts + '</select>' +
     (state.role === 'principal' ? '' : '<button class="btn" onclick="examForm()">+ ' + t('createExam') + '</button>' +
-    '<button class="btn" onclick="editExam(\'' + ex.id + '\')">✎ ' + t('editExam') + '</button>' +
-    (state.role === 'school' ? '<button class="btn danger" onclick="deleteExam(\'' + ex.id + '\')">🗑 ' + t('deleteExam') + '</button>' : '') +
-    '<button class="btn green" onclick="saveMarks(\'' + ex.id + '\')">✓ ' + t('saveMarks') + '</button>') + '</div></div>' + // v88: a principal sees the exam picker + marks table only — no Create/Edit/Delete/Save
+    '<button class="btn" onclick="editExam(\'' + ex.id + '\')">â ' + t('editExam') + '</button>' +
+    (state.role === 'school' ? '<button class="btn danger" onclick="deleteExam(\'' + ex.id + '\')">ð ' + t('deleteExam') + '</button>' : '') +
+    '<button class="btn green" onclick="saveMarks(\'' + ex.id + '\')">â ' + t('saveMarks') + '</button>') + '</div></div>' + // v88: a principal sees the exam picker + marks table only â no Create/Edit/Delete/Save
     '<div class="card"><div class="head-row"><div><h3>' + (state.role === 'principal' ? t('results') : t('enterMarks')) + '</h3><p class="card-sub">' + (n ? t('classAvg') + ': ' + Math.round(avg / n / ex.total * 100) + '% (' + n + ' ' + t('studentsMarked') + ')' : t('tNoMarks')) + '</p></div></div>' + // v88b: for a principal the card is "Results", not "Enter Marks"
     '<div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thMarks') + '</th><th>' + t('thResult') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div></div>' + bulkMarksCard100(ex) + deletedExamsSection();
 }
@@ -11331,7 +11331,7 @@ function deletedExamsSection() {
   var del = db.exams.filter(function (e) { return !!e.deleted; });
   if (!del.length) return '';
   var rows = del.map(function (e) {
-    return '<div class="hw-item"><div><b>' + esc(e.name) + '</b><span>' + esc(e.cls) + ' • ' + esc(e.subject) + ' • ' + esc(e.date) + '</span></div>' +
+    return '<div class="hw-item"><div><b>' + esc(e.name) + '</b><span>' + esc(e.cls) + ' â¢ ' + esc(e.subject) + ' â¢ ' + esc(e.date) + '</span></div>' +
       '<button class="btn" style="margin-left:auto" onclick="restoreExam(\'' + e.id + '\')">' + t('restoreExam') + '</button></div>';
   }).join('');
   return '<div class="card" style="margin-top:16px"><h3>' + t('examDeletedH') + '</h3><p class="card-sub">' + t('examDelNote') + '</p>' + rows + '</div>';
@@ -11339,12 +11339,12 @@ function deletedExamsSection() {
 function saveMarks(examId) {
   var ex = db.exams.find(function (e) { return e.id === examId; });
   if (!ex || !isActiveExam(ex)) return; // B6: never enter marks on a deleted exam
-  // v88: a principal is read-only — they never enter marks.
+  // v88: a principal is read-only â they never enter marks.
   if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
   // v35: a teacher enters marks only for their own assigned class.
   if (state.role === 'teacher' && teacherClasses().indexOf(ex.cls) === -1) { toast(t('tNotAllowed')); return; }
   var saved = 0, removed = 0, removedNames = [], bad = [];
-  var changes = []; // v62: {studentId, marks} — marks null clears an existing mark. Computed first, applied after the write lands.
+  var changes = []; // v62: {studentId, marks} â marks null clears an existing mark. Computed first, applied after the write lands.
   // A9 (M-25): one pass over db.marks into a Map (was a full scan per roster
   // student): key examId|studentId -> index, last match wins, matching
   // the old forEach scan. The Map is only read while collecting changes;
@@ -11353,15 +11353,15 @@ function saveMarks(examId) {
   db.marks.forEach(function (m, i) { marksByKey.set(m.examId + '|' + m.studentId, i); });
   // v34 (P1-10): new/updated marks are only saved for enrolled students
   // (Active/Inactive). An empty input still clears an EXISTING mark for
-  // any student in the class — that is cleanup of a stale record, not a
-  // new mark — so the roster filter never strands an old mark.
+  // any student in the class â that is cleanup of a stale record, not a
+  // new mark â so the roster filter never strands an old mark.
   db.students.filter(function (s) { return s.cls === ex.cls; }).forEach(function (s) {
     var inp = $('mk-' + s.id);
     if (!inp) return;
     var key = examId + '|' + s.id;
     var mkIdx = marksByKey.has(key) ? marksByKey.get(key) : -1;
     if (inp.value === '') {
-      if (mkIdx !== -1) { changes.push({ studentId: s.id, marks: null }); removed++; removedNames.push(s.name); } // v123: empty = remove marks — a removal, never a save
+      if (mkIdx !== -1) { changes.push({ studentId: s.id, marks: null }); removed++; removedNames.push(s.name); } // v123: empty = remove marks â a removal, never a save
       return;
     }
     if (!isEnrolledStudent(s)) return; // Cancelled/Draft: no new marks
@@ -11392,9 +11392,9 @@ function saveMarks(examId) {
     });
   };
   var doneToast = function () {
-    if (bad.length) toast(t('tNotSaved') + ': ' + bad.join(', ') + ' — ' + t('tCheckMarks') + ' (max ' + ex.total + ').');
-    else if (saved) toast('✓ ' + t('tMarksSaved') + ' ' + saved + ' ' + t(saved === 1 ? 'tStudentWord' : 'tStudentsWord') + '.');
-    else if (removed) toast('✓ ' + t('tMarksRemoved') + ' ' + removed + ' ' + t(removed === 1 ? 'tStudentWord' : 'tStudentsWord') + '.');
+    if (bad.length) toast(t('tNotSaved') + ': ' + bad.join(', ') + ' â ' + t('tCheckMarks') + ' (max ' + ex.total + ').');
+    else if (saved) toast('â ' + t('tMarksSaved') + ' ' + saved + ' ' + t(saved === 1 ? 'tStudentWord' : 'tStudentsWord') + '.');
+    else if (removed) toast('â ' + t('tMarksRemoved') + ' ' + removed + ' ' + t(removed === 1 ? 'tStudentWord' : 'tStudentsWord') + '.');
     else toast(t('tNoChanges'));
   };
   // v62: a cloud teacher writes through the server RPC (one call for the
@@ -11418,24 +11418,24 @@ function saveMarks(examId) {
         return;
       }
       applyChanges(changes);
-      if (saved) sbLogAuditCloud(mkToken98, 'Marks saved', ex.name + ' • ' + ex.cls + ' • ' + saved + ' ' + (saved === 1 ? 'student' : 'students'), 'Marks saved', ex.name + ' • ' + ex.cls, '📝', 'blue');
-      if (removed) sbLogAuditCloud(mkToken98, 'Marks removed', ex.name + ' • ' + ex.cls + ' • ' + removed + ' ' + (removed === 1 ? 'student' : 'students') + ' — ' + removedNames.join(', '), 'Marks removed', ex.name + ' • ' + ex.cls, '📝', 'blue');
+      if (saved) sbLogAuditCloud(mkToken98, 'Marks saved', ex.name + ' â¢ ' + ex.cls + ' â¢ ' + saved + ' ' + (saved === 1 ? 'student' : 'students'), 'Marks saved', ex.name + ' â¢ ' + ex.cls, 'ð', 'blue');
+      if (removed) sbLogAuditCloud(mkToken98, 'Marks removed', ex.name + ' â¢ ' + ex.cls + ' â¢ ' + removed + ' ' + (removed === 1 ? 'student' : 'students') + ' â ' + removedNames.join(', '), 'Marks removed', ex.name + ' â¢ ' + ex.cls, 'ð', 'blue');
       renderApp();
       doneToast();
     });
     return;
   }
   applyChanges(changes);
-  // v97: a marks save never wrote an audit row (local or cloud) — the
+  // v97: a marks save never wrote an audit row (local or cloud) â the
   // Activity Log showed the exam being created, never the marks going
   // in. One save = one entry in each list, like attendance.
-  if (saved) { logAudit('Marks saved', ex.name + ' • ' + ex.cls + ' • ' + saved + ' ' + (saved === 1 ? 'student' : 'students')); addActivity('📝', 'blue', 'Marks saved', ex.name + ' • ' + ex.cls); }
-  if (removed) { logAudit('Marks removed', ex.name + ' • ' + ex.cls + ' • ' + removed + ' ' + (removed === 1 ? 'student' : 'students') + ' — ' + removedNames.join(', ')); addActivity('📝', 'blue', 'Marks removed', ex.name + ' • ' + ex.cls); }
+  if (saved) { logAudit('Marks saved', ex.name + ' â¢ ' + ex.cls + ' â¢ ' + saved + ' ' + (saved === 1 ? 'student' : 'students')); addActivity('ð', 'blue', 'Marks saved', ex.name + ' â¢ ' + ex.cls); }
+  if (removed) { logAudit('Marks removed', ex.name + ' â¢ ' + ex.cls + ' â¢ ' + removed + ' ' + (removed === 1 ? 'student' : 'students') + ' â ' + removedNames.join(', ')); addActivity('ð', 'blue', 'Marks removed', ex.name + ' â¢ ' + ex.cls); }
   saveDB(db); renderApp();
   doneToast();
 }
 function fillAllMarks(examId) {
-  // v100: fill every marks input with one value — the teacher still
+  // v100: fill every marks input with one value â the teacher still
   // taps Save Marks, so nothing is written until they confirm.
   if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
   var ex = db.exams.find(function (e) { return e.id === examId; });
@@ -11449,11 +11449,11 @@ function fillAllMarks(examId) {
     inp.value = String(v);
     n++;
   });
-  if (n) toast('✓ ' + t('tFillAllDone'));
+  if (n) toast('â ' + t('tFillAllDone'));
 }
 function copyMarksFromExam(examId) {
   // v100: copy the stored marks of another exam in the same class into
-  // this exam's inputs (inputs only — Save Marks still confirms).
+  // this exam's inputs (inputs only â Save Marks still confirms).
   if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
   var ex = db.exams.find(function (e) { return e.id === examId; });
   if (!ex || !isActiveExam(ex)) return;
@@ -11471,12 +11471,12 @@ function copyMarksFromExam(examId) {
     inp.value = String(byStu[s.id]);
     n++;
   });
-  toast('✓ ' + n + ' ' + t('tCopyDone'));
+  toast('â ' + n + ' ' + t('tCopyDone'));
 }
 function pasteMarks(examId) {
   // v100: paste tab/comma-separated admission-no + mark pairs (one per
   // line, copied from a spreadsheet) into the marks inputs. Unmatched
-  // lines are reported, never silently dropped. Inputs only — Save
+  // lines are reported, never silently dropped. Inputs only â Save
   // Marks still confirms.
   if (state.role === 'principal') { toast(t('tNotAllowed')); return; }
   var ex = db.exams.find(function (e) { return e.id === examId; });
@@ -11499,26 +11499,26 @@ function pasteMarks(examId) {
     inp.value = String(v);
     pasted++;
   });
-  toast('✓ ' + pasted + ' ' + t('tPasteDone') + (skipped ? ' ' + skipped + ' ' + t('tPasteSkipped') : ''));
+  toast('â ' + pasted + ' ' + t('tPasteDone') + (skipped ? ' ' + skipped + ' ' + t('tPasteSkipped') : ''));
 }
 function bulkMarksCard100(ex) {
-  // v100: fill-all / copy-from-exam / paste-from-spreadsheet — all three
+  // v100: fill-all / copy-from-exam / paste-from-spreadsheet â all three
   // only fill the inputs; Save Marks still writes. A principal never
   // sees the card (their marks are read-only text).
   if (state.role === 'principal') return '';
   var others = db.exams.filter(function (e) { return isActiveExam(e) && e.cls === ex.cls && e.id !== ex.id; });
   var opts = others.map(function (e) { return '<option value="' + e.id + '">' + esc(e.name) + ' (' + esc(e.date) + ')</option>'; }).join('');
   return '<div class="card" style="margin-top:16px"><h3>' + t('bulkMarksH') + '</h3>' +
-    '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px"><input type="number" id="fillAllMarksInput" min="0" max="' + ex.total + '" step="0.5" placeholder="—" style="width:90px"><button class="btn" onclick="fillAllMarks(\'' + ex.id + '\')">' + t('fillAllMarks') + '</button>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px"><input type="number" id="fillAllMarksInput" min="0" max="' + ex.total + '" step="0.5" placeholder="â" style="width:90px"><button class="btn" onclick="fillAllMarks(\'' + ex.id + '\')">' + t('fillAllMarks') + '</button>' +
     (others.length ? '<select id="copyExamSelect">' + opts + '</select><button class="btn" onclick="copyMarksFromExam(\'' + ex.id + '\')">' + t('copyFromExam') + '</button>' : '<span class="muted">' + t('tNoPrevExam') + '</span>') + '</div>' +
     '<textarea id="pasteMarksBox" rows="4" placeholder="' + t('pasteMarksHint') + '" style="width:100%"></textarea>' +
     '<div style="margin-top:8px"><button class="btn" onclick="pasteMarks(\'' + ex.id + '\')">' + t('pasteMarks') + '</button></div></div>';
 }
 function examForm(editId) {
   // v37: exam creation (audit item 6). A teacher only ever sees their
-  // own assigned classes in the picker — the save re-checks it, so a
+  // own assigned classes in the picker â the save re-checks it, so a
   // crafted value cannot slip through.
-  // B6: with an id this is the EDIT form — same fields, prefilled.
+  // B6: with an id this is the EDIT form â same fields, prefilled.
   // Class is locked on edit (disabled select): the marks rows belong
   // to that class's roster, so changing it would strand them.
   if (state.role !== 'school' && state.role !== 'teacher') { toast(t('tNotAllowed')); return; }
@@ -11556,9 +11556,9 @@ function saveExam(e) {
   // v37: a teacher creates exams only for their own assigned classes.
   if (state.role === 'teacher' && teacherClasses().indexOf(cls) === -1) { toast(t('tNotAllowed')); return false; }
   if (state.editExamId) {
-    // B6: EDIT — update in place. Class never changes (see examForm):
+    // B6: EDIT â update in place. Class never changes (see examForm):
     // the marks rows belong to that class's roster. Marks already
-    // entered stay exactly as entered — never silently changed or
+    // entered stay exactly as entered â never silently changed or
     // deleted; percentages are recalculated against the new total,
     // and a mark above a lowered total is kept and flagged on the
     // next marks save (saveMarks rejects over-total values).
@@ -11566,33 +11566,33 @@ function saveExam(e) {
     if (!ex0 || !isActiveExam(ex0)) { state.editExamId = null; toast(t('tNotAllowed')); return false; }
     var oldName = ex0.name;
     ex0.name = name; ex0.subject = subject; ex0.date = date; ex0.total = total;
-    logAudit('Exam updated', oldName + ' → ' + name + ' • ' + ex0.cls + ' • ' + subject + ' • ' + date + ' • ' + total + ' marks');
+    logAudit('Exam updated', oldName + ' â ' + name + ' â¢ ' + ex0.cls + ' â¢ ' + subject + ' â¢ ' + date + ' â¢ ' + total + ' marks');
     state.editExamId = null;
     saveDB(db); closeModal(); renderApp();
-    toast('✓ ' + t('tExamUpdated'));
+    toast('â ' + t('tExamUpdated'));
     return false;
   }
   var ex = { id: uniqueId('ex'), name: name, cls: cls, subject: subject, date: date, total: total };
   db.exams.push(ex);
-  logAudit('Exam created', name + ' • ' + cls + ' • ' + subject + ' • ' + date + ' • ' + total + ' marks');
+  logAudit('Exam created', name + ' â¢ ' + cls + ' â¢ ' + subject + ' â¢ ' + date + ' â¢ ' + total + ' marks');
   state.examId = ex.id;
   saveDB(db); closeModal(); renderApp();
-  toast('✓ ' + t('tExamCreated'));
+  toast('â ' + t('tExamCreated'));
   return false;
 }
 function editExam(id) {
   // B6: opens the same form as create, prefilled. School + teacher
-  // (own classes only) — the role/class checks live in examForm.
+  // (own classes only) â the role/class checks live in examForm.
   examForm(id);
 }
 function sbQueueExamChange58(ex) {
   // v58: a soft-delete / restore changes NO server payload field
-  // (ss_exams has no deleted column), so the diff never queues it —
+  // (ss_exams has no deleted column), so the diff never queues it â
   // and without a pending outbox entry the v58 pull keep above has
   // nothing to key on. Queue it explicitly so the keep holds the
   // flag until the flush resolves it. v67 (SQL 20): the server row
   // now HAS the deleted column and sbMapExam carries it, so the
-  // flush PATCH actually writes the flag — the push is no longer a
+  // flush PATCH actually writes the flag â the push is no longer a
   // no-op, and the delete/restore travels to other devices. The
   // queue itself is still needed: the diff alone never queues a
   // delete, because only the flag changes. Local-only accounts skip
@@ -11606,48 +11606,48 @@ function sbQueueExamChange58(ex) {
 }
 function deleteExam(id) {
   // B6: school only, same pattern as deleteStudent (soft delete).
-  // SOFT DELETE only: the exam row and ALL of its marks stay saved —
+  // SOFT DELETE only: the exam row and ALL of its marks stay saved â
   // nothing is ever hard-deleted here. The marks are hidden
   // everywhere (exam lists, results, latest-exam %) until the exam
   // is restored from the "Deleted exams" card. v67 (SQL 20): the
   // flag now rides the server row, so the delete syncs to other
-  // devices — the merge-keep by the ss_exams pull holds it only
+  // devices â the merge-keep by the ss_exams pull holds it only
   // while the outbox entry is pending; once flushed, the server
   // value is the truth on every device.
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   var ex = db.exams.find(function (e) { return e.id === id && isActiveExam(e); });
   if (!ex) return;
-  confirmModal(t('delExamMsg') + ' — ' + ex.name + ' • ' + ex.cls + ' • ' + ex.subject + '?', function () {
+  confirmModal(t('delExamMsg') + ' â ' + ex.name + ' â¢ ' + ex.cls + ' â¢ ' + ex.subject + '?', function () {
     ex.deleted = true;
-    sbQueueExamChange58(ex); // v58: the diff never queues a delete (no payload field changes) — queue it so the pull keep holds the flag
+    sbQueueExamChange58(ex); // v58: the diff never queues a delete (no payload field changes) â queue it so the pull keep holds the flag
     if (state.examId === id) {
       var next = db.exams.filter(isActiveExam)[0];
       state.examId = next ? next.id : null;
     }
-    logAudit('Exam deleted', ex.name + ' • ' + ex.cls + ' • ' + ex.subject + ' • ' + ex.date + ' (soft delete — exam and marks kept)');
+    logAudit('Exam deleted', ex.name + ' â¢ ' + ex.cls + ' â¢ ' + ex.subject + ' â¢ ' + ex.date + ' (soft delete â exam and marks kept)');
     saveDB(db); renderApp();
     toast(t('tExamDeleted'));
   });
 }
 function restoreExam(id) {
-  // B6: undoes a soft delete — the exam and its marks come back
+  // B6: undoes a soft delete â the exam and its marks come back
   // everywhere at once, because neither was ever removed.
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   var ex = db.exams.find(function (e) { return e.id === id && !!e.deleted; });
   if (!ex) return;
   ex.deleted = false;
-  sbQueueExamChange58(ex); // v58: same as deleteExam — the diff never queues a restore on its own
-  logAudit('Exam restored', ex.name + ' • ' + ex.cls + ' • ' + ex.subject + ' • ' + ex.date);
+  sbQueueExamChange58(ex); // v58: same as deleteExam â the diff never queues a restore on its own
+  logAudit('Exam restored', ex.name + ' â¢ ' + ex.cls + ' â¢ ' + ex.subject + ' â¢ ' + ex.date);
   saveDB(db); renderApp();
-  toast('✓ ' + t('tExamRestored'));
+  toast('â ' + t('tExamRestored'));
 }
 function meStudent() {
   // v35: the logged-in student is found by id, never by name and never
   // by falling back to the first student in the list (the old code did
-  // both — a name match could open the wrong child).
+  // both â a name match could open the wrong child).
   // v86 (Phase 4): a parent is tied to the same ONE student
   // (state.user.studentId), so the parent portal reuses the student
-  // views — the parent sees only that child's data.
+  // views â the parent sees only that child's data.
   if ((state.role !== 'student' && state.role !== 'parent') || !state.user || !state.user.studentId) return null;
   return db.students.find(function (x) { return x.id === state.user.studentId; }) || null;
 }
@@ -11660,29 +11660,29 @@ function homeworkPage() {
   var myCls = me ? me.cls : '10th-A';
   // v35: a teacher sees homework for their own assigned classes only
   // (and may post it); a student sees only their own class.
-  // v86: a parent sees only their own child's class — never the whole
-  // school's homework — and never gets the Add button.
+  // v86: a parent sees only their own child's class â never the whole
+  // school's homework â and never gets the Add button.
   // v93: a staff member sees only their own assigned classes too.
   var list = db.homework.filter(function (h) { return (isStudent || isParent) ? h.cls === myCls : (isTeacher || isStaff) ? roleClasses().indexOf(h.cls) !== -1 : true; });
   var items = list.map(function (h) {
     var done = me ? h.doneBy.indexOf(me.id) !== -1 : false;
-    // v124: Edit/Delete buttons — school + own-class teacher/staff only;
+    // v124: Edit/Delete buttons â school + own-class teacher/staff only;
     // a student, parent or principal never gets them.
     var canEdit124 = !isStudent && !isParent && state.role !== 'principal' && ((isTeacher || isStaff) ? roleClasses().indexOf(h.cls) !== -1 : true);
-    var btns124 = canEdit124 ? '<button class="btn" onclick="editHomework(\'' + h.id + '\')">✎ ' + t('editHomework') + '</button><button class="btn danger" onclick="deleteHomework(\'' + h.id + '\')">🗑 ' + t('deleteHomework') + '</button>' : '';
+    var btns124 = canEdit124 ? '<button class="btn" onclick="editHomework(\'' + h.id + '\')">â ' + t('editHomework') + '</button><button class="btn danger" onclick="deleteHomework(\'' + h.id + '\')">ð ' + t('deleteHomework') + '</button>' : '';
     var box = isStudent
       ? '<input type="checkbox" ' + (done ? 'checked' : '') + ' onchange="toggleHw(\'' + h.id + '\', this.checked)" aria-label="Mark done">'
       : '';
     return '<div class="hw-item ' + (done ? 'done' : '') + '">' + box +
-      '<div><b>' + esc(h.title) + '</b><span>' + esc(h.subject) + ' • Class ' + esc(h.cls) + ' • Due ' + esc(h.due) + (isStudent ? '' : ' • ' + h.doneBy.length + ' ' + t('doneSuffix')) + '</span></div>' + btns124 + '</div>';
+      '<div><b>' + esc(h.title) + '</b><span>' + esc(h.subject) + ' â¢ Class ' + esc(h.cls) + ' â¢ Due ' + esc(h.due) + (isStudent ? '' : ' â¢ ' + h.doneBy.length + ' ' + t('doneSuffix')) + '</span></div>' + btns124 + '</div>';
   }).join('');
-  return '<div class="page-head"><div><h2>' + t('homework') + '</h2><p>' + (isStudent ? 'Class ' + esc(myCls) + ' — ' + t('tapDone') : t('subHomework')) + '</p></div>' +
+  return '<div class="page-head"><div><h2>' + t('homework') + '</h2><p>' + (isStudent ? 'Class ' + esc(myCls) + ' â ' + t('tapDone') : t('subHomework')) + '</p></div>' +
     ((isStudent || isParent || state.role === 'principal') ? '' : '<div class="toolbar"><button class="btn" onclick="homeworkForm()">+ ' + t('addHomework') + '</button></div>') + '</div>' + // v88: a principal never gets the Add button either
     '<div class="card">' + (items || '<div class="empty">' + t('tNoHw') + '</div>') + '</div>';
 }
 function toggleHw(id, done) {
   if (state.role !== 'student') return; // only the student marks their own homework
-  // v61: a cloud student is read-only — their homework status lives on
+  // v61: a cloud student is read-only â their homework status lives on
   // the server and cannot be saved from here. Re-render to uncheck.
   if (state.cloudDb) { toast(t('tCloudHwReadOnly')); renderPage(); return; }
   var h = db.homework.find(function (x) { return x.id === id; });
@@ -11690,7 +11690,7 @@ function toggleHw(id, done) {
   var me = meStudent();
   if (!me) return;
   var i = h.doneBy.indexOf(me.id);
-  // v124: push the student ID, not the student object — pushing the
+  // v124: push the student ID, not the student object â pushing the
   // object meant indexOf(me.id) never found it again, so the checkbox
   // unchecked itself on re-render, the mark could never be undone, and
   // the sync mapper filtered the object out (the done state never
@@ -11698,14 +11698,14 @@ function toggleHw(id, done) {
   var changed124 = (done && i === -1) || (!done && i !== -1);
   if (done && i === -1) h.doneBy.push(me.id);
   if (!done && i !== -1) h.doneBy.splice(i, 1);
-  if (changed124) logAudit(done ? 'Homework done' : 'Homework not done', me.name + ' • ' + h.title + ' • Class ' + h.cls);
+  if (changed124) logAudit(done ? 'Homework done' : 'Homework not done', me.name + ' â¢ ' + h.title + ' â¢ Class ' + h.cls);
   saveDB(db); renderPage();
-  toast(done ? '✓ ' + t('tHwDone') : t('tHwNotDone'));
+  toast(done ? 'â ' + t('tHwDone') : t('tHwNotDone'));
 }
 function homeworkForm(editId) {
   // v35: a teacher assigns homework only to their own classes.
   // v93: a staff member assigns homework only to their own classes too.
-  // v124: edit mode — the class is locked (the done list belongs to
+  // v124: edit mode â the class is locked (the done list belongs to
   // that class's roster), subject/title/due are editable. The due-date
   // minimum is dropped in edit mode so an old homework (past due) can
   // still be fixed; the create form's default due is today (the old
@@ -11717,17 +11717,17 @@ function homeworkForm(editId) {
   openModal('<h3>' + (hw124 ? t('editHomework') : t('addHomework')) + '</h3><form onsubmit="return saveHomework(event' + (hw124 ? ', \'' + hw124.id + '\'' : '') + ')"><div class="form-grid">' +
     '<div><label>' + t('fClass') + '</label><select id="fHwCls"' + (hw124 ? ' disabled' : '') + '>' + clsOpts + '</select>' + (hw124 ? '<div class="hint">' + t('hwClsLocked') + '</div>' : '') + '</div>' +
     '<div><label>' + t('fSubject') + '</label><select id="fHwSub">' + subOpts + '</select></div>' +
-    '<div class="full"><label>' + t('fTitle') + '</label><input id="fHwTitle" required placeholder="e.g. Ex 5.2 — Q1 to Q10" value="' + (hw124 ? esc(hw124.title) : '') + '"></div>' +
+    '<div class="full"><label>' + t('fTitle') + '</label><input id="fHwTitle" required placeholder="e.g. Ex 5.2 â Q1 to Q10" value="' + (hw124 ? esc(hw124.title) : '') + '"></div>' +
     '<div><label>' + t('fDue') + '</label><input id="fHwDue" type="date"' + (hw124 ? '' : ' min="' + todayIST() + '"') + ' value="' + (hw124 ? hw124.due : todayIST()) + '" required></div>' +
     '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + (hw124 ? t('saveBtn') : t('assignHw')) + '</button></div></form>');
 }
 function saveHomework(e, editId) {
   e.preventDefault();
-  // v124: edit mode — update subject/title/due on the existing row
+  // v124: edit mode â update subject/title/due on the existing row
   // (class locked). A cloud teacher/staff member has no edit path to
   // the server, so only the school admin (or a local teacher/staff
   // member, whose change rides the school's sync) may edit. A past due
-  // date is refused only when it CHANGES — an old homework keeps its
+  // date is refused only when it CHANGES â an old homework keeps its
   // due unless the teacher moves it.
   if (editId) {
     var hw124 = db.homework.find(function (x) { return x.id === editId; });
@@ -11738,13 +11738,13 @@ function saveHomework(e, editId) {
     var newDue124 = $('fHwDue').value;
     if (newDue124 < todayIST() && newDue124 !== hw124.due) { toast(t('tDueFuture')); return false; }
     hw124.subject = $('fHwSub').value; hw124.title = $('fHwTitle').value.trim(); hw124.due = newDue124;
-    logAudit('Homework updated', hw124.title + ' • Class ' + hw124.cls + ' • due ' + hw124.due);
+    logAudit('Homework updated', hw124.title + ' â¢ Class ' + hw124.cls + ' â¢ due ' + hw124.due);
     saveDB(db); closeModal(); renderApp();
     toast(t('tHwUpdated'));
     return false;
   }
   if ($('fHwDue').value < todayIST()) { toast(t('tDueFuture')); return false; }
-  // v88: a principal is read-only — they never post homework.
+  // v88: a principal is read-only â they never post homework.
   if (state.role === 'principal') { toast(t('tNotAllowed')); return false; }
   // v35: a teacher posts homework only to their own assigned class.
   // v93: a staff member posts homework only to their own assigned
@@ -11764,7 +11764,7 @@ function saveHomework(e, editId) {
         return;
       }
       db.homework.unshift(hw);
-      sbLogAuditCloud(hwToken98, 'Homework assigned', hw.subject + ' • Class ' + hw.cls + ' • due ' + hw.due, 'Homework assigned', hw.subject + ' • Class ' + hw.cls, '📚', 'orange');
+      sbLogAuditCloud(hwToken98, 'Homework assigned', hw.subject + ' â¢ Class ' + hw.cls + ' â¢ due ' + hw.due, 'Homework assigned', hw.subject + ' â¢ Class ' + hw.cls, 'ð', 'orange');
       closeModal(); renderApp();
       toast(t('tHwAssigned'));
     });
@@ -11772,8 +11772,8 @@ function saveHomework(e, editId) {
   }
   db.homework.unshift({ id: uniqueId('hw'), cls: $('fHwCls').value, subject: $('fHwSub').value, title: $('fHwTitle').value.trim(), due: $('fHwDue').value, doneBy: [] });
   // v97: homework wrote the dashboard activity but never the audit log.
-  logAudit('Homework assigned', $('fHwSub').value + ' • Class ' + $('fHwCls').value + ' • due ' + $('fHwDue').value);
-  addActivity('📚', 'orange', 'Homework assigned', $('fHwSub').value + ' • Class ' + $('fHwCls').value);
+  logAudit('Homework assigned', $('fHwSub').value + ' â¢ Class ' + $('fHwCls').value + ' â¢ due ' + $('fHwDue').value);
+  addActivity('ð', 'orange', 'Homework assigned', $('fHwSub').value + ' â¢ Class ' + $('fHwCls').value);
   saveDB(db); closeModal(); renderApp();
   toast(t('tHwAssigned'));
   return false;
@@ -11792,43 +11792,43 @@ function deleteHomework(id) {
   if (state.role === 'principal' || state.role === 'student' || state.role === 'parent') { toast(t('tNotAllowed')); return; }
   if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(h.cls) === -1) { toast(t('tNotAllowed')); return; }
   if (state.cloudTeacherToken || state.cloudStaffToken) { toast(t('tHwCloudReadOnly')); return; }
-  confirmModal(t('delHwMsg') + ' — ' + h.title + ' • Class ' + h.cls + '?', function () {
+  confirmModal(t('delHwMsg') + ' â ' + h.title + ' â¢ Class ' + h.cls + '?', function () {
     db.homework = db.homework.filter(function (x) { return x.id !== id; });
-    logAudit('Homework deleted', h.title + ' • Class ' + h.cls + ' • ' + h.subject + ' • due ' + h.due);
+    logAudit('Homework deleted', h.title + ' â¢ Class ' + h.cls + ' â¢ ' + h.subject + ' â¢ due ' + h.due);
     saveDB(db); renderApp();
     toast(t('tHwDeleted'));
   });
 }
 function noticesPage() {
-  // v126: the school can fix or remove a notice — every other role sees
+  // v126: the school can fix or remove a notice â every other role sees
   // the plain list (teachers view notices only, v35).
   var canEdit126 = state.role === 'school';
   var items = db.notices.map(function (n) {
     return '<div class="notice"><b>' + esc(n.title) + '</b><span>' + esc(n.date) + '</span><p>' + esc(n.body) + '</p>' +
-      (canEdit126 ? '<button class="btn" onclick="editNotice(\'' + n.id + '\')">✎ ' + t('editNotice') + '</button><button class="btn danger" onclick="deleteNotice(\'' + n.id + '\')">🗑 ' + t('deleteNotice') + '</button>' : '') + '</div>';
+      (canEdit126 ? '<button class="btn" onclick="editNotice(\'' + n.id + '\')">â ' + t('editNotice') + '</button><button class="btn danger" onclick="deleteNotice(\'' + n.id + '\')">ð ' + t('deleteNotice') + '</button>' : '') + '</div>';
   }).join('');
   // v96 (cons fix): an empty notices list showed a blank card with no
-  // message — now it says so, so a school admin never wonders whether
+  // message â now it says so, so a school admin never wonders whether
   // the page failed to load.
   if (!items) items = '<div class="empty">' + t('tNoNotices') + '</div>';
   var canPost = state.role === 'school'; // v35: teachers view notices only
-  return '<div class="page-head"><div><h2>' + t('notices') + '</h2><p>' + t('subNotices') + ' — ' + esc(db.profile.name) + '</p></div>' +
+  return '<div class="page-head"><div><h2>' + t('notices') + '</h2><p>' + t('subNotices') + ' â ' + esc(db.profile.name) + '</p></div>' +
     (canPost ? '<div class="toolbar"><button class="btn" onclick="noticeForm()">+ ' + t('publishNotice') + '</button></div>' : '') + '</div>' +
     '<div class="card">' + items + '</div>';
 }
 function noticeForm(editId) {
-  // v126: edit mode — title/body are editable, the publish date stays
+  // v126: edit mode â title/body are editable, the publish date stays
   // (it is the record of when the notice went out).
   var nt126 = editId ? db.notices.find(function (x) { return x.id === editId; }) : null;
   openModal('<h3>' + (nt126 ? t('editNotice') : t('publishNotice')) + '</h3><form onsubmit="return saveNotice(event' + (nt126 ? ', \'' + nt126.id + '\'' : '') + ')"><div class="form-grid">' +
     '<div class="full"><label>' + t('fTitle') + '</label><input id="fNtTitle" required placeholder="e.g. Annual Sports Day" value="' + (nt126 ? esc(nt126.title) : '') + '"></div>' +
-    '<div class="full"><label>' + t('fMessage') + '</label><textarea id="fNtBody" rows="3" required placeholder="Notice details…">' + (nt126 ? esc(nt126.body) : '') + '</textarea></div>' +
+    '<div class="full"><label>' + t('fMessage') + '</label><textarea id="fNtBody" rows="3" required placeholder="Notice detailsâ¦">' + (nt126 ? esc(nt126.body) : '') + '</textarea></div>' +
     '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + (nt126 ? t('saveBtn') : t('publishBtn')) + '</button></div></form>');
 }
 function saveNotice(e, editId) {
   e.preventDefault();
   if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
-  // v126: edit mode — title/body editable, the publish date stays.
+  // v126: edit mode â title/body editable, the publish date stays.
   if (editId) {
     var nt126 = db.notices.find(function (x) { return x.id === editId; });
     if (!nt126) return false;
@@ -11836,7 +11836,7 @@ function saveNotice(e, editId) {
     var newBody126 = $('fNtBody').value.trim();
     if (nt126.title === newTitle126 && nt126.body === newBody126) { toast(t('tNoChanges')); return false; }
     nt126.title = newTitle126; nt126.body = newBody126;
-    logAudit('Notice updated', nt126.title + ' • ' + nt126.date);
+    logAudit('Notice updated', nt126.title + ' â¢ ' + nt126.date);
     saveDB(db); closeModal(); renderApp();
     toast(t('tNtUpdated'));
     return false;
@@ -11846,8 +11846,8 @@ function saveNotice(e, editId) {
   var ntDate126 = todayIST();
   db.notices.unshift({ id: uniqueId('n'), title: ntTitle126, date: ntDate126, body: ntBody126 });
   // v126: publishing wrote the activity feed but never the audit log.
-  logAudit('Notice published', ntTitle126 + ' • ' + ntDate126);
-  addActivity('📢', 'orange', 'New notice published', ntTitle126);
+  logAudit('Notice published', ntTitle126 + ' â¢ ' + ntDate126);
+  addActivity('ð¢', 'orange', 'New notice published', ntTitle126);
   saveDB(db); closeModal(); renderApp();
   toast(t('tNoticePub'));
   return false;
@@ -11862,19 +11862,19 @@ function deleteNotice(id) {
   var n = db.notices.find(function (x) { return x.id === id; });
   if (!n) return;
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
-  confirmModal(t('delNtMsg') + ' — ' + n.title + '?', function () {
+  confirmModal(t('delNtMsg') + ' â ' + n.title + '?', function () {
     db.notices = db.notices.filter(function (x) { return x.id !== id; });
-    logAudit('Notice deleted', n.title + ' • ' + n.date);
+    logAudit('Notice deleted', n.title + ' â¢ ' + n.date);
     saveDB(db); renderApp();
     toast(t('tNtDeleted'));
   });
 }
 function reportsPage() {
-  return '<div class="page-head"><div><h2>' + t('reports') + '</h2><p>' + t('subReports') + ' — ' + esc(db.profile.name) + '</p></div></div>' +
+  return '<div class="page-head"><div><h2>' + t('reports') + '</h2><p>' + t('subReports') + ' â ' + esc(db.profile.name) + '</p></div></div>' +
   '<div class="grid2e">' +
-  '<div class="card"><h3>' + t('studentsReport') + '</h3><p class="card-sub">' + t('repStudentsSub') + '</p><button class="btn" onclick="downloadReportCSV(\'students\')">⬇ ' + t('dlStudents') + '</button></div>' +
-  '<div class="card"><h3>' + t('feesReport') + '</h3><p class="card-sub">' + t('repFeesSub') + '</p><button class="btn" onclick="downloadReportCSV(\'fees\')">⬇ ' + t('dlFees') + '</button></div>' +
-  '<div class="card"><h3>' + t('attReport') + '</h3><p class="card-sub">Register — Class ' + state.attCls + ' • ' + (state.attDate || todayIST()) + '</p><button class="btn" onclick="downloadReportCSV(\'attendance\')">⬇ ' + t('dlAtt') + '</button></div>' +
+  '<div class="card"><h3>' + t('studentsReport') + '</h3><p class="card-sub">' + t('repStudentsSub') + '</p><button class="btn" onclick="downloadReportCSV(\'students\')">â¬ ' + t('dlStudents') + '</button></div>' +
+  '<div class="card"><h3>' + t('feesReport') + '</h3><p class="card-sub">' + t('repFeesSub') + '</p><button class="btn" onclick="downloadReportCSV(\'fees\')">â¬ ' + t('dlFees') + '</button></div>' +
+  '<div class="card"><h3>' + t('attReport') + '</h3><p class="card-sub">Register â Class ' + state.attCls + ' â¢ ' + (state.attDate || todayIST()) + '</p><button class="btn" onclick="downloadReportCSV(\'attendance\')">â¬ ' + t('dlAtt') + '</button></div>' +
   '</div>';
 }
 function downloadReportCSV(kind) {
@@ -11891,7 +11891,7 @@ function downloadReportCSV(kind) {
       .concat(db.students.filter(function (s) { return s.cls === state.attCls && isEnrolledStudent(s); })
         .map(function (s) { return [s.name, s.cls, s.roll, aDate, recs[s.id] || t('attNotMarked')]; })));
   }
-  toast('✓ ' + t('tReportDl'));
+  toast('â ' + t('tReportDl'));
 }
 function feeCSVRows() {
   return [['Student', 'Enr', 'Class', 'Month', 'Type', 'Amount (INR)', 'Date', 'Status']]
@@ -11899,7 +11899,7 @@ function feeCSVRows() {
 }
 /* ================= Full backup & restore (v37, audit item 13) =================
    Export: the whole school DB as one JSON file. Restore: replaces the
-   LOCAL db with the backup's contents — never merges, never duplicates.
+   LOCAL db with the backup's contents â never merges, never duplicates.
    Behaviour, stated exactly:
    - Export is school-admin only and downloads
      school-saathi-backup-<date>.json with {app, kind, version,
@@ -11914,7 +11914,7 @@ function feeCSVRows() {
      saveDB triggers the normal sync path: the next cycle's
      upload-missing pass uploads restored rows the server lacks, and
      the merge pull may bring back server rows the backup did not
-     contain. A restore is a LOCAL operation — it never wipes the
+     contain. A restore is a LOCAL operation â it never wipes the
      server (there is no server restore). */
 var lastFullBackup = null; // last exported backup object (in-memory only; the harness reads it to prove the export happened)
 function buildFullBackup() {
@@ -11932,11 +11932,11 @@ function exportFullBackup() {
   var b = buildFullBackup();
   lastFullBackup = b;
   downloadJSON('school-saathi-backup-' + todayIST() + '.json', b);
-  toast('✓ ' + t('tBackupExported'));
+  toast('â ' + t('tBackupExported'));
   return true;
 }
 function validateFullBackup(obj) {
-  // Pure check — returns '' when valid, else the error key to toast.
+  // Pure check â returns '' when valid, else the error key to toast.
   if (!obj || typeof obj !== 'object') return 'tBackupBadFile';
   if (obj.app !== 'school-saathi' || obj.kind !== 'full-backup') return 'tBackupBadFile';
   var d = obj.db;
@@ -11962,19 +11962,19 @@ function restoreFullBackup(obj) {
   // Server-linked schools: drop the stale outbox + snapshot so the next
   // cycle re-syncs the restored db from scratch (upload-missing uploads
   // restored rows the server lacks; the merge pull may bring back server
-  // rows the backup did not contain — see the header comment).
+  // rows the backup did not contain â see the header comment).
   if (state.user && state.user.sbUid) {
     try { sbOutboxClear(state.user.sbUid); } catch (e) {}
     try { sbSnapClear(state.user.sbUid); } catch (e) {}
   }
   sbSyncResetMemory();
-  logAudit('Backup restored', counts.students + ' students • ' + counts.teachers + ' teachers • ' + counts.exams + ' exams • ' + counts.feeRecords + ' fee records');
+  logAudit('Backup restored', counts.students + ' students â¢ ' + counts.teachers + ' teachers â¢ ' + counts.exams + ' exams â¢ ' + counts.feeRecords + ' fee records');
   saveDB(db);
   sbStorageWarnClear('corrupt'); // B17: a successful restore resolves the corrupt-data warning
   return { ok: true, counts: counts };
 }
 function requestRestore(parsed) {
-  // File → validate → safety backup of current data → confirm → restore.
+  // File â validate â safety backup of current data â confirm â restore.
   if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
   var err = validateFullBackup(parsed);
   if (err) { toast(t(err)); return false; }
@@ -11983,12 +11983,12 @@ function requestRestore(parsed) {
     var r = restoreFullBackup(parsed);
     if (!r.ok) { toast(t(r.error)); return; }
     renderApp();
-    toast('✓ ' + t('tBackupRestored'));
+    toast('â ' + t('tBackupRestored'));
   });
   return true;
 }
 function onBackupFileChosen(input) {
-  // Browser-only file reading (FileReader) — the parse/validate/restore
+  // Browser-only file reading (FileReader) â the parse/validate/restore
   // core above is UI-free and harness-covered.
   var f = input && input.files && input.files[0];
   if (!f) return;
@@ -12017,7 +12017,7 @@ function settingsPage() {
   '<div><label>' + t('fEmail') + '</label><input id="fPfEm" value="' + esc(p.email) + '"></div>' +
   '<div><label>' + t('fSession') + '</label><select id="fPfSe">' + sessionSelectOpts(p.session) + '</select></div>' +
   '<div class="full"><label>' + t('fAddress') + '</label><input id="fPfAd" value="' + esc(p.address) + '"></div>' +
-  '<div class="full"><label>' + t('logoLabel') + '</label><div class="photo-row"><span id="fPfLogoPrev">' + (p.logo ? '<img class="photo-prev" src="' + esc(p.logo) + '" alt="">' : '<span class="photo-prev">🎓</span>') + '</span>' +
+  '<div class="full"><label>' + t('logoLabel') + '</label><div class="photo-row"><span id="fPfLogoPrev">' + (p.logo ? '<img class="photo-prev" src="' + esc(p.logo) + '" alt="">' : '<span class="photo-prev">ð</span>') + '</span>' +
   '<input type="file" id="fPfLogo" accept="image/*" onchange="onSchoolLogo(this)">' +
   '<button type="button" class="btn ghost sm" onclick="clearSchoolLogo()">' + t('removeLogo') + '</button></div>' +
   '<p class="muted">' + t('logoHint') + '</p></div>' +
@@ -12033,8 +12033,8 @@ function saveSettings(e) {
   e.preventDefault();
   if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
   var p = db.profile;
-  // v129 (Module 16): settings changes are significant admin actions — audit
-  // them with the old → new values, so a renamed school or a changed session
+  // v129 (Module 16): settings changes are significant admin actions â audit
+  // them with the old â new values, so a renamed school or a changed session
   // is visible in the Activity Log. A save with no changes logs nothing.
   var oldName = p.name, oldCity = p.city, oldPr = p.principal, oldSession = p.session, oldLogo = !!p.logo;
   p.name = $('fPfName').value.trim(); p.city = $('fPfCity').value.trim();
@@ -12046,20 +12046,20 @@ function saveSettings(e) {
     pendingLogo = null;
   }
   var changes = [];
-  if (p.name !== oldName) changes.push('Name: ' + (oldName || '—') + ' → ' + (p.name || '—'));
-  if (p.city !== oldCity) changes.push('City: ' + (oldCity || '—') + ' → ' + (p.city || '—'));
-  if (p.principal !== oldPr) changes.push('Principal: ' + (oldPr || '—') + ' → ' + (p.principal || '—'));
-  if (p.session !== oldSession) changes.push('Session: ' + (oldSession || '—') + ' → ' + (p.session || '—'));
+  if (p.name !== oldName) changes.push('Name: ' + (oldName || 'â') + ' â ' + (p.name || 'â'));
+  if (p.city !== oldCity) changes.push('City: ' + (oldCity || 'â') + ' â ' + (p.city || 'â'));
+  if (p.principal !== oldPr) changes.push('Principal: ' + (oldPr || 'â') + ' â ' + (p.principal || 'â'));
+  if (p.session !== oldSession) changes.push('Session: ' + (oldSession || 'â') + ' â ' + (p.session || 'â'));
   if (!!p.logo !== oldLogo) changes.push(oldLogo ? 'Logo removed' : 'Logo updated');
-  if (changes.length) logAudit('Settings updated', changes.join(' • '));
+  if (changes.length) logAudit('Settings updated', changes.join(' â¢ '));
   saveDB(db); renderApp();
-  toast('✓ ' + t('tSettingsSaved'));
+  toast('â ' + t('tSettingsSaved'));
   return false;
 }
 /* ================= TEACHERS view (v35) =================
    The school admin creates teacher login accounts here: name, subject,
    classes taught, email + password. The account is a local device
-   account (role 'teacher', djb2 hash — v36 replaces the hash) linked to
+   account (role 'teacher', djb2 hash â v36 replaces the hash) linked to
    the teacher record by teacherId; the teacher opens the school's DB.
    Teacher records (incl. classes[]) sync to the server like any other
    row; the login account itself is local-only in v35. */
@@ -12070,14 +12070,14 @@ function toggleTchrClass(cls, on) {
   if (!on && i !== -1) tchrFormClasses.splice(i, 1);
 }
 function teachersPage() {
-  // v88: a principal may view the teachers list (read-only) — no Add
+  // v88: a principal may view the teachers list (read-only) â no Add
   // button, no Edit button. Other non-school roles still see nothing.
   if (state.role !== 'school' && state.role !== 'principal') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
   var isPrincipal = state.role === 'principal';
   var rows = (db.teachers || []).filter(function (te) { return !te.deleted; }).map(function (te) {
     var acct = loadAccounts().find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; });
     var clsList = Array.isArray(te.classes) && te.classes.length ? te.classes : (te.cls ? [te.cls] : []);
-    return '<tr><td><b>' + esc(te.name) + '</b></td><td>' + esc(te.subject || '—') + '</td><td>' + esc(clsList.join(', ') || '—') + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('tchrNoLogin') + '</span>') + '</td><td>' + (isPrincipal ? '' : '<button class="btn ghost sm" onclick="teacherForm(\'' + te.id + '\')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteTeacher(\'' + te.id + '\')">' + t('deleteBtn') + '</button>') + '</td></tr>';
+    return '<tr><td><b>' + esc(te.name) + '</b></td><td>' + esc(te.subject || 'â') + '</td><td>' + esc(clsList.join(', ') || 'â') + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('tchrNoLogin') + '</span>') + '</td><td>' + (isPrincipal ? '' : '<button class="btn ghost sm" onclick="teacherForm(\'' + te.id + '\')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteTeacher(\'' + te.id + '\')">' + t('deleteBtn') + '</button>') + '</td></tr>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('teachers') + '</h2><p>' + t('teachersSub') + '</p></div>' +
     (isPrincipal ? '' : '<div class="toolbar"><button class="btn" onclick="teacherForm()">+ ' + t('tchrAdd') + '</button></div>') + '</div>' +
@@ -12099,7 +12099,7 @@ function teacherForm(id) {
     '<div><label>' + t('tchrSubject') + '</label><select id="fTchrSub">' + subOpts + '</select></div>' +
     '<div class="full"><label>' + t('tchrClasses') + ' *</label><div style="display:flex;flex-wrap:wrap;gap:8px 16px">' + clsBoxes + '</div></div>' +
     '<div><label>' + t('tchrEmail') + ' *</label><input id="fTchrEmail" type="email" required value="' + esc(acct ? acct.email : '') + '" placeholder="teacher@school.edu.in" autocomplete="off"></div>' +
-    '<div><label>' + t('tchrPw') + (acct ? '' : ' *') + '</label><input id="fTchrPw" type="password" ' + (acct ? '' : 'required') + ' placeholder="••••••••" autocomplete="new-password"><p class="muted">' + t('tchrPwHint') + '</p></div>' +
+    '<div><label>' + t('tchrPw') + (acct ? '' : ' *') + '</label><input id="fTchrPw" type="password" ' + (acct ? '' : 'required') + ' placeholder="â¢â¢â¢â¢â¢â¢â¢â¢" autocomplete="new-password"><p class="muted">' + t('tchrPwHint') + '</p></div>' +
     '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + t('saveBtn') + '</button></div></form>', true);
 }
 function saveTeacher(e, id) {
@@ -12127,14 +12127,14 @@ function saveTeacher(e, id) {
     te.name = name; te.subject = subject; te.classes = tchrFormClasses.slice(); te.cls = tchrFormClasses[0] || '';
   }
   if (ownAcct) {
-    ownAcct.name = name; ownAcct.email = email; ownAcct.sub = t('tchrSub') + ' • ' + db.profile.name;
+    ownAcct.name = name; ownAcct.email = email; ownAcct.sub = t('tchrSub') + ' â¢ ' + db.profile.name;
     if (pw) { ownAcct.pwHash = hashPwNew(pw); ownAcct.hashScheme = hashSchemeOf(ownAcct.pwHash); }
   } else {
     var pwH = hashPwNew(pw);
-    list.push({ uid: uniqueId('u'), name: name, school: db.profile.name, email: email, pwHash: pwH, hashScheme: hashSchemeOf(pwH), role: 'teacher', sub: t('tchrSub') + ' • ' + db.profile.name, teacherId: te.id, schoolUid: state.user.uid, created: todayIST() });
+    list.push({ uid: uniqueId('u'), name: name, school: db.profile.name, email: email, pwHash: pwH, hashScheme: hashSchemeOf(pwH), role: 'teacher', sub: t('tchrSub') + ' â¢ ' + db.profile.name, teacherId: te.id, schoolUid: state.user.uid, created: todayIST() });
   }
   saveAccounts(list);
-  logAudit(ownAcct ? 'Teacher updated' : 'Teacher added', name + ' • ' + (te.classes || []).join(', '));
+  logAudit(ownAcct ? 'Teacher updated' : 'Teacher added', name + ' â¢ ' + (te.classes || []).join(', '));
   saveDB(db); closeModal(); renderApp();
   toast(t('tchrSaved'));
   return false;
@@ -12146,13 +12146,13 @@ function deleteTeacher(id) {
   // Soft delete only: the record and ALL of its history (attendance,
   // marks, homework the teacher posted) are kept. The linked login
   // account is revoked at the same time, so a removed teacher cannot
-  // log in again — locally or from the cloud (SQL 41 refuses deleted
+  // log in again â locally or from the cloud (SQL 41 refuses deleted
   // rows in the login + token-owner functions).
-  confirmModal(t('tchrDelMsg') + ' — ' + te.name + '?', function () {
+  confirmModal(t('tchrDelMsg') + ' â ' + te.name + '?', function () {
     te.deleted = true;
     var list = loadAccounts().filter(function (a) { return !(a.role === 'teacher' && a.teacherId === te.id); });
     saveAccounts(list);
-    logAudit('Teacher removed', te.name + ' • ' + (te.classes || []).join(', ') + ' (soft delete — record kept)');
+    logAudit('Teacher removed', te.name + ' â¢ ' + (te.classes || []).join(', ') + ' (soft delete â record kept)');
     saveDB(db); renderApp();
     toast(t('tchrRemoved'));
   });
@@ -12178,7 +12178,7 @@ function staffPage() {
   if (state.role !== 'school') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
   var rows = (db.staff || []).filter(function (st) { return !st.deleted; }).map(function (st) {
     var acct = loadAccounts().find(function (a) { return (a.role === 'principal' || a.role === 'accountant' || a.role === 'staff') && a.staffId === st.id; });
-    var clsList = Array.isArray(st.classes) && st.classes.length ? st.classes.join(', ') : (st.role === 'staff' ? '—' : t('allClasses'));
+    var clsList = Array.isArray(st.classes) && st.classes.length ? st.classes.join(', ') : (st.role === 'staff' ? 'â' : t('allClasses'));
     return '<tr><td><b>' + esc(st.name) + '</b></td><td>' + esc(staffRoleLabel(st.role)) + '</td><td>' + esc(clsList) + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('staffNoLogin') + '</span>') + '</td><td><button class="btn ghost sm" onclick="staffForm(\'' + st.id + '\')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteStaff(\'' + st.id + '\')">' + t('deleteBtn') + '</button></td></tr>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('staffPage') + '</h2><p>' + t('staffPageSub') + '</p></div>' +
@@ -12231,14 +12231,14 @@ function saveStaff(e, id) {
     st.name = name; st.role = role; st.classes = role === 'staff' ? staffFormClasses.slice() : [];
   }
   if (ownAcct) {
-    ownAcct.name = name; ownAcct.email = email; ownAcct.role = role; ownAcct.sub = staffRoleLabel(role) + ' • ' + db.profile.name;
+    ownAcct.name = name; ownAcct.email = email; ownAcct.role = role; ownAcct.sub = staffRoleLabel(role) + ' â¢ ' + db.profile.name;
     if (pw) { ownAcct.pwHash = hashPwNew(pw); ownAcct.hashScheme = hashSchemeOf(ownAcct.pwHash); }
   } else {
     var pwH = hashPwNew(pw);
-    list.push({ uid: uniqueId('u'), name: name, school: db.profile.name, email: email, pwHash: pwH, hashScheme: hashSchemeOf(pwH), role: role, sub: staffRoleLabel(role) + ' • ' + db.profile.name, staffId: st.id, schoolUid: state.user.uid, created: todayIST() });
+    list.push({ uid: uniqueId('u'), name: name, school: db.profile.name, email: email, pwHash: pwH, hashScheme: hashSchemeOf(pwH), role: role, sub: staffRoleLabel(role) + ' â¢ ' + db.profile.name, staffId: st.id, schoolUid: state.user.uid, created: todayIST() });
   }
   saveAccounts(list);
-  logAudit(ownAcct ? 'Staff updated' : 'Staff added', name + ' • ' + staffRoleLabel(role) + (role === 'staff' ? ' • ' + (st.classes || []).join(', ') : ''));
+  logAudit(ownAcct ? 'Staff updated' : 'Staff added', name + ' â¢ ' + staffRoleLabel(role) + (role === 'staff' ? ' â¢ ' + (st.classes || []).join(', ') : ''));
   saveDB(db); closeModal(); renderApp();
   toast(t('staffSaved'));
   return false;
@@ -12249,13 +12249,13 @@ function deleteStaff(id) {
   if (!st) return;
   // Soft delete only: the record is kept. The linked login account is
   // revoked at the same time, so a removed staff member cannot log in
-  // again — locally or from the cloud (SQL 41 refuses deleted rows in
+  // again â locally or from the cloud (SQL 41 refuses deleted rows in
   // the login + token-owner functions).
-  confirmModal(t('staffDelMsg') + ' — ' + st.name + '?', function () {
+  confirmModal(t('staffDelMsg') + ' â ' + st.name + '?', function () {
     st.deleted = true;
     var list = loadAccounts().filter(function (a) { return !((a.role === 'principal' || a.role === 'accountant' || a.role === 'staff') && a.staffId === st.id); });
     saveAccounts(list);
-    logAudit('Staff removed', st.name + ' • ' + staffRoleLabel(st.role) + ' (soft delete — record kept)');
+    logAudit('Staff removed', st.name + ' â¢ ' + staffRoleLabel(st.role) + ' (soft delete â record kept)');
     saveDB(db); renderApp();
     toast(t('staffRemoved'));
   });
@@ -12278,7 +12278,7 @@ function classesPage() {
   if (state.role !== 'school') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
   var rows = schoolClasses().map(function (cls) {
     var subs = schoolSubjects(cls);
-    return '<tr><td><b>' + esc(cls) + '</b></td><td>' + esc(subs.join(', ') || '—') + '</td><td><button class="btn ghost sm" onclick="classForm(' + jsAttr(cls) + ')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteClass(' + jsAttr(cls) + ')">' + t('deleteBtn') + '</button></td></tr>';
+    return '<tr><td><b>' + esc(cls) + '</b></td><td>' + esc(subs.join(', ') || 'â') + '</td><td><button class="btn ghost sm" onclick="classForm(' + jsAttr(cls) + ')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteClass(' + jsAttr(cls) + ')">' + t('deleteBtn') + '</button></td></tr>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('classes') + '</h2><p>' + t('classesSub') + '</p></div>' +
     '<div class="toolbar"><button class="btn" onclick="classForm()">+ ' + t('clsAdd') + '</button></div></div>' +
@@ -12317,7 +12317,7 @@ function saveClass(e, oldCls) {
     if (!db.feeStructure.some(function (f) { return f.cls === name && f.type === 'Tuition'; })) {
       db.feeStructure.push({ cls: name, type: 'Tuition', amount: defaultTuitionAmt(classPartOf(name)) });
     }
-    logAudit('Class added', name + ' • ' + subjects.join(', '));
+    logAudit('Class added', name + ' â¢ ' + subjects.join(', '));
     saveDB(db); closeModal(); renderApp();
     toast(t('clsAdded'));
     return false;
@@ -12330,19 +12330,19 @@ function saveClass(e, oldCls) {
   removed.forEach(function (x) {
     if (!blocked && (db.exams || []).some(function (ex) { return ex.cls === oldCls && ex.subject === x && isActiveExam(ex); })) blocked = x;
   });
-  if (blocked) return failInto(errEl, t('clsSubjectInUse') + ' — ' + blocked, true);
+  if (blocked) return failInto(errEl, t('clsSubjectInUse') + ' â ' + blocked, true);
   var added = subjects.filter(function (x) { return (row.subjects || []).indexOf(x) === -1; });
   if (name !== oldCls) renameClassRefs(oldCls, name);
   row.cls = name; row.id = name; row.subjects = subjects;
-  if (name !== oldCls) logAudit('Class renamed', oldCls + ' → ' + name);
-  added.forEach(function (x) { logAudit('Subject added', name + ' • ' + x); });
-  removed.forEach(function (x) { logAudit('Subject removed', name + ' • ' + x); });
+  if (name !== oldCls) logAudit('Class renamed', oldCls + ' â ' + name);
+  added.forEach(function (x) { logAudit('Subject added', name + ' â¢ ' + x); });
+  removed.forEach(function (x) { logAudit('Subject removed', name + ' â¢ ' + x); });
   saveDB(db); closeModal(); renderApp();
   toast(t('clsSaved'));
   return false;
 }
 function renameClassRefs(oldCls, newCls) {
-  // v119: a class rename moves every reference — students, teacher and
+  // v119: a class rename moves every reference â students, teacher and
   // staff class lists, fee rows, exams, homework, attendance keys and
   // holidays. Nothing is left pointing at the old name.
   (db.students || []).forEach(function (s) { if (s.cls === oldCls) s.cls = newCls; });
@@ -12384,8 +12384,8 @@ function deleteClass(cls) {
   var row = classRow(cls);
   if (!row) return;
   var blocker = classInUse(cls);
-  if (blocker) { toast(t('clsInUse') + ' — ' + blocker); return; }
-  confirmModal(t('clsDelMsg') + ' — ' + cls + '?', function () {
+  if (blocker) { toast(t('clsInUse') + ' â ' + blocker); return; }
+  confirmModal(t('clsDelMsg') + ' â ' + cls + '?', function () {
     db.classes = (db.classes || []).filter(function (c) { return c.cls !== cls; });
     db.feeStructure = (db.feeStructure || []).filter(function (f) { return f.cls !== cls; });
     logAudit('Class removed', cls);
@@ -12406,7 +12406,7 @@ function studentDashboard() {
   var myHw = db.homework.filter(function (h) { return h.cls === me.cls; });
   var doneCount = myHw.filter(function (h) { return h.doneBy.indexOf(me.id) !== -1; }).length;
   // v66: the Results tile showed the STORED result field (0 when the
-  // school never set one) even when live marks existed — Ankit scored
+  // school never set one) even when live marks existed â Ankit scored
   // 42/50 but the tile read 0%. The profile overview already prefers
   // the live marks (latestExamPct); the tile follows it, falling back
   // to the stored value only when no marks exist at all.
@@ -12414,17 +12414,17 @@ function studentDashboard() {
   var resShow66 = lex66 ? lex66.pct : (me.result || 0);
   var hwItems = myHw.map(function (h) {
     var done = h.doneBy.indexOf(me.id) !== -1;
-    // v86: only the student gets the Mark-done checkbox — a parent sees
+    // v86: only the student gets the Mark-done checkbox â a parent sees
     // the same item read-only (toggleHw would refuse anyway, so the
     // checkbox must not render for a parent at all).
     var box86 = state.role === 'student' ? '<input type="checkbox" ' + (done ? 'checked' : '') + ' onchange="toggleHw(\'' + h.id + '\', this.checked)" aria-label="Mark done">' : '';
-    return '<div class="hw-item ' + (done ? 'done' : '') + '">' + box86 + '<div><b>' + esc(h.title) + '</b><span>' + esc(h.subject) + ' • Due ' + esc(h.due) + '</span></div></div>';
+    return '<div class="hw-item ' + (done ? 'done' : '') + '">' + box86 + '<div><b>' + esc(h.title) + '</b><span>' + esc(h.subject) + ' â¢ Due ' + esc(h.due) + '</span></div></div>';
   }).join('');
   var notices = db.notices.slice(0, 2).map(function (n) {
     return '<div class="notice"><b>' + esc(n.title) + '</b><span>' + esc(n.date) + '</span><p>' + esc(n.body) + '</p></div>';
   }).join('');
   return '<div class="phone"><div class="card"><div class="stu-hero">' + avatarHTML(me.photo, me.name, 'avatar') + '</div>' +
-    '<h3>' + esc(me.name) + '</h3><p>Class ' + esc(me.cls) + ' • ' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p>' +
+    '<h3>' + esc(me.name) + '</h3><p>Class ' + esc(me.cls) + ' â¢ ' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p>' +
     '<div class="toolbar" style="justify-content:center;margin-top:10px"><button class="btn" onclick="openStudentProfile(\'' + me.id + '\')">' + t('actView') + '</button></div></div>' +
     '<div class="tile-grid">' +
     '<div class="tile green" onclick="go(\'attendance\')" style="cursor:pointer"><div class="n">' + studentAttPct(me) + '%</div><div class="l">' + t('tileAtt') + '</div></div>' +
@@ -12435,11 +12435,11 @@ function studentDashboard() {
     '<div class="card" style="margin-top:16px"><h3>' + t('myHomework') + '</h3><p class="card-sub">' + t('myHwSub') + '</p>' + hwItems + '</div>' +
     '<div class="card" style="margin-top:16px"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div></div>';
 }
-// v65: parent features live in the student portal — no separate parent
+// v65: parent features live in the student portal â no separate parent
 // login. A parent logs in with the child's admission number + PIN (the
 // PIN field IS parent_pin) and gets three first-class pages: attendance,
 // fees and results. Each reuses the full profile's tab body, so the
-// detail is identical to what the school sees — only the student's own
+// detail is identical to what the school sees â only the student's own
 // rows, read-only. The fees tab's receipt button is rendered as plain
 // text here: openSavedReceipt jumps to the school fees page, which a
 // student login cannot open (renderPage refuses it).
@@ -12452,7 +12452,7 @@ function studentFeesPage() {
   var me = meStudent();
   if (!me) return '<div class="phone"><div class="card"><div class="empty">' + t('tNoStudentData') + '</div></div></div>';
   // v125: a parent/student can finally OPEN a receipt. The receipt
-  // number used to be a dead end — openSavedReceipt landed on this
+  // number used to be a dead end â openSavedReceipt landed on this
   // same list (the detail lived only in the school feesPage), and the
   // v65 regex only stripped the button here, not in the profile tab.
   // The detail is read-only (Back + Print); the receipt must belong
@@ -12461,14 +12461,14 @@ function studentFeesPage() {
     var rc125 = (db.receipts || []).find(function (r) { return r.receiptNo === state.savedReceiptId; });
     if (rc125 && rc125.studentId === me.id) {
       var s2125 = receiptStudent(rc125);
-      return '<div class="page-head"><div><h2>' + t('rcptTitle') + '</h2><p>' + esc(s2125.name) + ' • ' + esc(s2125.cls) + ' • ' + esc(s2125.admissionNo || '') + '</p></div>' +
+      return '<div class="page-head"><div><h2>' + t('rcptTitle') + '</h2><p>' + esc(s2125.name) + ' â¢ ' + esc(s2125.cls) + ' â¢ ' + esc(s2125.admissionNo || '') + '</p></div>' +
         '<div class="toolbar"><button class="btn ghost" onclick="backFromReceipt()">\u2190 ' + t('backFees') + '</button></div></div>' +
         receiptHTML(rc125, s2125, false) +
         '<div class="actions"><button class="btn" onclick="printReceipt(' + jsAttr(rc125.receiptNo) + ')">\u1f5a8 ' + t('rcptPrint') + '</button></div>';
     }
     state.savedReceiptId = null;
   }
-  // v125: the v65 plain-text strip is gone — the receipt number is a
+  // v125: the v65 plain-text strip is gone â the receipt number is a
   // link now, and it opens the receipt view above.
   return '<div class="page-head"><div><h2>' + t('fees') + '</h2><p>' + t('myFeesSub') + '</p></div></div>' + profileTabBody(me, 'fees');
 }
@@ -12491,7 +12491,7 @@ var PAGE_PRINCIPAL = { dashboard: principalDashboard, students: studentsPage, te
 var PAGE_ACCOUNTANT = { dashboard: roleDashboard, fees: feesPage, reports: reportsPage, notices: noticesPage }; // v92: the accountant opens the fees + reports pages (the principal's read-only fees stay untouched)
 var PAGE_STAFF = { dashboard: roleDashboard, attendance: attendancePage, homework: homeworkPage, notices: noticesPage }; // v93: a staff member opens attendance + homework (scoped to their classes) + notices
 // v86 (Phase 4): the Parent role reuses the student portal's read-only
-// views — the parent sees only their own child's data (meStudent() now
+// views â the parent sees only their own child's data (meStudent() now
 // covers the parent role). Homework is scoped to the child's class and
 // has no Add button for a parent; toggleHwDone already refuses
 // non-students.
@@ -12505,7 +12505,7 @@ var PAGE_SUPERADMIN = { dashboard: roleDashboard, schools: schoolsPage, notices:
    via a brand-new query URL after ?v=36, reloads, fresh tabs and
    closing all tabs). The SW is network-first for navigations, but the
    OLD worker is the one answering until the browser installs the new
-   one — so the app checks for a newer build itself.
+   one â so the app checks for a newer build itself.
    Mechanism:
    - version.json ({"version": 61}) is fetched with a cache-busting
      query and cache:'no-store', so even a cache-first old worker
@@ -12515,7 +12515,7 @@ var PAGE_SUPERADMIN = { dashboard: roleDashboard, schools: schoolsPage, notices:
      or after a 2.5s fallback so a stalled update never leaves the user
      on the old build. A localStorage guard (one reload per target
      version) prevents any reload loop.
-   - Offline: the fetch fails and nothing happens — the device keeps
+   - Offline: the fetch fails and nothing happens â the device keeps
      opening the last cached version, which is the point of the SW.
    Limits: the reload can still land on the old shell once if the new
    worker has not activated by the fallback (the browser's own SW
@@ -12525,7 +12525,7 @@ var PAGE_SUPERADMIN = { dashboard: roleDashboard, schools: schoolsPage, notices:
 var SW_UPDATE_KEY = 'schoolSaathiUpdateReload';
 function checkAppUpdate() {
   // Returns a Promise<{checked, newer, reloaded, version?, reason?}>.
-  // Never throws, never blocks the boot — a failed check is silent.
+  // Never throws, never blocks the boot â a failed check is silent.
   if (typeof fetch !== 'function') return Promise.resolve({ checked: false, newer: false, reloaded: false, reason: 'no-fetch' });
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return Promise.resolve({ checked: false, newer: false, reloaded: false, reason: 'offline' });
   var url = 'version.json?__v=' + Date.now();
@@ -12575,7 +12575,7 @@ function triggerSwUpdateReload() {
    the error still reaches the console (nothing is swallowed). The
    overlay is shown once per page load; the handler itself never
    throws. Resource-load failures (no message/error on the event) do
-   NOT trigger the overlay — only real JS errors do. Unhandled promise
+   NOT trigger the overlay â only real JS errors do. Unhandled promise
    rejections get a toast instead of the full overlay, so a failed
    background task never blanks the screen. */
 var fatalErrorShown = false;
@@ -12588,7 +12588,7 @@ function showFatalError(msg) {
       box = document.createElement('div');
       box.id = 'fatalError';
       box.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#0A1E4B;color:#fff;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;';
-      box.innerHTML = '<div><h2 style="margin:0 0 8px">Something went wrong</h2><p style="opacity:.85;margin:0 0 16px">School Saathi hit an unexpected error. Your data is saved on this device — please reload to continue.</p><p style="opacity:.85;margin:0 0 16px">कुछ गलत हो गया है। कृपया पेज दोबारा लोड करें।</p><button style="background:#F5B731;color:#0A1E4B;border:0;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer" onclick="location.reload()">Reload • दोबारा लोड करें</button></div>';
+      box.innerHTML = '<div><h2 style="margin:0 0 8px">Something went wrong</h2><p style="opacity:.85;margin:0 0 16px">School Saathi hit an unexpected error. Your data is saved on this device â please reload to continue.</p><p style="opacity:.85;margin:0 0 16px">à¤à¥à¤ à¤à¤²à¤¤ à¤¹à¥ à¤à¤¯à¤¾ à¤¹à¥à¥¤ à¤à¥à¤ªà¤¯à¤¾ à¤ªà¥à¤ à¤¦à¥à¤¬à¤¾à¤°à¤¾ à¤²à¥à¤¡ à¤à¤°à¥à¤à¥¤</p><button style="background:#F5B731;color:#0A1E4B;border:0;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer" onclick="location.reload()">Reload â¢ à¤¦à¥à¤¬à¤¾à¤°à¤¾ à¤²à¥à¤¡ à¤à¤°à¥à¤</button></div>';
       document.body.appendChild(box);
     }
     if (msg) { try { console.error('[School Saathi] ' + msg); } catch (e2) {} }
@@ -12602,24 +12602,24 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
     var r = e && e.reason;
     var msg = (r && (r.message || String(r))) || 'Unhandled promise rejection';
     try { console.error('[School Saathi] ' + msg); } catch (e2) {}
-    try { toast(msg); } catch (e3) { /* toast needs the DOM — skip if unavailable */ }
+    try { toast(msg); } catch (e3) { /* toast needs the DOM â skip if unavailable */ }
   });
 }
 
 document.addEventListener('DOMContentLoaded', function () {
   applyI18n();
-  // Phase 1 (CR-1/H-1): restoreSession is async now — the online server
+  // Phase 1 (CR-1/H-1): restoreSession is async now â the online server
   // validation runs before the app view is shown. sbBoot waits for it
   // so the first sync cycle never starts on a rejected session.
   restoreSession().then(function (ok) {
     if (!ok) showLogin();
     sbBoot(); // password-reset links + stored server session / pending backup
   });
-  // v37: check for a newer build (stale-SW flip) — fire-and-forget.
+  // v37: check for a newer build (stale-SW flip) â fire-and-forget.
   try { checkAppUpdate().catch(function () {}); } catch (e) {}
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('popstate', onPopState); // Android back button
-    // v32: reconnect + foreground — pull other devices' changes the
+    // v32: reconnect + foreground â pull other devices' changes the
     // moment the app comes back (online, tab visible, window focused).
     // Fire-and-forget; a failed cycle retries on the next trigger.
     window.addEventListener('online', function () {
@@ -12632,7 +12632,7 @@ document.addEventListener('DOMContentLoaded', function () {
       // v37: re-check for a newer build when the device comes online.
       try { checkAppUpdate().catch(function () {}); } catch (e2) {}
     });
-    // B7 (M-26): previously NO offline listener existed at all — only
+    // B7 (M-26): previously NO offline listener existed at all â only
     // 'online'. Going offline now refreshes the chip at once instead
     // of waiting for the next render or status write.
     window.addEventListener('offline', function () { sbOfflineChipRefresh(); });
@@ -12646,7 +12646,7 @@ document.addEventListener('DOMContentLoaded', function () {
   if ('serviceWorker' in navigator && window.location.protocol.indexOf('http') === 0) {
     try {
       navigator.serviceWorker.register('sw.js').then(function () { /* PWA ready */ }).catch(function () { /* offline mode still works without SW */ });
-    } catch (e) { /* ignore — app works without SW */ }
+    } catch (e) { /* ignore â app works without SW */ }
   }
 });
 
