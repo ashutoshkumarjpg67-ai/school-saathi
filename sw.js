@@ -1,21 +1,21 @@
-/* School Saathi service worker — offline-first app shell, NETWORK-FIRST navigation.
+/* School Saathi service worker â offline-first app shell, NETWORK-FIRST navigation.
    Versioned cache: bump CACHE_NAME on every deploy so old builds never stick.
    Lesson learned (VidyaSetu / gym app, Nov 2026): cache-first navigation served stale
    builds after deploys. Navigation is network-first here; static assets are
    cache-first with background refresh. Per-file precache: one missing file (e.g.
    an icon not yet uploaded) must not fail the whole app shell.
-   v37: version.json is network-first too — the in-app update check must see the
+   v37: version.json is network-first too â the in-app update check must see the
    LIVE version, never a cached marker. */
-var CACHE_NAME = 'school-saathi-v142';
+var CACHE_NAME = 'school-saathi-v143';
 var APP_SHELL = [
   './',
   'index.html',
-  'styles.css?v=142',
-  'app.js?v=142',
-  'js/modules/crypto.js?v=142',
-  'js/modules/i18n.js?v=142',
-  'js/bcrypt.js?v=142',
-  'qrgen.js?v=142',
+  'styles.css?v=143',
+  'app.js?v=143',
+  'js/modules/crypto.js?v=143',
+  'js/modules/i18n.js?v=143',
+  'js/bcrypt.js?v=143',
+  'qrgen.js?v=143',
   'version.json',
   'manifest.json',
   'icons/icon-192.png',
@@ -28,7 +28,7 @@ var APP_SHELL = [
 self.addEventListener('install', function (event) {
   event.waitUntil(
     caches.open(CACHE_NAME).then(function (cache) {
-      // Cache each file separately — a single 404 must not fail the whole shell.
+      // Cache each file separately â a single 404 must not fail the whole shell.
       return Promise.all(APP_SHELL.map(function (u) {
         return cache.add(u).catch(function () { /* single-file miss: ignore */ });
       }));
@@ -51,7 +51,7 @@ self.addEventListener('fetch', function (event) {
   if (url.origin !== self.location.origin) return; // never cache cross-origin
 
   if (req.mode === 'navigate') {
-    // NETWORK-FIRST for navigations (incl. "/" with no .html) — always try live first.
+    // NETWORK-FIRST for navigations (incl. "/" with no .html) â always try live first.
     event.respondWith(
       fetch(req).then(function (res) {
         if (res && res.ok) {
@@ -66,7 +66,7 @@ self.addEventListener('fetch', function (event) {
     return;
   }
 
-  // v37: the version marker is always network-first — the in-app update
+  // v37: the version marker is always network-first â the in-app update
   // check must see the LIVE version, never a cached one. Offline it
   // falls back to the cached marker (or fails, which the check treats
   // as "no update" and keeps the cached app running).
