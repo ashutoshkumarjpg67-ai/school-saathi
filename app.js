@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 139;
+var APP_VERSION = 140;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -342,6 +342,22 @@ function sbPhotoSignRequest(body, bearer) {
 function sbRefreshSignedPhotos() {
   try {
     if (!sbSyncActive() || !sbIsOnline()) return;
+    // v140 (photo privacy): a cloud staff/principal session re-mints through
+    // its staff token (action 'school'); the function scopes the batch like
+    // the login payload (principal: whole school, staff: own classes,
+    // accountant: refused). No JWT is involved, so no bearer is sent.
+    if (state.cloudStaffToken && state.user && state.user.cloud && state.role !== 'accountant') {
+      sbPhotoSignRequest({ action: 'school', staff_token: state.cloudStaffToken }).then(function (d) {
+        if (!d || !d.urls) return;
+        var sid = state.user.schoolServerId; if (!sid) return;
+        Object.keys(d.urls).forEach(function (k) {
+          var orig = (k === 'logo') ? sbStoragePublicUrl('school-logos', sid + '/logo.png') : sbStoragePublicUrl('student-photos', sid + '/' + k + '.jpg');
+          sbCacheSignedPhoto(orig, d.urls[k], d.expires_in);
+        });
+        if (typeof renderApp === 'function') renderApp(); // v140: re-render so staff avatars pick up the signed URLs
+      });
+      return;
+    }
     sbGetValidToken().then(function (token) {
       if (!token) return;
       sbPhotoSignRequest({ action: 'school' }, token).then(function (d) {
@@ -6541,6 +6557,7 @@ function restoreSession() {
           db = cloudS.slice; DB_KEY = 'schoolSaathiCloudDB';
           showView('app'); renderApp();
           persistSession();
+          sbRefreshSignedPhotos(); // v140: staff photos sign through the staff token
           return Promise.resolve(true);
         }
       } catch (e3) {}
@@ -7523,6 +7540,7 @@ function loginCloudStaff(acct, slice, token) {
   try { sessSet(CLOUD_STAFF_KEY, JSON.stringify({ acct: acct, slice: slice, token: token })); } catch (e) {}
   showView('app'); renderApp();
   persistSession();
+  sbRefreshSignedPhotos(); // v140: staff photos sign through the staff token
   lastBackAt = 0; histExiting = false;
   histArmGuard();
   toast(t('tLoggedIn') + ' ' + acct.name);
