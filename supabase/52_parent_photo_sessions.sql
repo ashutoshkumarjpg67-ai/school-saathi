@@ -107,6 +107,7 @@ $function$;
 revoke all on public.ss_parent_sessions from public;
 revoke all on function public.ss_parent_session_open(uuid, text, text) from public;
 revoke all on function public.ss_parent_revoke_session(uuid) from public;
+revoke all on function public.ss_parent_sessions_pin_wipe() from public;
 grant execute on function public.ss_parent_session_open(uuid, text, text) to anon;
 grant execute on function public.ss_parent_revoke_session(uuid) to anon;
 grant select on public.ss_parent_sessions to service_role;
