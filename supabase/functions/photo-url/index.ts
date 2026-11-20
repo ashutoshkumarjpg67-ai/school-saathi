@@ -19,7 +19,9 @@
 //
 // Hard rules (mirroring the audit requirements):
 //   * Object paths are DERIVED ON THE SERVER (<school_id>/<student_id>.jpg,
-//     <school_id>/logo.png). A caller can never supply a path, a school id
+//     authorized row's stored photo_url under <school_id>/ (the app saves
+//     photos as <school_id>/<local-student-id>.jpg), the logo is
+//     <school_id>/logo.png. A caller can never supply a path, a school id
 //     (owner/teacher modes), or another school's student.
 //   * The service_role key is read from the functions runtime environment
 //     only (Deno.env) — never in code, logs, or the client.
@@ -111,6 +113,9 @@ serve(async (req) => {
     if (!teacher || teacher.deleted) return json({ ok: false, error: 'bad_token' }, 401)
     schoolId = sess.school_id
     classScope = Array.isArray(teacher.classes) ? teacher.classes : []
+    // Batch school signing is owner-only: a teacher may only ever mint
+    // one student photo at a time, inside their own classes.
+    if (action === 'school') return json({ ok: false, error: 'not_allowed' }, 403)
   } else if (parentSchool && admissionNo && pin) {
     // ---- parent: verified by the LIVE login RPC (ss_student_cloud_login,
     // SQL 17/23) so every stored hash form works — bcrypt$ (reset/upgraded
@@ -166,17 +171,34 @@ serve(async (req) => {
     return data.signedUrl
   }
 
+  // The object path is recovered from the student's OWN row (photo_url,
+  // written by the app's upload as <school_id>/<local-student-id>.jpg) —
+  // never from the caller. It must sit under this school's prefix and be
+  // a single .jpg segment, or the request is treated as having no photo.
+  function photoPathFromUrl(photoUrl: string | null): string | null {
+    if (!photoUrl) return null
+    // Exact prefix: THIS project's URL, the public-object route, the photo
+    // bucket — anything looser could be steered by a crafted stored URL.
+    const prefix = url + '/storage/v1/object/public/' + PHOTO_BUCKET + '/' + schoolId + '/'
+    if (!photoUrl.startsWith(prefix)) return null
+    const rest = photoUrl.slice(prefix.length)
+    if (!/^[^/]+\.jpg$/i.test(rest)) return null
+    return photoUrl.slice(url.length + '/storage/v1/object/public/'.length + PHOTO_BUCKET.length + 1)
+  }
+
   if (action === 'student') {
     // The student must belong to the resolved school (and, for a teacher,
-    // to one of the teacher's classes). The object path is built here.
+    // to one of the teacher's classes). The object path comes from the
+    // row's own photo_url (photoPathFromUrl), never from the caller.
     let q = admin.from('ss_students').select('id, cls, photo_url').eq('id', studentId).eq('school_id', schoolId)
     const { data: stu } = await q.maybeSingle()
     if (!stu) return json({ ok: false, error: 'not_allowed' }, 403)
     if (classScope && !(stu.cls && classScope.includes(stu.cls))) {
       return json({ ok: false, error: 'not_allowed' }, 403)
     }
-    if (!stu.photo_url) return json({ ok: false, error: 'no_photo' }, 404)
-    const signed = await sign(PHOTO_BUCKET, schoolId + '/' + studentId + '.jpg')
+    const path = photoPathFromUrl(stu.photo_url)
+    if (!path) return json({ ok: false, error: 'no_photo' }, 404)
+    const signed = await sign(PHOTO_BUCKET, path)
     if (!signed) return json({ ok: false, error: 'no_photo' }, 404)
     return json({ ok: true, url: signed, expires_in: SIGN_TTL_SECONDS }, 200)
   }
@@ -187,12 +209,15 @@ serve(async (req) => {
   if (logo) out['logo'] = logo
   const { data: students } = await admin
     .from('ss_students')
-    .select('id')
+    .select('id, photo_url')
     .eq('school_id', schoolId)
     .not('photo_url', 'is', null)
   for (const row of students || []) {
-    const signed = await sign(PHOTO_BUCKET, schoolId + '/' + row.id + '.jpg')
-    if (signed) out[row.id] = signed
+    const path = photoPathFromUrl(row.photo_url)
+    if (!path) continue
+    const signed = await sign(PHOTO_BUCKET, path)
+    // the app rebuilds <school_id>/<key>.jpg, so the key is the filename
+    if (signed) out[path.slice(schoolId.length + 1, -4)] = signed
   }
   return json({ ok: true, urls: out, expires_in: SIGN_TTL_SECONDS }, 200)
 })
