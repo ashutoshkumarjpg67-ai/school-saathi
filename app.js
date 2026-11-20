@@ -7050,6 +7050,7 @@ function loginCloudStudent(acct, slice, opts) {
   try { sessSet(CLOUD_STUDENT_KEY, JSON.stringify({ acct: acct, slice: slice, token: state.cloudParentToken })); } catch (e) {}
   showView('app'); renderApp();
   persistSession();
+  sbSyncAutoStart(); // v142: the photo re-mint due-check rides this tick - a fresh cloud login must start it too
   lastBackAt = 0; histExiting = false;
   histArmGuard();
   if (!opts || !opts.silent) toast(t('tLoggedIn') + ' ' + acct.name);
@@ -7470,6 +7471,7 @@ function loginCloudTeacher(acct, slice, token, opts) {
   try { sessSet(CLOUD_TEACHER_KEY, JSON.stringify({ acct: acct, slice: slice, token: token })); } catch (e) {}
   showView('app'); renderApp();
   persistSession();
+  sbSyncAutoStart(); // v142: same tick start for a fresh teacher login
   lastBackAt = 0; histExiting = false;
   histArmGuard();
   if (!opts || !opts.silent) toast(t('tLoggedIn') + ' ' + acct.name);
