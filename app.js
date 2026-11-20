@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 141;
+var APP_VERSION = 142;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -370,7 +370,11 @@ if (typeof window !== 'undefined' && window.addEventListener) {
 }
 function sbRefreshSignedPhotos() {
   try {
-    if (!sbSyncActive() || !sbIsOnline()) return;
+    sbSyncAutoStart(); // v142: the re-mint due-check rides the 30s tick, so any session that signs photos must have the tick running (login and restore, every role)
+    // v142: the old owner-only gate (sbSyncActive) silently skipped every
+    // cloud role - caught by the harness runtime tests, not by strings.
+    var signedRole = typeof state !== 'undefined' && state && (sbSyncActive() || state.cloudTeacherToken || state.cloudParentToken || state.cloudStaffToken);
+    if (!signedRole || !sbIsOnline()) return;
     // v141 (photo privacy): a parent/student session re-mints its ONE
     // student photo through the SQL 52 session token - the PIN is long
     // gone by now, and the server still enforces the single-student scope.
@@ -6912,7 +6916,7 @@ function doStudentLogin(e) {
 function sbStudentCloudLogin(serverId, adm, pin) {
   // v141: the login RPC is ss_parent_session_open (SQL 52) - it delegates
   // PIN verification to ss_student_cloud_login (same payload, lockout and
-  // all) and adds a 30-day revocable photo-session token for re-mints.
+  // all) and adds a 7-day revocable photo-session token for re-mints.
   return sbRest('POST', 'rpc/ss_parent_session_open', SB_ANON_KEY, { p_school_id: serverId, p_admission_no: adm, p_pin: pin }).then(function (r) {
     if (!r || !r.ok || !r.data || typeof r.data !== 'object') return null;
     return r.data;
@@ -7010,7 +7014,7 @@ function mapCloudStudentPayload(p) {
   var d = emptyDb({ name: (p.school && p.school.name) || '', city: (p.school && p.school.city) || '', principal: '', phone: '', email: '', session: '2025–26', address: '' }, []);
   var stuMap = {};
   var stu = sbRowToStudent(p.student || {});
-  if (p.student && p.student.id) stuMap[p.student.id] = stu.id;
+  if (p.student && p.student.id) { stuMap[p.student.id] = stu.id; stu.srvId = p.student.id; } // v142: photo re-mint needs the server id
   d.students = [stu];
   var examMap = {};
   d.exams = (p.exams || []).map(function (row) { var e = { id: row.local_id || ('srv-' + row.id), name: row.name || '', cls: row.cls || '', subject: row.subject || '', date: row.exam_date || '', total: row.total || 100, deleted: !!row.deleted }; examMap[row.id] = e.id; return e; });
