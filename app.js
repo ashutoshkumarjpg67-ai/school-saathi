@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 138;
+var APP_VERSION = 139;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -7703,7 +7703,7 @@ function principalDashboard() {
     '<div class="tile orange"><div class="n">₹' + ft.collected + '</div><div class="l">' + t('feeCollected') + '</div></div>' +
     '<div class="tile red"><div class="n">₹' + ft.pending + '</div><div class="l">' + t('pendingFee') + '</div></div>' +
     '</div>' +
-    '<div class="card" style="margin-top:16px"><h3>' + t('todayAtt') + '</h3><p class="card-sub">' + st.avgAtt + '% ' + t('tileAtt') + ' • ' + db.students.length + ' ' + t('studentsW') + '</p>' + // v88b: studentStats returns avgAtt, not att (the live check showed "undefined%")
+    '<div class="card" style="margin-top:16px"><h3>' + t('todayAtt') + '</h3><p class="card-sub">' + (ta.total ? donutPct(ta.present, ta.total) + '% ' + t('presBtn') : t('attNotMarked')) + ' • ' + db.students.length + ' ' + t('studentsW') + '</p>' + // v139: subtitle matches the donut (today), not the all-time average — the old avgAtt subtitle contradicted the donut centre whenever today differed from the average
     donutSVG([{ value: ta.present, color: GREEN, label: t('presBtn'), pct: donutPct(ta.present, ta.total) }, { value: ta.absent, color: RED, label: t('absBtn'), pct: donutPct(ta.absent, ta.total) }, { value: ta.late, color: ORANGE, label: t('lateBtn'), pct: donutPct(ta.late, ta.total) }], 190, donutPct(ta.present, ta.total) + '%', t('todayAtt')) + '</div>' +
     '<div class="card" style="margin-top:16px"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div>';
 }
