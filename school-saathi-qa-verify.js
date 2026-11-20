@@ -7741,6 +7741,7 @@ function v28hcall(html, fn, want, name) { const r = hcallCheck(html, fn, want); 
   const sql49 = readRel('supabase/49_private_photo_buckets.sql');
   v28ok(sql49.includes("id = 'student-photos'") && sql49.includes('set public = false') && sql49.includes('school-logos INTENTIONALLY STAYS PUBLIC') && sql49.includes('set public = true'), 'v145: SQL 49 flips ONLY student-photos private, keeps school-logos public (unsigned logo renders) and documents the emergency rollback');
 })();
+;(() => { const sql53 = readRel('supabase/53_login_picker_school_guard.sql'); v28ok(sql53.includes('create or replace function public.ss_public_schools()') && sql53.includes('s.is_demo = false') && sql53.includes('length(btrim(s.name)) > 0') && sql53.includes('grant execute on function public.ss_public_schools() to anon, authenticated'), 'SQL 53: the login-picker directory applies the SQL 46 listable rule (no blank-name or demo schools, anon keep-execute)'); })();
 const tick = () => new Promise(r => setTimeout(r, 0));
 // B3 (harness fix): logout() is async (flush-then-clear) — a test that
 // proceeds right after ctx.logout() races the clear; the late clear
