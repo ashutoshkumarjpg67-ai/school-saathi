@@ -22,8 +22,10 @@ all student photos of the school) for owners only.
 
 Rules enforced here:
 
-- Object paths are built on the server (`<school_id>/<student_id>.jpg`,
-  `<school_id>/logo.png`). The caller never supplies a path; owner and
+- Object paths are recovered on the server from the authorized row's own
+  `photo_url` (the app stores photos as `<school_id>/<local-student-id>.jpg`),
+  validated to sit under the school's prefix; the logo is
+  `<school_id>/logo.png`. The caller never supplies a path; owner and
   teacher modes never take a school id from the client at all.
 - The service_role key comes from the functions runtime environment
   (`SUPABASE_SERVICE_ROLE_KEY`) and never appears in code, logs, or the
