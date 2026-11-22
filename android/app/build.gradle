@@ -1,5 +1,12 @@
 apply plugin: 'com.android.application'
 
+// versionCode/versionName come from the repo's single source of truth,
+// version.json (same number check-version.mjs enforces). Play Store needs
+// versionCode to rise on every release, so bump version.json and rebuild.
+def ssVersion = new groovy.json.JsonSlurper()
+        .parse(rootProject.file('../version.json'))
+        .version as int
+
 android {
     namespace = "in.schoolsaathi.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +14,8 @@ android {
         applicationId "in.schoolsaathi.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode ssVersion
+        versionName "${ssVersion}.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -18,8 +25,9 @@ android {
     }
     buildTypes {
         release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 }

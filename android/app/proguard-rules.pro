@@ -19,3 +19,18 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# --- School Saathi: release minify (R8) ---
+# Capacitor bridge + plugins are called by name from JS; keep them intact.
+-keep class com.getcapacitor.** { *; }
+-keep @com.getcapacitor.annotation.CapacitorPlugin class * { *; }
+-keepclassmembers class * {
+    @com.getcapacitor.PluginMethod public *;
+    @android.webkit.JavascriptInterface <methods>;
+}
+-keep class org.apache.cordova.** { *; }
+-keep class in.schoolsaathi.app.** { *; }
+-keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
+# Readable crash stack traces in Play Console
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
