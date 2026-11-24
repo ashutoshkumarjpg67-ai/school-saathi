@@ -15,12 +15,24 @@ the app (v60, Settings → Delete Account); this function is what makes the
 2. Deletes the school's rows across the `ss_*` tables — the 14 tables
    `ss_wipe_school` (05) covers **plus** `ss_student_login_attempts`
    (SQL 17), `ss_teacher_sessions` and `ss_teacher_login_attempts`
-   (SQL 18), which the RPC does not cover — then the school row, then
+   (SQL 18), `ss_staff`, `ss_staff_sessions` and
+   `ss_staff_login_attempts` (SQL 30), `ss_parent_pin_attempts`
+   (SQL 36), `ss_holidays` (SQL 38), `ss_classes` (SQL 42) and
+   `ss_parent_sessions` (SQL 52) — then the school row, then
    the email-keyed `ss_school_login_attempts` row (SQL 19) and any
-   `ss_platform_admins` row.
-3. Deletes the Auth user with the Admin API. The same email can then sign
+   `ss_platform_admins` row. The three session/attempt tables with no
+   foreign key to `ss_schools` (`ss_staff_sessions`,
+   `ss_staff_login_attempts`, `ss_parent_pin_attempts`) are deleted
+   explicitly — without that they would survive as orphans.
+   `ss_platform_settings` is platform-wide and is never deleted.
+3. Deletes the school's Storage objects **before** any row — the logo
+   (`school-logos/<school_id>/logo.png`) and every student photo
+   (`student-photos/<school_id>/<student_id>.jpg`). A storage failure
+   is fail-closed (`500 storage-delete-failed`, nothing deleted, safe
+   to retry); a bucket that was never created is skipped.
+4. Deletes the Auth user with the Admin API. The same email can then sign
    up again as a brand-new, empty school; the old data cannot come back.
-4. Returns `{ deleted: true, school_id, school_name }` on success, or
+5. Returns `{ deleted: true, school_id, school_name }` on success, or
    `{ error: ... }` with 401 / 404 (`no-school`) / 500 on failure.
 
 ## What it does NOT do
