@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 149;
+var APP_VERSION = 150;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -8513,15 +8513,9 @@ function renderApp() {
   $('sideNav').innerHTML = nav.map(function (n) {
     return '<button class="' + (state.view === n[0] ? 'active' : '') + '" onmousedown="queueNav(\'' + n[0] + '\')" onclick="go(\'' + n[0] + '\')"><span class="ic">' + n[1] + '</span>' + esc(t(n[2])) + '</button>';
   }).join('');
-  // v147: phone-first bottom nav — the first 4 of this role's NAV + More
-  // (opens the sidebar drawer, where the rest of the destinations live).
-  // Hidden on desktop by CSS; the sidebar stays the nav there.
-  var bn = $('bottomNav');
-  if (bn) {
-    bn.innerHTML = nav.slice(0, 4).map(function (n) {
-      return '<button class="' + (state.view === n[0] ? 'active' : '') + '" onmousedown="queueNav(\'' + n[0] + '\')" onclick="go(\'' + n[0] + '\')"><span class="ic">' + n[1] + '</span>' + esc(t(n[2])) + '</button>';
-    }).join('') + '<button onclick="toggleSidebar(true)"><span class="ic">\u22EF</span>' + esc(t('moreNav')) + '</button>';
-  }
+  // v150: bottom nav removed entirely (user order 24 Nov 2026 — the emoji
+  // tabs looked cheap/unprofessional). Navigation is sidebar-only again,
+  // as before v147; on phones the sidebar opens from the hamburger.
   var u = state.user;
   var me = (state.role === 'student' || state.role === 'parent') ? meStudent() : null; // v86: a parent's sidebar avatar is the child's photo too
   var whoPhoto = me ? sbDisplayPhoto(me.photo) : null; // v139: sidebar avatar goes through the signed-URL cache like every other avatar

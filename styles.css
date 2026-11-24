@@ -218,18 +218,6 @@ tbody tr:hover{background:var(--bg-soft)}
 .hw-item span{font-size:var(--text-xs);color:var(--muted)}
 
 
-/* ---------- v147: bottom navigation (phone-first) ---------- */
-/* Hidden on desktop (sidebar is the nav there). On phones the first 4 of
-   the role's NAV render here + More opens the sidebar drawer. */
-.bottom-nav{display:none}
-@media (max-width:760px){
-  .bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;background:#fff;border-top:1px solid var(--border);box-shadow:0 -6px 20px rgba(var(--navy-rgb),.10);padding-bottom:env(safe-area-inset-bottom, 0px)}
-  .bottom-nav button{flex:1;background:transparent;border:0;padding:8px 2px 9px;min-height:56px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:12px;font-weight:600;color:var(--muted);font-family:inherit}
-  .bottom-nav button .ic{font-size:20px;line-height:1}
-  .bottom-nav button.active{color:var(--blue)}
-  #toast{bottom:calc(88px + env(safe-area-inset-bottom, 0px))} /* toast sits above the bottom nav, never under it */
-}
-
 /* ---------- v147: big dashboard action cards (the day's work first) ---------- */
 .action-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-md);margin-bottom:18px}
 .action-card{background:var(--navy);color:#fff;border:0;border-radius:var(--radius);padding:18px 16px;min-height:96px;text-align:left;display:flex;flex-direction:column;gap:6px;cursor:pointer;font-family:inherit;box-shadow:var(--shadow);transition:transform .15s ease,box-shadow .15s ease}
@@ -285,7 +273,7 @@ tbody tr:hover{background:var(--bg-soft)}
   .stats{grid-template-columns:1fr 1fr;gap:11px}
   .stat{padding:14px}
   .stat .val{font-size:21px}
-  .page{padding:15px;padding-bottom:calc(96px + env(safe-area-inset-bottom, 0px))} /* v147: room for the bottom nav */
+  .page{padding:15px}
   .topbar{padding:calc(11px + env(safe-area-inset-top, 0px)) 14px 11px}
   .topbar h1{font-size:16px}
   .topbar .who > span:last-child{display:none}

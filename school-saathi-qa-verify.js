@@ -7184,12 +7184,19 @@ console.log(css.includes('--text-base:16px') && css.includes('--text-md:15px') &
   ? 'PASS v147: base text 16px, buttons/inputs min-height 44px'
   : 'FAIL v147: text tokens or 44px tap targets missing');
 if (!(css.includes('--text-base:16px') && css.includes('--text-md:15px') && css.includes('min-height:44px'))) process.exitCode = 1;
-// (2) Bottom nav: element in index.html + CSS rules + renderApp builds it from NAV.
+// (2) Bottom nav: REMOVED in v150 at the user's order (24 Nov 2026 —
+// the emoji tabs looked cheap/unprofessional). No element in
+// index.html, no CSS rules, no renderApp code, no More key — and no
+// leftover clearance (96px page padding / 88px toast lift) either.
 var html147 = require('fs').readFileSync('index.html', 'utf8');
-console.log(html147.includes('id="bottomNav"') && css.includes('.bottom-nav') && src.includes("var bn = $('bottomNav')")
-  ? 'PASS v147: bottom nav exists (index.html + CSS + renderApp from NAV)'
-  : 'FAIL v147: bottom nav missing in index.html, styles.css or renderApp');
-if (!(html147.includes('id="bottomNav"') && css.includes('.bottom-nav') && src.includes("var bn = $('bottomNav')"))) process.exitCode = 1;
+var bn150gone = !html147.includes('id="bottomNav"') && !html147.includes('bottom-nav')
+  && !css.includes('.bottom-nav') && !src.includes("var bn = $('bottomNav')")
+  && !src.includes("t('moreNav')") && !css.includes('padding-bottom:calc(96px')
+  && !css.includes('bottom:calc(88px');
+console.log(bn150gone
+  ? 'PASS v150: bottom nav fully removed (no element, CSS, renderApp code, More key, or leftover clearance)'
+  : 'FAIL v150: bottom nav still present in index.html, styles.css, renderApp, or its clearance survives');
+if (!bn150gone) process.exitCode = 1;
 // (5) Dashboard actions first: inside schoolDashboard() the action row comes
 // BEFORE the stats grid, and the old bottom Quick Links card is gone.
 // (String check at top level — app functions live in the VM context, not here.)
@@ -7215,12 +7222,12 @@ console.log(sess147ok
   : 'FAIL v147: session-expiry gaps fix missing (SESSION_CLOCK_SKEW_MS / future-dated check / toast)');
 if (!sess147ok) process.exitCode = 1;
 // ---- v148: live-check bug fixes (24 Nov 2026, Test Sunrise School) ----
-// (0) Version markers: version.json says 149 (APP_VERSION / sw.js /
+// (0) Version markers: version.json says 150 (APP_VERSION / sw.js /
 // ?v= are pinned generically against EXPECTED_VERSION above).
-console.log(EXPECTED_VERSION === 149
-  ? 'PASS v149: version.json says 149'
-  : 'FAIL v149: version.json does not say 149 (got ' + EXPECTED_VERSION + ')');
-if (EXPECTED_VERSION !== 149) process.exitCode = 1;
+console.log(EXPECTED_VERSION === 150
+  ? 'PASS v150: version.json says 150'
+  : 'FAIL v150: version.json does not say 150 (got ' + EXPECTED_VERSION + ')');
+if (EXPECTED_VERSION !== 150) process.exitCode = 1;
 // (1) Nav presses queue on mousedown and the next render applies them.
 var q148ok = src.includes('function queueNav(view)') && src.includes('onmousedown="queueNav(') && src.includes('if (pendingNav) { var pv148 = pendingNav;');
 console.log(q148ok
@@ -7282,10 +7289,10 @@ console.log(c8ok
   ? 'PASS v148 bug 8: attendance first-open fallback to a class with students + picked class sticks'
   : 'FAIL v148 bug 8: onAttCls148 / first-with-students fallback missing');
 if (!c8ok) process.exitCode = 1;
-console.log(css.includes('.bottom-nav') && css.includes('760px') && src.includes("t('moreNav')")
-  ? 'PASS v148 bug 9: bottom nav renders (CSS 760px breakpoint + More button in renderApp)'
-  : 'FAIL v148 bug 9: bottom nav / More button missing');
-if (!(css.includes('.bottom-nav') && css.includes('760px') && src.includes("t('moreNav')"))) process.exitCode = 1;
+console.log(!css.includes('.bottom-nav') && !src.includes("t('moreNav')")
+  ? 'PASS v150 bug 9: bottom nav stays removed (no CSS, no More button in renderApp)'
+  : 'FAIL v150 bug 9: bottom nav / More button came back');
+if (css.includes('.bottom-nav') || src.includes("t('moreNav')")) process.exitCode = 1;
 // ---- v149: bug 4 follow-up from the v148 live check (24 Nov 2026) ----
 // The live check found one false alarm left: Marks 85 vs 85, only the
 // id formats differ. Natural-key FKs are now skipped in the identical

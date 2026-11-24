@@ -32,9 +32,10 @@
 //  8. Attendance opened on 10th-A, which has no students — first open
 //     falls back to the first class that actually has students; a
 //     picked class sticks.
-//  9. Bottom nav is phone-only (<=760px) — the harness asserts it
-//     renders with the role tabs + More; the live phone-width check
-//     happens in the user's Chrome after the push.
+//  9. Bottom nav was phone-only (<=760px) — REMOVED in v150 at the
+//     user's order (24 Nov 2026): the emoji tabs looked cheap and
+//     unprofessional. Navigation is sidebar-only again, as before v147;
+//     the tests below now assert the bar is fully gone, no strip left.
 //
 // The harness's getElementById returns a fresh stub per call, so a
 // render's innerHTML writes vanish — and the real renderApp throws on
@@ -103,16 +104,16 @@ function disarm(app) {
 }
 
 describe('v148 version markers', () => {
-  it('APP_VERSION, version.json and package.json are all 149', () => {
+  it('APP_VERSION, version.json and package.json are all 150', () => {
     const app = createAppContext();
-    assert.equal(app.get('APP_VERSION'), 149);
-    assert.equal(VERSION_JSON.version, 149);
-    assert.equal(PACKAGE_JSON.version, '149.0.0');
+    assert.equal(app.get('APP_VERSION'), 150);
+    assert.equal(VERSION_JSON.version, 150);
+    assert.equal(PACKAGE_JSON.version, '150.0.0');
   });
 
-  it('sw.js cache is school-saathi-v149 with ?v=149 assets', () => {
-    assert.match(SW_SRC, /CACHE_NAME = 'school-saathi-v149'/);
-    assert.ok(SW_SRC.includes('app.js?v=149'), 'app.js?v=149 missing from sw.js precache');
+  it('sw.js cache is school-saathi-v150 with ?v=150 assets', () => {
+    assert.match(SW_SRC, /CACHE_NAME = 'school-saathi-v150'/);
+    assert.ok(SW_SRC.includes('app.js?v=150'), 'app.js?v=150 missing from sw.js precache');
   });
 });
 
@@ -139,12 +140,10 @@ describe('bug 1 — nav presses are queued, never swallowed', () => {
     disarm(app);
   });
 
-  it('sidebar, bottom nav and dashboard action cards all fire queueNav on mousedown', () => {
+  it('sidebar and dashboard action cards fire queueNav on mousedown (v150: bottom nav is gone)', () => {
     const app = loginSchool(appWithDom(), true);
     const side = app.run(`__els148.sideNav.innerHTML`);
-    const bottom = app.run(`__els148.bottomNav.innerHTML`);
     assert.ok(side.includes(`onmousedown="queueNav('attendance')"`), 'sidebar Attendance lacks queueNav');
-    assert.ok(bottom.includes(`onmousedown="queueNav('students')"`), 'bottom nav lacks queueNav');
     const dash = app.run('schoolDashboard()');
     assert.ok(dash.includes(`onmousedown="queueNav('attendance')"`), 'action card lacks queueNav');
     assert.ok(dash.includes(`onmousedown="queueNav('fees')"`), 'Collect Fee card lacks queueNav');
@@ -347,21 +346,22 @@ describe('bug 8 — attendance defaults to the first class with students', () =>
   });
 });
 
-describe('bug 9 — bottom nav renders with the role tabs + More', () => {
-  it('bottom nav has the first four role tabs, each queueing nav, plus More', () => {
+describe('bug 9 — bottom nav (v150: REMOVED entirely at the user order)', () => {
+  it('no bottom-nav element is rendered, and renderApp never touches it', () => {
     const app = loginSchool(appWithDom(), true);
-    const bottom = app.run(`__els148.bottomNav.innerHTML`);
-    assert.ok(bottom.length > 0, 'bottom nav rendered empty');
-    for (const label of ['Dashboard', 'Student Management', 'Teachers']) {
-      assert.ok(bottom.includes(label), 'bottom nav missing tab: ' + label);
-    }
-    assert.ok(bottom.includes('More'), 'bottom nav missing the More button');
-    assert.ok(bottom.includes(`onmousedown="queueNav(`), 'bottom nav tabs lack queueNav');
+    // The fake DOM only creates an element when code asks for it — a
+    // renderApp that still built the bar would create bottomNav here.
+    assert.equal(app.run(`typeof __els148.bottomNav === 'undefined'`), true);
+    assert.ok(!APP_SRC.includes("$('bottomNav')"), 'app.js still references bottomNav');
     disarm(app);
   });
 
-  it('bottom nav is hidden on desktop by CSS and shown only at phone width', () => {
-    assert.match(STYLES_SRC, /\.bottom-nav\{display:none\}/);
-    assert.match(STYLES_SRC, /@media[^{]*max-width:\s*760px[^{]*\{[^}]*\.bottom-nav\{[^}]*display:flex/s);
+  it('no bottom-nav markup, CSS, or More key survives anywhere', () => {
+    assert.ok(!INDEX_SRC.includes('bottomNav'), 'index.html still has the bottom-nav element');
+    assert.ok(!INDEX_SRC.includes('bottom-nav'), 'index.html still mentions bottom-nav');
+    assert.ok(!STYLES_SRC.includes('.bottom-nav'), 'styles.css still has .bottom-nav rules');
+    assert.ok(!STYLES_SRC.includes('bottom:calc(88px'), 'styles.css still lifts the toast above a bottom nav');
+    assert.ok(!STYLES_SRC.includes('padding-bottom:calc(96px'), 'styles.css still reserves page room for the bottom nav');
+    assert.ok(!I18N_SRC.includes('moreNav'), 'i18n.js still has the More key');
   });
 });
