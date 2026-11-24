@@ -7244,10 +7244,10 @@ if (!sess147ok) process.exitCode = 1;
 // ---- v148: live-check bug fixes (24 Nov 2026, Test Sunrise School) ----
 // (0) Version markers: version.json says 150 (APP_VERSION / sw.js /
 // ?v= are pinned generically against EXPECTED_VERSION above).
-console.log(EXPECTED_VERSION === 150
-  ? 'PASS v150: version.json says 150'
-  : 'FAIL v150: version.json does not say 150 (got ' + EXPECTED_VERSION + ')');
-if (EXPECTED_VERSION !== 150) process.exitCode = 1;
+console.log(EXPECTED_VERSION === 151
+  ? 'PASS v151: version.json says 151'
+  : 'FAIL v151: version.json does not say 151 (got ' + EXPECTED_VERSION + ')');
+if (EXPECTED_VERSION !== 151) process.exitCode = 1;
 // (1) Nav presses queue on mousedown and the next render applies them.
 var q148ok = src.includes('function queueNav(view)') && src.includes('onmousedown="queueNav(') && src.includes('if (pendingNav) { var pv148 = pendingNav;');
 console.log(q148ok

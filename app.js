@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 150;
+var APP_VERSION = 151;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -776,8 +776,15 @@ function sbSyncDetailsHtml() {
   } else {
     h += '<div>' + esc(t('sbSyncLastCycle')) + ': —</div>';
   }
+  // v150 (security): the conflicts figure is re-read LIVE here, not
+  // taken from the stored lastFlush diag. That diag is a flush-time
+  // snapshot, so a conflict recorded after the last flush (a pull-time
+  // record, the settlement prune, a manual resolve) left the line
+  // stale on load — "conflicts 0" under a "Sync conflicts (5)"
+  // heading. The heading and this line now always read the same
+  // recorded total.
   if (lf) {
-    h += '<div>' + esc(t('sbSyncLastFlush')) + ': ' + esc(t('sbSyncPushed')) + ' ' + esc(String(lf.pushed || 0)) + ' · ' + esc(t('sbSyncConflicts')) + ' ' + esc(String(lf.conflicts || 0)) + ' · ' + esc(t('sbSyncLeftover')) + ' ' + esc(String(lf.leftover || 0)) + ' · ' + esc(lf.ms == null ? '' : (lf.ms / 1000).toFixed(1) + 's') + (lf.calls != null ? ' · ' + esc(String(lf.calls)) + ' ' + esc(t('sbSyncCalls')) : '') + '</div>';
+    h += '<div>' + esc(t('sbSyncLastFlush')) + ': ' + esc(t('sbSyncPushed')) + ' ' + esc(String(lf.pushed || 0)) + ' · ' + esc(t('sbSyncConflicts')) + ' ' + esc(String(sbSyncRecordedConflictCount())) + ' · ' + esc(t('sbSyncLeftover')) + ' ' + esc(String(lf.leftover || 0)) + ' · ' + esc(lf.ms == null ? '' : (lf.ms / 1000).toFixed(1) + 's') + (lf.calls != null ? ' · ' + esc(String(lf.calls)) + ' ' + esc(t('sbSyncCalls')) : '') + '</div>';
   }
   if (out.length) {
     h += '<div class="mt-4">' + esc(t('sbSyncQueued')) + ':</div>';
@@ -815,8 +822,21 @@ function sbSyncDetailsRefresh() {
 }
 var SB_CONFLICT_TABLE_LABELS = { ss_students: 'Student', ss_teachers: 'Teacher', ss_staff: 'Staff', ss_fee_records: 'Fee record', ss_fee_structure: 'Fee structure', ss_attendance: 'Attendance', ss_marks: 'Marks', ss_exams: 'Exam', ss_homework: 'Homework', ss_notices: 'Notice', ss_holidays: 'Holiday', ss_timetable: 'Timetable', ss_receipts: 'Receipt', ss_schools: 'School profile' };
 var SB_CONFLICT_HIDE_KEYS = { id: 1, school_id: 1, local_id: 1, created_at: 1, updated_at: 1, _adoptedByNaturalKey: 1, photo_url: 1, photo_data_url: 1 };
+// v150 (security): field names that carry a credential. The conflict
+// view prints rows field-by-field, and a teacher/staff row carries
+// pw_hash (the salted login hash rides the server row — sbMapTeacher /
+// sbMapStaff) while a student row carries parent_pin (the parent-PIN
+// hash — sbMapStudent). Either used to render in the open. Names are
+// matched case-insensitively with separators stripped, so a server
+// column (pw_hash) and a local field (parentPinHash) redact alike.
+var SB_CONFLICT_SECRET_KEYS = ['pwhash', 'passwordhash', 'password', 'passwd', 'parentpin', 'parentpinhash', 'pinhash', 'accesstoken', 'refreshtoken', 'token', 'secret'];
+function sbSyncConflictIsSecret(k) {
+  var lk = String(k || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (SB_CONFLICT_SECRET_KEYS.indexOf(lk) !== -1) return true;
+  return lk.indexOf('password') !== -1 || lk.indexOf('token') !== -1 || lk.indexOf('secret') !== -1;
+}
 function sbSyncConflictLabel(k) {
-  var map = { name: 'Name', admission_no: 'Admission no.', cls: 'Class', section: 'Section', phone: 'Phone', dob: 'Date of birth', gender: 'Gender', status: 'Status', amount: 'Amount', month: 'Month', fee_type: 'Fee type', date: 'Date', holiday_date: 'Date', reason: 'Reason', marks: 'Marks', exam_id: 'Exam', student_id: 'Student', title: 'Title', sub: 'Details', action: 'Action', details: 'Details', actor: 'By', ts: 'When', receipt_no: 'Receipt no.', total: 'Total', counter_no: 'Counter no.', profile: 'Profile', admCounter: 'Admission counter', receiptCounter: 'Receipt counter', feeExtras: 'Fee extras' };
+  var map = { name: 'Name', admission_no: 'Admission no.', cls: 'Class', section: 'Section', phone: 'Phone', dob: 'Date of birth', gender: 'Gender', status: 'Status', amount: 'Amount', month: 'Month', fee_type: 'Fee type', date: 'Date', holiday_date: 'Date', reason: 'Reason', marks: 'Marks', exam_id: 'Exam', student_id: 'Student', title: 'Title', sub: 'Details', action: 'Action', details: 'Details', actor: 'By', ts: 'When', receipt_no: 'Receipt no.', total: 'Total', counter_no: 'Counter no.', profile: 'Profile', admCounter: 'Admission counter', receiptCounter: 'Receipt counter', feeExtras: 'Fee extras', pw_hash: 'Password', parent_pin: 'Parent PIN' };
   if (map[k]) return map[k];
   return String(k).replace(/_/g, ' ');
 }
@@ -828,6 +848,11 @@ function sbSyncConflictRowHtml(row) {
   if (!keys.length) return '<div class="muted">—</div>';
   var h = '<div style="font-size:13px;line-height:1.7">';
   keys.slice(0, 10).forEach(function (k) {
+    // v150 (security): a credential field is never printed — the label
+    // stays so the admin sees the field exists on both sides, but the
+    // value is masked. The hash stays in the stored record (local
+    // vault-sealed db only); only the rendering is redacted.
+    if (sbSyncConflictIsSecret(k)) { h += '<div><b>' + esc(sbSyncConflictLabel(k)) + ':</b> ••••••</div>'; return; }
     var v = row[k];
     var vs = (v === null || v === undefined || v === '') ? '—' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
     h += '<div><b>' + esc(sbSyncConflictLabel(k)) + ':</b> ' + esc(vs.slice(0, 80)) + '</div>';
@@ -3153,6 +3178,9 @@ function sbSyncDiagSet(patch) {
 // the two always agree. Read at flush time, after this flush's new
 // records; the cycle-settlement prune may drop false alarms after
 // that, and the next flush's line picks the new total up.
+// v150: the render re-reads the live total (sbSyncDetailsHtml), so a
+// conflict recorded after the last flush no longer leaves the line
+// stale on load — the stored diag value is only a fallback record.
 function sbSyncRecordedConflictCount() {
   try { return (db && Array.isArray(db.syncConflicts)) ? db.syncConflicts.length : 0; } catch (e) { return 0; }
 } // per Supabase uid: [{table,key,op,row,at}]
