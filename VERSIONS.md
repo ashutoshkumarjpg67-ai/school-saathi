@@ -1,3 +1,11 @@
+## v151 — security: password hash / parent PIN redacted in Sync conflicts + stale Last-flush line fixed
+
+- **Security fix (24 Nov 2026, PR #85):** Settings > Sync conflicts rendered teacher `pw_hash` and student `parent_pin` in the open. The conflict renderer now masks secret fields (`pw_hash`, `parent_pin`, tokens) as `••••••` and labels them 'Password' / 'Parent PIN'; every other render site was audited (audit log, student profile, teacher/staff lists) and renders no credential values.
+- **Stale Last-flush line:** the Settings sync-details line now reads the live recorded conflict total instead of the stored flush-time value, so it always matches the 'Sync conflicts (N)' heading.
+- **Tests:** new `tests/phase8/v150-sync-conflict-redact.test.mjs` (6 tests, written at v150) — hash/PIN/token masking on both conflict sides, stale-diag case. Full suite 282 pass at v150 base; see PR #85.
+- **Version bump:** all markers 150 → 151 (version.json, APP_VERSION, sw.js CACHE_NAME + ?v=151, index.html/landing.html ?v=151, package.json 151.0.0); privacy-policy/terms header 'App version 147' → 151. Based on main d99b336 (PR #84 Super Admin merged).
+- **No other changes:** no sync-behaviour change, no SQL, no live-data change.
+
 ## v150 — bottom nav removed entirely (back to sidebar-only, as before v147)
 
 - **User order (24 Nov 2026, phone screenshot of the Don Basco dashboard):** "Ye niche waale tab icon hta do pahle jaise hi thik tha. Bahut cheap lag rha hai. Ai emoji wale icons nahi professional." The v147 bottom tab bar (Dashboard, Student Management, Teachers, Staff, More — emoji icons) is removed COMPLETELY: no redesign, no SVG replacement, no text-only tabs, no placeholder.
