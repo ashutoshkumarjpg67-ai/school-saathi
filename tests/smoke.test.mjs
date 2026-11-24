@@ -55,6 +55,7 @@ describe('source parses', () => {
     'tests/landing.test.mjs',
     'tests/smoke.test.mjs',
     'tests/session-expiry.test.mjs',
+    'tests/super-admin.test.mjs',
   ];
   for (const f of files) {
     it(`node --check ${f}`, () => {

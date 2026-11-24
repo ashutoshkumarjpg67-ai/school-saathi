@@ -968,7 +968,7 @@ function sbCheckSuperAdmin(token, email, uid) {
     state.sb = { uid: uid, email: email };
     $('loginErr').classList.add('hidden');
     loginAs(a);
-    sbLoadSuperSchools(token);
+    sbLoadSuperData(token);
     return true;
   }).catch(function () { return false; });
 }
@@ -978,22 +978,96 @@ function sbLoadSuperSchools(token) {
   // (is_ss_admin), so this is one plain PostgREST select. The result is
   // cached on state; the page re-renders when it lands.
   var tk = token || (state.sb && state.sbToken) || SB_ANON_KEY;
-  return sbRest('GET', 'ss_schools?select=id,name,city,session,owner_id,created_at&order=name.asc', tk).then(function (res) {
+  return sbRest('GET', 'ss_schools?select=id,name,city,session,owner_id,created_at,is_demo&order=name.asc', tk).then(function (res) {
     if (res && res.ok && Array.isArray(res.data)) {
       state.superSchools = res.data;
-      if (state.role === 'superadmin' && state.view === 'schools') renderPage();
+      if (state.role === 'superadmin' && (state.view === 'schools' || state.view === 'dashboard')) renderPage();
     }
     return res;
   }).catch(function () { return null; });
 }
+function sbLoadSuperStats(token) {
+  // Super Admin dashboard: per-school student / teacher / staff counts
+  // from one admin-only RPC (SQL 56, ss_super_admin_school_stats). The
+  // RPC itself raises for non-admins, so a failed call here never leaks
+  // anything — it only means the counts are unavailable (SQL 56 not
+  // applied yet, or offline). The schools list still works without it:
+  // state.superStats stays null and the counts render as '—'.
+  var tk = token || (state.sb && state.sbToken) || SB_ANON_KEY;
+  return sbRest('POST', 'rpc/ss_super_admin_school_stats', tk, {}).then(function (res) {
+    if (res && res.ok && Array.isArray(res.data)) {
+      state.superStats = res.data;
+      if (state.role === 'superadmin' && (state.view === 'schools' || state.view === 'dashboard')) renderPage();
+    }
+    return res;
+  }).catch(function () { return null; });
+}
+function sbLoadSuperData(token) {
+  // One guarded load of both super admin lists per session (login and
+  // session restore call this; a re-render never re-fires it). The two
+  // calls run in parallel — either may fail alone without blocking the
+  // other, and a failed stats call is retried on the next login.
+  if (state.superLoaded) return;
+  state.superLoaded = true;
+  sbLoadSuperSchools(token);
+  sbLoadSuperStats(token);
+}
+function mergeSuperSchoolStats(schools, stats) {
+  // Pure merge: one row per school, counts joined by school id. A
+  // school with no stats row (SQL 56 not applied, or a school created
+  // after the stats call) gets null counts — the page shows '—', never
+  // a made-up 0. A stats row for an unknown school id is ignored.
+  var byId = {};
+  (stats || []).forEach(function (r) { if (r && r.school_id) byId[r.school_id] = r; });
+  return (schools || []).map(function (s) {
+    var st = byId[s.id] || null;
+    return { id: s.id, name: s.name, city: s.city, session: s.session, owner_id: s.owner_id, created_at: s.created_at, is_demo: !!s.is_demo, students: st ? st.student_count : null, teachers: st ? st.teacher_count : null, staff: st ? st.staff_count : null };
+  });
+}
+function superAdminTotals(rows) {
+  // Platform totals over the merged rows. Totals sum only rows that
+  // actually have counts; statsReady is false until every row does, so
+  // the dashboard never presents a partial sum as the platform total.
+  var tot = { schools: (rows || []).length, students: 0, teachers: 0, staff: 0, statsReady: true };
+  (rows || []).forEach(function (r) {
+    if (r.students == null || r.teachers == null || r.staff == null) { tot.statsReady = false; return; }
+    tot.students += r.students; tot.teachers += r.teachers; tot.staff += r.staff;
+  });
+  return tot;
+}
+function superAdminDashboard() {
+  // Super Admin dashboard (read-only platform overview). Defence in
+  // depth: renderPage() only calls this for the superadmin role, and
+  // go() enforces PERMS first — but a direct state.view must never
+  // render another role's data either, so the role is checked here too.
+  if (state.role !== 'superadmin') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
+  if (!state.superSchools) return '<div class="card"><div class="empty">' + t('loading') + '</div></div>';
+  var rows = mergeSuperSchoolStats(state.superSchools, state.superStats);
+  var tot = superAdminTotals(rows);
+  return '<div class="page-head"><div><h2>' + t('superAdminDash') + '</h2><p>' + t('saPlatformSub') + '</p></div></div>' +
+    '<div class="tile-grid">' +
+    '<div class="tile blue"><div class="n">' + tot.schools + '</div><div class="l">' + t('saTotalSchools') + '</div></div>' +
+    '<div class="tile green"><div class="n">' + (tot.statsReady ? tot.students : '—') + '</div><div class="l">' + t('saTotalStudents') + '</div></div>' +
+    '<div class="tile yellow"><div class="n">' + (tot.statsReady ? tot.teachers : '—') + '</div><div class="l">' + t('saTotalTeachers') + '</div></div>' +
+    '<div class="tile purple"><div class="n">' + (tot.statsReady ? tot.staff : '—') + '</div><div class="l">' + t('saTotalStaff') + '</div></div>' +
+    '</div>' +
+    '<div class="card" style="margin-top:16px"><p class="card-sub">' + t('saReadOnly') + (tot.statsReady ? '' : ' ' + t('saStatsPending')) + '</p>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" onclick="go(\'schools\')">' + esc(t('schools')) + '</button></div></div>';
+}
 function schoolsPage() {
-  // v94: the super admin's schools list (read-only in this step).
-  var rows = (state.superSchools || []).map(function (s) {
-    return '<tr><td><b>' + esc(s.name || '—') + '</b></td><td>' + esc(s.city || '—') + '</td><td>' + esc(s.session || '—') + '</td><td>' + esc(s.owner_id || '—') + '</td><td>' + esc(s.created_at ? String(s.created_at).slice(0, 10) : '—') + '</td></tr>';
+  // Super Admin schools list (read-only inspection). Same role guard
+  // as the dashboard: only a super admin ever reaches this page, and
+  // there are no edit / login-as / delete actions on it by design.
+  if (state.role !== 'superadmin') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
+  var rows = mergeSuperSchoolStats(state.superSchools, state.superStats);
+  var num = function (v) { return v == null ? '—' : String(v); };
+  var body = rows.map(function (s) {
+    return '<tr><td><b>' + esc(s.name || '—') + '</b></td><td>' + esc(s.city || '—') + '</td><td>' + esc(s.session || '—') + '</td><td>' + num(s.students) + '</td><td>' + num(s.teachers) + '</td><td>' + num(s.staff) + '</td><td>' + esc(s.owner_id || '—') + '</td><td>' + esc(s.created_at ? String(s.created_at).slice(0, 10) : '—') + '</td></tr>';
   }).join('');
+  var statsNote = (state.superSchools && !state.superStats) ? '<p class="card-sub">' + t('saStatsPending') + '</p>' : '';
   return '<div class="page-head"><div><h2>' + t('schools') + '</h2><p>' + t('schoolsSub') + '</p></div></div>' +
-    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thSchool') + '</th><th>' + t('thCity') + '</th><th>' + t('thSession') + '</th><th>' + t('thOwner') + '</th><th>' + t('thCreated') + '</th></tr></thead><tbody>' +
-    (rows || '<tr><td colspan="5"><div class="empty">' + (state.superSchools ? t('tNoSchools') : t('loading')) + '</div></td></tr>') + '</tbody></table></div></div>';
+    '<div class="card">' + statsNote + '<div class="tbl-wrap"><table><thead><tr><th>' + t('thSchool') + '</th><th>' + t('thCity') + '</th><th>' + t('thSession') + '</th><th>' + t('thStudents') + '</th><th>' + t('thTeachers') + '</th><th>' + t('thStaff') + '</th><th>' + t('thOwner') + '</th><th>' + t('thCreated') + '</th></tr></thead><tbody>' +
+    (body || '<tr><td colspan="8"><div class="empty">' + (state.superSchools ? t('tNoSchools') : t('loading')) + '</div></td></tr>') + '</tbody></table></div></div>';
 }
 function sbShowNoSchool() {
   // v28: a Supabase account with no school tied to it (no local school
@@ -5643,7 +5717,7 @@ function sbStorageFreePhotos() {
 var db = loadDB();
 
 /* ================= state ================= */
-var state = { role: null, user: null, view: 'dashboard', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, feeEditId: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', ttCls: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, actSearch: '', actAction: 'All', actActor: 'All', actFrom: '', actTo: '', actLimit: 50, sb: null, rcCls: '', rcExam: '', rcStudent: '' };
+var state = { role: null, user: null, view: 'dashboard', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, feeEditId: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', ttCls: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, actSearch: '', actAction: 'All', actActor: 'All', actFrom: '', actTo: '', actLimit: 50, sb: null, rcCls: '', rcExam: '', rcStudent: '', superSchools: null, superStats: null, superLoaded: false };
 // v148 (bug 1): a nav press queued on mousedown — see queueNav below.
 var pendingNav = null;
 // v148 (bug 8): has the admin picked an attendance class yet? The
@@ -6921,6 +6995,11 @@ function restoreSession() {
       loginAs(a, { silent: true });
       var ss = sbLoadSession();
       if (ss && ss.user_id && (!ss.email || ss.email === sv.email)) state.sb = { uid: ss.user_id, email: ss.email || sv.email };
+      // A restored super admin session reloads the platform lists: v94
+      // never did, so a page reload left the dashboard and schools list
+      // empty until the next fresh login. The stored access token is
+      // passed explicitly — the anon key cannot read ss_schools.
+      if (a.role === 'superadmin' && sbIsOnline() && ss && ss.access_token) sbLoadSuperData(ss.access_token);
       state.view = (NAV[a.role] || []).some(function (n) { return n[0] === sv.view; }) ? sv.view : 'dashboard';
       if (state.view !== 'dashboard') histReplaceTop({ view: state.view }); // drop the guard: the restored view sits on top
       renderApp();
@@ -8235,6 +8314,7 @@ function logoutClear() {
   } catch (e2) {}
   sbClearSession();
   state.sb = null;
+  state.superSchools = null; state.superStats = null; state.superLoaded = false; // Super Admin data never survives a logout
   sbSyncResetMemory(); // v31: drop the in-memory snapshot + pending flush timer (the persisted outbox/snapshot stay for the next login)
   sbSyncFailToasted = false; // B6: a fresh login starts a fresh failure episode — the next failure toasts again
   sbSyncAutoStop(); // v32: stop the auto-pull interval (restarts on the next login)
@@ -12976,7 +13056,7 @@ var PAGE_STAFF = { dashboard: roleDashboard, attendance: attendancePage, homewor
 // has no Add button for a parent; toggleHwDone already refuses
 // non-students.
 var PAGE_PARENT = { dashboard: studentDashboard, attendance: studentAttendancePage, fees: studentFeesPage, results: studentResultsPage, homework: homeworkPage, timetable: timetablePage, notices: noticesPage };
-var PAGE_SUPERADMIN = { dashboard: roleDashboard, schools: schoolsPage, notices: noticesPage }; // v94: the super admin opens the schools list (read-only in this step)
+var PAGE_SUPERADMIN = { dashboard: superAdminDashboard, schools: schoolsPage, notices: noticesPage }; // Super Admin dashboard (totals + read-only schools list); no school-data editing, no login-as-school, no wipe/delete here
 
 /* ================= init ================= */
 /* ================= App-update check (v61) =================
