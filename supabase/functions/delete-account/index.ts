@@ -21,11 +21,27 @@
 //   ss_admission_requests, ss_support_requests, ss_fee_structure,
 //   ss_students (the 14 tables ss_wipe_school covers), plus the ones it
 //   does not: ss_student_login_attempts (SQL 17), ss_teacher_sessions
-//   and ss_teacher_login_attempts (SQL 18). The email-keyed
-//   ss_school_login_attempts row (SQL 19) is deleted by the account email.
-//   A ss_platform_admins row for this user (if any) is deleted too —
-//   deleting the Auth user would cascade-delete it anyway (01_schema.sql
-//   FKs are ON DELETE CASCADE), the explicit delete is belt-and-braces.
+//   and ss_teacher_login_attempts (SQL 18), ss_staff, ss_staff_sessions
+//   and ss_staff_login_attempts (SQL 30), ss_parent_pin_attempts
+//   (SQL 36), ss_holidays (SQL 38), ss_classes (SQL 42) and
+//   ss_parent_sessions (SQL 52). Three of those have NO foreign key to
+//   ss_schools (ss_staff_sessions, ss_staff_login_attempts,
+//   ss_parent_pin_attempts) — without an explicit delete here their rows
+//   would survive as orphans after the school row is gone; the other
+//   four are ON DELETE CASCADE, listed explicitly anyway so the wipe
+//   stays complete even if a future migration ever drops a cascade.
+//   The email-keyed ss_school_login_attempts row (SQL 19) is deleted by
+//   the account email. A ss_platform_admins row for this user (if any)
+//   is deleted too — deleting the Auth user would cascade-delete it
+//   anyway (01_schema.sql FKs are ON DELETE CASCADE), the explicit
+//   delete is belt-and-braces. ss_platform_settings is platform-wide
+//   (one shared row) and is deliberately NEVER deleted.
+// Storage (SQL 28/49) is deleted too, before any row: the school logo
+// (school-logos/<school_id>/logo.png) and every student photo
+// (student-photos/<school_id>/<student_id>.jpg). A storage failure is
+// fail-closed — the function answers 500 and deletes nothing — so a
+// retry can finish the job and the app never claims a delete that
+// left children's photos behind.
 //
 // Deploy: `supabase functions deploy delete-account` — see README.md in
 // this directory. Deployment is Ashutosh's step; the app treats a missing
@@ -68,7 +84,53 @@ const CHILD_TABLES = [
   'ss_student_login_attempts',
   'ss_teacher_sessions',
   'ss_teacher_login_attempts',
+  'ss_staff',
+  'ss_staff_sessions',
+  'ss_staff_login_attempts',
+  'ss_parent_pin_attempts',
+  'ss_holidays',
+  'ss_classes',
+  'ss_parent_sessions',
 ]
+
+// Storage buckets holding per-school objects, always under the
+// <school_id>/ folder (SQL 28: school-logos/<school_id>/logo.png,
+// student-photos/<school_id>/<student_id>.jpg; SQL 49 flipped
+// student-photos private, school-logos stays public).
+const STORAGE_BUCKETS = ['school-logos', 'student-photos']
+const STORAGE_LIST_LIMIT = 100
+
+// Delete every Storage object under <school_id>/ in both buckets.
+// Throws on any storage error — the caller turns that into a 500
+// BEFORE any row is deleted, so the delete is all-or-nothing and a
+// retry is safe. A bucket that was never created (SQL 28 not applied)
+// holds nothing, so it is skipped, not an error. List entries with a
+// null id are subfolders, never files — they are skipped, not removed.
+async function deleteSchoolStorage(admin: any, schoolId: string): Promise<void> {
+  const { data: buckets, error: bucketsError } = await admin.storage.listBuckets()
+  if (bucketsError) throw new Error('storage-delete-failed')
+  const existing = new Set((buckets || []).map((b: any) => b.id))
+  for (const bucket of STORAGE_BUCKETS) {
+    if (!existing.has(bucket)) continue
+    // No offset: each pass removes what it listed, so the next pass
+    // re-lists from the top — an offset would skip objects that slid
+    // down after the removal. The loop ends when a pass finds nothing.
+    let guard = 0
+    for (;;) {
+      if (++guard > 10000) throw new Error('storage-delete-failed')
+      const { data: objects, error: listError } = await admin.storage
+        .from(bucket)
+        .list(schoolId, { limit: STORAGE_LIST_LIMIT, offset: 0 })
+      if (listError) throw new Error('storage-delete-failed')
+      const names = (objects || [])
+        .filter((o: any) => o.id !== null && o.name)
+        .map((o: any) => schoolId + '/' + o.name)
+      if (names.length === 0) break
+      const { error: removeError } = await admin.storage.from(bucket).remove(names)
+      if (removeError) throw new Error('storage-delete-failed')
+    }
+  }
+}
 
 serve(async (req: Request): Promise<Response> => {
   if (req.method === 'OPTIONS') {
@@ -116,7 +178,16 @@ serve(async (req: Request): Promise<Response> => {
   if (!school) return json({ error: 'no-school' }, 404)
   const schoolId = school.id as string
 
-  // 3. Delete the school's rows, children first, school row last.
+  // 3. Storage first: logo + student photos. Fail-closed — a storage
+  // error answers 500 here, before any row is deleted, so the account
+  // is untouched and a retry can finish the job.
+  try {
+    await deleteSchoolStorage(admin, schoolId)
+  } catch (_e) {
+    return json({ error: 'storage-delete-failed' }, 500)
+  }
+
+  // 4. Delete the school's rows, children first, school row last.
   for (const table of CHILD_TABLES) {
     const { error } = await admin.from(table).delete().eq('school_id', schoolId)
     if (error) return json({ error: 'delete-failed', table }, 500)
@@ -127,11 +198,11 @@ serve(async (req: Request): Promise<Response> => {
     .eq('id', schoolId)
   if (schoolDeleteError) return json({ error: 'delete-failed', table: 'ss_schools' }, 500)
 
-  // 4. Rows keyed by something other than school_id.
+  // 5. Rows keyed by something other than school_id.
   await admin.from('ss_school_login_attempts').delete().eq('email', email)
   await admin.from('ss_platform_admins').delete().eq('user_id', userId)
 
-  // 5. The Auth user itself — this is the step no RPC or client call
+  // 6. The Auth user itself — this is the step no RPC or client call
   // can do. The same email can now sign up again as a brand-new school;
   // the old data is gone and cannot come back on a later login.
   const { error: authDeleteError } = await admin.auth.admin.deleteUser(userId)
