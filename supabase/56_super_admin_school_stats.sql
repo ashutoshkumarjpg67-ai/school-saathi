@@ -1,4 +1,4 @@
--- SQL 55: Super Admin school stats (Super Admin dashboard, v146)
+-- SQL 56: Super Admin school stats (Super Admin dashboard, v147)
 -- One admin-only RPC returning every school with its basic counts, so
 -- the Super Admin dashboard lists schools with student / teacher /
 -- staff numbers in a single call instead of one query per school.

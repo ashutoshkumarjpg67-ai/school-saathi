@@ -1,12 +1,12 @@
-// tests/super-admin.test.mjs — Super Admin dashboard (SQL 55 + app.js).
+// tests/super-admin.test.mjs — Super Admin dashboard (SQL 56 + app.js).
 //
 // Gate logic is tested where the harness allows (no network, no DOM):
 // the PERMS/NAV matrix, the page-level role guards, the pure stats
 // merge + totals helpers, the rendered dashboard / schools page, the
-// i18n keys (English-only since v147), and the SQL 55 file's fail-closed shape.
+// i18n keys (English-only since v147), and the SQL 56 file's fail-closed shape.
 // The live RPC behaviour (admin gets rows, non-admin gets an error,
 // counts match the server tables) can only be verified against the
-// live project AFTER SQL 55 is applied — it is not asserted here.
+// live project AFTER SQL 56 is applied — it is not asserted here.
 // Run: npm test   (node --test tests/*.test.mjs, Node built-ins only)
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -84,7 +84,7 @@ describe('super admin stats merge + totals (pure helpers)', () => {
     assert.equal(rows[1].staff, null);
   });
 
-  it('null stats (SQL 55 not applied) means null counts for every school', () => {
+  it('null stats (SQL 56 not applied) means null counts for every school', () => {
     const app = createAppContext();
     const rows = app.run('mergeSuperSchoolStats(' + JSON.stringify(SCHOOLS) + ', null)');
     assert.equal(rows[0].students, null);
@@ -130,7 +130,7 @@ describe('super admin dashboard + schools page rendering', () => {
     app.run('state.superStats = null;');
     const html = app.run('superAdminDashboard()');
     assert.match(html, /—/);
-    assert.match(html, /server update \(SQL 55\)/);
+    assert.match(html, /server update \(SQL 56\)/);
     assert.doesNotMatch(html, />200</);
   });
 
@@ -154,12 +154,12 @@ describe('super admin dashboard + schools page rendering', () => {
     assert.doesNotMatch(html, /Delete/);
   });
 
-  it('schools page shows dashes + the SQL 55 note while stats are unavailable', () => {
+  it('schools page shows dashes + the SQL 56 note while stats are unavailable', () => {
     const app = superAdminContext();
     app.run('state.superStats = null;');
     const html = app.run('schoolsPage()');
     assert.match(html, /—/);
-    assert.match(html, /server update \(SQL 55\)/);
+    assert.match(html, /server update \(SQL 56\)/);
   });
 
   it('schools page refuses a non-superadmin role', () => {
@@ -191,9 +191,9 @@ describe('super admin i18n keys (EN only — v147 removed Hindi mode)', () => {
   }
 });
 
-describe('SQL 55 file (static checks — live behaviour needs the live DB)', () => {
+describe('SQL 56 file (static checks — live behaviour needs the live DB)', () => {
   it('defines ss_super_admin_school_stats with the admin gate and counts', () => {
-    const sql = read('supabase/55_super_admin_school_stats.sql');
+    const sql = read('supabase/56_super_admin_school_stats.sql');
     assert.match(sql, /create or replace function public\.ss_super_admin_school_stats\(\)/);
     assert.match(sql, /if not public\.is_ss_admin\(\) then/);
     assert.match(sql, /raise exception 'not a super admin'/);
@@ -207,7 +207,7 @@ describe('SQL 55 file (static checks — live behaviour needs the live DB)', () 
   });
 
   it('grants execute to authenticated only; no anon, no hard-coded admin', () => {
-    const sql = read('supabase/55_super_admin_school_stats.sql');
+    const sql = read('supabase/56_super_admin_school_stats.sql');
     assert.match(sql, /grant execute on function public\.ss_super_admin_school_stats\(\) to authenticated;/);
     assert.match(sql, /revoke all on function public\.ss_super_admin_school_stats\(\) from anon;/);
     assert.doesNotMatch(sql, /insert into public\.ss_platform_admins/i);

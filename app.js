@@ -988,9 +988,9 @@ function sbLoadSuperSchools(token) {
 }
 function sbLoadSuperStats(token) {
   // Super Admin dashboard: per-school student / teacher / staff counts
-  // from one admin-only RPC (SQL 55, ss_super_admin_school_stats). The
+  // from one admin-only RPC (SQL 56, ss_super_admin_school_stats). The
   // RPC itself raises for non-admins, so a failed call here never leaks
-  // anything — it only means the counts are unavailable (SQL 55 not
+  // anything — it only means the counts are unavailable (SQL 56 not
   // applied yet, or offline). The schools list still works without it:
   // state.superStats stays null and the counts render as '—'.
   var tk = token || (state.sb && state.sbToken) || SB_ANON_KEY;
@@ -1014,7 +1014,7 @@ function sbLoadSuperData(token) {
 }
 function mergeSuperSchoolStats(schools, stats) {
   // Pure merge: one row per school, counts joined by school id. A
-  // school with no stats row (SQL 55 not applied, or a school created
+  // school with no stats row (SQL 56 not applied, or a school created
   // after the stats call) gets null counts — the page shows '—', never
   // a made-up 0. A stats row for an unknown school id is ignored.
   var byId = {};
