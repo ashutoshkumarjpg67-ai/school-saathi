@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 148;
+var APP_VERSION = 149;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -3049,6 +3049,17 @@ function sbSyncDiagSet(patch) {
   var d = sbSyncDiagLoad();
   Object.keys(patch).forEach(function (k) { d[k] = patch[k]; });
   sbSyncDiagSave(d);
+}
+// v149 (bug 4 follow-up): how many conflicts are RECORDED right now.
+// The Settings heading shows db.syncConflicts.length, but the
+// Last-flush line used to print this flush's newly recorded count —
+// an empty outbox printed "conflicts 0" under a "Sync conflicts (6)"
+// heading (live v148). The line now reports the recorded total, so
+// the two always agree. Read at flush time, after this flush's new
+// records; the cycle-settlement prune may drop false alarms after
+// that, and the next flush's line picks the new total up.
+function sbSyncRecordedConflictCount() {
+  try { return (db && Array.isArray(db.syncConflicts)) ? db.syncConflicts.length : 0; } catch (e) { return 0; }
 } // per Supabase uid: [{table,key,op,row,at}]
 var SB_SRVID_KEY = 'schoolSaathiSrvIds'; // per Supabase uid: {table: {localKey: serverUuid}}
 var SB_SNAP_KEY = 'schoolSaathiSyncSnap'; // per local account uid: {table: {key: hash}}
@@ -3234,12 +3245,26 @@ function sbSyncSameValue(a, b) {
   if (typeof na === 'object' || typeof nb === 'object') return JSON.stringify(na) === JSON.stringify(nb);
   return String(na) === String(nb);
 }
-function sbSyncRowSameAsServer(payload, serverRow) {
+// v149 (bug 4 follow-up): rows matched by NATURAL KEY carry their
+// identity in the lookup, not in the compared fields. A marks row is
+// found by (exam_id, student_id) and an attendance row by
+// (att_date, cls, student_id), so those id columns are identity, not
+// content — comparing them raw makes an identical row look different
+// whenever the id maps are stale or missing (live v148: Marks 85 vs
+// 85 stayed listed as a conflict because only the id formats
+// differed; the prune maps the recorded local row with the CURRENT
+// maps, while the recorded server row was matched with the maps at
+// record time). Tables found by local_id keep the full comparison —
+// local_id is still compared, so their foreign keys stay in it.
+var SB_SYNC_NATURAL_KEY_FKS = { ss_marks: { exam_id: 1, student_id: 1 }, ss_attendance: { student_id: 1 } };
+function sbSyncRowSameAsServer(payload, serverRow, table) {
   if (!payload || !serverRow || typeof serverRow !== 'object') return false;
+  var skipFk = (table && SB_SYNC_NATURAL_KEY_FKS[table]) || null;
   var keys = Object.keys(payload);
   for (var i = 0; i < keys.length; i++) {
     var k = keys[i];
     if (k === 'id' || k === 'updated_at' || k === 'created_at' || k === 'school_id') continue;
+    if (skipFk && skipFk[k]) continue; // v149: natural-key identity, already established by the lookup
     if (!sbSyncSameValue(payload[k], serverRow[k])) return false;
   }
   return true;
@@ -3552,7 +3577,7 @@ function sbSyncPruneIdenticalConflicts(account, sbUid) {
           ? sbSyncSchoolPayloadFromParts(local.profile, local.feeExtras, local.admCounter, local.receiptCounter)
           : sbSyncMapRow(c.table, local, schoolId, maps, db);
         if (!payload) return true;
-        if (sbSyncRowSameAsServer(payload, c.serverRow)) return false; // identical — drop the false alarm
+        if (sbSyncRowSameAsServer(payload, c.serverRow, c.table)) return false; // identical — drop the false alarm
         return true;
       } catch (e2) { return true; }
     });
@@ -4011,12 +4036,12 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
       // v53: the school row is re-queued on every profile/counter
       // change, but its content is usually already on the server —
       // skip the PATCH when the full batch row matches.
-      if (schRow && sbSyncRowSameAsServer(payload, schRow)) return { pushed: true, hash: JSON.stringify(payload) };
+      if (schRow && sbSyncRowSameAsServer(payload, schRow, 'ss_schools')) return { pushed: true, hash: JSON.stringify(payload) };
       if (row && row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) {
         // No batch row: the live find only carried id+updated_at, so
         // fetch the full row before calling it a conflict.
         if (!schRow) return sbSyncFullRow148(table, row.id, schoolId, token).then(function (full) {
-          if (full && sbSyncRowSameAsServer(payload, full)) return { pushed: true, hash: JSON.stringify(payload) };
+          if (full && sbSyncRowSameAsServer(payload, full, 'ss_schools')) return { pushed: true, hash: JSON.stringify(payload) };
           return { pushed: false, conflict: true, serverRow: row };
         });
         return { pushed: false, conflict: true, serverRow: row }; // v107: the record needs the server row for the conflicts view
@@ -4085,7 +4110,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
       // v53: identical content already on the server — resolve WITHOUT
       // a PATCH. The id map is set exactly as the PATCH branch sets
       // it, so the next pull/find sees the same server id.
-      if (batchRow53 && sbSyncRowSameAsServer(payload2, batchRow53)) {
+      if (batchRow53 && sbSyncRowSameAsServer(payload2, batchRow53, table)) {
         sbSrvIdSet(uid, table, entry.key, batchRow53.id);
         if (batchRow53._adoptedByNaturalKey && batchRow53.local_id) sbSrvIdSet(uid, table, batchRow53.local_id, batchRow53.id);
         return { pushed: true, hash: JSON.stringify(payload2), serverRow: batchRow53 }; // v127: the flush needs the server row to guard the local-row sync
@@ -4095,7 +4120,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
         // No batch row: the live find only carried id+updated_at, so
         // fetch the full row before calling it a conflict.
         if (!batchRow53) return sbSyncFullRow148(table, row.id, schoolId, token).then(function (full) {
-          if (full && sbSyncRowSameAsServer(payload2, full)) { sbSrvIdSet(uid, table, entry.key, row.id); return { pushed: true, hash: JSON.stringify(payload2), serverRow: full }; }
+          if (full && sbSyncRowSameAsServer(payload2, full, table)) { sbSrvIdSet(uid, table, entry.key, row.id); return { pushed: true, hash: JSON.stringify(payload2), serverRow: full }; }
           return { pushed: false, conflict: true, serverRow: row };
         });
         return { pushed: false, conflict: true, serverRow: row }; // v107: the record needs the server row for the conflicts view
@@ -4226,7 +4251,7 @@ function sbSyncFlushWithToken(act, tok) {
                   var cur127 = sbSyncLocalRow(entry);
                   if (cur127) {
                     var curPayload127 = sbSyncMapRow(entry.table, cur127, schoolId, maps, db);
-                    if (curPayload127 && sbSyncRowSameAsServer(curPayload127, r.serverRow)) sbSyncSetLocalRow(entry.table, entry.key, entry.row);
+                    if (curPayload127 && sbSyncRowSameAsServer(curPayload127, r.serverRow, entry.table)) sbSyncSetLocalRow(entry.table, entry.key, entry.row);
                   }
                 }
                 if (entry.op === 'delete') { sbSyncSnapDelete(act.account.uid, entry.table, entry.key); if (r.noOpDelete128) sbTombRemove(act.uid, entry.table, entry.key); else sbTombAdd(act.uid, entry.table, entry.key); } // v105: the delete leaves the outbox here — the tombstone is what stops another tab re-uploading it; v128: a no-op delete (the row was already gone) clears the snapshot key and REMOVES the queue-time tombstone (added when the delete was queued) — a phantom delete must not block a later legitimate re-creation under the same key
@@ -4293,7 +4318,10 @@ function sbSyncFlushWithToken(act, tok) {
       sbSyncFailToastOnce(); // B6 (M-22): a background flush failure toasts once per episode (not while logging out)
     }
     // v53 diag: the flush's real cost, read by Settings "Sync details".
-    sbSyncDiagSet({ lastFlush: { at: new Date().toISOString(), ms: Date.now() - flushT0, pushed: r.pushed || 0, conflicts: r.conflicts || 0, leftover: left, calls: sbSyncRestCalls - flushCalls0 } });
+    // v149: conflicts is the RECORDED total (sbSyncRecordedConflictCount),
+    // not this flush's newly recorded count — the heading above the
+    // line shows the same total, and the two must agree.
+    sbSyncDiagSet({ lastFlush: { at: new Date().toISOString(), ms: Date.now() - flushT0, pushed: r.pushed || 0, conflicts: sbSyncRecordedConflictCount(), leftover: left, calls: sbSyncRestCalls - flushCalls0 } });
     sbSyncDetailsRefresh();
     return r;
   });

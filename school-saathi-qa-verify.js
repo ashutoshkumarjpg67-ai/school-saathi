@@ -7215,12 +7215,12 @@ console.log(sess147ok
   : 'FAIL v147: session-expiry gaps fix missing (SESSION_CLOCK_SKEW_MS / future-dated check / toast)');
 if (!sess147ok) process.exitCode = 1;
 // ---- v148: live-check bug fixes (24 Nov 2026, Test Sunrise School) ----
-// (0) Version markers: version.json says 148 (APP_VERSION / sw.js /
+// (0) Version markers: version.json says 149 (APP_VERSION / sw.js /
 // ?v= are pinned generically against EXPECTED_VERSION above).
-console.log(EXPECTED_VERSION === 148
-  ? 'PASS v148: version.json says 148'
-  : 'FAIL v148: version.json does not say 148 (got ' + EXPECTED_VERSION + ')');
-if (EXPECTED_VERSION !== 148) process.exitCode = 1;
+console.log(EXPECTED_VERSION === 149
+  ? 'PASS v149: version.json says 149'
+  : 'FAIL v149: version.json does not say 149 (got ' + EXPECTED_VERSION + ')');
+if (EXPECTED_VERSION !== 149) process.exitCode = 1;
 // (1) Nav presses queue on mousedown and the next render applies them.
 var q148ok = src.includes('function queueNav(view)') && src.includes('onmousedown="queueNav(') && src.includes('if (pendingNav) { var pv148 = pendingNav;');
 console.log(q148ok
@@ -7250,8 +7250,8 @@ var sch148i = push148.indexOf("table === 'ss_schools'");
 var lww148 = 'new Date(row.updated_at) > new Date(entry.at)';
 var gen148i = push148.indexOf('var findP53');
 var c4ok = src.includes('function sbSyncFullRow148') && src.includes('sbSyncPruneIdenticalConflicts')
-  && push148.indexOf('sbSyncRowSameAsServer(payload, schRow)', sch148i) !== -1 && push148.indexOf('sbSyncRowSameAsServer(payload, schRow)', sch148i) < push148.indexOf(lww148, sch148i)
-  && push148.indexOf('sbSyncRowSameAsServer(payload2, batchRow53)', gen148i) !== -1 && push148.indexOf('sbSyncRowSameAsServer(payload2, batchRow53)', gen148i) < push148.indexOf(lww148, gen148i);
+  && push148.indexOf("sbSyncRowSameAsServer(payload, schRow, 'ss_schools')", sch148i) !== -1 && push148.indexOf("sbSyncRowSameAsServer(payload, schRow, 'ss_schools')", sch148i) < push148.indexOf(lww148, sch148i)
+  && push148.indexOf('sbSyncRowSameAsServer(payload2, batchRow53, table)', gen148i) !== -1 && push148.indexOf('sbSyncRowSameAsServer(payload2, batchRow53, table)', gen148i) < push148.indexOf(lww148, gen148i);
 console.log(c4ok
   ? 'PASS v148 bug 4: identical-content check precedes the timestamp in both push branches + full-row fallback + prune'
   : 'FAIL v148 bug 4: push reorder / sbSyncFullRow148 / sbSyncPruneIdenticalConflicts missing');
@@ -7286,6 +7286,30 @@ console.log(css.includes('.bottom-nav') && css.includes('760px') && src.includes
   ? 'PASS v148 bug 9: bottom nav renders (CSS 760px breakpoint + More button in renderApp)'
   : 'FAIL v148 bug 9: bottom nav / More button missing');
 if (!(css.includes('.bottom-nav') && css.includes('760px') && src.includes("t('moreNav')"))) process.exitCode = 1;
+// ---- v149: bug 4 follow-up from the v148 live check (24 Nov 2026) ----
+// The live check found one false alarm left: Marks 85 vs 85, only the
+// id formats differ. Natural-key FKs are now skipped in the identical
+// comparison, and the Last-flush line reports the recorded total.
+var c149a = src.includes('SB_SYNC_NATURAL_KEY_FKS') && src.includes("ss_marks: { exam_id: 1, student_id: 1 }") && src.includes("ss_attendance: { student_id: 1 }");
+console.log(c149a
+  ? 'PASS v149 bug 4: natural-key FK map covers ss_marks (exam_id, student_id) and ss_attendance (student_id)'
+  : 'FAIL v149 bug 4: SB_SYNC_NATURAL_KEY_FKS map missing or incomplete');
+if (!c149a) process.exitCode = 1;
+var c149b = src.includes('function sbSyncRowSameAsServer(payload, serverRow, table)') && src.includes('if (skipFk && skipFk[k]) continue;');
+console.log(c149b
+  ? 'PASS v149 bug 4: sbSyncRowSameAsServer takes the table and skips natural-key FKs'
+  : 'FAIL v149 bug 4: table-scoped FK skip missing from sbSyncRowSameAsServer');
+if (!c149b) process.exitCode = 1;
+var c149c = src.includes("sbSyncRowSameAsServer(payload, c.serverRow, c.table)") && src.includes("sbSyncRowSameAsServer(payload2, batchRow53, table)") && src.includes("sbSyncRowSameAsServer(curPayload127, r.serverRow, entry.table)");
+console.log(c149c
+  ? 'PASS v149 bug 4: prune, push and v127 guard all pass the table to the identical check'
+  : 'FAIL v149 bug 4: not all identical-check call sites pass the table');
+if (!c149c) process.exitCode = 1;
+var c149d = src.includes('function sbSyncRecordedConflictCount()') && src.includes('conflicts: sbSyncRecordedConflictCount()') && !src.includes('conflicts: r.conflicts || 0');
+console.log(c149d
+  ? 'PASS v149 bug 4: Last-flush line reports the recorded conflict total, not this flush\'s new count'
+  : 'FAIL v149 bug 4: flush diag still writes this flush\'s conflict count');
+if (!c149d) process.exitCode = 1;
 console.log(css.includes('760px') && css.includes('#0A1E4B') && css.includes('#EA8600') && css.includes('.auth-tab')
   ? 'PASS styles.css keeps navy/gold theme + 760px breakpoint + auth tabs'
   : 'FAIL styles.css missing navy/gold / 760px / auth-tab rules');
