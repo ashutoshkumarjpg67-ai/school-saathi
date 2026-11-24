@@ -1,6 +1,6 @@
 # School Saathi
 
-**School Saathi — Smart Education. Better Tomorrow.** Multi-school management system for schools in Bihar — School Admin, Teacher & Student dashboards: attendance, fees, exams, homework, notices & reports.
+**School Saathi — Smart Education. Better Tomorrow.** Multi-school management system for schools in Bihar — School Admin, Teacher & Student dashboards: attendance, fees, exams, homework, timetable, notices & reports.
 
 ## Run
 
@@ -10,8 +10,8 @@ Public landing page: `landing.html` — what the app is, its features, how a sch
 
 ## Features
 
-- **School Admin dashboard** — students, attendance, fees & receipts, exams & marks, homework, notices, CSV reports, settings
-- **Student login** — admission number + PIN, school-scoped; attendance, fees, results & homework
+- **School Admin dashboard** — students, attendance, fees & receipts, exams & marks, homework, weekly timetable, notices, CSV reports, settings
+- **Student login** — admission number + PIN, school-scoped; attendance, fees, results, homework & timetable
 - **Teacher login** — email + password, assigned classes only
 - **Fees** — collection with printable receipts (QR), defaulter list, WhatsApp reminders via wa.me (manual send)
 - **Attendance** — class-wise marking

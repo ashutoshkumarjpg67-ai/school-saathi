@@ -18,7 +18,7 @@ the app (v60, Settings → Delete Account); this function is what makes the
    (SQL 18), `ss_staff`, `ss_staff_sessions` and
    `ss_staff_login_attempts` (SQL 30), `ss_parent_pin_attempts`
    (SQL 36), `ss_holidays` (SQL 38), `ss_classes` (SQL 42) and
-   `ss_parent_sessions` (SQL 52) — then the school row, then
+   `ss_parent_sessions` (SQL 52), `ss_timetable` (SQL 55) — then the school row, then
    the email-keyed `ss_school_login_attempts` row (SQL 19) and any
    `ss_platform_admins` row. The three session/attempt tables with no
    foreign key to `ss_schools` (`ss_staff_sessions`,

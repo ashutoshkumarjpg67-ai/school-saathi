@@ -19,14 +19,17 @@ import { createAppContext } from '../harness.mjs';
 
 // Expected PERMS at v129, copied from app.js (var PERMS, ~line 7800).
 // school = School Admin. Order matches app.js.
+// tt: 'timetable' added for school, teacher, student, principal and
+// parent (read-only for principal/student/parent) in the same commit
+// that added the view — the pin moves with the feature, never silently.
 const EXPECTED_PERMS = {
-  school: ['dashboard', 'students', 'teachers', 'staff', 'classes', 'admissions', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog', 'settings'],
-  teacher: ['dashboard', 'students', 'attendance', 'exams', 'homework', 'notices'],
-  student: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'],
-  principal: ['dashboard', 'students', 'teachers', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog'], // v129: the principal may open the read-only Activity Log
+  school: ['dashboard', 'students', 'teachers', 'staff', 'classes', 'admissions', 'attendance', 'fees', 'exams', 'homework', 'timetable', 'notices', 'reports', 'activityLog', 'settings'],
+  teacher: ['dashboard', 'students', 'attendance', 'exams', 'homework', 'timetable', 'notices'],
+  student: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'timetable', 'notices'],
+  principal: ['dashboard', 'students', 'teachers', 'attendance', 'fees', 'exams', 'homework', 'timetable', 'notices', 'reports', 'activityLog'], // v129: the principal may open the read-only Activity Log
   accountant: ['dashboard', 'fees', 'reports', 'notices'],
   staff: ['dashboard', 'attendance', 'homework', 'notices'],
-  parent: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'],
+  parent: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'timetable', 'notices'],
   superadmin: ['dashboard', 'schools', 'notices'],
 };
 
