@@ -28,6 +28,7 @@ var I18N = {
     sbStatusLocalOnly: 'Not linked to the server — your data stays on this device. Link to back up.',
     waReminderBtn: 'WhatsApp Reminder', waNotifyBtn: 'Notify Parent', waShareReceiptBtn: 'Share on WhatsApp', waChatBtn: 'WhatsApp', waNotifyCol: 'Notify',
     waNoNumber: 'No valid parent mobile number for this student — WhatsApp is unavailable.',
+    privacyPolicy: 'Privacy Policy', termsOfService: 'Terms of Service', legalTitle: 'Legal',
     waOpened: 'WhatsApp opened — press Send in WhatsApp to send the message.',
     waNotAbsent: 'Only students marked Absent or Late can be notified.',
     waFeeReminderMsg: 'Namaste, this is {school}. Fee reminder for {student} (Class {cls}): {amount} is due for {month}. Please pay at the earliest. Thank you.',

@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Privacy Policy — School Saathi</title>
+<meta name="description" content="School Saathi Privacy Policy — what data the app collects, where it is stored, and how to delete it.">
+<style>
+  :root { --navy:#0A1E4B; --ink:#1c2433; --muted:#5b6577; --line:#e3e7ee; --bg:#f6f8fb; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif; color:var(--ink); background:var(--bg); line-height:1.65; }
+  header { background:var(--navy); color:#fff; padding:28px 20px; }
+  header .wrap, main, footer .wrap { max-width:760px; margin:0 auto; }
+  header h1 { margin:0 0 4px; font-size:26px; }
+  header p { margin:4px 0 0; color:#c6d2ea; font-size:14px; }
+  header a { color:#ffd76a; }
+  main { background:#fff; padding:28px 24px 40px; border:1px solid var(--line); border-top:0; }
+  h2 { font-size:19px; margin:32px 0 8px; color:var(--navy); border-bottom:1px solid var(--line); padding-bottom:6px; }
+  h3 { font-size:16px; margin:20px 0 6px; }
+  p, li { font-size:15px; }
+  ul, ol { padding-left:22px; }
+  li { margin:4px 0; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:12px 0; }
+  th, td { border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#eef2f8; }
+  code { background:#eef2f8; padding:1px 5px; border-radius:4px; font-size:13px; }
+  .note { background:#fff8e1; border:1px solid #f0d48a; border-radius:8px; padding:12px 14px; font-size:14px; }
+  footer { padding:20px; color:var(--muted); font-size:13px; text-align:center; }
+  footer a { color:var(--navy); }
+  .back { display:inline-block; margin-bottom:16px; font-size:14px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>School Saathi — Privacy Policy</h1>
+    <p>Last updated: 24 November 2026 · App version 147</p>
+    <p><a href="index.html">← Back to School Saathi</a> &nbsp;·&nbsp; <a href="terms-of-service.html">Terms of Service</a></p>
+  </div>
+</header>
+<main>
+  <p class="note"><b>No legal review:</b> this policy has had no independent legal review. The support mailbox, the operator's legal details and the governing law are still to be confirmed by the owner.</p>
+
+  <h2>1. What School Saathi is</h2>
+  <p>School Saathi is a multi-school app (a web app / PWA, also available as an Android app — the same web app in a Capacitor wrapper) for schools in Bihar, covering classes Nursery to 12th. A school uses it to keep its own records: students, attendance, fees and receipts, exams and marks, homework, notices, and teachers.</p>
+  <p>The app is used mainly by <b>school staff</b> — the school admin and teachers. Students and parents are secondary users: students log in with a PIN to see their own attendance, fees, results and homework, and parents log in with their child's admission number and the PIN the school set.</p>
+  <p>There is <b>no "super admin" login screen</b> in the app — platform administration is a server-side role only (see §6).</p>
+
+  <h2>2. Who this policy is for</h2>
+  <ul>
+    <li><b>School admins</b> who create a school account and enter school data.</li>
+    <li><b>Teachers</b> who log in on the school's device and work with their classes.</li>
+    <li><b>Parents / guardians</b> who log in with their child's admission number and PIN to see attendance, fees, results and homework.</li>
+    <li><b>Students and their parents/guardians</b>, whose records the school keeps in the app. Students do not sign up themselves — the school adds them at admission.</li>
+  </ul>
+  <p>If you are a parent or guardian and you have a question about your child's record in School Saathi, please ask the school first. The school entered the record and is responsible for it (see §12).</p>
+
+  <h2>3. What data we collect</h2>
+  <h3>3.1 School admin account</h3>
+  <ul>
+    <li><b>Email address and password</b> (used for login, sign-up and password reset through Supabase Auth).</li>
+    <li><b>School profile:</b> school name, city, principal's name, phone, email, session (academic year), address, and school logo.</li>
+    <li>The app also keeps <b>local device accounts</b> on the device where the school logs in, so the school can log in on that device.</li>
+  </ul>
+  <h3>3.2 Students (including children)</h3>
+  <p>Students are minors (Nursery to 12th). The school enters these details:</p>
+  <ul>
+    <li>Name, class and section, roll number, enrolment number.</li>
+    <li>Guardian's name, phone number, second mobile number, parent email, father/mother name and occupation.</li>
+    <li>Date of birth, gender, blood group, category.</li>
+    <li>Address, state, district, PIN code, previous school and class.</li>
+    <li>Admission number and date, status, result percentage.</li>
+    <li><b>Documents:</b> only flags/notes (for example, whether a birth certificate or transfer certificate is on file). <b>No document files are uploaded.</b></li>
+    <li><b>Photo (optional):</b> only if the school adds one. The photo is compressed on the device first (maximum 512 pixels / ~120 KB) and then uploaded to the school's private photo storage on the server (<code>student-photos</code> bucket), where it is opened only through a short-lived signed link. A base64 copy is kept on the device only as an offline fallback when the upload has not happened yet. The photo is used for the student profile, ID cards and fee receipts.</li>
+    <li><b>Aadhaar (optional, last 4 digits only):</b> if the school enters an Aadhaar number, <b>only the last 4 digits are ever stored, shown, exported or printed</b>. The full 12-digit number never leaves the device. The server also truncates it to the last 4 digits.
+      <br>⚠️ <b>UNVERIFIED:</b> whether any <b>old full-Aadhaar values</b> still exist in the live database from before the truncation was added is <b>not verified</b>. Do not treat "no full Aadhaar exists on the server" as a fact until the live database is checked.</li>
+    <li><b>Student / parent PIN (login PIN):</b> the school sets the PIN at admission and can issue a new one (admin "Generate new PIN" — a fresh 6-digit random PIN, shown once so the school can share it with the parent). The PIN is stored and synced <b>only as a salted hash</b> (<code>s256$…</code>). The plain PIN is never stored on the server and never shown in the app again after it is issued. Resetting a PIN with a date of birth was removed in v146 — a forgotten PIN can only be replaced by the school.
+      <br>The hash uses single-iteration SHA-256, so the hash alone is <b>not</b> strong protection if it leaks. The real protection is that the PIN is <b>checked on the server</b> (<code>ss_student_cloud_login</code>) when the school's data is on the server, with a server-side lockout after wrong attempts. On a device without the server copy, the check is local, with a 5-wrong-attempts / 15-minute lockout on that device.
+      <br>⚠️ <b>UNVERIFIED:</b> whether any server PIN rows are still stored as <b>legacy plaintext</b> (from before hashing) is <b>not verified</b> by a server-side check. The app now hashes a legacy plaintext PIN as soon as it sees one and uploads the hash on the next sync, so old rows heal themselves when the school opens the app — but no one-time server sweep has been run to confirm zero plaintext rows remain.
+      <br>The PIN hash is visible to the school owner (and to platform admins — see §6) under the server rules. Do not read this policy as saying the hash is hidden from the school.</li>
+  </ul>
+  <h3>3.3 Teachers</h3>
+  <ul>
+    <li>Name, subject, classes taught.</li>
+    <li>Login email and password for the teacher login on the school's device.</li>
+    <li>Since v62, the teacher's login email and salted password hash are also synced to the server, so a teacher can log in from another device. Only <code>s256$</code> hashes are sent — never a plain password, and an old-style hash is skipped until the teacher logs in once on the school device.
+      <br>⚠️ <b>UNVERIFIED:</b> whether the server columns for this (SQL 18) are actually applied on the live database is <b>not verified</b> — that is a Supabase-dashboard check.</li>
+  </ul>
+  <h3>3.4 Fees, attendance, marks, exams, homework, notices</h3>
+  <ul>
+    <li>Fee records and receipts (amount, month, fee type, status, payment mode, bank, number), fee structure per class, attendance records, marks and exams, homework, notices.</li>
+    <li>These are <b>the school's fees charged to students</b> — not the app's pricing. The app does not process payments: the school records a payment (cash/UPI) by hand; the app only keeps the record. No payment-gateway code was found in the app at v146. The app collects <b>no payment card or bank account details</b>.</li>
+  </ul>
+  <h3>3.5 Admission requests (public form)</h3>
+  <p>Anyone can fill in the "Apply for Admission" form without logging in. It collects: applicant name, date of birth, gender, class applied for, guardian's name, phone, previous school. The school reviews the request and approves or rejects it.</p>
+  <h3>3.6 Support requests</h3>
+  <p>If you use the in-app support form, we collect your <b>name and message</b>. On the device, at most the latest <b>50</b> support requests are kept.</p>
+
+  <h2>4. What we do NOT collect</h2>
+  <ul>
+    <li><b>Location</b> — the app never asks for your location.</li>
+    <li><b>Analytics or crash data</b> — there is no analytics or crash-reporting SDK in the app. We do not track how you use the app.</li>
+    <li><b>Device or advertising IDs, contacts, SMS, call logs, files</b> — none of these are collected or accessed.</li>
+    <li><b>Ads</b> — there are no ads in the app and no ads SDK in the code.</li>
+  </ul>
+
+  <h2>5. Why we collect it (purpose)</h2>
+  <table>
+    <tr><th>Data</th><th>Purpose</th></tr>
+    <tr><td>School account + profile</td><td>Login, sign-up, password reset; identifying which school's data is shown and synced.</td></tr>
+    <tr><td>Student records</td><td>Attendance, fees and receipts, exams and marks, homework, notices, ID cards.</td></tr>
+    <tr><td>Student photo</td><td>Student profile, ID cards, fee receipts.</td></tr>
+    <tr><td>Aadhaar last-4</td><td>Student identity record, as entered by the school.</td></tr>
+    <tr><td>Student PIN (hash)</td><td>Student / parent login authentication.</td></tr>
+    <tr><td>Teacher records</td><td>Teacher login, class-scoped dashboards, attendance, homework and marks.</td></tr>
+    <tr><td>Fees / attendance / marks</td><td>The app's core function: the school's fee bookkeeping, attendance tracking, exams and results, reports.</td></tr>
+    <tr><td>Admission requests</td><td>Admission enquiries for the school to review, approve or reject.</td></tr>
+    <tr><td>Support requests</td><td>Answering the user's message.</td></tr>
+  </table>
+  <p>We do <b>not</b> use the data for advertising, marketing, or any purpose other than running the school's records in the app.</p>
+
+  <h2>6. Where data is stored</h2>
+  <ul>
+    <li><b>On the school's device</b>, in the browser's localStorage (school accounts, the school database, the login session, support requests).</li>
+    <li><b>On our server:</b> Supabase project <code>bsjqeeeemwimzldrehpw</code> (<code>https://bsjqeeeemwimzldrehpw.supabase.co</code>) — Supabase Auth (login accounts), the Postgres database tables (<code>ss_*</code>), and private file storage (<code>student-photos</code> for student photos, <code>school-logos</code> for school logos), so the school's records sync across the school's devices.</li>
+  </ul>
+  <p>A school's data is visible only inside that school. The server rules (row-level security) allow a school owner to see only their own school's rows; schools cannot see each other's data. One exception the school should know about: the database also has a platform-admin role (<code>ss_platform_admins</code>) that can access schools' data under the server rules. There is no platform-admin login in the app itself — this is a database-level role — and whether any admin rows exist, and who holds them, is <b>not verified</b> here.</p>
+
+  <h2>7. Who we share data with</h2>
+  <ul>
+    <li><b>Supabase (data processor).</b> Supabase hosts the database and the login service. Data is stored there so the school's records sync across devices. Supabase is the only third party that receives data automatically.</li>
+    <li><b>WhatsApp — only when the school admin manually opens it.</b> The app can open a <code>wa.me</code> link with a pre-filled fee reminder, absence alert, receipt or profile message. There is no WhatsApp API, no automatic sending and no bulk sending. The message goes only to the number the admin chose, only when the admin taps send.</li>
+    <li><b>We do not sell data. We do not share data for advertising or marketing. We use no third-party advertising or analytics SDKs.</b></li>
+  </ul>
+
+  <h2>8. How data is protected</h2>
+  <ul>
+    <li><b>In transit:</b> all traffic to Supabase goes over HTTPS/TLS. WhatsApp <code>wa.me</code> links also open over HTTPS. No data is sent over plain HTTP.</li>
+    <li><b>Passwords and PINs:</b> stored only as salted <code>s256$</code> SHA-256 hashes (single iteration). Plain passwords and PINs are never stored. A slower, server-side check (PBKDF2 / bcrypt / argon2) is planned but <b>not yet built</b>.</li>
+    <li><b>Student / parent PIN lockout:</b> after 5 wrong PIN attempts the login is locked for 15 minutes. When the school's data is on the server, the lockout is enforced on the server too (<code>ss_student_cloud_login</code>). On a device without the server copy, the lockout lives only on that device (clearing the device's stored data resets it).</li>
+    <li><b>At rest — honest statement: no app-level encryption yet.</b> The app stores its local database (including PIN hashes, phone numbers, Aadhaar last-4 and photos) as <b>plaintext in localStorage</b>, and login tokens as plaintext in localStorage. A full-backup JSON export contains the whole database (hashes, photos and personal data) without a warning. Encrypting stored data is <b>undecided</b> — it needs a decision first, because losing the encryption key would mean losing the data. Supabase's own platform-level disk encryption is <b>not verified here</b> and is not claimed.</li>
+    <li><b>Independent security review / certifications:</b> none. We do not claim any.</li>
+  </ul>
+  <p><b>What this means in plain words:</b> anyone who can open the school's device or its browser storage can read the school's stored data. Keep the school's device locked, do not share the school's login, and treat a full-backup file like a paper register — keep it safe and do not forward it to strangers.</p>
+
+  <h2>9. How long we keep data (retention)</h2>
+  <p>There is <b>no automatic retention period</b> in the app today. Data is kept until the school deletes it (per-record delete, Reset All Data, or Delete Account — see §10). We do not invent a retention period in this policy.</p>
+  <ul>
+    <li>Support requests kept on the device are capped at the latest <b>50</b>.</li>
+    <li>A student record deleted in the app is <b>soft-deleted</b>: the record is kept, and the student's fees, marks, attendance and homework stay saved.</li>
+  </ul>
+  <p>If a retention rule is set later (for example, "rejected admission requests older than X are deleted"), this policy will be updated together with the app.</p>
+
+  <h2>10. Deleting your data</h2>
+  <ol>
+    <li><b>Delete Account (in the app).</b> Settings → "Delete Account". It asks for the account password and for the exact school name typed out (two steps). If the school is linked to the server, the app then asks whether to delete <b>from this device only</b> or <b>from the server too</b>. "From the server too" runs a server function that wipes the school's server rows <b>and deletes the login account</b> — after that, the same email cannot log in again. "This device only" removes everything for that school on this device; logging in again with the same email brings a server-linked school back. A school that was never linked to the server is gone for good either way.
+      <br>If the server function has not been deployed yet, the app says so honestly and only the device-only deletion runs — it never claims a server deletion happened.</li>
+    <li><b>Reset All Data.</b> Deletes all school data on the device, with an option "Delete on server too" (which wipes the school's server rows). But the login account itself (<code>auth.users</code>) is <b>never</b> deleted by it, and the same email and password can log in again afterwards.</li>
+  </ol>
+  <p>Individual records (a student, a teacher, a fee record, an exam) can also be deleted in the app by the school admin. Exam deletion is a soft delete.</p>
+
+  <h2>11. Children's data</h2>
+  <ul>
+    <li>The app handles <b>minors' school records</b> (Nursery to 12th): name, date of birth, photo, Aadhaar last-4, PIN hash and the rest of §3.2.</li>
+    <li><b>Consent is school-mediated.</b> Students do not sign up themselves. A child's record is created by the school at admission (admission form or school enrolment), and the <b>school is responsible for having the parent/guardian's consent or authority</b> to enter and keep that child's data. The app does not itself collect a parent's consent, and this policy does not invent a consent mechanism.</li>
+    <li>The app's primary users are school staff; students and parents are secondary users (a parent sees only their own child's record, with the admission number and PIN the school gave them). No age-gate is built into teacher, student or parent login today.</li>
+    <li>We do not use children's data for advertising, and we do not share it with advertisers.</li>
+  </ul>
+
+  <h2>12. The school's responsibilities</h2>
+  <p>The school admin is responsible for:</p>
+  <ul>
+    <li>Keeping the school's login password and teacher/student PINs safe, and for who on the school's devices can open the app.</li>
+    <li>The <b>accuracy</b> of the records the school enters (names, fees, marks, attendance).</li>
+    <li>Having the parent/guardian's consent or authority for each child's record (§11).</li>
+    <li>Keeping its own backups (the app's full-backup export) somewhere safe.</li>
+    <li>What the school sends out of the app itself — for example, a receipt or reminder the admin chooses to send over WhatsApp (§7).</li>
+  </ul>
+
+  <h2>13. Your rights</h2>
+  <ul>
+    <li><b>School admin:</b> you can view, correct and delete the records you entered, in the app. You can export a full backup, reset all data, or delete the account on the device (§10).</li>
+    <li><b>Parent / guardian / student:</b> ask your school to show, correct or delete your (or your child's) record. If the school cannot help, contact us (§14) and we will pass the request to the school — we cannot change a school's records without the school.</li>
+    <li>Because server-side deletion depends on the server function being deployed (§10, point 1), a deletion request for server data can also be made manually: contact us (§14) and tell us the school name and email, and we will confirm what was deleted.</li>
+  </ul>
+
+  <h2>14. Contact us</h2>
+  <ul>
+    <li><b>Email:</b> <code>support@school-saathi.in</code>
+      <br>⚠️ <b>UNVERIFIED:</b> whether this mailbox is actually monitored, and by whom, is <b>not verified</b>. Do not promise a support response time until the owner confirms it.</li>
+  </ul>
+
+  <h2>15. हिंदी सारांश (Hindi summary)</h2>
+  <p><b>School Saathi</b> बिहार के स्कूलों (Nursery–12th) के लिए एक ऐप है — छात्र, उपस्थिति, फीस, परीक्षा और होमवर्क का रिकॉर्ड रखने के लिए।</p>
+  <ul>
+    <li><b>क्या डेटा लेते हैं:</b> स्कूल अकाउंट (ईमेल + पासवर्ड), छात्रों का रिकॉर्ड (नाम, कक्षा, जन्म तिथि, फोटो, आधार के <b>सिर्फ आखिरी 4 अंक</b>, PIN का hash), शिक्षकों का रिकॉर्ड, फीस/उपस्थिति/अंक, दाखिले के आवेदन, और सपोर्ट मैसेज। माता-पिता अपने बच्चे की प्रवेश संख्या और PIN से लॉगिन करते हैं।</li>
+    <li><b>कहाँ रहता है:</b> स्कूल के डिवाइस पर और Supabase सर्वर (<code>bsjqeeeemwimzldrehpw</code>) पर। एक स्कूल का डेटा दूसरे स्कूल को नहीं दिखता।</li>
+    <li><b>किससे साझा करते हैं:</b> सिर्फ Supabase (सर्वर) से, और WhatsApp से सिर्फ तब जब एडमिन खुद <code>wa.me</code> लिंक खोले। डेटा <b>बेचते नहीं</b>, विज्ञापन के लिए <b>साझा नहीं करते</b>, कोई विज्ञापन/analytics SDK <b>नहीं</b> है।</li>
+    <li><b>सुरक्षा:</b> सर्वर से बातचीत HTTPS से होती है। पासवर्ड/PIN सिर्फ hash के रूप में रखे जाते हैं। लेकिन डिवाइस पर डेटा <b>बिना encryption</b> रखा जाता है — डिवाइस को लॉक रखें, लॉगिन किसी से साझा न करें।</li>
+    <li><b>बच्चों का डेटा:</b> छात्र नाबालिग हैं। उनका रिकॉर्ड स्कूल दाखिले के समय बनाता है — माता-पिता की सहमति की ज़िम्मेदारी <b>स्कूल की</b> है।</li>
+    <li><b>हटाना:</b> ऐप में "Delete Account" से डिवाइस से या सर्वर से भी हटाया जा सकता है — सर्वर से हटाने पर लॉगिन अकाउंट भी मिट जाता है।</li>
+    <li><b>संपर्क:</b> <code>support@school-saathi.in</code> (यह mailbox देखी जाती है या नहीं, यह अभी <b>पुष्टि नहीं</b> हुई है)।</li>
+    <li><b>आखिरी अपडेट:</b> 24 नवंबर 2026।</li>
+  </ul>
+
+  <h2>16. Changes to this policy</h2>
+  <p>When this policy changes, the new version will replace this page, and the app will link to the current version. The policy is hosted at <code>https://ashutoshkumarjpg67-ai.github.io/school-saathi/privacy-policy.html</code> (and the Cloudflare Pages mirror). Material changes — for example, a new kind of data collected, or pricing — will be reflected here <b>before</b> the change takes effect.</p>
+  <p>The full source of this policy, including the traceability table for every claim and the list of open items still to be confirmed by the owner, is in <code>docs/privacy-policy.md</code> in the School Saathi repository.</p>
+</main>
+<footer>
+  <div class="wrap">
+    <p>School Saathi — Smart Education. Better Tomorrow. · <a href="index.html">Back to the app</a> · <a href="terms-of-service.html">Terms of Service</a></p>
+  </div>
+</footer>
+</body>
+</html>
