@@ -7214,6 +7214,78 @@ console.log(sess147ok
   ? 'PASS v147: session-expiry gaps fix present (clock-skew guard + expiry toast)'
   : 'FAIL v147: session-expiry gaps fix missing (SESSION_CLOCK_SKEW_MS / future-dated check / toast)');
 if (!sess147ok) process.exitCode = 1;
+// ---- v148: live-check bug fixes (24 Nov 2026, Test Sunrise School) ----
+// (0) Version markers: version.json says 148 (APP_VERSION / sw.js /
+// ?v= are pinned generically against EXPECTED_VERSION above).
+console.log(EXPECTED_VERSION === 148
+  ? 'PASS v148: version.json says 148'
+  : 'FAIL v148: version.json does not say 148 (got ' + EXPECTED_VERSION + ')');
+if (EXPECTED_VERSION !== 148) process.exitCode = 1;
+// (1) Nav presses queue on mousedown and the next render applies them.
+var q148ok = src.includes('function queueNav(view)') && src.includes('onmousedown="queueNav(') && src.includes('if (pendingNav) { var pv148 = pendingNav;');
+console.log(q148ok
+  ? 'PASS v148 bug 1: nav presses queue on mousedown (queueNav) and renderApp applies the queued view'
+  : 'FAIL v148 bug 1: queueNav / pendingNav apply missing');
+if (!q148ok) process.exitCode = 1;
+// (2) Dashboard shows a loading state on first login, never 0s.
+var fl148ok = src.includes('sbFirstLoadPending') && src.includes('function sbFirstLoadBegin') && src.includes('function sbFirstLoadDone');
+var sd148 = src.slice(src.indexOf('function schoolDashboard()'), src.indexOf('function schoolDashboard()') + 6000);
+var fl148b = sd148.includes('loading148') && sd148.includes("t('loading')");
+console.log(fl148ok && fl148b
+  ? 'PASS v148 bug 2: first-load flag + begin/done helpers, dashboard renders Loading instead of 0s'
+  : 'FAIL v148 bug 2: sbFirstLoadPending / schoolDashboard loading branch missing');
+if (!(fl148ok && fl148b)) process.exitCode = 1;
+// (3) No ", Bihar" before the city loads.
+var c148ok = src.includes("(prof.city ? '<br>' + esc(prof.city) + ', Bihar' : '')") && src.includes('crumbName148');
+console.log(c148ok
+  ? 'PASS v148 bug 3: sidebar + crumb render the city line only when prof.city is non-empty'
+  : 'FAIL v148 bug 3: conditional city rendering missing');
+if (!c148ok) process.exitCode = 1;
+// (4) Identical content is never a conflict: the identical-content
+// check runs BEFORE the last-write-wins timestamp in both push
+// branches, with a full-row fetch fallback and a prune for recorded
+// false alarms.
+var push148 = src.slice(src.indexOf('function sbSyncPushEntry'));
+var sch148i = push148.indexOf("table === 'ss_schools'");
+var lww148 = 'new Date(row.updated_at) > new Date(entry.at)';
+var gen148i = push148.indexOf('var findP53');
+var c4ok = src.includes('function sbSyncFullRow148') && src.includes('sbSyncPruneIdenticalConflicts')
+  && push148.indexOf('sbSyncRowSameAsServer(payload, schRow)', sch148i) !== -1 && push148.indexOf('sbSyncRowSameAsServer(payload, schRow)', sch148i) < push148.indexOf(lww148, sch148i)
+  && push148.indexOf('sbSyncRowSameAsServer(payload2, batchRow53)', gen148i) !== -1 && push148.indexOf('sbSyncRowSameAsServer(payload2, batchRow53)', gen148i) < push148.indexOf(lww148, gen148i);
+console.log(c4ok
+  ? 'PASS v148 bug 4: identical-content check precedes the timestamp in both push branches + full-row fallback + prune'
+  : 'FAIL v148 bug 4: push reorder / sbSyncFullRow148 / sbSyncPruneIdenticalConflicts missing');
+if (!c4ok) process.exitCode = 1;
+// (5) A renamed demo seed's stale email self-heals to the login email
+// on pull; the seed quarantine itself is untouched.
+var c5ok = src.includes('function sbIsRenamedSeedProfile') && src.includes('d.profile.email = account.email')
+  && src.includes("(p.name || '') === 'St. Xavier School'");
+console.log(c5ok
+  ? 'PASS v148 bug 5: renamed-seed profile detected, pull adopts the account login email, seed quarantine intact'
+  : 'FAIL v148 bug 5: sbIsRenamedSeedProfile / pull email correction missing');
+if (!c5ok) process.exitCode = 1;
+// (6) The homepage no longer promises WhatsApp Alerts (no such
+// feature); (7) the receipt grammar is fixed.
+console.log(!html147.includes('WhatsApp Alerts') && !i18n147.includes('featWhatsApp')
+  ? 'PASS v148 bug 6: no "WhatsApp Alerts" claim in index.html or i18n.js'
+  : 'FAIL v148 bug 6: WhatsApp Alerts claim still present');
+if (html147.includes('WhatsApp Alerts') || i18n147.includes('featWhatsApp')) process.exitCode = 1;
+console.log(i18n147.includes('Does not require a signature.') && !i18n147.includes('Does not required signature')
+  ? 'PASS v148 bug 7: receipt reads "Does not require a signature."'
+  : 'FAIL v148 bug 7: receipt grammar still wrong');
+if (!i18n147.includes('Does not require a signature.') || i18n147.includes('Does not required signature')) process.exitCode = 1;
+// (8) Attendance defaults to the first class with students; a picked
+// class sticks. (9) Bottom nav renders with the role tabs + More.
+var att148 = src.slice(src.indexOf('function attendancePage()'), src.indexOf('function attendancePage()') + 4000);
+var c8ok = src.includes('function onAttCls148') && src.includes('attClsPicked148') && att148.includes('with148');
+console.log(c8ok
+  ? 'PASS v148 bug 8: attendance first-open fallback to a class with students + picked class sticks'
+  : 'FAIL v148 bug 8: onAttCls148 / first-with-students fallback missing');
+if (!c8ok) process.exitCode = 1;
+console.log(css.includes('.bottom-nav') && css.includes('760px') && src.includes("t('moreNav')")
+  ? 'PASS v148 bug 9: bottom nav renders (CSS 760px breakpoint + More button in renderApp)'
+  : 'FAIL v148 bug 9: bottom nav / More button missing');
+if (!(css.includes('.bottom-nav') && css.includes('760px') && src.includes("t('moreNav')"))) process.exitCode = 1;
 console.log(css.includes('760px') && css.includes('#0A1E4B') && css.includes('#EA8600') && css.includes('.auth-tab')
   ? 'PASS styles.css keeps navy/gold theme + 760px breakpoint + auth tabs'
   : 'FAIL styles.css missing navy/gold / 760px / auth-tab rules');
@@ -8553,6 +8625,138 @@ async function v28run() {
   ctx.saveDB(ctx.db);
   await ctx.sbSyncFlushNow();
   v28eq(sbServer.ss_students.filter(function (r) { return r.local_id === stu107.id; })[0].name, origName107, 'v107: fixture name restored on the server');
+
+  // ---- v148 bug 4: identical content is never a conflict ----
+  // Live v147: Settings showed 21 "Sync conflicts" whose local and
+  // server amounts were byte-identical. The push used to run the
+  // last-write-wins timestamp check BEFORE the identical-content
+  // check, so a server row touched after the entry was queued flagged
+  // an identical row. The identical check now runs first (both
+  // branches), with a full-row fetch fallback when the row is not in
+  // the pass batch, and the cycle settlement prunes recorded false
+  // alarms.
+  var stu148 = ctx.db.students[0];
+  v28ok(!!stu148, 'v148 bug 4: seed student present for the identical-content fixture');
+  var sch148 = (ctx.sbServerSchoolMap() || {})[pullAcct.uid];
+  // (a) Batch path: local and server IDENTICAL, server timestamp newer
+  // than the entry's — the old code conflicted, the fix resolves it.
+  stu148.name = 'Local Name 148';
+  ctx.saveDB(ctx.db);
+  var out148a = ctx.sbOutboxLoad('sb-uid-pull@school.in');
+  out148a.forEach(function (e) { if (e.table === 'ss_students' && e.key === stu148.id) e.at = new Date(Date.now() - 60000).toISOString(); });
+  ctx.sbOutboxSave('sb-uid-pull@school.in', out148a);
+  var srv148 = sbServer.ss_students.filter(function (r) { return r.local_id === stu148.id; })[0];
+  v28ok(!!srv148, 'v148 bug 4: student is on the mock server before the identical-content push');
+  srv148.name = 'Local Name 148';
+  srv148.updated_at = new Date(Date.now() - 30000).toISOString();
+  var conf148pre = (ctx.db.syncConflicts || []).length;
+  var fl148a = await ctx.sbSyncFlushNow();
+  v28eq((ctx.db.syncConflicts || []).length, conf148pre, 'v148 bug 4: an identical row with a newer server timestamp records NO conflict');
+  v28ok(!ctx.sbOutboxLoad('sb-uid-pull@school.in').some(function (e) { return e.table === 'ss_students' && e.key === stu148.id; }), 'v148 bug 4: the identical entry leaves the outbox as pushed');
+  v28eq(sbServer.ss_students.filter(function (r) { return r.local_id === stu148.id; })[0].name, 'Local Name 148', 'v148 bug 4: the server row is untouched by the identical push');
+  // (b) Control: genuinely DIFFERENT content with a newer server
+  // timestamp still conflicts — the fix must not swallow real ones.
+  // Re-fetch: (a)'s flush replaced the array element (the v127
+  // guard's sbSyncSetLocalRow deep-copies the row), so the captured
+  // reference is detached — mutating it would change nothing and
+  // queue nothing (QA run 2: outbox stayed empty here).
+  stu148 = ctx.db.students.filter(function (s) { return s.id === stu148.id; })[0];
+  stu148.name = 'Local Name 148b';
+  ctx.saveDB(ctx.db);
+  var out148b = ctx.sbOutboxLoad('sb-uid-pull@school.in');
+  out148b.forEach(function (e) { if (e.table === 'ss_students' && e.key === stu148.id) e.at = new Date(Date.now() - 60000).toISOString(); });
+  ctx.sbOutboxSave('sb-uid-pull@school.in', out148b);
+  srv148.name = 'Server Name 148b';
+  srv148.updated_at = new Date(Date.now() - 30000).toISOString();
+  var fl148b = await ctx.sbSyncFlushNow();
+  v28eq((ctx.db.syncConflicts || []).length, conf148pre + 1, 'v148 bug 4: different content with a newer server timestamp still conflicts');
+  ctx.sbSyncResolveConflict((ctx.db.syncConflicts || []).length - 1, false); // Use server — clears the control record
+  v28eq((ctx.db.syncConflicts || []).length, conf148pre, 'v148 bug 4: the control conflict resolves cleanly');
+  // (c) No-batch path: the live find only carries id+updated_at, so
+  // the full-row fallback (sbSyncFullRow148) must prove identity
+  // before the push calls it a conflict.
+  // Re-fetch again: (b)'s Use-server resolution replaced the row too.
+  stu148 = ctx.db.students.filter(function (s) { return s.id === stu148.id; })[0];
+  stu148.name = 'Local Name 148c';
+  ctx.saveDB(ctx.db);
+  var ent148c = ctx.sbOutboxLoad('sb-uid-pull@school.in').filter(function (e) { return e.table === 'ss_students' && e.key === stu148.id; })[0];
+  v28ok(!!ent148c, 'v148 bug 4: the no-batch fixture queues an upsert');
+  var out148c = ctx.sbOutboxLoad('sb-uid-pull@school.in');
+  out148c.forEach(function (e) { if (e.table === 'ss_students' && e.key === stu148.id) e.at = new Date(Date.now() - 60000).toISOString(); });
+  ctx.sbOutboxSave('sb-uid-pull@school.in', out148c);
+  // Re-fetch: the entry object above predates the `at` rewrite (the
+  // save wrote fresh objects), and the push reads entry.at — passing
+  // the stale object makes the server look OLDER than the entry, so
+  // the timestamp branch (and its full-row fallback) never runs.
+  // The flush re-loads the outbox itself, which is why (a)/(b) did
+  // not need this; the direct push here does.
+  ent148c = ctx.sbOutboxLoad('sb-uid-pull@school.in').filter(function (e) { return e.table === 'ss_students' && e.key === stu148.id; })[0];
+  srv148.name = 'Local Name 148c';
+  srv148.updated_at = new Date(Date.now() - 30000).toISOString();
+  var calls148pre = sbCalls.length;
+  var push148c = ent148c ? await ctx.sbSyncPushEntry(ent148c, 'tok-pull', sch148, { stu: {}, exam: {} }, 'sb-uid-pull@school.in') : null;
+  v28eq(push148c && push148c.pushed, true, 'v148 bug 4: the no-batch identical push resolves as pushed, not a conflict');
+  v28eq(push148c && push148c.conflict, undefined, 'v148 bug 4: the no-batch identical push records no conflict');
+  v28ok(!!ent148c && sbCalls.slice(calls148pre).some(function (c) { return c.method === 'GET' && c.url.indexOf('ss_students?select=*&id=eq.') !== -1; }), 'v148 bug 4: the no-batch path fetched the full row before deciding');
+  await ctx.sbSyncFlushNow(); // drain the directly-pushed entry
+  v28ok(!ctx.sbOutboxLoad('sb-uid-pull@school.in').some(function (e) { return e.table === 'ss_students' && e.key === stu148.id; }), 'v148 bug 4: the no-batch entry drains on the next flush');
+  // (d) The prune drops an already-recorded identical conflict and
+  // keeps a real one (the 21 live v147 false alarms clear on the next
+  // successful cycle, without an admin resolving each by hand). The
+  // identical pair is built from the live local row, not a hardcoded
+  // amount, so a fee-structure edit by an earlier test cannot break it.
+  var fs6148 = (ctx.db.feeStructure || []).filter(function (f) { return f.cls === '6th-A' && (f.type || 'Tuition') === 'Tuition'; })[0];
+  var fs7148 = (ctx.db.feeStructure || []).filter(function (f) { return f.cls === '7th-A' && (f.type || 'Tuition') === 'Tuition'; })[0];
+  v28ok(!!fs6148 && !!fs7148, 'v148 bug 4: fee-structure rows exist for the prune fixture');
+  var maps148 = ctx.sbSyncBuildMaps(ctx.db, 'sb-uid-pull@school.in');
+  var fsPayload148 = ctx.sbSyncMapRow('ss_fee_structure', fs6148, sch148, maps148, ctx.db);
+  ctx.db.syncConflicts = [
+    { table: 'ss_fee_structure', key: '6th-A|Tuition', localRow: null, serverRow: Object.assign({ id: 'srv-148a', updated_at: new Date().toISOString() }, fsPayload148), at: new Date().toISOString() },
+    { table: 'ss_fee_structure', key: '7th-A|Tuition', localRow: null, serverRow: { id: 'srv-148b', school_id: sch148, cls: '7th-A', fee_type: 'Tuition', amount: (fs7148.amount || 0) + 12345, updated_at: new Date().toISOString() }, at: new Date().toISOString() }
+  ];
+  ctx.saveDB(ctx.db);
+  ctx.sbSyncPruneIdenticalConflicts(pullAcct, 'sb-uid-pull@school.in');
+  v28eq((ctx.db.syncConflicts || []).length, 1, 'v148 bug 4: the prune drops the identical recorded conflict and keeps the real one');
+  v28eq((ctx.db.syncConflicts || [])[0].key, '7th-A|Tuition', 'v148 bug 4: the kept conflict is the differing one');
+  ctx.db.syncConflicts = [];
+  ctx.saveDB(ctx.db);
+  // Restore the fixture student on both sides.
+  // Re-fetch once more: (c)'s direct push + drain flush replaced it.
+  stu148 = ctx.db.students.filter(function (s) { return s.id === stu148.id; })[0];
+  stu148.name = origName107;
+  srv148.name = origName107;
+  srv148.updated_at = new Date(Date.now() - 60000).toISOString();
+  ctx.saveDB(ctx.db);
+  await ctx.sbSyncFlushNow();
+  v28eq(sbServer.ss_students.filter(function (r) { return r.local_id === stu148.id; })[0].name, origName107, 'v148 bug 4: fixture student restored on the server');
+
+  // ---- v148 bug 5: a renamed demo seed's stale email self-heals on pull ----
+  // Live v147: Settings showed info@stxavierpatna.edu.in for Test
+  // Sunrise School — a renamed demo seed. The seed quarantine stays,
+  // but the pull adopts the account's own login email for a profile
+  // that still carries the seed's contact triple.
+  await ctx.sbSyncFlushNow(); // drain: no pending ss_schools entry, so the pull takes the server profile
+  var srvSch148 = sbServer.ss_schools.filter(function (r) { return r.id === sch148; })[0];
+  v28ok(!!srvSch148, 'v148 bug 5: the server school row exists for the renamed-seed fixture');
+  var origSch148 = { name: srvSch148.name, city: srvSch148.city, principal: srvSch148.principal, phone: srvSch148.phone, email: srvSch148.email };
+  srvSch148.name = 'Test Sunrise School';
+  srvSch148.city = 'Patna';
+  srvSch148.principal = 'Rahul Kumar';
+  srvSch148.phone = '+91 98350 12345';
+  srvSch148.email = 'info@stxavierpatna.edu.in';
+  var cy148 = await ctx.sbSyncStart(pullAcct, 'sb-uid-pull@school.in', 'tok-pull');
+  v28eq(ctx.db.profile.name, 'Test Sunrise School', 'v148 bug 5: the pull takes the renamed school name from the server');
+  v28eq(ctx.db.profile.email, 'pull@school.in', 'v148 bug 5: the pull replaces the stale seed email with the account login email');
+  v28eq(ctx.db.profile.principal, 'Rahul Kumar', 'v148 bug 5: the rest of the renamed profile is untouched');
+  await ctx.sbSyncFlushNow();
+  v28eq(sbServer.ss_schools.filter(function (r) { return r.id === sch148; })[0].email, 'pull@school.in', 'v148 bug 5: the corrected email pushes back to the server on the next flush');
+  // Restore the server row + local profile to the Pull School state.
+  var srvSch148b = sbServer.ss_schools.filter(function (r) { return r.id === sch148; })[0];
+  srvSch148b.name = origSch148.name; srvSch148b.city = origSch148.city; srvSch148b.principal = origSch148.principal; srvSch148b.phone = origSch148.phone; srvSch148b.email = origSch148.email;
+  ctx.db.profile.name = origSch148.name; ctx.db.profile.city = origSch148.city; ctx.db.profile.principal = origSch148.principal; ctx.db.profile.phone = origSch148.phone; ctx.db.profile.email = origSch148.email;
+  ctx.saveDB(ctx.db);
+  await ctx.sbSyncFlushNow();
+  v28eq(sbServer.ss_schools.filter(function (r) { return r.id === sch148; })[0].name, origSch148.name, 'v148 bug 5: the server school row is restored');
 
   // ---- v31: offline writes queue in the outbox and flush on reconnect ----
   // (harness fix, B22) while offline the per-save diff is skipped, so
@@ -11662,6 +11866,13 @@ ctx.sbStoreSession({ access_token: 'tok-vm127b', refresh_token: 'ref-vm127b', ex
   vm44SeedTestSchool();
   ctx.saveAccounts([vmAcct]);
   ctx.loginAs(vmAcct);
+  // v148 (bug 2): this block tests audit-log rendering, not the
+  // first-load state — the login above arms the dashboard loading
+  // flag (empty local db + server identity), and the (D) checks run
+  // within the 12s backstop, so the dashboard would show Loading
+  // instead of the audit rows. Disarm it; the loading behaviour
+  // itself is pinned by the v148 node tests.
+  if (typeof ctx.sbFirstLoadDone === 'function') ctx.sbFirstLoadDone();
   ctx.db = ctx.emptyDb({ name: 'Test Sunrise School', city: 'Patna', principal: 'Test Admin', phone: '', email: 'test@sunrise.test', session: '2025\u201326', address: '' });
   ctx.state.sb = { uid: 'sb-uid-vm@school.in', email: 'vm@school.in' };
   ctx.sbStoreSession({ access_token: 'tok' + '-vm129', refresh_token: 'ref' + '-vm129', expires_in: 3600, user: { id: 'sb-uid-vm@school.in', email: 'vm@school.in' } });

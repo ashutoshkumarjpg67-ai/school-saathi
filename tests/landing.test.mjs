@@ -24,7 +24,7 @@ describe('landing page exists and is self-contained', () => {
     const vs = [...landing.matchAll(/\?v=(\d+)/g)].map((m) => Number(m[1]));
     assert.ok(vs.length >= 1, 'landing.html: expected a ?v= stylesheet link');
     for (const v of vs) assert.equal(v, truth, `landing.html: ?v=${v} != ${truth}`);
-    assert.ok(landing.includes('styles.css?v=147'), 'landing.html must load styles.css');
+    assert.ok(landing.includes('styles.css?v=' + truth), 'landing.html must load styles.css');
   });
 
   it('links into the app login (index.html) and back', () => {

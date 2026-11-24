@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 147;
+var APP_VERSION = 148;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -631,6 +631,8 @@ function sbSetStatus(st, detail) {
   // truthful status stands. (The parameter is named `st` so it does not
   // shadow the global `state` this guard reads.)
   if ((st === 'failed' || st === 'offline' || st === 'session-expired') && (typeof state === 'undefined' || !state || !state.user || state.user.role !== 'school')) return;
+  // v148 (bug 2): the first post-login cycle settling ends the dashboard loading state.
+  if (sbFirstLoadPending && st !== 'syncing' && st !== 'uploading') sbFirstLoadDone();
   // v43: the stored status is stamped with the build that wrote it, so
   // a failure from an older build can be recognised as stale (see
   // sbStatusText). The stamp is part of the stored record, never shown.
@@ -1852,6 +1854,19 @@ function sbIsSeedProfileParts(p) {
     && (p.principal || '') === 'Rahul Kumar' && (p.phone || '') === '+91 98350 12345'
     && (p.email || '') === 'info@stxavierpatna.edu.in';
 }
+// v148 (bug 5): a RENAMED demo seed — the school was renamed (Test
+// Sunrise School) but still carries the seed's contact triple
+// (principal Rahul Kumar, +91 98350 12345, info@stxavierpatna.edu.in).
+// The seed quarantine (sbIsSeedProfileParts, above) is NOT relaxed —
+// a renamed seed that became a live school must keep syncing — but its
+// stale seed email is not the school's real address, so the pull
+// adopts the account's own login email (below).
+function sbIsRenamedSeedProfile(p) {
+  if (!p) return false;
+  return (p.name || '') !== 'St. Xavier School'
+    && (p.principal || '') === 'Rahul Kumar' && (p.phone || '') === '+91 98350 12345'
+    && (p.email || '') === 'info@stxavierpatna.edu.in';
+}
 function sbIsSeedProfile(d) {
   if (!d || !sbIsSeedProfileParts(d.profile)) return false;
   // A real school could share the name — the seed rows prove it is the
@@ -2444,6 +2459,17 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
       d.profile.logoUrl = schoolRow.logo_url || null; // Phase 3 (v78)
       d.feeExtras = { admissionFee: schoolRow.admission_fee || 0, cautionMoney: schoolRow.caution_money || 0, annualCharges: schoolRow.annual_charges || 0, transportFee: schoolRow.transport_fee || 0 };
     }
+    // v148 (bug 5): a renamed demo seed carries the seed's contact
+    // email (info@stxavierpatna.edu.in) even though the school is now
+    // a live school under its own login — the live Settings page
+    // showed exactly that stale address for Test Sunrise School. The
+    // account's own login email is the school's real address: adopt it
+    // here, so the next queue-diff pushes the correction to the server
+    // too. Runs whether or not keepProfile113 held the local profile
+    // — it only fires while the seed email is still there, so a
+    // deliberate email change is never overwritten.
+    var seedEmailFixed148 = false;
+    if (account && account.email && d.profile && sbIsRenamedSeedProfile(d.profile)) { d.profile.email = account.email; seedEmailFixed148 = true; }
     d.admCounter = schoolRow.adm_counter || 1;
     d.receiptCounter = schoolRow.receipt_counter || 1;
     if (account) sbSaveServerSchool(account.uid, sid);
@@ -2466,6 +2492,14 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   function snapHas(table, key) { return !!(snap[table] && snap[table][key] !== undefined); }
   var kept = {};
   function keep(table, key) { if (!kept[table]) kept[table] = {}; kept[table][key] = true; }
+  // v148 (bug 5, follow-up): the snapshot refresh hashes the CURRENT
+  // local db, so a corrected email would be snapshotted as already
+  // synced and the next diff would see no change — the server would
+  // keep the stale seed email forever (QA run 2 caught this: the local
+  // email healed but the server row never did). Keep the school row
+  // out of the snapshot (the v33 mechanism): the pull's saveDB then
+  // re-queues it and the cycle's flush PATCHes the correction up.
+  if (seedEmailFixed148) keep('ss_schools', 'school');
   // v45: snapshot the seed student/exam ids BEFORE the merges below
   // drop the seed rows — the dependent merges (fee records, attendance,
   // marks, receipts) prove a row is seed by its student/exam, and that
@@ -3210,6 +3244,24 @@ function sbSyncRowSameAsServer(payload, serverRow) {
   }
   return true;
 }
+// v148 (bug 4): full-row fetch for the push conflict check. The live
+// find (sbSyncFindServerRow) only selects id+updated_at, so when a row
+// is NOT in the pass batch the push cannot tell identical content from
+// a real conflict. Fetch the full row by id and let the caller compare
+// — one extra round-trip, only on the conflict path. Returns
+// Promise<full server row | null>; fail-closed (any error or missing
+// row = null, so the caller still records the conflict).
+function sbSyncFullRow148(table, serverId, schoolId, token) {
+  try {
+    if (!serverId) return Promise.resolve(null);
+    var q = table + '?select=*&id=eq.' + encodeURIComponent(serverId);
+    if (table !== 'ss_schools') q += '&school_id=eq.' + encodeURIComponent(schoolId);
+    return sbRest('GET', q, token).then(function (r) {
+      if (r && r.ok && Array.isArray(r.data) && r.data.length) return r.data[0];
+      return null;
+    }).catch(function () { return null; });
+  } catch (e) { return Promise.resolve(null); }
+}
 // v53: the batched twin of sbSyncFindServerRow — look the entry up in
 // the per-table rows fetched once per flush pass (select=*) instead of
 // a GET per entry. Same lookup rules: stored server id first (with
@@ -3462,6 +3514,52 @@ function sbSyncRecordConflict(act, entry, r) {
     for (i = 0; i < db.syncConflicts.length; i++) { if (db.syncConflicts[i] && db.syncConflicts[i].table === rec.table && db.syncConflicts[i].key === rec.key) { found = i; break; } }
     if (found >= 0) db.syncConflicts[found] = rec; else db.syncConflicts.push(rec);
     saveDB(db);
+  } catch (e) {}
+}
+// v148 (bug 4): drop already-recorded conflicts whose local and server
+// rows are in fact identical — the detector fix stops NEW false alarms,
+// but the 21 already sitting in Settings (live v147) would stay until
+// an admin resolves each by hand. Runs in the cycle settlement, only
+// after a successful cycle, so the comparison runs against fresh state.
+// Fail-closed: a conflict whose rows cannot be mapped, or whose
+// recorded server row is thin (live find, id+updated_at only), stays
+// recorded — only a full-row identical pair is dropped. The comparison
+// uses the RECORDED local copy (c.localRow), never the live row: the
+// pull overwrites a conflicted live row with the server version before
+// resolution (v107), so a live-row comparison would call every real
+// conflict identical and drop it — the first v148 harness run proved
+// exactly that. A REAL conflict (local edited differently on two
+// devices) still differs here and stays listed.
+function sbSyncPruneIdenticalConflicts(account, sbUid) {
+  try {
+    if (!db || !Array.isArray(db.syncConflicts) || !db.syncConflicts.length) return;
+    var schoolId = (sbServerSchoolMap()[account.uid]) || null;
+    if (!schoolId) return;
+    var maps = sbSyncBuildMaps(db, account.uid);
+    var kept = db.syncConflicts.filter(function (c) {
+      try {
+        if (!c || !c.table || !c.key || !c.serverRow) return true;
+        // v148: compare the RECORDED local copy, never the live row —
+        // the pull overwrites a conflicted live row with the server
+        // version (v107: the pull restores the server version locally
+        // before resolution), so comparing the live row would call
+        // EVERY conflict identical and drop real ones. The record
+        // preserves the local copy precisely for this comparison; when
+        // it is missing, fall back to the live row.
+        var local = c.localRow || sbSyncLocalRow({ table: c.table, key: c.key });
+        if (!local) return true;
+        var payload = c.table === 'ss_schools'
+          ? sbSyncSchoolPayloadFromParts(local.profile, local.feeExtras, local.admCounter, local.receiptCounter)
+          : sbSyncMapRow(c.table, local, schoolId, maps, db);
+        if (!payload) return true;
+        if (sbSyncRowSameAsServer(payload, c.serverRow)) return false; // identical — drop the false alarm
+        return true;
+      } catch (e2) { return true; }
+    });
+    if (kept.length !== db.syncConflicts.length) {
+      db.syncConflicts = kept;
+      saveDB(db);
+    }
   } catch (e) {}
 }
 function sbSyncQueueDiff() {
@@ -3904,11 +4002,25 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
     var schRow = batch ? sbSyncFindFromBatch(batch, table, entry, schoolId, maps, uid) : null;
     var schP = schRow ? Promise.resolve(schRow) : sbSyncFindServerRow(table, entry, token, schoolId, maps, uid);
     return schP.then(function (row) {
-      if (row && row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true, serverRow: row }; // v107: the record needs the server row for the conflicts view
+      // v148 (bug 4): identical content is never a conflict — the live
+      // Settings page showed 21 "conflicts" whose local and server
+      // amounts were byte-identical. Check content BEFORE the
+      // last-write-wins timestamp, so a server row touched after the
+      // entry was queued (re-queued with an old `at`, or written back
+      // by a pull) does not flag when nothing actually differs.
       // v53: the school row is re-queued on every profile/counter
       // change, but its content is usually already on the server —
       // skip the PATCH when the full batch row matches.
       if (schRow && sbSyncRowSameAsServer(payload, schRow)) return { pushed: true, hash: JSON.stringify(payload) };
+      if (row && row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) {
+        // No batch row: the live find only carried id+updated_at, so
+        // fetch the full row before calling it a conflict.
+        if (!schRow) return sbSyncFullRow148(table, row.id, schoolId, token).then(function (full) {
+          if (full && sbSyncRowSameAsServer(payload, full)) return { pushed: true, hash: JSON.stringify(payload) };
+          return { pushed: false, conflict: true, serverRow: row };
+        });
+        return { pushed: false, conflict: true, serverRow: row }; // v107: the record needs the server row for the conflicts view
+      }
       return sbRest('PATCH', 'ss_schools?id=eq.' + encodeURIComponent(schoolId), token, payload, 'return=minimal').then(function (r) {
         if (!r.ok) throw new Error('patch-ss_schools-' + (r.status || 'fail'));
         return { pushed: true, hash: JSON.stringify(payload) };
@@ -3965,17 +4077,28 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
         if (localRc51 && sbReceiptSame(localRc51, entry.row || {})) return { pushed: false, skipped: true, keep: true };
         return { pushed: false, skipped: true };
       }
-      // Last-write-wins: a newer server copy beats this local change.
-      if (row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) return { pushed: false, conflict: true, serverRow: row }; // v107: the record needs the server row for the conflicts view
+      // v148 (bug 4): identical content is never a conflict — check
+      // BEFORE the last-write-wins timestamp (see the ss_schools
+      // branch above). The receipt collision check above still runs
+      // first, so a same-number different receipt never resolves as
+      // identical.
       // v53: identical content already on the server — resolve WITHOUT
-      // a PATCH. The receipt collision check above still runs first,
-      // so a same-number different receipt never resolves as
-      // identical. The id map is set exactly as the PATCH branch sets
+      // a PATCH. The id map is set exactly as the PATCH branch sets
       // it, so the next pull/find sees the same server id.
       if (batchRow53 && sbSyncRowSameAsServer(payload2, batchRow53)) {
         sbSrvIdSet(uid, table, entry.key, batchRow53.id);
         if (batchRow53._adoptedByNaturalKey && batchRow53.local_id) sbSrvIdSet(uid, table, batchRow53.local_id, batchRow53.id);
         return { pushed: true, hash: JSON.stringify(payload2), serverRow: batchRow53 }; // v127: the flush needs the server row to guard the local-row sync
+      }
+      // Last-write-wins: a newer server copy beats this local change.
+      if (row.updated_at && entry.at && new Date(row.updated_at) > new Date(entry.at)) {
+        // No batch row: the live find only carried id+updated_at, so
+        // fetch the full row before calling it a conflict.
+        if (!batchRow53) return sbSyncFullRow148(table, row.id, schoolId, token).then(function (full) {
+          if (full && sbSyncRowSameAsServer(payload2, full)) { sbSrvIdSet(uid, table, entry.key, row.id); return { pushed: true, hash: JSON.stringify(payload2), serverRow: full }; }
+          return { pushed: false, conflict: true, serverRow: row };
+        });
+        return { pushed: false, conflict: true, serverRow: row }; // v107: the record needs the server row for the conflicts view
       }
       // v44: a student found by admission_no/enr (not by local_id) is
       // THIS student under a stale local id — PATCH it, but never send
@@ -4832,6 +4955,9 @@ function sbSyncCycleRun(account, sbUid, token) {
     var resCycle = r.done ? (leftCycle ? 'pending: ' + leftCycle + ' left' : 'synced') : ('failed: ' + (r.reason || r.detail || 'error'));
     sbSyncDiagSet({ lastCycle: { at: new Date().toISOString(), ms: Date.now() - cycleT0, result: resCycle, detail: r.detail || '', outbox: leftCycle, calls: sbSyncRestCalls - cycleCalls0 } });
     sbSyncDetailsRefresh();
+    // v148 (bug 4): drop already-recorded false-alarm conflicts after
+    // a successful cycle (see sbSyncPruneIdenticalConflicts).
+    if (r.done) { try { sbSyncPruneIdenticalConflicts(account, sbUid); } catch (e148) {} }
     return r;
   });
 }
@@ -5449,6 +5575,40 @@ var db = loadDB();
 
 /* ================= state ================= */
 var state = { role: null, user: null, view: 'dashboard', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, feeEditId: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, actSearch: '', actAction: 'All', actActor: 'All', actFrom: '', actTo: '', actLimit: 50, sb: null, rcCls: '', rcExam: '', rcStudent: '' };
+// v148 (bug 1): a nav press queued on mousedown — see queueNav below.
+var pendingNav = null;
+// v148 (bug 8): has the admin picked an attendance class yet? The
+// first-open fallback (first class WITH students) runs only until then.
+var attClsPicked148 = false;
+// v148 (bug 2): the first post-login sync is still running for a
+// server-linked school whose local db is empty — the dashboard shows a
+// loading state instead of 0s until the first cycle settles.
+var sbFirstLoadPending = false;
+var sbFirstLoadTimer = null;
+function sbFirstLoadBegin() {
+  // Called from loginAs, before the first render: only a server-linked
+  // school with an empty local db can flash 0s (a fresh device pulls
+  // the real numbers seconds later). The flag clears when the first
+  // cycle writes a terminal status (sbSetStatus) or after 12s,
+  // whichever comes first — an offline login must never show
+  // "Loading…" forever.
+  try {
+    if (state.role !== 'school' || !state.user || !state.user.sbUid) return;
+    var empty = !(db.students && db.students.length) && !(db.teachers && db.teachers.length) && !(db.feeRecords && db.feeRecords.length);
+    if (!empty) return;
+    sbFirstLoadPending = true;
+    if (typeof setTimeout === 'function') {
+      if (sbFirstLoadTimer) clearTimeout(sbFirstLoadTimer);
+      sbFirstLoadTimer = setTimeout(function () { sbFirstLoadDone(); }, 12000);
+    }
+  } catch (e) {}
+}
+function sbFirstLoadDone() {
+  if (!sbFirstLoadPending) return;
+  sbFirstLoadPending = false;
+  if (sbFirstLoadTimer) { try { clearTimeout(sbFirstLoadTimer); } catch (e) {} sbFirstLoadTimer = null; }
+  try { if (state.view === 'dashboard' && state.role === 'school') renderApp(); } catch (e2) {}
+}
 
 /* Phase 2: bulk import + promotion state (in-memory only, never persisted). */
 var importState = { rows: null, fileName: '', result: null };
@@ -6533,8 +6693,10 @@ function clearStoredSession() {
 }
 function loginAs(a, opts) {
   state.role = a.role; state.user = a; state.view = 'dashboard';
+  attClsPicked148 = false; // v148 (bug 8): a fresh login gets the smart attendance default again
   DB_KEY = dbKeyFor(a);
   db = loadDB(a.role === 'school' ? a : null);
+  sbFirstLoadBegin(); // v148 (bug 2): arm the dashboard loading state before the first paint
   showView('app'); renderApp();
   persistSession();
   lastBackAt = 0; histExiting = false;
@@ -7750,7 +7912,7 @@ function principalDashboard() {
   var notices = (db.notices || []).slice(0, 2).map(function (n) {
     return '<div class="notice"><b>' + esc(n.title) + '</b><span>' + esc(n.date) + '</span><p>' + esc(n.body) + '</p></div>';
   }).join('');
-  return '<div class="card"><h3>' + esc(u.name || '') + '</h3><p>Principal • ' + esc(db.profile.name || '') + ', ' + esc(db.profile.city || '') + '</p>' +
+  return '<div class="card"><h3>' + esc(u.name || '') + '</h3><p>Principal • ' + esc(db.profile.name || '') + (db.profile.city ? ', ' + esc(db.profile.city) : '') + '</p>' + // v148 (bug 3): no city, no ", "
     '<p class="card-sub">Read-only overview — you can view the whole school, but nothing can be changed from this login.</p></div>' +
     '<div class="tile-grid">' +
     '<div class="tile blue pointer" onclick="go(\'students\')"><div class="n">' + db.students.length + '</div><div class="l">' + t('totalStudents') + '</div></div>' +
@@ -7801,7 +7963,7 @@ function teacherDashboard() {
     return '<div class="tile blue pointer" onclick="openTeacherClass(' + jsAttr(c) + ')"><div class="n">' + n + '</div><div class="l">' + esc(c) + '</div></div>';
   }).join('');
   return '<div class="phone"><div class="card"><div class="stu-hero">' + avatarHTML(null, te.name, 'avatar') + '</div>' +
-    '<h3>' + esc(te.name) + '</h3><p>' + esc(te.subject || '') + ' • ' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div>' +
+    '<h3>' + esc(te.name) + '</h3><p>' + esc(te.subject || '') + ' • ' + esc(db.profile.name) + (db.profile.city ? ', ' + esc(db.profile.city) : '') + '</p></div>' + // v148 (bug 3): no city, no ", "
     '<div class="tile-grid">' +
     '<div class="tile green"><div class="n">' + myClasses.length + '</div><div class="l">' + t('tchrMyClasses') + '</div></div>' +
     '<div class="tile yellow pointer" onclick="openTeacherClass(\'\')"><div class="n">' + myStudents.length + '</div><div class="l">' + t('tchrStudents') + '</div></div>' +
@@ -8272,12 +8434,28 @@ function histBack() {
 function backFromProfile() { if (histBack()) return; state.profileStudent = null; renderPage(); }
 function backFromFeeProfile() { if (histBack()) return; state.feeStudent = null; renderPage(); }
 function backFromReceipt() { if (histBack()) return; state.savedReceiptId = null; state.collectStudent = null; renderPage(); }
+function queueNav(view) {
+  // v148 (bug 1): the post-login load burst re-renders the sidebar and
+  // bottom nav repeatedly (pull applying server rows, per-photo signing
+  // re-renders) — a press whose button node is replaced between
+  // mousedown and click loses the click entirely (live v147: the first
+  // two Attendance taps after login did nothing). The nav buttons fire
+  // this on mousedown, before any re-render can remove the node; the
+  // next renderApp() applies the queued view (below), and the click's
+  // go() is then a harmless repeat (histPush dedupes). Recording intent
+  // only — no render here, so a queued press can never itself swallow
+  // another press.
+  if (!state.user || !view) return;
+  if (!canAccessView(state.role, view)) return;
+  pendingNav = view;
+}
 function go(view) {
   // v85 (Phase 4): PERMS is the enforcement — a view a role may not
   // open refuses here, before any render. NAV is only the visible menu.
   var ok = canAccessView(state.role, view);
   if (!ok) { toast(t('tNotAllowed')); state.view = 'dashboard'; }
   else state.view = view;
+  pendingNav = null; // v148: a completed navigation clears any queued press
   if (state.view !== 'fees') { state.feeStudent = null; state.collectStudent = null; state.collectRecordId = null; state.savedReceiptId = null; collectDraft = null; }
   state.profileStudent = null;
   promoState = null; importState.rows = null; importState.result = null;
@@ -8298,9 +8476,14 @@ function renderApp() {
   // below. A render with no logged-in user is always stale (the login
   // screen already stands), so there is nothing to draw.
   if (!state.user) return;
+  // v148 (bug 1): apply a nav press queued on mousedown (see queueNav)
+  // BEFORE building the nav, so the active tab and the rendered page
+  // already reflect it — a press swallowed mid-click by a re-render
+  // still lands.
+  if (pendingNav) { var pv148 = pendingNav; pendingNav = null; if (canAccessView(state.role, pv148)) { state.view = pv148; histPush({ view: state.view }); } }
   var nav = NAV[state.role] || [];
   $('sideNav').innerHTML = nav.map(function (n) {
-    return '<button class="' + (state.view === n[0] ? 'active' : '') + '" onclick="go(\'' + n[0] + '\')"><span class="ic">' + n[1] + '</span>' + esc(t(n[2])) + '</button>';
+    return '<button class="' + (state.view === n[0] ? 'active' : '') + '" onmousedown="queueNav(\'' + n[0] + '\')" onclick="go(\'' + n[0] + '\')"><span class="ic">' + n[1] + '</span>' + esc(t(n[2])) + '</button>';
   }).join('');
   // v147: phone-first bottom nav — the first 4 of this role's NAV + More
   // (opens the sidebar drawer, where the rest of the destinations live).
@@ -8308,7 +8491,7 @@ function renderApp() {
   var bn = $('bottomNav');
   if (bn) {
     bn.innerHTML = nav.slice(0, 4).map(function (n) {
-      return '<button class="' + (state.view === n[0] ? 'active' : '') + '" onclick="go(\'' + n[0] + '\')"><span class="ic">' + n[1] + '</span>' + esc(t(n[2])) + '</button>';
+      return '<button class="' + (state.view === n[0] ? 'active' : '') + '" onmousedown="queueNav(\'' + n[0] + '\')" onclick="go(\'' + n[0] + '\')"><span class="ic">' + n[1] + '</span>' + esc(t(n[2])) + '</button>';
     }).join('') + '<button onclick="toggleSidebar(true)"><span class="ic">\u22EF</span>' + esc(t('moreNav')) + '</button>';
   }
   var u = state.user;
@@ -8324,7 +8507,7 @@ function renderApp() {
   var prof = db.profile;
   var bc = $('sideBrandCap');
   if (bc) bc.innerHTML = prof.logo ? '<img class="side-logo" src="' + esc(sbDisplayPhoto(prof.logo)) + '" alt="">' : '🎓'; // v139: signed-URL cache
-  $('sideSchoolInfo').innerHTML = '<b style="color:#fff">' + esc(prof.name) + '</b><br>' + esc(prof.city) + ', Bihar';
+  $('sideSchoolInfo').innerHTML = '<b style="color:#fff">' + esc(prof.name) + '</b>' + (prof.city ? '<br>' + esc(prof.city) + ', Bihar' : ''); // v148 (bug 3): no city loaded yet, no ", Bihar" — the sidebar flashed ", Bihar" while the profile was still loading
   var sess = $('sessionSel');
   if (!sess.options.length) {
     SESSIONS.forEach(function (s) {
@@ -8336,7 +8519,8 @@ function renderApp() {
   var vt = VIEW_TITLES[state.view] || ['Dashboard', ''];
   $('topTitle').textContent = t(state.view) === state.view ? vt[0] : t(state.view);
   if (state.view === 'dashboard') $('topTitle').textContent = t('dashboard');
-  $('topCrumb').textContent = state.role === 'school' ? prof.name + ', ' + prof.city : (state.role === 'student' ? t('stuDashboard') : state.role === 'parent' ? t('parentDash') : state.role === 'principal' ? t('principalDash') : state.role === 'staff' ? t('staffDash') : state.role === 'accountant' ? t('accountantDash') : state.role === 'superadmin' ? t('superAdminDash') : t('tchrDashboard')); // v86: a parent's top crumb says Parent Dashboard, never Teacher Dashboard; v88b: a principal's says Principal Dashboard; v91: a staff member's says Staff Dashboard, an accountant's says Accountant Dashboard; v94: a super admin's says Super Admin Dashboard
+  var crumbName148 = prof.city ? prof.name + ', ' + prof.city : prof.name; // v148 (bug 3): same no-city guard as the sidebar
+  $('topCrumb').textContent = state.role === 'school' ? crumbName148 : (state.role === 'student' ? t('stuDashboard') : state.role === 'parent' ? t('parentDash') : state.role === 'principal' ? t('principalDash') : state.role === 'staff' ? t('staffDash') : state.role === 'accountant' ? t('accountantDash') : state.role === 'superadmin' ? t('superAdminDash') : t('tchrDashboard')); // v86: a parent's top crumb says Parent Dashboard, never Teacher Dashboard; v88b: a principal's says Principal Dashboard; v91: a staff member's says Staff Dashboard, an accountant's says Accountant Dashboard; v94: a super admin's says Super Admin Dashboard
   sbOfflineChipRefresh(); // B7 (M-26): the topbar chip is re-driven on every render
   sbStorageWarnRender(); // B17/B18: re-show the sticky storage warning (if any) on every render
   renderPage();
@@ -8753,6 +8937,7 @@ function submitSupportRequest(e) {
 /* ================= SCHOOL ADMIN pages ================= */
 function schoolDashboard() {
   var ft = feeTotals(), ta = todayAtt();
+  var loading148 = sbFirstLoadPending; // v148 (bug 2): first post-login sync still running — show loading, never 0s
   // v129 (Module 16): Recent Activities reads the real audit trail (db.auditLog,
   // top 6 newest) instead of db.activities — the old feed only held actions
   // that also called addActivity, so fee deletions, PIN changes and class
@@ -8764,15 +8949,17 @@ function schoolDashboard() {
     return '<div class="act"><div class="ic" style="background:var(--' + ic.bg + '-soft)">' + ic.icon + '</div><div><b>' + esc(a.action) + '</b><span>' + esc(a.details || '') + ' • ' + esc(a.actor || '') + (when ? ' • ' + esc(when) : '') + '</span></div></div>';
   }).join('');
   var logoHtml = db.profile.logo ? '<img class="dash-logo" src="' + esc(db.profile.logo) + '" alt="">' : '';
-  return '<div class="page-head"><div class="prof-head">' + logoHtml + '<div><h2>' + t('schoolDashboard') + '</h2><p>' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div></div>' +
+  return '<div class="page-head"><div class="prof-head">' + logoHtml + '<div><h2>' + t('schoolDashboard') + '</h2><p>' + esc(db.profile.name) + (db.profile.city ? ', ' + esc(db.profile.city) : '') + '</p></div></div>' + // v148 (bug 3): no city, no ", " — same guard as the sidebar
     '<div class="toolbar"><button class="btn sm" onclick="downloadReportCSV(\'fees\')">⬇ ' + t('downloadReport') + '</button></div></div>' +
   '<div class="action-grid">' +
-    '<button class="action-card" onclick="go(\'attendance\')"><div class="ic">✅</div><b>' + t('qaMarkAtt') + '</b><span>' + t('qaMarkAttD') + '</span></button>' +
-    '<button class="action-card gold" onclick="go(\'fees\')"><div class="ic">💰</div><b>' + t('collectFeeBtn') + '</b><span>₹' + ft.pending.toLocaleString('en-IN') + ' ' + t('pendingW') + '</span></button>' +
-    '<button class="action-card blue" onclick="go(\'students\')"><div class="ic">🎒</div><b>' + t('qaAddStudent') + '</b><span>' + t('qaAddStudentD') + '</span></button>' +
-    '<button class="action-card green" onclick="go(\'exams\')"><div class="ic">📝</div><b>' + t('qaEnterMarks') + '</b><span>' + t('qaEnterMarksD') + '</span></button>' +
+    '<button class="action-card" onmousedown="queueNav(\'attendance\')" onclick="go(\'attendance\')"><div class="ic">✅</div><b>' + t('qaMarkAtt') + '</b><span>' + t('qaMarkAttD') + '</span></button>' +
+    '<button class="action-card gold" onmousedown="queueNav(\'fees\')" onclick="go(\'fees\')"><div class="ic">💰</div><b>' + t('collectFeeBtn') + '</b><span>' + (loading148 ? t('loading') : '₹' + ft.pending.toLocaleString('en-IN') + ' ' + t('pendingW')) + '</span></button>' +
+    '<button class="action-card blue" onmousedown="queueNav(\'students\')" onclick="go(\'students\')"><div class="ic">🎒</div><b>' + t('qaAddStudent') + '</b><span>' + t('qaAddStudentD') + '</span></button>' +
+    '<button class="action-card green" onmousedown="queueNav(\'exams\')" onclick="go(\'exams\')"><div class="ic">📝</div><b>' + t('qaEnterMarks') + '</b><span>' + t('qaEnterMarksD') + '</span></button>' +
   '</div>' +
-  '<div class="stats">' +
+  (loading148
+    ? '<div class="card"><div class="empty">' + t('loading') + '</div></div>'
+    : '<div class="stats">' +
     statCard('🎒', 'blue', t('totalStudents'), db.students.length, '', 'up') +
     statCard('👩‍🏫', 'green', t('totalTeachers'), db.teachers.filter(function (t) { return !t.deleted; }).length, '', 'up') +
     statCard('💰', 'orange', t('feeCollected'), ft.collected, '', 'up', { prefix: '₹' }) +
@@ -8785,7 +8972,7 @@ function schoolDashboard() {
     '<div class="row"><span class="dot" style="background:' + ORANGE + '"></span>' + t('lateBtn') + '<b>' + num(ta.late) + '</b></div></div>' +
   '</div></div>' +
   '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted mt-8"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div></div>' +
-  '<div class="card"><div class="head-row"><div><h3>' + t('recentAct') + '</h3></div><a href="#" onclick="go(\'activityLog\');return false">' + t('viewAll') + '</a></div><div class="act-list">' + acts + '</div></div>';
+  '<div class="card"><div class="head-row"><div><h3>' + t('recentAct') + '</h3></div><a href="#" onclick="go(\'activityLog\');return false">' + t('viewAll') + '</a></div><div class="act-list">' + acts + '</div></div>');
 }
 /* ================= Activity / Audit Log (v24, v129) =================
    The dashboard "Recent Activities" card reads the real audit trail
@@ -9817,6 +10004,7 @@ function waChatBtn(studentId) {
   if (!waNormalizePhone(s.phone)) return '<button class="btn ghost" disabled title="' + esc(t('waNoNumber')) + '">💬 ' + t('waChatBtn') + '</button>';
   return '<button class="btn ghost" onclick="waProfileChat(\'' + studentId + '\')">💬 ' + t('waChatBtn') + '</button>';
 }
+function onAttCls148(v) { attClsPicked148 = true; state.attCls = v; renderPage(); } // v148 (bug 8): a picked class sticks — the first-open fallback never overrides it
 function attendancePage() {
   if (!state.attDate) state.attDate = todayIST();
   // v35: a teacher only ever sees their own assigned classes — the class
@@ -9827,6 +10015,16 @@ function attendancePage() {
     var myCls35 = roleClasses();
     if (!myCls35.length) return '<div class="page-head"><div><h2>' + t('attendance') + '</h2></div></div><div class="card"><div class="empty">' + t('tchrNoClassesYet') + '</div></div>';
     if (myCls35.indexOf(state.attCls) === -1) state.attCls = myCls35[0];
+  }
+  // v148 (bug 8): Attendance opened on 10th-A by default, which has no
+  // students here — an empty register on open. On first open (or when
+  // the class no longer exists), fall back to the first class that
+  // actually has enrolled students. Once the admin picks a class the
+  // choice sticks — even an empty class stays open (holidays, new
+  // sections); the fallback never yanks it away.
+  if (!attClsPicked148 || roleClasses().indexOf(state.attCls) === -1) {
+    var with148 = roleClasses().filter(function (c) { return db.students.some(function (s) { return s.cls === c && isEnrolledStudent(s); }); });
+    if (with148.length && with148.indexOf(state.attCls) === -1) state.attCls = with148[0];
   }
   var cls = state.attCls;
   // v34 (P1-10): rosters are enrolled students only — Cancelled/Draft
@@ -9885,7 +10083,7 @@ function attendancePage() {
     }
   }
   return '<div class="page-head"><div><h2>' + t('attendance') + '</h2><p>Class ' + esc(cls) + ' • ' + esc(state.attDate) + ' — ' + (hol100 ? t('holidayWord') : counts.Present + ' ' + t('presBtn') + ', ' + counts.Absent + ' ' + t('absBtn') + ', ' + counts.Late + ' ' + t('lateBtn') + (counts.NotMarked ? ', ' + counts.NotMarked + ' ' + t('attNotMarked') : '')) + '</p></div>' +
-    '<div class="toolbar"><select onchange="state.attCls=this.value;renderPage()">' + clsOpts + '</select>' +
+    '<div class="toolbar"><select onchange="onAttCls148(this.value)">' + clsOpts + '</select>' +
     '<input type="date" value="' + esc(state.attDate) + '" max="' + todayIST() + '" onchange="onAttDate(this.value)" style="min-width:160px">' +
     attTools + '</div></div>' + // v88b: a principal never sees the Save Attendance button; v100: mark-all + holiday tools live in attTools
     '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thStatus') + '</th><th>' + t('waNotifyCol') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
