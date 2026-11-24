@@ -24,11 +24,15 @@ function seedSchool(app, email = 'test@school.in') {
 }
 
 function setSession(app, obj) {
-  app.run(`localStorage.setItem(SESSION_KEY, JSON.stringify(${JSON.stringify(obj)}))`);
+  // v147: the app seals the session at rest — write it sealed, the way
+  // persistSession does (vaultDecode passes legacy plaintext through,
+  // so a plaintext fixture would still restore, but sealed is the real
+  // on-device shape).
+  app.run(`localStorage.setItem(SESSION_KEY, vaultEncode(JSON.stringify(${JSON.stringify(obj)})))`);
 }
 
 function storedSession(app) {
-  const raw = app.storage.getItem('schoolSaathiSession');
+  const raw = app.run(`vaultDecode(localStorage.getItem('schoolSaathiSession'))`);
   return raw ? JSON.parse(raw) : null;
 }
 

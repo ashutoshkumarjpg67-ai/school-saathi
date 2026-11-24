@@ -27,7 +27,10 @@ describe('vault cipher (ChaCha20, RFC 8439)', () => {
     const keyHex = Array.from({ length: 32 }, (_, i) => ('0' + i.toString(16)).slice(-2)).join('');
     const nonceHex = '000000090000004a00000000';
     const plain = "Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.";
-    const expected = createCipheriv('chacha20', Buffer.from(keyHex, 'hex'), Buffer.from(nonceHex, 'hex'));
+    // OpenSSL's raw 'chacha20' takes a 16-byte IV: 4-byte little-endian
+    // counter (1, as in the RFC vector) + the 12-byte nonce.
+    const iv = Buffer.concat([Buffer.from([1, 0, 0, 0]), Buffer.from(nonceHex, 'hex')]);
+    const expected = createCipheriv('chacha20', Buffer.from(keyHex, 'hex'), iv);
     const expectedCt = Buffer.concat([expected.update(Buffer.from(plain, 'utf8')), expected.final()]);
     const got = app.run(
       `vaultBytesToHex(vaultChaChaCrypt('${keyHex}', vaultHexToBytes('${nonceHex}'), vaultUtf8Encode(${JSON.stringify(plain)})))`
@@ -111,7 +114,6 @@ describe('vault at the storage layer', () => {
     app.storage.setItem('schoolSaathiDBv1', legacy);
     const loaded = app.run('loadDB()');
     assert.ok(loaded && loaded.students.length > 0, 'legacy DB did not load');
-    assert.ok(!app.storage.getItem('schoolSaathiDBv1').startsWith('ssv1$') || true, 'placeholder');
     // loadDB on a v2 DB re-saves through saveDB, so it is sealed already.
     assert.ok(app.storage.getItem('schoolSaathiDBv1').startsWith('ssv1$'), 'legacy DB was not sealed on save');
   });
@@ -138,14 +140,39 @@ describe('vault at the storage layer', () => {
     assert.equal(list[0].email, 'a@school.in');
   });
 
-  it('local session is sealed and restores (persist -> restore)', () => {
+  it('local session is sealed; expired and future-dated sessions are rejected by restore', async () => {
     const app = createAppContext();
-    app.run(`state.role = 'school'; state.user = { email: 'a@school.in' }; state.view = 'dashboard'; persistSession();`);
+    app.run(`state.role = 'school'; state.user = { email: 'a@school.in', uid: 'u1', role: 'school', name: 'Test School' }; state.view = 'dashboard'; persistSession();`);
     const raw = sealCheck(app, 'schoolSaathiSession');
     assert.ok(raw.startsWith('ssv1$'), 'session stored as plaintext JSON!');
     assert.ok(!raw.includes('a@school.in'), 'email visible in stored session');
-    const restored = app.run(`restoreSession().then ? 'async' : 'sync'`);
-    assert.equal(restored, 'async'); // restoreSession returns a Promise
+    // The sealed value decodes to the exact session that was persisted.
+    assert.equal(app.run(`JSON.parse(vaultDecode(localStorage.getItem('schoolSaathiSession'))).email`), 'a@school.in');
+    // Expired (at = 0): rejected and the stored session is cleared.
+    app.run(`localStorage.setItem('schoolSaathiSession', vaultEncode(JSON.stringify({ role: 'school', email: 'a@school.in', view: 'dashboard', at: 0 })));`);
+    assert.equal(await app.run('restoreSession()'), false, 'expired session restored');
+    assert.equal(app.storage.getItem('schoolSaathiSession'), null, 'expired session was not cleared');
+    // Future-dated (clock-skew hole, #77): rejected and cleared too.
+    app.run(`localStorage.setItem('schoolSaathiSession', vaultEncode(JSON.stringify({ role: 'school', email: 'a@school.in', view: 'dashboard', at: Date.now() + 3600000 })));`);
+    assert.equal(await app.run('restoreSession()'), false, 'future-dated session restored');
+    assert.equal(app.storage.getItem('schoolSaathiSession'), null, 'future-dated session was not cleared');
+  });
+
+  it('a fresh sealed session restores end to end (persist -> restore -> loginAs)', async () => {
+    const app = createAppContext();
+    // The harness has no <select> `options` stub, so the real renderApp
+    // throws in node:vm (no existing test calls loginAs). Stub rendering
+    // out — session logic is what's under test here, not rendering.
+    // (Same trick as tests/session-expiry.test.mjs.)
+    app.run(`renderApp = function () {}; toast = function (m) { window.__lastToast = m; };`);
+    app.run(`saveAccounts([{ uid: 'u1', name: 'Test School', email: 'a@school.in', role: 'school' }]);`);
+    app.run(`state.role = 'school'; state.user = { email: 'a@school.in', uid: 'u1', role: 'school', name: 'Test School' }; state.view = 'dashboard'; persistSession();`);
+    app.run(`state.role = null; state.user = null;`);
+    assert.equal(await app.run('restoreSession()'), true, 'sealed session did not restore');
+    assert.equal(app.run('state.role'), 'school');
+    assert.equal(app.run('state.user.email'), 'a@school.in');
+    // The restored session is re-persisted sealed, with `at` preserved.
+    assert.ok(app.storage.getItem('schoolSaathiSession').startsWith('ssv1$'));
   });
 
   it('sessionStorage snapshots are sealed (sessSet/sessGet round-trip)', () => {
@@ -165,21 +192,30 @@ describe('vault at the storage layer', () => {
     const app = createAppContext();
     app.run(`sbOutboxSave('u1', [{ op: 'upsert', table: 'students' }]);`);
     assert.ok(sealCheck(app, app.run(`sbOutboxKey('u1')`)).startsWith('ssv1$'));
-    assert.deepEqual(app.run(`sbOutboxLoad('u1')`), [{ op: 'upsert', table: 'students' }]);
+    // vm-realm objects fail deepStrictEqual on prototypes — compare JSON.
+    assert.equal(JSON.stringify(app.run(`sbOutboxLoad('u1')`)), JSON.stringify([{ op: 'upsert', table: 'students' }]));
     app.run(`sbTombSave('u1', { s1: 1 });`);
     assert.ok(sealCheck(app, app.run(`'schoolSaathiTombstones:u1'`)).startsWith('ssv1$'));
-    assert.deepEqual(app.run(`sbTombLoad('u1')`), { s1: 1 });
+    assert.equal(JSON.stringify(app.run(`sbTombLoad('u1')`)), JSON.stringify({ s1: 1 }));
   });
 
   it('backup export -> wipe -> restore still round-trips (sealed storage, plaintext file)', () => {
     const app = createAppContext();
     app.run(`db = seedDB(); saveDB(db);`);
-    const counts = app.run(`({ s: db.students.length, f: db.feeRecords.length })`);
-    const file = app.run(`exportFullBackup()`);
-    app.run(`db = emptyDb(); saveDB(db);`);
+    app.run('lastFullBackup = buildFullBackup();');
+    const backup = app.get('lastFullBackup');
+    assert.equal(backup.db.students.length, 40);
+    // Wipe: the local db is now empty, as after Reset All Data.
+    app.run('db = emptyDb(); saveDB(db);');
     assert.equal(app.run('loadDB().students.length'), 0);
-    app.run(`restoreFullBackup(${JSON.stringify(file)});`);
-    assert.equal(app.run('loadDB().students.length'), counts.s);
-    assert.equal(app.run('loadDB().feeRecords.length'), counts.f);
+    // Restore from the exported backup (the file stays plaintext — it is
+    // the user's own export; the seal applies to on-device storage).
+    const res = app.run('restoreFullBackup(lastFullBackup)');
+    assert.equal(res.ok, true);
+    assert.equal(res.counts.students, 40);
+    assert.equal(app.run('loadDB().students.length'), 40);
+    assert.equal(app.run('loadDB().feeRecords.length'), 70);
+    // The restored db is sealed at rest again after the save + reload.
+    assert.ok(app.storage.getItem('schoolSaathiDBv1').startsWith('ssv1$'));
   });
 });
