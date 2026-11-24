@@ -486,3 +486,38 @@ tbody tr:hover{background:var(--bg-soft)}
 @media (prefers-reduced-motion: reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
 }
+
+/* ---------- public landing page (v147, landing.html) ----------
+   Standalone page at the site root: shares the login hero, buttons
+   and cards above, adds only its own layout. No app.js, no network.
+   The app deliberately disables text selection (v29 long-press);
+   a public page must let visitors select/copy text, so body.landing
+   re-enables it. Nothing above this block was changed for landing:
+   styles.css has no dead landing CSS — the only "landing" strings
+   in the repo at v147 are the unused i18n keys landFooter/loginBack
+   (js/modules/i18n.js), and landFooter is NOT used here because it
+   claims "Free for Schools" while pricing is undecided. */
+body.landing{-webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
+.landing-intro{color:var(--lavender);font-size:var(--text-base);margin:14px auto 0;max-width:560px;position:relative;z-index:1}
+.landing-hero-cta{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:22px;position:relative;z-index:1}
+.landing-hero-cta .btn{text-decoration:none}
+.landing-main{max-width:960px;margin:0 auto;padding:30px 18px 10px}
+.landing-sec{margin-bottom:34px}
+.landing-sec h2{font-size:21px;color:var(--navy);letter-spacing:-.3px;margin-bottom:8px}
+.landing-sec>p{font-size:var(--text-base);color:var(--text-2);max-width:720px}
+.landing-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin-top:16px}
+.landing-feat{margin-bottom:0}
+.landing-feat h3{font-size:16px;margin-bottom:5px}
+.landing-feat p{font-size:var(--text-sm);color:var(--text-2);margin:0}
+.landing-steps{list-style:none;display:flex;flex-direction:column;gap:12px;margin-top:16px;counter-reset:step}
+.landing-steps li{counter-increment:step;display:flex;gap:12px;align-items:flex-start;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;box-shadow:var(--shadow);font-size:var(--text-base);color:var(--text-2)}
+.landing-steps li::before{content:counter(step);flex:none;width:30px;height:30px;border-radius:50%;background:var(--navy);color:#fff;font-weight:800;font-size:14px;display:flex;align-items:center;justify-content:center}
+.landing-steps li b{color:var(--navy)}
+.landing-note{background:var(--blue-50);border:1px solid var(--blue-soft);border-radius:var(--radius-sm);padding:12px 15px;margin-top:16px;font-size:var(--text-sm);color:var(--navy);max-width:720px}
+.landing-foot{border-top:1px solid var(--border);padding:24px 18px 32px;text-align:center;color:var(--muted);font-size:13px}
+.landing-foot p{margin-bottom:5px}
+@media (max-width:760px){
+  .landing-grid{grid-template-columns:1fr}
+  .landing-main{padding:22px 16px 6px}
+  .landing-sec h2{font-size:19px}
+}

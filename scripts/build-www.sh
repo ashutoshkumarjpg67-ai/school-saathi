@@ -5,7 +5,7 @@
 #
 # Usage:  bash scripts/build-www.sh        (or: npm run build-www)
 #
-# Copies: index.html, app.js, styles.css, qrgen.js, manifest.json, sw.js,
+# Copies: index.html, landing.html, app.js, styles.css, qrgen.js, manifest.json, sw.js,
 #         version.json, js/ (modules), icons/ (app icons + logo).
 # Never copies: node_modules/, supabase/, .git, android/, www/ itself,
 #               package.json / package-lock.json / capacitor.config.json.
@@ -18,6 +18,7 @@ rm -rf "$ROOT/www"
 mkdir -p "$ROOT/www/js/modules" "$ROOT/www/icons"
 
 cp "$ROOT/index.html" \
+   "$ROOT/landing.html" \
    "$ROOT/app.js" \
    "$ROOT/styles.css" \
    "$ROOT/qrgen.js" \

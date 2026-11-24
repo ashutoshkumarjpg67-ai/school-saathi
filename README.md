@@ -6,6 +6,8 @@
 
 Static site — no build step, no server, no npm. Open `index.html` in any browser, or host the folder on GitHub Pages.
 
+Public landing page: `landing.html` — what the app is, its features, how a school starts, and a link into the app login. It is linked from the login screen ("← Back to website") and needs no login, no JavaScript framework and no network call of its own.
+
 ## Features
 
 - **School Admin dashboard** — students, attendance, fees & receipts, exams & marks, homework, notices, CSV reports, settings
