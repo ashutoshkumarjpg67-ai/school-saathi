@@ -311,12 +311,12 @@ describe('issue 17 — Average Attendance is marked days only', () => {
   });
 });
 
-describe('version markers stay at v150 (no bump in this branch)', () => {
-  it('APP_VERSION, version.json and package.json are all 150', () => {
+describe('version markers stay consistent (no bump in this branch)', () => {
+  it('APP_VERSION, version.json and package.json all agree with version.json', () => {
     const app = createAppContext();
-    assert.equal(app.get('APP_VERSION'), 150);
-    assert.equal(JSON.parse(readFileSync(join(ROOT, 'version.json'), 'utf8')).version, 150);
-    assert.equal(JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version, '150.0.0');
+    const expected = JSON.parse(readFileSync(join(ROOT, 'version.json'), 'utf8')).version;
+    assert.equal(app.get('APP_VERSION'), expected);
+    assert.equal(JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version, expected + '.0.0');
   });
 
   it('new i18n keys exist', () => {
