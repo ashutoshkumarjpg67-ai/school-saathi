@@ -53,6 +53,7 @@ describe('source parses', () => {
     'scripts/seed-fixtures.js',
     'tests/harness.mjs',
     'tests/smoke.test.mjs',
+    'tests/session-expiry.test.mjs',
   ];
   for (const f of files) {
     it(`node --check ${f}`, () => {
