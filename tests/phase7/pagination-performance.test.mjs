@@ -197,6 +197,10 @@ describe('lightweight pages — weight budgets + CSP (v108)', () => {
   // plus the service worker. Measured at v108: app.js 698,328 B;
   // total 963,102 B (~941 KiB). Budgets leave ~25% headroom on purpose:
   // they guard against accidental bloat, not against deliberate growth.
+  // Re-baselined at v150: app.js ~815 KB on main (deliberate feature
+  // growth since v108); Super Admin adds ~6 KB → ~821 KB, so the
+  // app.js budget is raised 800 → 850 KB. The 1.2 MB first-load
+  // budget above remains the real cap.
   const FIRST_LOAD = ['app.js', 'index.html', 'styles.css', 'qrgen.js', 'js/bcrypt.js', 'js/modules/i18n.js', 'js/modules/crypto.js', 'sw.js'];
 
   it('first-load total stays under 1.2 MB', () => {
@@ -210,9 +214,9 @@ describe('lightweight pages — weight budgets + CSP (v108)', () => {
     assert.ok(total < 1.2 * 1024 * 1024, `first-load total ${total} B exceeds the 1.2 MB budget (${JSON.stringify(sizes)})`);
   });
 
-  it('app.js stays under 800 KB', () => {
+  it('app.js stays under 850 KB', () => {
     const n = statSync(join(ROOT, 'app.js')).size;
-    assert.ok(n < 800 * 1024, `app.js is ${n} B, over the 800 KB budget`);
+    assert.ok(n < 850 * 1024, `app.js is ${n} B, over the 850 KB budget`);
   });
 
   it('CSP allows scripts only from self, and network only to Supabase', () => {
