@@ -5438,7 +5438,7 @@ function sbStorageFreePhotos() {
 var db = loadDB();
 
 /* ================= state ================= */
-var state = { role: null, user: null, view: 'dashboard', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, feeEditId: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, actSearch: '', actAction: 'All', actActor: 'All', actFrom: '', actTo: '', actLimit: 50, sb: null };
+var state = { role: null, user: null, view: 'dashboard', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, feeEditId: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, actSearch: '', actAction: 'All', actActor: 'All', actFrom: '', actTo: '', actLimit: 50, sb: null, rcCls: '', rcExam: '', rcStudent: '' };
 
 /* Phase 2: bulk import + promotion state (in-memory only, never persisted). */
 var importState = { rows: null, fileName: '', result: null };
@@ -11831,13 +11831,109 @@ function deleteNotice(id) {
     toast(t('tNtDeleted'));
   });
 }
+/* ================= Report card / marksheet (print) =================
+   Reuses the marks the app already stores — NO new marks model, no
+   grade scale, no rank: the app computes neither, so the card shows
+   subject-wise marks, total and percentage only. (Grade scale and
+   class rank are owner decisions, not invented here.)
+   Data model, as stored: one exam row = one subject paper
+   {id, name, cls, subject, date, total, deleted}; one mark row =
+   {examId, studentId, marks}. A report card groups the ACTIVE exam
+   rows that share one exam NAME in the student's class — each row is
+   one subject (an exam whose subject is 'All Subjects' is a single
+   combined paper, so the card has one row). First mark per
+   (exam, student) wins, matching examsPage. A subject with no mark
+   yet shows '—' and still counts in the max total, so the percentage
+   is obtained / full total — the missing-subjects note says how many.
+   Print follows the receipt pattern: HTML into #printArea, then
+   window.print() (print CSS in styles.css, .print-stmt). */
+function buildReportCard(d, studentId, examName) {
+  // Pure computation — returns null when there is nothing to show.
+  if (!d || !studentId || !examName) return null;
+  var s = (d.students || []).filter(function (x) { return x.id === studentId; })[0];
+  if (!s) return null;
+  var papers = (d.exams || []).filter(function (e) { return e.name === examName && e.cls === s.cls && isActiveExam(e); });
+  if (!papers.length) return null;
+  var markByExam = new Map();
+  (d.marks || []).forEach(function (m) {
+    if (m.studentId !== studentId) return;
+    if (typeof m.marks !== 'number' || !isFinite(m.marks)) return;
+    if (!markByExam.has(m.examId)) markByExam.set(m.examId, m.marks);
+  });
+  var rows = papers.map(function (e) {
+    var mk = markByExam.has(e.id) ? markByExam.get(e.id) : null;
+    return { examId: e.id, subject: e.subject || '', date: e.date || '', marks: mk, total: e.total || 100 };
+  }).sort(function (a, b) { return a.subject < b.subject ? -1 : a.subject > b.subject ? 1 : 0; });
+  var obtained = 0, maxTotal = 0, entered = 0;
+  rows.forEach(function (r) {
+    maxTotal += r.total;
+    if (r.marks !== null) { obtained += r.marks; entered++; }
+  });
+  var missing = rows.length - entered;
+  return { student: s, examName: examName, cls: s.cls, rows: rows, obtained: obtained, maxTotal: maxTotal,
+    pct: entered ? Math.round(obtained / maxTotal * 100) : null, entered: entered, missing: missing };
+}
+function reportCardTableHTML(rc) {
+  // Subject table + totals, shared by the on-screen preview and print.
+  var rows = rc.rows.map(function (r) {
+    return '<tr><td><b>' + esc(r.subject) + '</b></td><td>' + (r.marks !== null ? r.marks : '<span class="muted">' + t('tNotEntered') + '</span>') + '</td><td>' + r.total + '</td><td>' + (r.marks !== null ? '<b>' + Math.round(r.marks / r.total * 100) + '%</b>' : '<span class="muted">—</span>') + '</td></tr>';
+  }).join('');
+  return '<table><thead><tr><th>' + t('rcSubject') + '</th><th>' + t('thMarks') + '</th><th>' + t('rcMaxMarks') + '</th><th>' + t('thResult') + '</th></tr></thead><tbody>' + rows +
+    '</tbody></table><div class="tot"><span>' + t('rcObtained') + ': ' + rc.obtained + ' / ' + rc.maxTotal + '</span><span>' + t('rcPercentage') + ': ' + (rc.pct !== null ? rc.pct + '%' : '—') + '</span></div>' +
+    (rc.missing ? '<p class="muted">' + rc.missing + ' ' + t('rcMissing') + '.</p>' : '');
+}
+function reportCardPrintHTML(rc) {
+  var s = rc.student, p = db.profile || {};
+  var logo = p.logo ? '<img class="print-logo" src="' + esc(p.logo) + '" alt="">' : '';
+  var meta = '<div class="rc-meta">' +
+    '<span><b>' + t('thStudent') + ':</b> ' + esc(s.name) + '</span><span><b>' + t('rcAdmNo') + '</b> ' + esc(s.admissionNo || '—') + '</span>' +
+    '<span><b>' + t('thClass') + ':</b> ' + esc(rc.cls) + '</span><span><b>' + t('rcRoll') + '</b> ' + esc(s.roll == null ? '—' : String(s.roll)) + '</span>' +
+    '<span><b>' + t('rcFather') + ':</b> ' + esc(s.fatherName || s.guardian || '—') + '</span><span><b>' + t('rcSession') + ':</b> ' + esc(s.session || p.session || '—') + '</span>' +
+    '</div>';
+  return '<div class="print-head">' + logo + '<div><h1>' + esc(p.name || '') + '</h1><p class="muted">' + esc(p.address || '') + ' • ' + esc(p.phone || '') + '</p></div></div>' +
+    '<h2>' + esc(t('rcTitle')) + ' — ' + esc(rc.examName) + '</h2>' + meta + reportCardTableHTML(rc) +
+    '<div class="sign-row"><div><div class="sign-line"></div>' + esc(t('rcSignTeacher')) + '</div><div><div class="sign-line"></div>' + esc(t('rcSignPrincipal')) + '</div></div>' +
+    '<p class="muted">' + esc(t('thDate')) + ': ' + esc(todayIST()) + '</p>';
+}
+function printReportCard(studentId, examName) {
+  var rc = buildReportCard(db, studentId, examName);
+  if (!rc) return;
+  $('printArea').innerHTML = '<div class="print-stmt">' + reportCardPrintHTML(rc) + '</div>';
+  if (window.print) window.print();
+}
+function reportCardCard() {
+  // Reports-page card (school + principal only — the accountant sees
+  // the Reports page too, but not marks). Pick class, then exam name,
+  // then student; the card previews below and prints via #printArea.
+  if (state.role !== 'school' && state.role !== 'principal') return '';
+  var classes = schoolClasses();
+  var cls = classes.indexOf(state.rcCls) !== -1 ? state.rcCls : '';
+  var examNames = [];
+  db.exams.filter(isActiveExam).filter(function (e) { return !cls || e.cls === cls; }).forEach(function (e) { if (examNames.indexOf(e.name) === -1) examNames.push(e.name); });
+  examNames.sort();
+  var examName = examNames.indexOf(state.rcExam) !== -1 ? state.rcExam : '';
+  var roster = cls ? db.students.filter(function (s) { return s.cls === cls && isEnrolledStudent(s); }) : [];
+  var stu = roster.filter(function (s) { return s.id === state.rcStudent; })[0] || null;
+  var rc = (stu && examName) ? buildReportCard(db, stu.id, examName) : null;
+  var clsOpts = '<option value="">' + esc(t('rcChoose')) + '</option>' + classes.map(function (c) { return '<option value="' + esc(c) + '" ' + (c === cls ? 'selected' : '') + '>' + esc(c) + '</option>'; }).join('');
+  var examOpts = '<option value="">' + esc(t('rcChoose')) + '</option>' + examNames.map(function (n) { return '<option value="' + esc(n) + '" ' + (n === examName ? 'selected' : '') + '>' + esc(n) + '</option>'; }).join('');
+  var stuOpts = '<option value="">' + esc(t('rcChoose')) + '</option>' + roster.map(function (s) { return '<option value="' + esc(s.id) + '" ' + (stu && s.id === stu.id ? 'selected' : '') + '>' + esc(s.name) + ' (' + esc(s.roll) + ')</option>'; }).join('');
+  var body = '<div class="toolbar"><select onchange="state.rcCls=this.value;state.rcExam=\'\';state.rcStudent=\'\';renderPage()">' + clsOpts + '</select>' +
+    '<select onchange="state.rcExam=this.value;state.rcStudent=\'\';renderPage()" ' + (cls ? '' : 'disabled') + '>' + examOpts + '</select>' +
+    '<select onchange="state.rcStudent=this.value;renderPage()" ' + (examName ? '' : 'disabled') + '>' + stuOpts + '</select></div>';
+  if (cls && !examNames.length) body += '<p class="muted">' + esc(t('rcNoExams')) + '</p>';
+  else if (cls && !roster.length) body += '<p class="muted">' + esc(t('rcNoStudents')) + '</p>';
+  else if (rc) body += '<div class="tbl-wrap">' + reportCardTableHTML(rc) + '</div><div class="actions"><button class="btn" onclick="printReportCard(' + jsAttr(stu.id) + ', ' + jsAttr(examName) + ')">🖨 ' + t('rcPrint') + '</button></div>';
+  else if (cls) body += '<p class="muted">' + esc(t('rcNoCard')) + '</p>';
+  return '<div class="card"><h3>📄 ' + t('rcTitle') + '</h3><p class="card-sub">' + t('rcSub') + '</p>' + body + '</div>';
+}
 function reportsPage() {
   return '<div class="page-head"><div><h2>' + t('reports') + '</h2><p>' + t('subReports') + ' — ' + esc(db.profile.name) + '</p></div></div>' +
   '<div class="grid2e">' +
   '<div class="card"><h3>' + t('studentsReport') + '</h3><p class="card-sub">' + t('repStudentsSub') + '</p><button class="btn" onclick="downloadReportCSV(\'students\')">⬇ ' + t('dlStudents') + '</button></div>' +
   '<div class="card"><h3>' + t('feesReport') + '</h3><p class="card-sub">' + t('repFeesSub') + '</p><button class="btn" onclick="downloadReportCSV(\'fees\')">⬇ ' + t('dlFees') + '</button></div>' +
   '<div class="card"><h3>' + t('attReport') + '</h3><p class="card-sub">Register — Class ' + state.attCls + ' • ' + (state.attDate || todayIST()) + '</p><button class="btn" onclick="downloadReportCSV(\'attendance\')">⬇ ' + t('dlAtt') + '</button></div>' +
-  '</div>';
+  '</div>' + reportCardCard();
 }
 function downloadReportCSV(kind) {
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
