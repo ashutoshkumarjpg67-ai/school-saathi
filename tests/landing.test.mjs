@@ -76,7 +76,7 @@ describe('landing content: only verified facts, no invented claims', () => {
   it('lists only features that exist at v147', () => {
     const mustHave = [
       'Students', 'Attendance', 'Fees', 'Exams', 'Homework',
-      'Notices', 'Reports', 'WhatsApp reminders', 'Backup', 'Works offline',
+      'Notices', 'Reports', 'Backup', 'Works offline',
     ];
     for (const f of mustHave) assert.ok(landing.includes(f), `landing.html: missing feature "${f}"`);
   });

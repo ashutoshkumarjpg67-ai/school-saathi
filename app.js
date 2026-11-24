@@ -9831,6 +9831,12 @@ function cancelAdmission(id) {
 function openStudentProfile(id) {
   if (!canViewStudent(id)) { toast(t('tOwnProfileOnly')); return; }
   promoState = null;
+  // Live #10: the profile only renders on the students view
+  // (studentsPage returns the profile when profileStudent is set, and
+  // renderPage dispatches on state.view) — without this, opening a
+  // profile from Attendance / Exams / Fees set the id but re-rendered
+  // the old view, so the tap visibly did nothing.
+  state.view = 'students';
   state.profileStudent = id; state.profileTab = 'overview';
   persistSession();
   histPush({ view: 'students', sub: 'profile:' + id });
@@ -10241,8 +10247,12 @@ function attendancePage() {
   var hol100 = holidayFor(state.attDate, cls); // v100: a holiday day has no register
   var recs = db.attendance[key] || {};
   var rows = roster.map(function (s) {
-    var cur = recs[s.id] || 'Present';
-    if (hol100) return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td><span class="badge orange">' + t('holidayWord') + '</span></td><td><span class="muted">—</span></td></tr>';
+    // Live #8: an unmarked student must NOT look Present. The old
+    // default ('Present') lit the Present button green while the header
+    // counts (correctly) said 0 Present — v88b fixed the counts but
+    // left the button default. No mark now means no button is 'on'.
+    var cur = recs[s.id] || '';
+    if (hol100) return '<tr><td><button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td><td>' + s.roll + '</td><td><span class="badge orange">' + t('holidayWord') + '</span></td><td><span class="muted">—</span></td></tr>';
     // v38: an Absent/Late student can be notified on WhatsApp (manual
     // wa.me chat, parent presses nothing here — the admin presses Send
     // inside WhatsApp). The button appears only for Absent/Late marks.
@@ -10253,12 +10263,12 @@ function attendancePage() {
     if (state.role === 'principal') {
       var curP = recs[s.id];
       var badgeP = curP ? '<span class="badge ' + (curP === 'Present' ? 'green' : curP === 'Absent' ? 'red' : 'orange') + '">' + curP + '</span>' : '<span class="badge grey">' + t('attNotMarked') + '</span>';
-      return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td>' + badgeP + '</td><td><span class="muted">—</span></td></tr>';
+      return '<tr><td><button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td><td>' + s.roll + '</td><td>' + badgeP + '</td><td><span class="muted">—</span></td></tr>';
     }
     var notifyCell = (cur === 'Absent' || cur === 'Late')
       ? '<button class="btn ghost sm" onclick="waAbsentAlert(\'' + s.id + '\')">💬 ' + t('waNotifyBtn') + '</button>'
       : '<span class="muted">—</span>';
-    return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td><div class="mark-btns">' +
+    return '<tr><td><button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td><td>' + s.roll + '</td><td><div class="mark-btns">' +
       ['Present', 'Absent', 'Late'].map(function (m) {
         return '<button class="' + m[0].toLowerCase() + (cur === m ? ' on' : '') + '" onclick="markAtt(\'' + s.id + '\',\'' + m + '\')">' + (m === 'Present' ? t('presBtn') : m === 'Absent' ? t('absBtn') : t('lateBtn')) + '</button>';
       }).join('') + (recs[s.id] ? '<button class="btn ghost sm" title="' + esc(t('attClear')) + '" onclick="clearAttMark(\'' + s.id + '\')">\u2715</button>' : '') + '</div></td><td>' + notifyCell + '</td></tr>';
@@ -11617,6 +11627,15 @@ function saveAdmissionRequest(e) {
   toast(t('admReqSubmitted'));
   return false;
 }
+function admReqStatusLabel(status) {
+  // Live #7: the admReqApproved / admReqRejected i18n keys are TOAST
+  // strings ('Admission request approved.') — they must never label a
+  // status badge or a filter option. The short labels live in the *St
+  // keys; Pending has no *St key because admReqPending is already short.
+  if (status === 'Approved') return t('admReqApprovedSt');
+  if (status === 'Rejected') return t('admReqRejectedSt');
+  return t('admReqPending');
+}
 function admissionRequestsPage() {
   var list = (db.admissionRequests || []).slice().sort(function (a, b) { return a.submitted < b.submitted ? 1 : -1; });
   var f = state.admReqFilter || 'All';
@@ -11626,14 +11645,14 @@ function admissionRequestsPage() {
   var rows = shown.map(function (r) {
     var badge = r.status === 'Pending' ? 'orange' : r.status === 'Approved' ? 'green' : 'red';
     return '<tr><td><b>' + esc(r.name) + '</b></td><td>' + esc(r.dob || '—') + '</td><td>' + esc(r.classApply) + '</td><td>' + esc(r.guardianName || '—') + '</td><td>' + esc(r.phone) + '</td><td>' + esc(r.submitted) + '</td>' +
-      '<td><span class="badge ' + badge + '">' + t('admReq' + r.status) + '</span></td>' +
+      '<td><span class="badge ' + badge + '">' + admReqStatusLabel(r.status) + '</span></td>' +
       '<td><div class="row-actions"><button class="btn ghost sm" onclick="viewAdmissionRequest(\'' + r.id + '\')">' + t('admReqView') + '</button>' +
       (r.status === 'Pending' ? '<button class="btn green sm" onclick="approveAdmissionRequest(\'' + r.id + '\')">' + t('admReqApprove') + '</button>' +
       '<button class="btn danger sm" onclick="rejectAdmissionRequest(\'' + r.id + '\')">' + t('admReqReject') + '</button>' : '') +
       '</div></td></tr>';
   }).join('');
   var fOpts = ['All', 'Pending', 'Approved', 'Rejected'].map(function (x) {
-    var lbl = x === 'All' ? t('admReqAll') : t('admReq' + x);
+    var lbl = x === 'All' ? t('admReqAll') : admReqStatusLabel(x);
     return '<option value="' + x + '" ' + (f === x ? 'selected' : '') + '>' + lbl + '</option>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('admissions') + '</h2><p>' + list.length + ' ' + t('admReqTitle') + ' — ' + counts.Pending + ' ' + t('admReqPending') + '</p></div>' +
@@ -11650,7 +11669,7 @@ function viewAdmissionRequest(id) {
     kv(t('fStudentName'), esc(r.name)) + kv(t('fDob'), esc(r.dob || '—')) + kv(t('fGender'), esc(r.gender || '—')) +
     kv(t('admReqClassApply'), esc(r.classApply)) + kv(t('fGuardian'), esc(r.guardianName || '—')) + kv(t('fPhone'), esc(r.phone)) +
     kv(t('fPrevSchool'), esc(r.previousSchool || '—')) + kv(t('admReqSubmittedOn'), esc(r.submitted)) +
-    kv(t('admReqStatus'), '<span class="badge ' + badge + '">' + t('admReq' + r.status) + '</span>') +
+    kv(t('admReqStatus'), '<span class="badge ' + badge + '">' + admReqStatusLabel(r.status) + '</span>') +
     (r.status === 'Rejected' && r.reason ? kv(t('admReqReason'), esc(r.reason)) : '') +
     (r.status === 'Approved' && r.studentId ? kv(t('fAdmNo'), esc((db.students.find(function (s) { return s.id === r.studentId; }) || {}).admissionNo || '—')) : '') +
     '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
@@ -11721,7 +11740,7 @@ function examsPage() {
     // v88: a principal sees the mark as text — no editable input.
     var markCell = state.role === 'principal' ? '<td>' + (mk ? '<b>' + mk.marks + '</b>' : '<span class="muted">—</span>') + ' / ' + ex.total + '</td>'
       : '<td><input type="number" min="0" step="0.5" max="' + ex.total + '" value="' + (mk ? mk.marks : '') + '" placeholder="—" style="width:90px" id="mk-' + s.id + '"> / ' + ex.total + '</td>';
-    return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td>' +
+    return '<tr><td><button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td><td>' + s.roll + '</td>' +
       markCell +
       '<td>' + (mk ? '<b>' + Math.round(mk.marks / ex.total * 100) + '%</b>' : '<span class="muted">' + t('tNotEntered') + '</span>') + '</td></tr>';
   }).join('');
@@ -12736,6 +12755,26 @@ function toggleTchrClass(cls, on) {
   if (on && i === -1) tchrFormClasses.push(cls);
   if (!on && i !== -1) tchrFormClasses.splice(i, 1);
 }
+function viewTeacher(id) {
+  // Live #10: teachers had no detail view at all — the list showed only
+  // Edit/Delete. Read-only modal reusing the viewAdmissionRequest kv
+  // pattern; the school role also gets an Edit button. No password hash
+  // is ever shown (the login account row carries only the email).
+  var te = (db.teachers || []).find(function (x) { return x.id === id; });
+  if (!te) return;
+  var acct = loadAccounts().find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; });
+  var clsList = Array.isArray(te.classes) && te.classes.length ? te.classes : (te.cls ? [te.cls] : []);
+  var n = db.students.filter(function (s) { return clsList.indexOf(s.cls) !== -1 && isEnrolledStudent(s); }).length;
+  var kv = function (label, val) { return '<div class="kv"><b>' + label + '</b><span>' + val + '</span></div>'; };
+  openModal('<h3>' + esc(te.name) + '</h3><div class="card">' +
+    kv(t('tchrName'), esc(te.name)) + kv(t('tchrSubject'), esc(te.subject || '—')) +
+    kv(t('tchrClasses'), esc(clsList.join(', ') || '—')) +
+    kv(t('tchrEmail'), acct ? esc(acct.email) : t('tchrNoLogin')) +
+    kv(t('totalStudents'), String(n)) +
+    '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    (state.role === 'school' ? '<button type="button" class="btn" onclick="closeModal();teacherForm(\'' + te.id + '\')">' + t('editBtn') + '</button>' : '') +
+    '</div>');
+}
 function teachersPage() {
   // v88: a principal may view the teachers list (read-only) — no Add
   // button, no Edit button. Other non-school roles still see nothing.
@@ -12744,7 +12783,7 @@ function teachersPage() {
   var rows = (db.teachers || []).filter(function (te) { return !te.deleted; }).map(function (te) {
     var acct = loadAccounts().find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; });
     var clsList = Array.isArray(te.classes) && te.classes.length ? te.classes : (te.cls ? [te.cls] : []);
-    return '<tr><td><b>' + esc(te.name) + '</b></td><td>' + esc(te.subject || '—') + '</td><td>' + esc(clsList.join(', ') || '—') + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('tchrNoLogin') + '</span>') + '</td><td>' + (isPrincipal ? '' : '<button class="btn ghost sm" onclick="teacherForm(\'' + te.id + '\')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteTeacher(\'' + te.id + '\')">' + t('deleteBtn') + '</button>') + '</td></tr>';
+    return '<tr><td><button class="linklike" onclick="viewTeacher(\'' + te.id + '\')">' + esc(te.name) + '</button></td><td>' + esc(te.subject || '—') + '</td><td>' + esc(clsList.join(', ') || '—') + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('tchrNoLogin') + '</span>') + '</td><td><button class="btn ghost sm" onclick="viewTeacher(\'' + te.id + '\')">' + t('admReqView') + '</button> ' + (isPrincipal ? '' : '<button class="btn ghost sm" onclick="teacherForm(\'' + te.id + '\')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteTeacher(\'' + te.id + '\')">' + t('deleteBtn') + '</button>') + '</td></tr>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('teachers') + '</h2><p>' + t('teachersSub') + '</p></div>' +
     (isPrincipal ? '' : '<div class="toolbar"><button class="btn" onclick="teacherForm()">+ ' + t('tchrAdd') + '</button></div>') + '</div>' +
