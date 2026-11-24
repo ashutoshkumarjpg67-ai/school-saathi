@@ -1,5 +1,11 @@
 apply plugin: 'com.android.application'
 
+// v146: versionCode/versionName pinned to the web release (APP_VERSION 146).
+// Play Store needs versionCode to rise on every release — bump these two
+// lines together with version.json on the next release. (PR #74 derived
+// these from version.json, which would give versionName "146.0.0"; kept
+// hardcoded here so versionName stays "1.46".)
+
 android {
     namespace = "in.schoolsaathi.app"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -7,8 +13,8 @@ android {
         applicationId "in.schoolsaathi.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 146
+        versionName "1.46"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -18,8 +24,9 @@ android {
     }
     buildTypes {
         release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 }
