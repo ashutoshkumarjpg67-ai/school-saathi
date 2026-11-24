@@ -7242,12 +7242,12 @@ console.log(sess147ok
   : 'FAIL v147: session-expiry gaps fix missing (SESSION_CLOCK_SKEW_MS / future-dated check / toast)');
 if (!sess147ok) process.exitCode = 1;
 // ---- v148: live-check bug fixes (24 Nov 2026, Test Sunrise School) ----
-// (0) Version markers: version.json says 152 (APP_VERSION / sw.js /
+// (0) Version markers: version.json says 153 (APP_VERSION / sw.js /
 // ?v= are pinned generically against EXPECTED_VERSION above).
-console.log(EXPECTED_VERSION === 152
-  ? 'PASS v152: version.json says 152'
-  : 'FAIL v152: version.json does not say 152 (got ' + EXPECTED_VERSION + ')');
-if (EXPECTED_VERSION !== 152) process.exitCode = 1;
+console.log(EXPECTED_VERSION === 153
+  ? 'PASS v153: version.json says 153'
+  : 'FAIL v153: version.json does not say 153 (got ' + EXPECTED_VERSION + ')');
+if (EXPECTED_VERSION !== 153) process.exitCode = 1;
 // (1) Nav presses queue on mousedown and the next render applies them.
 var q148ok = src.includes('function queueNav(view)') && src.includes('onmousedown="queueNav(') && src.includes('if (pendingNav) { var pv148 = pendingNav;');
 console.log(q148ok
@@ -7378,6 +7378,26 @@ console.log(c152f
   ? 'PASS v152 scope: Spider PR #87 session line kept, no BAT v151 settingsPage duplicate'
   : 'FAIL v152 scope: session drop line changed or v151 settingsPage duplicate present');
 if (!c152f) process.exitCode = 1;
+// ---- v153: attendance empty-class message + Generate Fees current-month default (24 Nov 2026) ----
+// An empty attendance roster showed only bare headers; Generate Fees
+// defaulted to hardcoded 'Sep'. The timetable read failure is server-side
+// (SQL 55 never applied) — no code change, so the check pins the pull
+// intact instead of a workaround.
+var c153a = src.includes("t('attNoStudents')") && src.includes('<tr><td colspan="4"><div class="empty">') && i18n147.includes('attNoStudents');
+console.log(c153a
+  ? 'PASS v153 fix 1: empty attendance roster renders the attNoStudents empty-state row (colspan 4)'
+  : 'FAIL v153 fix 1: attendance empty-state row / attNoStudents key missing');
+if (!c153a) process.exitCode = 1;
+var c153b = src.includes('feeGenMonth: collectMonthDefault()') && !src.includes("feeGenMonth: 'Sep'");
+console.log(c153b
+  ? 'PASS v153 fix 2: feeGenMonth defaults to collectMonthDefault() (current month), no hardcoded Sep'
+  : 'FAIL v153 fix 2: feeGenMonth default is not collectMonthDefault() or the Sep literal remains');
+if (!c153b) process.exitCode = 1;
+var c153c = src.includes("throw new Error('read-' + table)") && src.includes("'ss_timetable'");
+console.log(c153c
+  ? 'PASS v153 fix 3: timetable pull intact — read failure still throws loudly, no silent-skip workaround'
+  : 'FAIL v153 fix 3: timetable pull / read-throw missing (a workaround may be hiding the missing server table)');
+if (!c153c) process.exitCode = 1;
 console.log(css.includes('760px') && css.includes('#0A1E4B') && css.includes('#EA8600') && css.includes('.auth-tab')
   ? 'PASS styles.css keeps navy/gold theme + 760px breakpoint + auth tabs'
   : 'FAIL styles.css missing navy/gold / 760px / auth-tab rules');

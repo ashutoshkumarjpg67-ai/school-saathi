@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 152;
+var APP_VERSION = 153;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -5812,7 +5812,7 @@ function sbStorageFreePhotos() {
 var db = loadDB();
 
 /* ================= state ================= */
-var state = { role: null, user: null, view: 'dashboard', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, feeEditId: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', ttCls: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, actSearch: '', actAction: 'All', actActor: 'All', actFrom: '', actTo: '', actLimit: 50, sb: null, rcCls: '', rcExam: '', rcStudent: '', superSchools: null, superStats: null, superLoaded: false };
+var state = { role: null, user: null, view: 'dashboard', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: collectMonthDefault(), feeFormOpen: false, feePreselect: null, feeEditId: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', ttCls: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, actSearch: '', actAction: 'All', actActor: 'All', actFrom: '', actTo: '', actLimit: 50, sb: null, rcCls: '', rcExam: '', rcStudent: '', superSchools: null, superStats: null, superLoaded: false };
 // v148 (bug 1): a nav press queued on mousedown — see queueNav below.
 var pendingNav = null;
 // v148 (bug 8): has the admin picked an attendance class yet? The
@@ -10430,7 +10430,7 @@ function attendancePage() {
     '<div class="toolbar"><select onchange="onAttCls148(this.value)">' + clsOpts + '</select>' +
     '<input type="date" value="' + esc(state.attDate) + '" max="' + todayIST() + '" onchange="onAttDate(this.value)" style="min-width:160px">' +
     attTools + '</div></div>' + // v88b: a principal never sees the Save Attendance button; v100: mark-all + holiday tools live in attTools
-    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thStatus') + '</th><th>' + t('waNotifyCol') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thStatus') + '</th><th>' + t('waNotifyCol') + '</th></tr></thead><tbody>' + (rows || '<tr><td colspan="4"><div class="empty">' + t('attNoStudents') + '</div></td></tr>') + '</tbody></table></div>' +
     (state.role === 'teacher' ? '' : '<p class="muted mt-12">School-wide today: ' + num(ta.present) + ' Present • ' + num(ta.absent) + ' Absent • ' + num(ta.late) + ' Late (' + donutPct(ta.present, ta.total) + '% attendance).</p>') + '</div>' + holidaysCard100(cls);
 }
 function onAttDate(v) {
