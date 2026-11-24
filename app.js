@@ -1702,6 +1702,20 @@ function sbNormTs(v) { return String(v || '').slice(0, 19); }
 // uploaded before this change (local_id NULL), so nothing re-uploads.
 function sbAuditKey(r) { return sbNormTs(r.ts) + '|' + (r.actor || '') + '|' + (r.action || '') + '|' + (r.details || '') + '|' + (r.local_id || r.localId || ''); }
 function sbActivityKey(r) { return (r.title || '') + '|' + (r.sub || '') + '|' + (r.local_id || r.localId || ''); }
+// Live issue 3 (24 Nov 2026): the same attendance entry repeated again and
+// again — identical (second, actor, action, details) rows are one event
+// recorded twice (e.g. a double-tapped Save). Collapse them, keeping the
+// newest; entries a second apart still show separately. The key omits
+// localId on purpose: the two copies carry different ids (cf. sbAuditKey).
+function dedupeAuditRows(rows) {
+  var seen = {};
+  return (rows || []).filter(function (a) {
+    var k = sbNormTs(a.ts) + '|' + (a.actor || '') + '|' + (a.action || '') + '|' + (a.details || '');
+    if (seen[k]) return false;
+    seen[k] = true;
+    return true;
+  });
+}
 // Upload rows that are not on the server yet. keyFn builds the dedupe key
 // from a row (local or server). onInserted receives ALL rows for the table
 // (existing + inserted) so callers can build id maps. Returns a promise
@@ -5405,6 +5419,22 @@ function migrateFeesV7(d) {
   });
   (d.feeRecords || []).forEach(function (r) { if (!r.type) r.type = 'Tuition'; });
   if (!Array.isArray(d.feeStructure) || !d.feeStructure.length) d.feeStructure = defaultFeeStructure();
+  // Live issue 9 (24 Nov 2026): a stored structure that is SHORT (e.g. only
+  // the pre-v37 6th–10th rows) renders only those sections — the card shows
+  // exactly what is stored. One-time top-up: add a Tuition row at the
+  // default amount for every school class that lacks one. Existing rows
+  // (amounts and extra types) are never touched, and the flag means a row
+  // the admin deliberately deleted is never resurrected by a later load.
+  if (!d.feeStructToppedUp9) {
+    var have9 = {};
+    (d.feeStructure || []).forEach(function (f) { have9[(f.cls || '') + '|' + (f.type || 'Tuition')] = true; });
+    var classes9 = CLASSES.slice();
+    (d.classes || []).forEach(function (c) { if (c && c.cls && classes9.indexOf(c.cls) === -1) classes9.push(c.cls); });
+    classes9.forEach(function (c) {
+      if (!have9[c + '|Tuition']) d.feeStructure.push({ cls: c, type: 'Tuition', amount: defaultTuitionAmt(classPartOf(c)) });
+    });
+    d.feeStructToppedUp9 = true;
+  }
   return d;
 }
 function migrateStudentsV9(d) {
@@ -6818,19 +6848,34 @@ function animateDonuts(root) {
     }, 60 + i * 90);
   });
 }
+// Live issue 4 (24 Nov 2026): the y-axis max was rounded up to the next
+// multiple of ₹50,000, so a ₹800 month rendered as a ~3px dash. Scale to a
+// nice number just above the data instead, and label the axis in K/L.
+function chartNiceMax(v) {
+  if (!v || v <= 0) return 1000;
+  var pow = Math.pow(10, Math.floor(Math.log10(v)));
+  var n = v / pow;
+  var nice = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+  return nice * pow;
+}
+function chartAxisLabel(v) {
+  if (v >= 100000) return (v / 100000).toFixed(1).replace('.0', '') + 'L';
+  if (v >= 1000) return (v / 1000).toFixed(1).replace('.0', '') + 'K';
+  return String(Math.round(v));
+}
 function barChartSVG(data) {
   // data: [{label, collected, pending}]
   if (!data || !data.length) return '<div class="empty">' + t('tNoFeeData') + '</div>';
   var W = 560, H = 260, padL = 46, padB = 30, padT = 14, maxV = 0;
   data.forEach(function (d) { maxV = Math.max(maxV, d.collected || 0, d.pending || 0); });
-  maxV = Math.ceil(maxV / 50000) * 50000 || 50000;
+  maxV = chartNiceMax(maxV);
   var iw = W - padL - 14, ih = H - padT - padB, n = data.length, gw = iw / n, bw = Math.min(26, gw / 3.4);
   var y = function (v) { return padT + ih - (v / maxV) * ih; };
   var s = '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="Fee collection trend">';
   [0, 0.5, 1].forEach(function (f) {
     var yy = padT + ih * (1 - f);
     s += '<line class="grid-ln" x1="' + padL + '" y1="' + yy + '" x2="' + (W - 10) + '" y2="' + yy + '"/>' +
-      '<text class="axis-lbl" x="' + (padL - 6) + '" y="' + (yy + 4) + '" text-anchor="end">' + (f === 0 ? '0' : (f * maxV / 100000).toFixed(1).replace('.0', '') + 'L') + '</text>';
+      '<text class="axis-lbl" x="' + (padL - 6) + '" y="' + (yy + 4) + '" text-anchor="end">' + (f === 0 ? '0' : chartAxisLabel(f * maxV)) + '</text>';
   });
   data.forEach(function (d, i) {
     var cx = padL + gw * i + gw / 2, base = padT + ih;
@@ -8719,14 +8764,14 @@ function renderApp() {
   var whoPhoto = me ? sbDisplayPhoto(me.photo) : null; // v139: sidebar avatar goes through the signed-URL cache like every other avatar
   var schoolLogo = (db.profile && db.profile.logo) || null;
   var wa = $('whoAvatar');
-  if (schoolLogo) { wa.innerHTML = '<img src="' + esc(sbDisplayPhoto(schoolLogo)) + '" alt="">'; wa.classList.add('has-logo'); wa.classList.remove('has-photo'); } // v139: logo through the signed-URL cache
+  if (schoolLogo) { wa.innerHTML = '<img src="' + esc(sbDisplayPhoto(schoolLogo)) + '" alt="" onerror="this.remove()">'; wa.classList.add('has-logo'); wa.classList.remove('has-photo'); } // v139: logo through the signed-URL cache
   else if (whoPhoto) { wa.innerHTML = '<img src="' + esc(whoPhoto) + '" alt="">'; wa.classList.add('has-photo'); wa.classList.remove('has-logo'); }
   else { wa.textContent = initialsOf(u.name); wa.classList.remove('has-photo'); wa.classList.remove('has-logo'); }
   $('whoName').textContent = u.name;
   $('whoRole').textContent = u.sub;
   var prof = db.profile;
   var bc = $('sideBrandCap');
-  if (bc) bc.innerHTML = prof.logo ? '<img class="side-logo" src="' + esc(sbDisplayPhoto(prof.logo)) + '" alt="">' : '🎓'; // v139: signed-URL cache
+  if (bc) bc.innerHTML = prof.logo ? '<img class="side-logo" src="' + esc(sbDisplayPhoto(prof.logo)) + '" alt="" onerror="this.outerHTML=\'🎓\'">' : '🎓'; // v139: signed-URL cache
   $('sideSchoolInfo').innerHTML = '<b style="color:#fff">' + esc(prof.name) + '</b>' + (prof.city ? '<br>' + esc(prof.city) + ', Bihar' : ''); // v148 (bug 3): no city loaded yet, no ", Bihar" — the sidebar flashed ", Bihar" while the profile was still loading
   var sess = $('sessionSel');
   if (!sess.options.length) {
@@ -9163,12 +9208,12 @@ function schoolDashboard() {
   // that also called addActivity, so fee deletions, PIN changes and class
   // changes never appeared here (the v120 cosmetic gap). Teacher/staff cloud
   // rows reach db.auditLog through the pull, so they show up too.
-  var acts = (db.auditLog || []).slice().sort(function (a, b) { return a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0; }).slice(0, 6).map(function (a) {
+  var acts = dedupeAuditRows((db.auditLog || []).slice().sort(function (a, b) { return a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0; })).slice(0, 6).map(function (a) {
     var ic = auditIconFor(a.action || '');
     var when = relTime(a.ts);
     return '<div class="act"><div class="ic" style="background:var(--' + ic.bg + '-soft)">' + ic.icon + '</div><div><b>' + esc(a.action) + '</b><span>' + esc(a.details || '') + ' • ' + esc(a.actor || '') + (when ? ' • ' + esc(when) : '') + '</span></div></div>';
   }).join('');
-  var logoHtml = db.profile.logo ? '<img class="dash-logo" src="' + esc(db.profile.logo) + '" alt="">' : '';
+  var logoHtml = db.profile.logo ? '<img class="dash-logo" src="' + esc(sbDisplayPhoto(db.profile.logo)) + '" alt="" onerror="this.remove()">' : '';
   return '<div class="page-head"><div class="prof-head">' + logoHtml + '<div><h2>' + t('schoolDashboard') + '</h2><p>' + esc(db.profile.name) + (db.profile.city ? ', ' + esc(db.profile.city) : '') + '</p></div></div>' + // v148 (bug 3): no city, no ", " — same guard as the sidebar
     '<div class="toolbar"><button class="btn sm" onclick="downloadReportCSV(\'fees\')">⬇ ' + t('downloadReport') + '</button></div></div>' +
   '<div class="action-grid">' +
@@ -9204,7 +9249,7 @@ function schoolDashboard() {
 function auditFiltered() {
   // v129 (Module 16): the Activity Log filters — text + action + actor + date range.
   // Returns the rows newest-first. Pure (no DOM), so the harness can call it directly.
-  var rows = (db.auditLog || []).slice().sort(function (a, b) { return a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0; });
+  var rows = dedupeAuditRows((db.auditLog || []).slice().sort(function (a, b) { return a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0; }));
   var q = (state.actSearch || '').trim().toLowerCase();
   var act = state.actAction || 'All';
   var who = state.actActor || 'All';
@@ -9845,6 +9890,12 @@ function cancelAdmission(id) {
 function openStudentProfile(id) {
   if (!canViewStudent(id)) { toast(t('tOwnProfileOnly')); return; }
   promoState = null;
+  // Live #10: the profile only renders on the students view
+  // (studentsPage returns the profile when profileStudent is set, and
+  // renderPage dispatches on state.view) — without this, opening a
+  // profile from Attendance / Exams / Fees set the id but re-rendered
+  // the old view, so the tap visibly did nothing.
+  state.view = 'students';
   state.profileStudent = id; state.profileTab = 'overview';
   persistSession();
   histPush({ view: 'students', sub: 'profile:' + id });
@@ -9981,11 +10032,11 @@ function profileTabBody(s, tab) {
     return '<div class="card">' + docRow(t('fBirthCert'), !!d.birthCert) + docRow(t('fTc'), !!d.tc) + kv(t('fTcNo'), esc(d.tcNumber || '—')) + kv(t('fDocsOther'), esc(d.other || '—')) + '<p class="muted mt-10">' + t('docsNote') + '</p></div>';
   }
   if (tab === 'activity') {
-    var acts = (db.auditLog || []).filter(function (a) {
+    var acts = dedupeAuditRows((db.auditLog || []).filter(function (a) {
       var det = a.details || '';
       if (s.admissionNo) return det.indexOf(s.admissionNo) !== -1;
       return det.indexOf(s.name) !== -1;
-    });
+    }));
     var arows = acts.map(function (a) {
       return '<div class="act"><div><b>' + esc(a.action) + '</b><div class="muted">' + esc(a.details) + '</div><div class="muted">' + esc(a.ts) + ' • ' + esc(a.actor) + '</div></div></div>';
     }).join('');
@@ -10255,8 +10306,12 @@ function attendancePage() {
   var hol100 = holidayFor(state.attDate, cls); // v100: a holiday day has no register
   var recs = db.attendance[key] || {};
   var rows = roster.map(function (s) {
-    var cur = recs[s.id] || 'Present';
-    if (hol100) return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td><span class="badge orange">' + t('holidayWord') + '</span></td><td><span class="muted">—</span></td></tr>';
+    // Live #8: an unmarked student must NOT look Present. The old
+    // default ('Present') lit the Present button green while the header
+    // counts (correctly) said 0 Present — v88b fixed the counts but
+    // left the button default. No mark now means no button is 'on'.
+    var cur = recs[s.id] || '';
+    if (hol100) return '<tr><td><button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td><td>' + s.roll + '</td><td><span class="badge orange">' + t('holidayWord') + '</span></td><td><span class="muted">—</span></td></tr>';
     // v38: an Absent/Late student can be notified on WhatsApp (manual
     // wa.me chat, parent presses nothing here — the admin presses Send
     // inside WhatsApp). The button appears only for Absent/Late marks.
@@ -10267,12 +10322,12 @@ function attendancePage() {
     if (state.role === 'principal') {
       var curP = recs[s.id];
       var badgeP = curP ? '<span class="badge ' + (curP === 'Present' ? 'green' : curP === 'Absent' ? 'red' : 'orange') + '">' + curP + '</span>' : '<span class="badge grey">' + t('attNotMarked') + '</span>';
-      return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td>' + badgeP + '</td><td><span class="muted">—</span></td></tr>';
+      return '<tr><td><button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td><td>' + s.roll + '</td><td>' + badgeP + '</td><td><span class="muted">—</span></td></tr>';
     }
     var notifyCell = (cur === 'Absent' || cur === 'Late')
       ? '<button class="btn ghost sm" onclick="waAbsentAlert(\'' + s.id + '\')">💬 ' + t('waNotifyBtn') + '</button>'
       : '<span class="muted">—</span>';
-    return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td><td><div class="mark-btns">' +
+    return '<tr><td><button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td><td>' + s.roll + '</td><td><div class="mark-btns">' +
       ['Present', 'Absent', 'Late'].map(function (m) {
         return '<button class="' + m[0].toLowerCase() + (cur === m ? ' on' : '') + '" onclick="markAtt(\'' + s.id + '\',\'' + m + '\')">' + (m === 'Present' ? t('presBtn') : m === 'Absent' ? t('absBtn') : t('lateBtn')) + '</button>';
       }).join('') + (recs[s.id] ? '<button class="btn ghost sm" title="' + esc(t('attClear')) + '" onclick="clearAttMark(\'' + s.id + '\')">\u2715</button>' : '') + '</div></td><td>' + notifyCell + '</td></tr>';
@@ -10966,7 +11021,7 @@ function generateFees() {
 
 /* ================= print ================= */
 function printRowsToArea(title, sub, headHtml, bodyHtml, totalsHtml) {
-  var printLogoHtml = db.profile.logo ? '<img class="print-logo" src="' + esc(db.profile.logo) + '" alt="">' : '';
+  var printLogoHtml = db.profile.logo ? '<img class="print-logo" src="' + esc(sbDisplayPhoto(db.profile.logo)) + '" alt="" onerror="this.remove()">' : '';
   $('printArea').innerHTML = '<div class="print-stmt"><div class="print-head">' + printLogoHtml + '<div><h1>' + esc(db.profile.name) + '</h1><p class="muted">' + esc(db.profile.address || '') + ' • ' + esc(db.profile.phone || '') + '</p></div></div>' +
     '<h2>' + esc(title) + '</h2><p>' + sub + '</p><table><thead><tr>' + headHtml + '</tr></thead><tbody>' + bodyHtml + '</tbody></table>' + totalsHtml +
     '<p class="muted mt-14">' + t('printGenOn') + ' ' + todayIST() + '</p></div>';
@@ -11025,7 +11080,7 @@ function qrSvgFor(text, px) {
 }
 // One student's front + back, credit-card size (85.6 x 54 mm), navy + gold.
 function idCardHTML(s) {
-  var logoHtml = db.profile.logo ? '<img class="id-logo-img" src="' + esc(db.profile.logo) + '" alt="">' : '<span class="id-logo-cap">🎓</span>';
+  var logoHtml = db.profile.logo ? '<img class="id-logo-img" src="' + esc(sbDisplayPhoto(db.profile.logo)) + '" alt="" onerror="this.remove()">' : '<span class="id-logo-cap">🎓</span>';
   var qr = qrSvgFor(idCardPayload(s), 150);
   var qrHtml = qr || '<div class="id-qr-missing">' + t('idcNoQr') + '</div>';
   var backLines = '';
@@ -11322,7 +11377,7 @@ function receiptStudent(rc) {
 // One receipt renderer for the draft page, the saved view and print. Never
 // includes Aadhaar (the receipt has no field for it by design).
 function receiptHTML(rcpt, s, editable) {
-  var logoHtml = db.profile.logo ? '<img class="rcpt-logo" src="' + esc(db.profile.logo) + '" alt="">' : '<span class="rcpt-logo-cap">🎓</span>';
+  var logoHtml = db.profile.logo ? '<img class="rcpt-logo" src="' + esc(sbDisplayPhoto(db.profile.logo)) + '" alt="" onerror="this.remove()">' : '<span class="rcpt-logo-cap">🎓</span>';
   var moOpts = MONTHS_ACAD.map(function (m) { return '<option value="' + m + '" ' + (m === rcpt.month ? 'selected' : '') + '>' + m + '</option>'; }).join('');
   var meta = '<div class="rcpt-meta"><div class="rcpt-meta-grid">' +
     '<span><b>' + t('rcptReceiptNo') + '</b> : ' + esc(rcpt.receiptNo) + (editable ? ' <span class="muted">(' + t('rcptDraft') + ')</span>' : '') + '</span>' +
@@ -11631,6 +11686,15 @@ function saveAdmissionRequest(e) {
   toast(t('admReqSubmitted'));
   return false;
 }
+function admReqStatusLabel(status) {
+  // Live #7: the admReqApproved / admReqRejected i18n keys are TOAST
+  // strings ('Admission request approved.') — they must never label a
+  // status badge or a filter option. The short labels live in the *St
+  // keys; Pending has no *St key because admReqPending is already short.
+  if (status === 'Approved') return t('admReqApprovedSt');
+  if (status === 'Rejected') return t('admReqRejectedSt');
+  return t('admReqPending');
+}
 function admissionRequestsPage() {
   var list = (db.admissionRequests || []).slice().sort(function (a, b) { return a.submitted < b.submitted ? 1 : -1; });
   var f = state.admReqFilter || 'All';
@@ -11640,14 +11704,14 @@ function admissionRequestsPage() {
   var rows = shown.map(function (r) {
     var badge = r.status === 'Pending' ? 'orange' : r.status === 'Approved' ? 'green' : 'red';
     return '<tr><td><b>' + esc(r.name) + '</b></td><td>' + esc(r.dob || '—') + '</td><td>' + esc(r.classApply) + '</td><td>' + esc(r.guardianName || '—') + '</td><td>' + esc(r.phone) + '</td><td>' + esc(r.submitted) + '</td>' +
-      '<td><span class="badge ' + badge + '">' + t('admReq' + r.status) + '</span></td>' +
+      '<td><span class="badge ' + badge + '">' + admReqStatusLabel(r.status) + '</span></td>' +
       '<td><div class="row-actions"><button class="btn ghost sm" onclick="viewAdmissionRequest(\'' + r.id + '\')">' + t('admReqView') + '</button>' +
       (r.status === 'Pending' ? '<button class="btn green sm" onclick="approveAdmissionRequest(\'' + r.id + '\')">' + t('admReqApprove') + '</button>' +
       '<button class="btn danger sm" onclick="rejectAdmissionRequest(\'' + r.id + '\')">' + t('admReqReject') + '</button>' : '') +
       '</div></td></tr>';
   }).join('');
   var fOpts = ['All', 'Pending', 'Approved', 'Rejected'].map(function (x) {
-    var lbl = x === 'All' ? t('admReqAll') : t('admReq' + x);
+    var lbl = x === 'All' ? t('admReqAll') : admReqStatusLabel(x);
     return '<option value="' + x + '" ' + (f === x ? 'selected' : '') + '>' + lbl + '</option>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('admissions') + '</h2><p>' + list.length + ' ' + t('admReqTitle') + ' — ' + counts.Pending + ' ' + t('admReqPending') + '</p></div>' +
@@ -11664,7 +11728,7 @@ function viewAdmissionRequest(id) {
     kv(t('fStudentName'), esc(r.name)) + kv(t('fDob'), esc(r.dob || '—')) + kv(t('fGender'), esc(r.gender || '—')) +
     kv(t('admReqClassApply'), esc(r.classApply)) + kv(t('fGuardian'), esc(r.guardianName || '—')) + kv(t('fPhone'), esc(r.phone)) +
     kv(t('fPrevSchool'), esc(r.previousSchool || '—')) + kv(t('admReqSubmittedOn'), esc(r.submitted)) +
-    kv(t('admReqStatus'), '<span class="badge ' + badge + '">' + t('admReq' + r.status) + '</span>') +
+    kv(t('admReqStatus'), '<span class="badge ' + badge + '">' + admReqStatusLabel(r.status) + '</span>') +
     (r.status === 'Rejected' && r.reason ? kv(t('admReqReason'), esc(r.reason)) : '') +
     (r.status === 'Approved' && r.studentId ? kv(t('fAdmNo'), esc((db.students.find(function (s) { return s.id === r.studentId; }) || {}).admissionNo || '—')) : '') +
     '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
@@ -11735,7 +11799,7 @@ function examsPage() {
     // v88: a principal sees the mark as text — no editable input.
     var markCell = state.role === 'principal' ? '<td>' + (mk ? '<b>' + mk.marks + '</b>' : '<span class="muted">—</span>') + ' / ' + ex.total + '</td>'
       : '<td><input type="number" min="0" step="0.5" max="' + ex.total + '" value="' + (mk ? mk.marks : '') + '" placeholder="—" style="width:90px" id="mk-' + s.id + '"> / ' + ex.total + '</td>';
-    return '<tr><td><b>' + esc(s.name) + '</b></td><td>' + s.roll + '</td>' +
+    return '<tr><td><button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td><td>' + s.roll + '</td>' +
       markCell +
       '<td>' + (mk ? '<b>' + Math.round(mk.marks / ex.total * 100) + '%</b>' : '<span class="muted">' + t('tNotEntered') + '</span>') + '</td></tr>';
   }).join('');
@@ -12501,7 +12565,7 @@ function reportCardTableHTML(rc) {
 }
 function reportCardPrintHTML(rc) {
   var s = rc.student, p = db.profile || {};
-  var logo = p.logo ? '<img class="print-logo" src="' + esc(p.logo) + '" alt="">' : '';
+  var logo = p.logo ? '<img class="print-logo" src="' + esc(sbDisplayPhoto(p.logo)) + '" alt="" onerror="this.remove()">' : '';
   var meta = '<div class="rc-meta">' +
     '<span><b>' + t('thStudent') + ':</b> ' + esc(s.name) + '</span><span><b>' + t('rcAdmNo') + '</b> ' + esc(s.admissionNo || '—') + '</span>' +
     '<span><b>' + t('thClass') + ':</b> ' + esc(rc.cls) + '</span><span><b>' + t('rcRoll') + '</b> ' + esc(s.roll == null ? '—' : String(s.roll)) + '</span>' +
@@ -12760,6 +12824,26 @@ function toggleTchrClass(cls, on) {
   if (on && i === -1) tchrFormClasses.push(cls);
   if (!on && i !== -1) tchrFormClasses.splice(i, 1);
 }
+function viewTeacher(id) {
+  // Live #10: teachers had no detail view at all — the list showed only
+  // Edit/Delete. Read-only modal reusing the viewAdmissionRequest kv
+  // pattern; the school role also gets an Edit button. No password hash
+  // is ever shown (the login account row carries only the email).
+  var te = (db.teachers || []).find(function (x) { return x.id === id; });
+  if (!te) return;
+  var acct = loadAccounts().find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; });
+  var clsList = Array.isArray(te.classes) && te.classes.length ? te.classes : (te.cls ? [te.cls] : []);
+  var n = db.students.filter(function (s) { return clsList.indexOf(s.cls) !== -1 && isEnrolledStudent(s); }).length;
+  var kv = function (label, val) { return '<div class="kv"><b>' + label + '</b><span>' + val + '</span></div>'; };
+  openModal('<h3>' + esc(te.name) + '</h3><div class="card">' +
+    kv(t('tchrName'), esc(te.name)) + kv(t('tchrSubject'), esc(te.subject || '—')) +
+    kv(t('tchrClasses'), esc(clsList.join(', ') || '—')) +
+    kv(t('tchrEmail'), acct ? esc(acct.email) : t('tchrNoLogin')) +
+    kv(t('totalStudents'), String(n)) +
+    '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
+    (state.role === 'school' ? '<button type="button" class="btn" onclick="closeModal();teacherForm(\'' + te.id + '\')">' + t('editBtn') + '</button>' : '') +
+    '</div>');
+}
 function teachersPage() {
   // v88: a principal may view the teachers list (read-only) — no Add
   // button, no Edit button. Other non-school roles still see nothing.
@@ -12768,7 +12852,7 @@ function teachersPage() {
   var rows = (db.teachers || []).filter(function (te) { return !te.deleted; }).map(function (te) {
     var acct = loadAccounts().find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; });
     var clsList = Array.isArray(te.classes) && te.classes.length ? te.classes : (te.cls ? [te.cls] : []);
-    return '<tr><td><b>' + esc(te.name) + '</b></td><td>' + esc(te.subject || '—') + '</td><td>' + esc(clsList.join(', ') || '—') + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('tchrNoLogin') + '</span>') + '</td><td>' + (isPrincipal ? '' : '<button class="btn ghost sm" onclick="teacherForm(\'' + te.id + '\')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteTeacher(\'' + te.id + '\')">' + t('deleteBtn') + '</button>') + '</td></tr>';
+    return '<tr><td><button class="linklike" onclick="viewTeacher(\'' + te.id + '\')">' + esc(te.name) + '</button></td><td>' + esc(te.subject || '—') + '</td><td>' + esc(clsList.join(', ') || '—') + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('tchrNoLogin') + '</span>') + '</td><td><button class="btn ghost sm" onclick="viewTeacher(\'' + te.id + '\')">' + t('admReqView') + '</button> ' + (isPrincipal ? '' : '<button class="btn ghost sm" onclick="teacherForm(\'' + te.id + '\')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteTeacher(\'' + te.id + '\')">' + t('deleteBtn') + '</button>') + '</td></tr>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('teachers') + '</h2><p>' + t('teachersSub') + '</p></div>' +
     (isPrincipal ? '' : '<div class="toolbar"><button class="btn" onclick="teacherForm()">+ ' + t('tchrAdd') + '</button></div>') + '</div>' +
@@ -12867,7 +12951,8 @@ function staffRoleLabel(role) {
 }
 function staffPage() {
   if (state.role !== 'school') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
-  var rows = (db.staff || []).filter(function (st) { return !st.deleted; }).map(function (st) {
+  var seenSt = {};
+  var rows = (db.staff || []).filter(function (st) { if (st.deleted || seenSt[st.id]) return false; seenSt[st.id] = true; return true; }).map(function (st) {
     var acct = loadAccounts().find(function (a) { return (a.role === 'principal' || a.role === 'accountant' || a.role === 'staff') && a.staffId === st.id; });
     var clsList = Array.isArray(st.classes) && st.classes.length ? st.classes.join(', ') : (st.role === 'staff' ? '—' : t('allClasses'));
     return '<tr><td><b>' + esc(st.name) + '</b></td><td>' + esc(staffRoleLabel(st.role)) + '</td><td>' + esc(clsList) + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('staffNoLogin') + '</span>') + '</td><td><button class="btn ghost sm" onclick="staffForm(\'' + st.id + '\')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteStaff(\'' + st.id + '\')">' + t('deleteBtn') + '</button></td></tr>';
@@ -12915,6 +13000,7 @@ function saveStaff(e, id) {
   if (!ownAcct && pw.length < 6) return failInto(errEl, t('tPwShort'), true);
   if (ownAcct && pw && pw.length < 6) return failInto(errEl, t('tPwShort'), true);
   if (!st) {
+    if ((db.staff || []).some(function (x) { return !x.deleted && String(x.name || '').trim().toLowerCase() === name.toLowerCase() && x.role === role; })) return failInto(errEl, t('staffDuplicate'), true);
     st = { id: uniqueId('stf'), name: name, role: role, classes: role === 'staff' ? staffFormClasses.slice() : [] };
     if (!Array.isArray(db.staff)) db.staff = []; // v90: a DB loaded without the migration still gets the list
     db.staff.push(st);
