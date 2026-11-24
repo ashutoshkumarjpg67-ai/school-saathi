@@ -5287,10 +5287,27 @@ var SUBJECTS = ['Mathematics','Science','English','Hindi','Social Science'];
 // globals stay as the seed/default only; every dropdown, filter, chart
 // and sort reads schoolClasses() / schoolSubjects() instead.
 function defaultClasses() { return CLASSES.map(function (c) { return { id: c, cls: c, subjects: SUBJECTS.slice() }; }); }
+// live issue 12: ONE central class order — Nursery -> 12th,
+// then section A -> Z. db.classes is stored in whatever order the
+// pull merge / class adds left it (the live list came back jumbled),
+// so every listing sorts through here instead of trusting stored
+// order: dropdowns, charts, the class sort and the fee structure all
+// read schoolClasses(). A part the list does not know (a custom class
+// such as 'PG') sorts after the known parts, alphabetically.
+var CLASS_PART_ORDER = ['Nursery', 'LKG', 'UKG', '1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th', '9th', '10th', '11th', '12th'];
+function classPartRank(part) { var i = CLASS_PART_ORDER.indexOf(part); return i === -1 ? CLASS_PART_ORDER.length : i; }
+function compareClass(a, b) {
+  var pa = classPartOf(a), pb = classPartOf(b);
+  var ra = classPartRank(pa), rb = classPartRank(pb);
+  if (ra !== rb) return ra - rb;
+  if (pa !== pb) return pa < pb ? -1 : 1;
+  var sa = sectionOf(a), sb = sectionOf(b);
+  return sa < sb ? -1 : sa > sb ? 1 : 0;
+}
 function schoolClasses() {
   var list = (typeof db !== 'undefined' && db && Array.isArray(db.classes) && db.classes.length) ? db.classes : null;
-  if (list) return list.map(function (c) { return c.cls; });
-  return CLASSES.slice();
+  if (list) return list.map(function (c) { return c.cls; }).sort(compareClass);
+  return CLASSES.slice().sort(compareClass);
 }
 function classRow(cls) {
   if (typeof db === 'undefined' || !db || !Array.isArray(db.classes)) return null;
@@ -6258,20 +6275,30 @@ function sessionOptions() {
 }
 function studentStats() {
   var vis = visibleStudents();
-  var total = vis.length, active = 0, inactive = 0, draft = 0, cancelled = 0, boys = 0, girls = 0, unspec = 0, pend = 0, attSum = 0;
+  var total = vis.length, active = 0, inactive = 0, draft = 0, cancelled = 0, boys = 0, girls = 0, unspec = 0, pend = 0;
   var byClass = {};
   var curSess = currentSession();
   var newAdm = 0;
+  // live issue 17: the average is POOLED over marked days only —
+  // attended / marked across every visible student. The old mean of
+  // per-student %s counted a student with NO marked days at their stored
+  // admission value (att: 100), so a fresh school read "Average
+  // Attendance 100%" while the Dashboard's today donut — same marked
+  // records, today only — read 0%. With nothing marked at all there is
+  // no average to show: null renders as "—" (see studentsPage).
+  var attPres = 0, attTot = 0;
   vis.forEach(function (s) {
     var st = s.status || 'Active';
     if (st === 'Active') active++; else if (st === 'Inactive') inactive++; else if (st === 'Draft') draft++; else if (st === 'Cancelled') cancelled++;
     if (s.gender === 'Boy') boys++; else if (s.gender === 'Girl') girls++; else unspec++;
     if (studentFeeStatus(s.id) === 'Pending') pend++;
-    attSum += studentAttPct(s);
+    // live issue 17: pooled marked days only — see below.
+    var ac = studentAttCounts(s);
+    attPres += ac.present; attTot += ac.total;
     byClass[s.cls] = (byClass[s.cls] || 0) + 1;
     if (s.admissionDate && sessionOfDate(s.admissionDate) === curSess) newAdm++;
   });
-  return { total: total, active: active, inactive: inactive, draft: draft, cancelled: cancelled, boys: boys, girls: girls, unspec: unspec, pendFee: pend, avgAtt: total ? Math.round(attSum / total) : 0, newAdm: newAdm, byClass: byClass };
+  return { total: total, active: active, inactive: inactive, draft: draft, cancelled: cancelled, boys: boys, girls: girls, unspec: unspec, pendFee: pend, avgAtt: attTot ? Math.round(attPres / attTot * 100) : null, newAdm: newAdm, byClass: byClass };
 }
 function classBarsHTML(byClass) {
   var max = 0;
@@ -6685,14 +6712,11 @@ function todayAtt() {
   });
   return { present: p, absent: a, late: l, total: p + a + l };
 }
-function studentAttPct(s) {
-  // v24: a student's attendance % is computed LIVE from the actual marked
-  // records in db.attendance — so the figure moves the moment attendance
-  // is marked. Present and Late both count as attended (the student was
-  // there); Absent does not. Only when the student has NO marked days at
-  // all do we fall back to the stored s.att (the seed / import / admission
-  // value). Never write the computed value back into s.att — the stored
-  // value stays the fallback.
+// live issue 17: the marked-day count, shared by studentAttPct
+// and the Students-page average — ONE definition everywhere: marked
+// records only, Present and Late count as attended, a holiday day
+// never counts. A student with no marked days contributes nothing.
+function studentAttCounts(s) {
   var total = 0, attended = 0;
   Object.keys(db.attendance || {}).forEach(function (k) {
     var kp100 = k.split('|');
@@ -6703,7 +6727,18 @@ function studentAttPct(s) {
     total++;
     if (m === 'Present' || m === 'Late') attended++;
   });
-  return total ? Math.round(attended / total * 100) : (s.att || 0);
+  return { present: attended, total: total };
+}
+function studentAttPct(s) {
+  // v24: a student's attendance % is computed LIVE from the actual marked
+  // records in db.attendance — so the figure moves the moment attendance
+  // is marked. Present and Late both count as attended (the student was
+  // there); Absent does not. Only when the student has NO marked days at
+  // all do we fall back to the stored s.att (the seed / import / admission
+  // value). Never write the computed value back into s.att — the stored
+  // value stays the fallback.
+  var c = studentAttCounts(s);
+  return c.total ? Math.round(c.present / c.total * 100) : (s.att || 0);
 }
 /* v26: real relative time from an ISO timestamp. Returns '' when the
    entry has no timestamp — old entries that predate timestamps show
@@ -8000,7 +8035,8 @@ function teacherRecord() {
 function teacherClasses() {
   var te = teacherRecord();
   if (!te) return [];
-  return Array.isArray(te.classes) ? te.classes.slice() : (te.cls ? [te.cls] : []);
+  var list = Array.isArray(te.classes) ? te.classes.slice() : (te.cls ? [te.cls] : []);
+  return list.sort(compareClass); // live issue 12: same central class order as schoolClasses()
 }
 function staffRecord() {
   // v93: the staff record for the signed-in staff member (mirrors
@@ -9259,7 +9295,7 @@ function studentsPage() {
     var stt = s.status || 'Active';
     var badgeCls = stt === 'Active' ? 'green' : stt === 'Inactive' ? 'grey' : stt === 'Draft' ? 'blue' : 'red';
     return '<tr>' + ((isTeacher || isPrincipal) ? '' : '<td class="sel-col"><input type="checkbox" ' + ((state.stuSel || {})[s.id] ? 'checked' : '') + ' onchange="toggleStuSel(\'' + s.id + '\', this.checked)" aria-label="' + esc(s.name) + '"></td>') + '<td>' + avatarHTML(s.photo, s.name, 'mini-avatar') + '<button class="linklike" onclick="openStudentProfile(\'' + s.id + '\')">' + esc(s.name) + '</button></td>' +
-      '<td>' + esc(s.numPending ? t('sbNumAssigning') : (s.admissionNo || '—')) + '</td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.fatherName || s.guardian) + '</td><td>' + esc(s.phone) + '</td><td>' + studentAttPct(s) + '%</td>' +
+      '<td>' + esc(s.numPending ? t('sbNumAssigning') : (s.admissionNo || '—')) + '</td><td>' + esc(s.cls) + '</td><td>' + s.roll + '</td><td>' + esc(s.fatherName || s.guardian || '—') + '</td><td>' + esc(s.phone || '—') + '</td><td>' + studentAttPct(s) + '%</td>' +
       (isTeacher ? '' : '<td><span class="badge ' + (fs === 'Paid' ? 'green' : fs === 'Pending' ? 'orange' : 'grey') + '">' + fs + '</span></td>') +
       '<td><span class="badge ' + badgeCls + '">' + stt + '</span></td>' +
       ((isTeacher || isPrincipal) ? '' : '<td><button class="btn ghost sm" onclick="stuActions(\'' + s.id + '\')">⋮ ' + t('actionsW') + '</button></td>') + '</tr>';
@@ -9291,8 +9327,9 @@ function studentsPage() {
     statCard('⏸️', 'blue', t('stInactive'), st.inactive, '', 'up') +
     statCard('🆕', 'orange', t('stNewAdm'), st.newAdm, '', 'up') +
     (isTeacher ? '' : statCard('⏰', 'red', t('stPendFee'), st.pendFee, '', 'down')) +
-    statCard('📊', 'blue', t('stAvgAtt'), st.avgAtt, '', 'up', { suffix: '%' }) +
+    statCard('📊', 'blue', t('stAvgAtt'), st.avgAtt === null ? '—' : st.avgAtt, '', 'up', st.avgAtt === null ? {} : { suffix: '%' }) +
     '</div>' +
+    '<p class="muted mt-8">' + t('stAvgAttSub') + '</p>' +
     '<div class="grid2 mt-16"><div class="card"><h3>' + t('stByClass') + '</h3><p class="muted">' + t('stByClassSub') + '</p><div class="mt-10">' + classBarsHTML(st.byClass) + '</div></div>' +
     '<div class="card"><h3>' + t('stGenderDist') + '</h3><p class="muted">' + t('stGenderSub') + '</p><div style="display:flex;align-items:center;gap:16px;margin-top:10px">' +
     donutSVG([{ value: st.boys, color: BLUE, label: t('stBoys'), pct: donutPct(st.boys, st.total) }, { value: st.girls, color: '#EC4899', label: t('stGirls'), pct: donutPct(st.girls, st.total) }, { value: st.unspec, color: '#94A3B8', label: t('stNotSpec'), pct: donutPct(st.unspec, st.total) }], 150, String(st.total), t('studentsW')) +
@@ -9866,7 +9903,7 @@ function profileTabBody(s, tab) {
     return '<div class="card">' + kv(t('fStudentName'), esc(s.name)) + kv(t('fDob'), esc(s.dob || '—')) + kv(t('fGender'), esc(s.gender || '—')) + kv(t('fBlood'), esc(s.bloodGroup || '—')) + kv(t('fCategory'), esc(s.category || '—')) + kv(t('fAddress'), esc(s.address || '—')) + kv(t('fState'), esc(s.state || '—')) + kv(t('fDistrict'), esc(s.district || '—')) + kv(t('fPin'), esc(s.pin || '—')) + kv(t('fAadhaar'), maskAadhaar(s.aadhaar)) + '</div>';
   }
   if (tab === 'parent') {
-    var base = '<div class="card">' + kv(t('fFather'), esc(s.fatherName || '—')) + kv(t('fMother'), esc(s.motherName || '—')) + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fPhone2'), esc(s.mobile2 || '—')) + kv(t('fParentEmail'), esc(s.parentEmail || '—')) + kv(t('fOccupation'), esc(s.occupation || '—')) + '</div>';
+    var base = '<div class="card">' + kv(t('fFather'), esc(s.fatherName || '—')) + kv(t('fMother'), esc(s.motherName || '—')) + kv(t('fGuardian'), esc(s.guardian || '—')) + kv(t('fPhone'), esc(s.phone || '—')) + kv(t('fPhone2'), esc(s.mobile2 || '—')) + kv(t('fParentEmail'), esc(s.parentEmail || '—')) + kv(t('fOccupation'), esc(s.occupation || '—')) + '</div>';
     if (state.role !== 'school') return base;
     var pinSet54 = pinHasPin(s); // v54 (A2): the PIN value is never rendered — at most "PIN set / not set"
     var pinBox = '<div class="card mt-16"><h3>' + t('stuPinTitle') + '</h3>' +
@@ -9959,10 +9996,10 @@ function profileTabBody(s, tab) {
   return '<div class="stats">' +
     statCard('📊', 'blue', t('attPct'), studentAttPct(s), '', 'up', { suffix: '%' }) +
     statCard('💰', 'green', t('feeSt'), pendAmt, '', pendAmt ? 'down' : 'up', { prefix: '₹' }) +
-    statCard('📝', 'orange', t('latestExam'), lex ? lex.pct : 0, lex ? lex.name : '', 'up', { suffix: '%' }) +
+    statCard('📝', 'orange', t('latestExam'), lex ? lex.pct : '—', lex ? lex.name : t('tNotEntered'), 'up', lex ? { suffix: '%' } : {}) +
     statCard('📚', 'red', t('hwPending'), hwPend, '', 'up') +
     '</div>' +
-    '<div class="card">' + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fAdmNo'), esc(s.admissionNo || '—')) + kv(t('thEnr'), esc(s.enr || '—')) + kv(t('fAdmDate'), esc(s.admissionDate || '—')) + kv(t('fSession'), esc(s.session || '—')) + kv(t('thStatus'), esc(s.status || 'Active')) + '</div>' + pendHtml38;
+    '<div class="card">' + kv(t('fGuardian'), esc(s.guardian || '—')) + kv(t('fPhone'), esc(s.phone || '—')) + kv(t('fAdmNo'), esc(s.admissionNo || '—')) + kv(t('thEnr'), esc(s.enr || '—')) + kv(t('fAdmDate'), esc(s.admissionDate || '—')) + kv(t('fSession'), esc(s.session || '—')) + kv(t('thStatus'), esc(s.status || 'Active')) + '</div>' + pendHtml38;
 }
 function setStudentPin(id) {
   var s = db.students.find(function (x) { return x.id === id; });
@@ -10590,7 +10627,7 @@ function studentFeeProfile(sid) {
       '<td><span class="badge ' + (r.status === 'Collected' ? 'green' : 'orange') + '">' + r.status + '</span></td>' +
       '<td>' + (r.status === 'Pending' ? (state.role === 'principal' ? '<span class="muted">—</span>' : state.role === 'accountant' ? '<button class="btn green sm" onclick="openCollectFee(\'' + s.id + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, s.id) : '<button class="btn green sm" onclick="openCollectFee(\'' + s.id + '\',\'' + r.id + '\')">' + t('collectBtn') + '</button> ' + waReminderBtn(r.id, s.id) + ' <button class="btn danger sm" onclick="deleteFeeRecord(\'' + r.id + '\')">' + t('deleteBtn') + '</button>') : '<span class="muted">—</span>') + '</td></tr>'; // v92: the fee-profile rows follow the same rule as the fee list — principal read-only, accountant collects but never deletes
   }).join('');
-  return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • ' + t('thGuardian') + ' ' + esc(s.guardian) + ' • ' + t('thPhone') + ' ' + esc(s.phone) + '</p><p class="muted">' + t('feeProfileSub') + '</p></div></div>' +
+  return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • ' + t('thGuardian') + ' ' + esc(s.guardian || '—') + ' • ' + t('thPhone') + ' ' + esc(s.phone || '—') + '</p><p class="muted">' + t('feeProfileSub') + '</p></div></div>' +
     '<div class="toolbar"><button class="btn ghost" onclick="backFromFeeProfile()">← ' + t('backFees') + '</button>' +
     ((state.role === 'school' || state.role === 'accountant') ? '<button class="btn green" onclick="openCollectFee(\'' + s.id + '\')">💰 ' + t('collectFeeBtn') + '</button>' : '') + // v92: the fee-profile Collect button is school + accountant only — a principal never sees it
     (state.role === 'school' ? '<button class="btn" onclick="openAddFeeFor(\'' + s.id + '\')">+ ' + t('addFee') + '</button>' : '') + // v92: the Add Fee button is school-only (was visible to every role)
@@ -10644,8 +10681,27 @@ function receiptCellForRecord(r) {
   if (!rc) return '<span class="muted">—</span>';
   return '<button class="linklike" onclick="openSavedReceipt(' + jsAttr(rc.receiptNo) + ')">' + esc(rc.receiptNo) + '</button>';
 }
+// live issue 16: collapse duplicate receipt rows for ONE
+// collection — the same collapse the v42 pull mirror already does for
+// server rows, applied to the local render too. Restores / repairs can
+// leave several rows for one collection under different numbers; the
+// list shows the earliest number once. A genuinely different collection
+// (different total, date, fee type, or paid fee-record ids — see
+// sbReceiptContentKey) keeps its own row.
+function dedupeReceipts(list) {
+  var earliestByContent = {}, out = [];
+  (list || []).forEach(function (r) {
+    if (!r || !r.receiptNo) { out.push(r); return; }
+    var k = sbReceiptContentKey(r);
+    var cur = earliestByContent[k];
+    if (!cur) { earliestByContent[k] = r; out.push(r); return; }
+    if (r.receiptNo < cur.receiptNo) { var i = out.indexOf(cur); if (i !== -1) out[i] = r; earliestByContent[k] = r; }
+    // else: a later duplicate of the same collection — drop it.
+  });
+  return out;
+}
 function receiptListCard(sid) {
-  var rcs = (db.receipts || []).filter(function (r) { return r.studentId === sid; }).slice().reverse();
+  var rcs = dedupeReceipts((db.receipts || []).filter(function (r) { return r.studentId === sid; })).slice().reverse();
   var rcRows = rcs.map(function (r) {
     return '<tr><td>' + esc(r.receiptNo) + '</td><td>' + esc(r.date) + '</td><td>' + esc(payModeLabel(r.payMode)) + '</td><td>' + inr(r.total) + '</td>' +
       '<td><button class="btn sm" onclick="openSavedReceipt(' + jsAttr(r.receiptNo) + ')">' + t('rcptView') + '</button> ' +
@@ -10711,6 +10767,13 @@ function saveFeeRecord(e) {
     if (!ty) { toast(t('tTypeRequired')); return false; }
   }
   var mo122 = $('fFeeMonth').value, st122 = $('fFeeStatus').value, dt122 = $('fFeeDate').value || todayIST();
+  // live issue 16: a manual add must not silently duplicate a
+  // record Generate Fees already made (or one added before) — the same
+  // student+month+type collected twice mints two receipts for one due.
+  // Generate Fees already dedupes this way; the edit path above is
+  // untouched (it updates in place), and the collect flow's own
+  // partial-payment remainder is created by finishCollectFee, not here.
+  if (!state.feeEditId && db.feeRecords.some(function (r) { return r.studentId === sid && r.month === mo122 && feeTypeOf(r) === ty; })) { toast(t('tFeeDuplicate')); return false; }
   if (state.feeEditId) {
     // Edit in place: the record keeps its id, so the server row updates instead of duplicating.
     var er = db.feeRecords.find(function (x) { return x.id === state.feeEditId; });
@@ -10735,7 +10798,12 @@ function saveFeeRecord(e) {
   return false;
 }
 function feeStructureCard() {
-  var rows = (db.feeStructure || []).map(function (row, i) {
+  // live issue 12: rows render in central class order (stored order jumbles after a
+  // pull). Each row keeps its ORIGINAL index for its input id / delete
+  // button — saveFeeStructure reads amounts by that index.
+  var rows = (db.feeStructure || []).map(function (row, i) { return { row: row, i: i }; })
+    .sort(function (a, b) { return compareClass(a.row.cls, b.row.cls) || ((a.row.type || '') < (b.row.type || '') ? -1 : (a.row.type || '') > (b.row.type || '') ? 1 : 0); })
+    .map(function (x) { var row = x.row, i = x.i;
     return '<tr><td>' + esc(row.cls) + '</td><td>' + esc(feeTypeLabel(row.type)) + '</td>' +
       '<td><input type="number" min="0" step="50" value="' + row.amount + '" id="fsAmt-' + i + '" style="width:120px"></td>' +
       '<td><button class="btn danger sm" onclick="deleteFeeStructureRow(' + i + ')">' + t('deleteBtn') + '</button></td></tr>';
@@ -10900,7 +10968,7 @@ function printStudentStatement(sid) {
   var body = recs.map(function (r) {
     return '<tr><td>' + r.month + '</td><td>' + esc(feeTypeLabel(feeTypeOf(r))) + '</td><td>' + inr(r.amount) + '</td><td>' + esc(r.date) + '</td><td>' + r.status + '</td></tr>';
   }).join('');
-  printRowsToArea(t('printTitle'), esc(s.name) + ' • ' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • ' + t('thGuardian') + ' ' + esc(s.guardian),
+  printRowsToArea(t('printTitle'), esc(s.name) + ' • ' + t('thClass') + ' ' + esc(s.cls) + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • ' + t('thGuardian') + ' ' + esc(s.guardian || '—'),
     '<th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th>',
     body,
     '<div class="tot"><span>' + t('totalBilled') + ': ' + inr(billed) + '</span><span>' + t('totalPaid') + ': ' + inr(paid) + '</span><span>' + t('totalPending') + ': ' + inr(pend) + '</span></div>');
@@ -11940,11 +12008,19 @@ function sbQueueExamChange58(ex) {
   // flush PATCH actually writes the flag — the push is no longer a
   // no-op, and the delete/restore travels to other devices. The
   // queue itself is still needed: the diff alone never queues a
-  // delete, because only the flag changes. Local-only accounts skip
-  // this entirely (no pull can clobber the flag there).
+  // delete, because only the flag changes.
+  // live issue 15: the old code returned early with no live
+  // session, so a delete made while logged in locally — exactly the
+  // post-logout state, where the school IS server-linked but the
+  // session is gone — never queued. The next pull then overwrote the
+  // local deleted flag with the server's stale false and the deleted
+  // exam reappeared in the list. The outbox is keyed by Supabase uid
+  // and the pull keep reads the account's STORED sbUid too, so queue
+  // under that when there is no live session. A school that never
+  // linked has no sbUid at all and still skips (no pull can clobber
+  // the flag there).
   try {
-    if (!sbSyncActive()) return;
-    var uid58 = (state.sb && state.sb.uid) || '';
+    var uid58 = (state.sb && state.sb.uid) || (state.user && state.user.sbUid) || '';
     if (!uid58 || !ex || !ex.id) return;
     sbOutboxAdd(uid58, { table: 'ss_exams', key: ex.id, op: 'upsert', row: JSON.parse(JSON.stringify(ex)), at: new Date().toISOString() });
   } catch (e58) {}
@@ -12606,10 +12682,15 @@ function settingsPage() {
   '<input type="file" id="fPfLogo" accept="image/*" onchange="onSchoolLogo(this)">' +
   '<button type="button" class="btn ghost sm" onclick="clearSchoolLogo()">' + t('removeLogo') + '</button></div>' +
   '<p class="muted">' + t('logoHint') + '</p></div>' +
-  '</div><div class="actions toolbar-start"><button class="btn" type="submit">' + t('saveSettingsBtn') + '</button>' +
+  '</div><div class="actions toolbar-start"><button class="btn" type="submit">' + t('saveSettingsBtn') + '</button></div></form></div>' +
+  // live issue 14: the destructive actions live in their own
+  // Danger Zone card — never in the Save row, where a slip deletes
+  // the school. Same buttons, same handlers, only the placement
+  // changes; the password / school-name gates still apply.
+  '<div class="card maxw-680 mt-16 danger-zone"><h3>' + t('dangerZone') + '</h3><p class="card-sub">' + t('dangerZoneSub') + '</p><div class="actions toolbar-start">' +
   '<button type="button" class="btn danger" onclick="resetAllData()">' + t('resetAllData') + '</button>' +
-  '<button type="button" class="btn" onclick="removeSchoolData()">' + t('removeDeviceData') + '</button>' +
-  '<button type="button" class="btn danger" onclick="deleteAccount()">' + t('delAccount') + '</button></div></form></div>' +
+  '<button type="button" class="btn danger" onclick="removeSchoolData()">' + t('removeDeviceData') + '</button>' +
+  '<button type="button" class="btn danger" onclick="deleteAccount()">' + t('delAccount') + '</button></div></div>' +
   '<div class="card maxw-680 mt-16"><h3>' + t('sbTitle') + '</h3><p class="card-sub" id="sbStatusLine">' + sbStatusText() + '</p><div id="sbSyncDetails">' + sbSyncDetailsHtml() + '</div><div id="sbSyncConflicts">' + sbSyncConflictsHtml() + '</div><div class="actions toolbar-start"><button type="button" class="btn" onclick="sbRetryMigration(this)">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload(this)">' + t('sbDownloadNow') + '</button>' + (state.user && state.user.role === 'school' && !state.user.sbUid ? '<button type="button" class="btn ghost" onclick="openLinkServerModal()">' + t('sbLinkServer') + '</button>' : '') + (sbSessionExpired ? '<button type="button" class="btn ghost" onclick="logout()">' + t('authLogin') + '</button>' : '') + '</div></div>' +
   '<div class="card maxw-680 mt-16"><h3>' + t('fullBackup') + '</h3><p class="card-sub">' + t('fullBackupSub') + '</p><div class="actions toolbar-start"><button type="button" class="btn" onclick="exportFullBackup()">' + t('backupExport') + '</button><label class="btn ghost pointer">' + t('backupImport') + '<input type="file" accept="application/json,.json" style="display:none" onchange="onBackupFileChosen(this)"></label></div></div>' +
   '<div class="card maxw-680 mt-16"><h3>' + t('raiseSupport') + '</h3><p class="card-sub">' + t('contactSub') + '</p><div class="actions toolbar-start"><button type="button" class="btn" onclick="openSupportForm()">' + t('raiseSupport') + '</button></div></div>' +
@@ -12999,7 +13080,10 @@ function studentDashboard() {
   // the live marks (latestExamPct); the tile follows it, falling back
   // to the stored value only when no marks exist at all.
   var lex66 = latestExamPct(me);
-  var resShow66 = lex66 ? lex66.pct : (me.result || 0);
+  // live issue 13: a stored 0 is "never set", not a 0% result — show "—" when
+  // neither live marks nor a stored result exist (same rule as the
+  // profile overview's Latest Exam card).
+  var resShow66 = lex66 ? lex66.pct : (me.result || null);
   var hwItems = myHw.map(function (h) {
     var done = h.doneBy.indexOf(me.id) !== -1;
     // v86: only the student gets the Mark-done checkbox — a parent sees
@@ -13017,7 +13101,7 @@ function studentDashboard() {
     '<div class="tile-grid">' +
     '<div class="tile green pointer" onclick="go(\'attendance\')"><div class="n">' + studentAttPct(me) + '%</div><div class="l">' + t('tileAtt') + '</div></div>' +
     '<div class="tile yellow pointer" onclick="go(\'fees\')"><div class="n">' + studentFeeStatus(me.id) + '</div><div class="l">' + t('tileFees') + '</div></div>' +
-    '<div class="tile purple pointer" onclick="go(\'results\')"><div class="n">' + resShow66 + '%</div><div class="l">' + t('tileResults') + '</div></div>' +
+    '<div class="tile purple pointer" onclick="go(\'results\')"><div class="n">' + (resShow66 === null ? '—' : resShow66 + '%') + '</div><div class="l">' + t('tileResults') + '</div></div>' +
     '<div class="tile blue pointer" onclick="go(\'homework\')"><div class="n">' + myHw.length + '</div><div class="l">' + t('tileHw') + ' (' + doneCount + ' ' + t('doneSuffix') + ')</div></div>' +
     '</div></div>' +
     '<div class="card mt-16"><h3>' + t('myHomework') + '</h3><p class="card-sub">' + t('myHwSub') + '</p>' + hwItems + '</div>' +
