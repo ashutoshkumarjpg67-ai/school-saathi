@@ -203,7 +203,7 @@ describe('table grants (static)', () => {
     assert.deepEqual(anonGrants.sort(), ['ss_admission_requests:insert', 'ss_platform_settings:select']);
   });
 
-  it('authenticated gets CRUD on the 17 loop tables + ss_staff + ss_holidays + ss_classes, and nothing else', () => {
+  it('authenticated gets CRUD on the 17 loop tables + ss_staff + ss_holidays + ss_classes + ss_timetable, and nothing else', () => {
     const src02 = readFileSync(join(SQL_DIR, '02_rls.sql'), 'utf8');
     // 02_rls.sql has TWO foreach loops: the 12-table policy loop first,
     // then the grants loop. The grants loop is the one containing
@@ -217,16 +217,16 @@ describe('table grants (static)', () => {
     // select, insert, update, delete on public.%I to authenticated', t)) —
     // no literal grant statement exists for them. Assert the loop's
     // format string is the CRUD grant, and the only LITERAL CRUD grants
-    // are the three tables that postdate the loop (ss_staff, ss_holidays, ss_classes).
+    // are the four tables that postdate the loop (ss_staff, ss_holidays, ss_classes, ss_timetable).
     assert.match(src02, /execute format\('grant select, insert, update, delete on public\.%I to authenticated', t\)/,
       '02_rls.sql grant loop must grant full CRUD to authenticated');
     let sql = sqlFiles.map((f) => readFileSync(join(SQL_DIR, f), 'utf8')).join('\n');
     sql = sql.replace(/--[^\n]*/g, ' ');
     const flat = sql.replace(/\s+/g, ' ');
     const literalCrud = [...flat.matchAll(/grant select, insert, update, delete on public\.(ss_[a-z_0-9]+) to authenticated;/gi)].map((m) => m[1]).sort();
-    assert.deepEqual(literalCrud, ['ss_classes', 'ss_holidays', 'ss_staff']);
+    assert.deepEqual(literalCrud, ['ss_classes', 'ss_holidays', 'ss_staff', 'ss_timetable']);
     const crud = new Set([...loopTables, ...literalCrud]);
-    assert.deepEqual([...crud].sort(), [...loopTables, 'ss_classes', 'ss_holidays', 'ss_staff'].sort());
+    assert.deepEqual([...crud].sort(), [...loopTables, 'ss_classes', 'ss_holidays', 'ss_staff', 'ss_timetable'].sort());
   });
 
   it('the 7 RPC-only tables have no table grant at all', () => {

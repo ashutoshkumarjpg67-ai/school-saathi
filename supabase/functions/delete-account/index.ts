@@ -24,7 +24,7 @@
 //   and ss_teacher_login_attempts (SQL 18), ss_staff, ss_staff_sessions
 //   and ss_staff_login_attempts (SQL 30), ss_parent_pin_attempts
 //   (SQL 36), ss_holidays (SQL 38), ss_classes (SQL 42) and
-//   ss_parent_sessions (SQL 52). Three of those have NO foreign key to
+//   ss_parent_sessions (SQL 52), ss_timetable (SQL 55). Three of those have NO foreign key to
 //   ss_schools (ss_staff_sessions, ss_staff_login_attempts,
 //   ss_parent_pin_attempts) — without an explicit delete here their rows
 //   would survive as orphans after the school row is gone; the other
@@ -89,6 +89,7 @@ const CHILD_TABLES = [
   'ss_staff_login_attempts',
   'ss_parent_pin_attempts',
   'ss_holidays',
+  'ss_timetable',
   'ss_classes',
   'ss_parent_sessions',
 ]

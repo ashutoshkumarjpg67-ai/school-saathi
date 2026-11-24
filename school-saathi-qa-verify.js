@@ -1210,7 +1210,7 @@ const test = `
   eq(typeof findStudentByAdmNo, 'undefined', 'v35 (iv): the global admission-number scan is gone');
   eq(typeof findStudentById, 'undefined', 'v35 (iv): the global student-id scan is gone');
   eq(typeof PAGE_PARENT, 'object', 'v85: PAGE_PARENT is back as the Phase 4 parent role map');
-  eq(Object.keys(PAGE_PARENT).join(','), 'dashboard,attendance,fees,results,homework,notices', 'v86: the parent page map reuses the student views');
+  eq(Object.keys(PAGE_PARENT).join(','), 'dashboard,attendance,fees,results,homework,timetable,notices', 'v86: the parent page map reuses the student views');
   // (i) student login with the right number + PIN opens ONLY that student.
   fillSchoolPicker('studentSchool');
   ok(__els['studentSchool'].innerHTML.indexOf('St. Xavier School') !== -1, 'v35: the student school picker lists the school on this device');
@@ -5496,9 +5496,9 @@ const test = `
   // their current views.
   var roles85 = ['school', 'teacher', 'student', 'principal', 'accountant', 'staff', 'parent', 'superadmin'];
   roles85.forEach(function (r) { ok(Array.isArray(PERMS[r]) && PERMS[r].length > 0, 'v85: PERMS has an allow-list for ' + r); });
-  eq(PERMS.school.join(','), 'dashboard,students,teachers,staff,classes,admissions,attendance,fees,exams,homework,notices,reports,activityLog,settings', 'v85: the school allow-list is unchanged'); // v90: the school gains the Staff management view; v119: the Classes view
-  eq(PERMS.teacher.join(','), 'dashboard,students,attendance,exams,homework,notices', 'v85: the teacher allow-list is unchanged');
-  eq(PERMS.student.join(','), 'dashboard,attendance,fees,results,homework,notices', 'v85: the student allow-list is unchanged');
+  eq(PERMS.school.join(','), 'dashboard,students,teachers,staff,classes,admissions,attendance,fees,exams,homework,timetable,notices,reports,activityLog,settings', 'v85: the school allow-list is unchanged'); // v90: the school gains the Staff management view; v119: the Classes view; tt: the Timetable view
+  eq(PERMS.teacher.join(','), 'dashboard,students,attendance,exams,homework,timetable,notices', 'v85: the teacher allow-list is unchanged');
+  eq(PERMS.student.join(','), 'dashboard,attendance,fees,results,homework,timetable,notices', 'v85: the student allow-list is unchanged');
   // v86: the parent grew past dashboard + notices (its portal reuses the
   // student views), so the v85 "starts with" check covers the other four.
   // v88: the principal grew too (its oversight nav) — the check covers
@@ -5566,7 +5566,7 @@ const test = `
   // views, view-only: the child's attendance, fees, results, homework
   // (own class only, no Add button) and notices — never other students,
   // never the school's totals, never an edit.
-  eq(PERMS.parent.join(','), 'dashboard,attendance,fees,results,homework,notices', 'v86: the parent allow-list matches the student views');
+  eq(PERMS.parent.join(','), 'dashboard,attendance,fees,results,homework,timetable,notices', 'v86: the parent allow-list matches the student views');
   ok(canAccessView('parent', 'results') && canAccessView('parent', 'attendance') && canAccessView('parent', 'fees'), 'v86: a parent may open results, attendance and fees');
   ok(!canAccessView('parent', 'students') && !canAccessView('parent', 'teachers') && !canAccessView('parent', 'settings') && !canAccessView('parent', 'exams'), 'v86: a parent may not open students, teachers, settings or exams');
   eq(PAGE_PARENT.dashboard, studentDashboard, 'v86: the parent dashboard reuses the student dashboard');
@@ -5629,9 +5629,9 @@ const test = `
   var riya88 = db.students.find(function (s) { return s.name === 'Riya Kumari'; });
   var prin88 = { role: 'principal', name: 'Test Principal', sub: 'Principal • Test Principal', email: 'principal:test-school:prin88', uid: 'principal-prin88', staffId: 'prin88', schoolUid: 'test-school' };
   // PERMS + NAV + PAGE for the principal.
-  eq(PERMS.principal.join(','), 'dashboard,students,teachers,attendance,fees,exams,homework,notices,reports,activityLog', 'v88: PERMS.principal is the full oversight set (10 views)');
-  eq(NAV.principal.length, 10, 'v88: NAV.principal has 10 items');
-  eq(Object.keys(PAGE_PRINCIPAL).length, 10, 'v88: PAGE_PRINCIPAL has 10 pages');
+  eq(PERMS.principal.join(','), 'dashboard,students,teachers,attendance,fees,exams,homework,timetable,notices,reports,activityLog', 'v88: PERMS.principal is the full oversight set (11 views)');
+  eq(NAV.principal.length, 11, 'v88: NAV.principal has 11 items');
+  eq(Object.keys(PAGE_PRINCIPAL).length, 11, 'v88: PAGE_PRINCIPAL has 11 pages');
   eq(canAccessView('principal', 'students'), true, 'v88: a principal may open Students');
   eq(canAccessView('principal', 'settings'), false, 'v88: a principal may NOT open Settings');
   eq(canAccessView('principal', 'admissions'), false, 'v88: a principal may NOT open Admissions');
@@ -6732,6 +6732,24 @@ const test = `
   db.holidays = db.holidays.filter(function (h) { return h.id !== 'hol-100'; });
   saveDB(db);
   eq(sbLocalCountsReal(db).holidays, 0, 'v100: the sync counts drop back to zero after the holiday is removed');
+  // tt: timetable sync pieces — mapping, registry, hashes, counts, migration.
+  eq(JSON.stringify(sbMapTimetable({ id: 'tt-1', cls: '6th-A', day: 1, period: 2, subject: 'Mathematics', teacher: 'Rahul Kumar' }, 'srv-school-100')), JSON.stringify({ school_id: 'srv-school-100', local_id: 'tt-1', cls: '6th-A', day_of_week: 1, period: 2, subject: 'Mathematics', teacher: 'Rahul Kumar' }), 'tt: sbMapTimetable maps the local row to the server payload');
+  eq(SB_SYNC_TABLES.ss_timetable.local, 'timetable', 'tt: ss_timetable is registered in the sync tables');
+  eq(SB_SYNC_TABLES.ss_timetable.key, 'id', 'tt: ss_timetable syncs by local id');
+  ok(SB_SYNC_DELETABLE.indexOf('ss_timetable') !== -1, 'tt: a deleted timetable row leaves the server too');
+  db.timetable = migrateTimetable(db).timetable;
+  db.timetable.push({ id: 'tt-1', cls: '6th-A', day: 1, period: 2, subject: 'Mathematics', teacher: 'Rahul Kumar' });
+  saveDB(db);
+  eq(sbLocalCountsReal(db).timetable, 1, 'tt: the sync counts include timetable rows');
+  var hashesTt = sbSyncTableHashes(db, 'srv-school-100', { stu: {}, exam: {} });
+  eq(hashesTt.ss_timetable['tt-1'].hash, JSON.stringify(sbMapTimetable({ id: 'tt-1', cls: '6th-A', day: 1, period: 2, subject: 'Mathematics', teacher: 'Rahul Kumar' }, 'srv-school-100')), 'tt: the sync hash for a timetable row is its server payload');
+  db.timetable = db.timetable.filter(function (r) { return r.id !== 'tt-1'; });
+  saveDB(db);
+  eq(sbLocalCountsReal(db).timetable, 0, 'tt: the sync counts drop back to zero after the row is removed');
+  var migTtA = migrateTimetable({ timetable: undefined });
+  ok(Array.isArray(migTtA.timetable) && migTtA.timetable.length === 0, 'tt: migration adds the timetable list to an older DB');
+  var migTtB = migrateTimetable({ timetable: [{ id: 'a', cls: '6th-A', day: 1, period: 1 }, { id: 'b', cls: '6th-A', day: 1, period: 1 }, { id: 'c', cls: '6th-A', day: 2, period: 1 }, { id: 'd', cls: '', day: 1, period: 1 }] });
+  eq(migTtB.timetable.length, 2, 'tt: migration dedupes a double-booked slot and drops a class-less row');
   var mig100a = migrateV100({ holidays: undefined });
   ok(Array.isArray(mig100a.holidays) && mig100a.holidays.length === 0, 'v100: migration adds the holidays list to an older DB');
   var mig100b = migrateV100({ holidays: [{ id: 'a', date: '2026-11-15', cls: '6th-A' }, { id: 'b', date: '2026-11-15', cls: '6th-A' }, { id: 'c', date: '2026-11-16', cls: '6th-A' }, { id: 'd', date: '', cls: '6th-A' }] });
@@ -7510,7 +7528,7 @@ let sbCalls = [];
 let sbFailTables = new Set();
 let sbNowMs = Date.parse('2026-11-09T06:00:00Z');
 function sbNowISO() { sbNowMs += 1000; return new Date(sbNowMs).toISOString(); }
-const sbServer = { ss_schools: [], ss_students: [], ss_fee_records: [], ss_fee_structure: [], ss_attendance: [], ss_receipts: [], ss_audit_log: [], ss_activities: [], ss_teachers: [], ss_exams: [], ss_marks: [], ss_homework: [], ss_notices: [], ss_holidays: [], ss_platform_admins: [], ss_admission_requests: [], ss_support_requests: [], ss_staff: [], ss_classes: [] }; // v90: the mock server has the ss_staff table (SQL 30 created it live); v100: ss_holidays (SQL 38); v119: ss_classes (SQL 42)
+const sbServer = { ss_schools: [], ss_students: [], ss_fee_records: [], ss_fee_structure: [], ss_attendance: [], ss_receipts: [], ss_audit_log: [], ss_activities: [], ss_teachers: [], ss_exams: [], ss_marks: [], ss_homework: [], ss_notices: [], ss_holidays: [], ss_timetable: [], ss_platform_admins: [], ss_admission_requests: [], ss_support_requests: [], ss_staff: [], ss_classes: [] }; // v90: the mock server has the ss_staff table (SQL 30 created it live); v100: ss_holidays (SQL 38); v119: ss_classes (SQL 42); tt: ss_timetable (SQL 55)
 let sbSeq = 0;
 let sbPhotoFnLive = false; // v142: the photo-url mock answers only while a photo test arms it, so older flows keep the 404 path
 let sbSignupMode = 'ok'; // v34: 'ok' | 'rate-limit' | 'exists' — drives the mocked GoTrue signup
@@ -7641,7 +7659,7 @@ function sbMockFetch(url, init) {
   if (u.indexOf('/rest/v1/rpc/ss_wipe_school') !== -1) {
     const b = JSON.parse(init.body || '{}');
     const sid = b.p_school_id;
-    ['ss_marks', 'ss_attendance', 'ss_fee_records', 'ss_receipts', 'ss_audit_log', 'ss_activities', 'ss_homework', 'ss_notices', 'ss_holidays', 'ss_exams', 'ss_teachers', 'ss_admission_requests', 'ss_support_requests', 'ss_fee_structure', 'ss_students'].forEach(function (t) {
+    ['ss_marks', 'ss_attendance', 'ss_fee_records', 'ss_receipts', 'ss_audit_log', 'ss_activities', 'ss_homework', 'ss_notices', 'ss_holidays', 'ss_timetable', 'ss_exams', 'ss_teachers', 'ss_admission_requests', 'ss_support_requests', 'ss_fee_structure', 'ss_students'].forEach(function (t) {
       sbServer[t] = sbServer[t].filter(function (r) { return r.school_id !== sid; });
     });
     sbServer.ss_schools = sbServer.ss_schools.filter(function (r) { return r.id !== sid; });
@@ -7657,8 +7675,9 @@ function sbMockFetch(url, init) {
     if (method === 'GET') {
       // v105: ss_holidays has NO updated_at column (live SQL 38) — a
       // select naming it 42703s, exactly like live PostgREST. The app
-      // must never ask for it on this table.
-      if (table === 'ss_holidays' && (params.select || '').indexOf('updated_at') !== -1) return Promise.resolve(sbJsonRes(400, { code: '42703', message: 'column ss_holidays.updated_at does not exist' }));
+      // must never ask for it on this table. tt: ss_timetable (SQL 55)
+      // has no updated_at either — same rule.
+      if ((table === 'ss_holidays' || table === 'ss_timetable') && (params.select || '').indexOf('updated_at') !== -1) return Promise.resolve(sbJsonRes(400, { code: '42703', message: 'column ' + table + '.updated_at does not exist' }));
       if (table === 'ss_schools' && sbGetSchoolsEmptyOnce) { sbGetSchoolsEmptyOnce = false; return Promise.resolve(sbJsonRes(200, [])); }
       let rows = sbServer[table].slice();
       Object.keys(params).forEach(function (k) {
@@ -11003,14 +11022,15 @@ async function v28run() {
   v28eq(sbServer.ss_marks.length, 0, 'v52 async: no zombie mark is POSTed for the gone student');
   v28eq(ctx.db.feeRecords.length, srvFeeIds52.length, 'v52 async: the pull collapses the 6 local fee rows to the deduped set');
   v28eq(ctx.feeTotals().collected, expFee52, 'v52 async: dashboard Fee Collected stays the deduped total after the pull');
-  // the verify, called directly: 13 GETs, and the deduped local
+  // the verify, called directly: 14 GETs, and the deduped local
   // counts pass against the server (the legacy 6-row local DB must
   // not fail the count check against the server's unique rows).
+  // tt: 13 -> 14 — sbVerifyCounts gained the ss_timetable check.
   sbCalls = [];
   var ver52 = await ctx.sbVerifyCounts('tok-vm', 'srv-school-vm33', ctx.sbLocalCounts(ctx.db));
   v28eq(ver52.ok, true, 'v52 async: the count verification passes on the drained legacy profile');
-  v28eq(sbCalls.filter(function (c) { return c.method === 'GET'; }).length, 13, 'v52 async: the verify issues 13 GETs');
-  v28eq(sbCalls.length, 13, 'v52 async: the verify issues exactly 13 calls — one batch, nothing sequential after it');
+  v28eq(sbCalls.filter(function (c) { return c.method === 'GET'; }).length, 14, 'v52 async: the verify issues 14 GETs');
+  v28eq(sbCalls.length, 14, 'v52 async: the verify issues exactly 14 calls — one batch, nothing sequential after it');
   // the manual backup toast appears now that the outbox can drain.
   ctx.sbRetryMigration();
   var toastOk52 = await waitFor(function () { return ctx.document.getElementById('toast').textContent === 'Backup complete.'; }, 'manual backup toast shows Backup complete.');

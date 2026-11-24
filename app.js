@@ -813,7 +813,7 @@ function sbSyncDetailsRefresh() {
   } catch (e) {}
   sbSyncConflictsRefresh(); // v107: the conflicts list lives beside the details
 }
-var SB_CONFLICT_TABLE_LABELS = { ss_students: 'Student', ss_teachers: 'Teacher', ss_staff: 'Staff', ss_fee_records: 'Fee record', ss_fee_structure: 'Fee structure', ss_attendance: 'Attendance', ss_marks: 'Marks', ss_exams: 'Exam', ss_homework: 'Homework', ss_notices: 'Notice', ss_holidays: 'Holiday', ss_receipts: 'Receipt', ss_schools: 'School profile' };
+var SB_CONFLICT_TABLE_LABELS = { ss_students: 'Student', ss_teachers: 'Teacher', ss_staff: 'Staff', ss_fee_records: 'Fee record', ss_fee_structure: 'Fee structure', ss_attendance: 'Attendance', ss_marks: 'Marks', ss_exams: 'Exam', ss_homework: 'Homework', ss_notices: 'Notice', ss_holidays: 'Holiday', ss_timetable: 'Timetable', ss_receipts: 'Receipt', ss_schools: 'School profile' };
 var SB_CONFLICT_HIDE_KEYS = { id: 1, school_id: 1, local_id: 1, created_at: 1, updated_at: 1, _adoptedByNaturalKey: 1, photo_url: 1, photo_data_url: 1 };
 function sbSyncConflictLabel(k) {
   var map = { name: 'Name', admission_no: 'Admission no.', cls: 'Class', section: 'Section', phone: 'Phone', dob: 'Date of birth', gender: 'Gender', status: 'Status', amount: 'Amount', month: 'Month', fee_type: 'Fee type', date: 'Date', holiday_date: 'Date', reason: 'Reason', marks: 'Marks', exam_id: 'Exam', student_id: 'Student', title: 'Title', sub: 'Details', action: 'Action', details: 'Details', actor: 'By', ts: 'When', receipt_no: 'Receipt no.', total: 'Total', counter_no: 'Counter no.', profile: 'Profile', admCounter: 'Admission counter', receiptCounter: 'Receipt counter', feeExtras: 'Fee extras' };
@@ -1449,6 +1449,12 @@ function sbMapHoliday(h, schoolId) {
   // sbMapNotice: local_id is the local id, holiday_date is a date.
   return { school_id: schoolId, local_id: h.id, holiday_date: h.date || null, cls: h.cls || '', reason: h.reason || '' };
 }
+function sbMapTimetable(tt, schoolId) {
+  // tt: local timetable row -> server payload (SQL 55). Mirrors
+  // sbMapHoliday: local_id is the local id, day_of_week is 1 (Mon)
+  // to 6 (Sat), period is 1-8.
+  return { school_id: schoolId, local_id: tt.id, cls: tt.cls || '', day_of_week: tt.day || 1, period: tt.period || 1, subject: tt.subject || '', teacher: tt.teacher || '' };
+}
 function sbCounterNo(v) {
   // v40: ss_receipts.counter_no is an INTEGER column, but the Collect
   // Fee form stores the counter label as free text ('COUNTER-1' by
@@ -1544,7 +1550,7 @@ function sbLocalCountsReal(d) {
     activities: sbCountUnique(d.activities, sbActivityKey),
     teachers: real('ss_teachers', d.teachers), exams: real('ss_exams', d.exams),
     marks: sbCountUnique((d.marks || []).filter(function (m) { return !sbIsSeedExamId(m.examId, d) && !sbIsSeedStudentId(m.studentId, d); }), function (m) { return m.examId + '|' + m.studentId; }),
-    homework: real('ss_homework', d.homework), notices: real('ss_notices', d.notices), holidays: real('ss_holidays', d.holidays) };
+    homework: real('ss_homework', d.homework), notices: real('ss_notices', d.notices), holidays: real('ss_holidays', d.holidays), timetable: real('ss_timetable', d.timetable) };
 }
 // v64: paged fetch — the sync pull/download/verify/upload-dedupe used to
 // fetch each table with a single `limit=5000`, so a table with more than
@@ -1678,7 +1684,7 @@ function sbVerifyCounts(token, schoolId, counts) {
     ['ss_receipts', 'receipt_no', counts.receipts], ['ss_audit_log', 'ts', counts.auditLog],
     ['ss_activities', 'title', counts.activities], ['ss_teachers', 'local_id', counts.teachers],
     ['ss_exams', 'local_id', counts.exams], ['ss_marks', 'exam_id', counts.marks],
-    ['ss_homework', 'local_id', counts.homework], ['ss_notices', 'local_id', counts.notices], ['ss_holidays', 'local_id', counts.holidays]
+    ['ss_homework', 'local_id', counts.homework], ['ss_notices', 'local_id', counts.notices], ['ss_holidays', 'local_id', counts.holidays], ['ss_timetable', 'local_id', counts.timetable]
   ];
   // v52: the 12 count checks ran as 12 SEQUENTIAL round-trips — the
   // manual "Back Up Now" path spent most of its 90s+ stall here (and
@@ -2203,6 +2209,20 @@ function sbSyncUploadMissing(account, sbUid, token) {
         function (row) { return row.local_id; });
     });
   }
+  function stepTimetable() {
+    // tt: timetable rows upload like holidays (SQL 55) — INSERT-only,
+    // the fetch-filter inside sbUploadMissing skips rows the server
+    // has. Phase A: no id map needed.
+    return step('ss_timetable', function () {
+      var ttRows = (d.timetable || []).filter(function (r) { return !sbIsSeedRow('ss_timetable', r, d); }).map(function (r) { return sbMapTimetable(r, schoolId); });
+      var ttUpload = schoolRecreated
+        ? freshRows('ss_timetable', ttRows, function (row) { return row.local_id; })
+        : ttRows;
+      return sbUploadMissing(token, schoolId, 'ss_timetable', 'local_id',
+        ttUpload,
+        function (row) { return row.local_id; });
+    });
+  }
   function stepAuditLog() {
     return step('ss_audit_log', function () {
       var auRows = (d.auditLog || []).map(function (a) { return sbMapAudit(a, schoolId); });
@@ -2256,7 +2276,7 @@ function sbSyncUploadMissing(account, sbUid, token) {
     // PATCH stays last, after the tables. Per-table error handling is
     // unchanged: step() still records a failure per table and the
     // chain continues with the rest.
-    return Promise.all([stepFeeStructure(), stepStudents(), stepTeachers(), stepStaff(), stepClasses(), stepExams(), stepNotices(), stepHolidays(), stepAuditLog(), stepActivities()]);
+    return Promise.all([stepFeeStructure(), stepStudents(), stepTeachers(), stepStaff(), stepClasses(), stepExams(), stepNotices(), stepHolidays(), stepTimetable(), stepAuditLog(), stepActivities()]);
   }).then(function () {
     return Promise.all([stepFeeRecords(), stepAttendance(), stepReceipts(), stepMarks(), stepHomework()]);
   }).then(function () {
@@ -2967,6 +2987,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   });
   d.notices = mergeById('ss_notices', d.notices || [], byTable.ss_notices || [], function (row) { return { id: row.local_id || ('srv-' + row.id), title: row.title || '', date: row.notice_date || '', body: row.body || '' }; });
   d.holidays = mergeById('ss_holidays', d.holidays || [], byTable.ss_holidays || [], function (row) { return { id: row.local_id || ('srv-' + row.id), date: row.holiday_date || '', cls: row.cls || '', reason: row.reason || '' }; });
+  d.timetable = mergeById('ss_timetable', d.timetable || [], byTable.ss_timetable || [], function (row) { return { id: row.local_id || ('srv-' + row.id), cls: row.cls || '', day: row.day_of_week || 1, period: row.period || 1, subject: row.subject || '', teacher: row.teacher || '' }; });
   if (byTable.ss_admission_requests) {
     d.admissionRequests = mergeById('ss_admission_requests', d.admissionRequests || [], byTable.ss_admission_requests, function (row) { return sbRowToAdmissionRequest(row, stuMap); });
   }
@@ -3368,6 +3389,7 @@ function sbSyncMapRow(table, row, schoolId, maps, d) {
   if (table === 'ss_homework') return sbMapHomework(row, schoolId, maps.stu);
   if (table === 'ss_notices') return sbMapNotice(row, schoolId);
   if (table === 'ss_holidays') return sbMapHoliday(row, schoolId);
+  if (table === 'ss_timetable') return sbMapTimetable(row, schoolId); // tt: timetable rows ride the outbox like holiday rows do
   if (table === 'ss_admission_requests') return sbMapAdmissionRequest(row, schoolId, maps.stu);
   if (table === 'ss_receipts') {
     var byId = {};
@@ -3396,9 +3418,10 @@ var SB_SYNC_TABLES = {
   ss_exams: { local: 'exams', key: 'id' }, ss_fee_records: { local: 'feeRecords', key: 'id' },
   ss_homework: { local: 'homework', key: 'id' }, ss_notices: { local: 'notices', key: 'id' },
   ss_holidays: { local: 'holidays', key: 'id' },
+  ss_timetable: { local: 'timetable', key: 'id' }, // tt: the weekly timetable syncs to ss_timetable (SQL 55)
   ss_admission_requests: { local: 'admissionRequests', key: 'id' }, ss_receipts: { local: 'receipts', key: 'receiptNo' }
 };
-var SB_SYNC_DELETABLE = ['ss_fee_records', 'ss_fee_structure', 'ss_attendance', 'ss_marks', 'ss_holidays', 'ss_classes', 'ss_homework', 'ss_notices']; // v119: a deleted class row must leave the server too, or the pull restores it // v124: a deleted homework row must leave the server too // v126: a deleted notice must leave the server too
+var SB_SYNC_DELETABLE = ['ss_fee_records', 'ss_fee_structure', 'ss_attendance', 'ss_marks', 'ss_holidays', 'ss_classes', 'ss_homework', 'ss_notices', 'ss_timetable']; // v119: a deleted class row must leave the server too, or the pull restores it // v124: a deleted homework row must leave the server too // v126: a deleted notice must leave the server too // tt: a deleted timetable row must leave the server too
 function sbSyncTableHashes(d, schoolId, maps) {
   // Canonical hash per row = the exact server payload it would push.
   // Local rows and server-derived rows hash identically when their
@@ -3777,7 +3800,8 @@ function sbSyncFindServerRow(table, entry, token, schoolId, maps, uid) {
   // through to "row not found" and was silently skipped (live 12 Nov:
   // the live find returned the 42703 error for the exact query the app
   // sends). Any future table without updated_at must be added here.
-  var findCols105 = table === 'ss_receipts' ? 'id,updated_at,student_id,total,receipt_date,student_name,month' : (table === 'ss_holidays' ? 'id' : 'id,updated_at');
+  // tt: ss_timetable (SQL 55) has no updated_at either — same branch.
+  var findCols105 = table === 'ss_receipts' ? 'id,updated_at,student_id,total,receipt_date,student_name,month' : (table === 'ss_holidays' || table === 'ss_timetable' ? 'id' : 'id,updated_at');
   // v44: a stored server id is only a hint — the row may have been
   // deleted and re-created under a new id (live: the V21 student row
   // was re-created 9 Nov 12:37 UTC with a new uuid but the same
@@ -4356,7 +4380,7 @@ function sbSyncGuardHit(d, byTable) {
     // never be on the server and must not trip the migration guard.
     ['ss_receipts', rc45.receipts],
     ['ss_marks', rc45.marks], ['ss_homework', rc45.homework],
-    ['ss_notices', rc45.notices], ['ss_holidays', rc45.holidays], ['ss_admission_requests', (d.admissionRequests || []).length]
+    ['ss_notices', rc45.notices], ['ss_holidays', rc45.holidays], ['ss_timetable', rc45.timetable], ['ss_admission_requests', (d.admissionRequests || []).length]
   ];
   for (var i = 0; i < checks.length; i++) {
     if (checks[i][1] > 0 && !(byTable[checks[i][0]] || []).length) return checks[i][0];
@@ -4379,7 +4403,7 @@ function sbSyncPullRun(account, sbUid, token, serverSchoolId) {
     : sbGetServerSchoolId(sbUid, token).then(function (row) { return row ? row.id : null; });
   return idP.then(function (sid) {
     if (!sid) return { done: false, reason: 'no-server-school' };
-    var tables = ['ss_fee_structure', 'ss_students', 'ss_teachers', 'ss_staff', 'ss_classes', 'ss_exams', 'ss_fee_records', 'ss_attendance', 'ss_receipts', 'ss_marks', 'ss_homework', 'ss_notices', 'ss_holidays', 'ss_admission_requests']; // v90: ss_staff joins the pull (the staff list mirrors the server); v119: ss_classes joins it too
+    var tables = ['ss_fee_structure', 'ss_students', 'ss_teachers', 'ss_staff', 'ss_classes', 'ss_exams', 'ss_fee_records', 'ss_attendance', 'ss_receipts', 'ss_marks', 'ss_homework', 'ss_notices', 'ss_holidays', 'ss_timetable', 'ss_admission_requests']; // v90: ss_staff joins the pull (the staff list mirrors the server); v119: ss_classes joins it too // tt: ss_timetable joins it too (SQL 55)
     var gets = [sbRest('GET', 'ss_schools?select=*&id=eq.' + encodeURIComponent(sid), token)];
     tables.forEach(function (t) { gets.push(sbFetchAllPages(t, '*', sid, token)); });
     return Promise.all(gets).then(function (res) {
@@ -5226,6 +5250,7 @@ function emptyDb(profile, schools) {
     homework: [],
     notices: [],
     holidays: [],
+    timetable: [], // tt: weekly timetable rows {id, cls, day 1-6, period 1-8, subject, teacher} — synced to ss_timetable (SQL 55)
     syncConflicts: [], // v107: unresolved sync conflicts {table, key, localRow, serverRow, at} — school admin resolves them in Settings
     activities: [],
     profile: p,
@@ -5324,6 +5349,22 @@ function migrateV100(d) {
   d.holidays = d.holidays.filter(function (h) {
     if (!h || !h.date || !h.cls) return false;
     var k = h.date + '|' + h.cls;
+    if (seen[k]) return false;
+    seen[k] = true;
+    return true;
+  });
+  return d;
+}
+function migrateTimetable(d) {
+  // tt: timetable list — older DBs predate it. Idempotent: only adds
+  // the list when missing, drops rows without a class/day/period, and
+  // dedupes by cls|day|period (one subject per slot — a double-entry
+  // from two devices collapses to the first row on load).
+  if (!Array.isArray(d.timetable)) d.timetable = [];
+  var seen = {};
+  d.timetable = d.timetable.filter(function (r) {
+    if (!r || !r.cls || !r.day || !r.period) return false;
+    var k = r.cls + '|' + r.day + '|' + r.period;
     if (seen[k]) return false;
     seen[k] = true;
     return true;
@@ -5433,7 +5474,7 @@ function loadDB(override) {
       var raw = vaultDecode(rawStored);
       var d = null;
       try { d = raw ? JSON.parse(raw) : null; } catch (eParse) { d = null; }
-      if (d && d.v === 2) { var m = migrateV119(migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))))))); saveDB(m); return m; }
+      if (d && d.v === 2) { var m = migrateV119(migrateTimetable(migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))))))))))); saveDB(m); return m; }
       if (d) {
         // Parsed but unknown version: keep a backup, never wipe silently.
         pendingBak = rawStored;
@@ -5475,7 +5516,7 @@ function sbLoadBak() {
     if (!raw) return null;
     var d = JSON.parse(raw);
     if (!d || d.v !== 2) return null;
-    var m = migrateV119(migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))))))))));
+    var m = migrateV119(migrateTimetable(migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))))))));
     saveDB(m);
     return m;
   } catch (e) { return null; }
@@ -5602,7 +5643,7 @@ function sbStorageFreePhotos() {
 var db = loadDB();
 
 /* ================= state ================= */
-var state = { role: null, user: null, view: 'dashboard', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, feeEditId: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, actSearch: '', actAction: 'All', actActor: 'All', actFrom: '', actTo: '', actLimit: 50, sb: null, rcCls: '', rcExam: '', rcStudent: '' };
+var state = { role: null, user: null, view: 'dashboard', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, feeEditId: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', ttCls: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, actSearch: '', actAction: 'All', actActor: 'All', actFrom: '', actTo: '', actLimit: 50, sb: null, rcCls: '', rcExam: '', rcStudent: '' };
 // v148 (bug 1): a nav press queued on mousedown — see queueNav below.
 var pendingNav = null;
 // v148 (bug 8): has the admin picked an attendance class yet? The
@@ -5637,7 +5678,6 @@ function sbFirstLoadDone() {
   if (sbFirstLoadTimer) { try { clearTimeout(sbFirstLoadTimer); } catch (e) {} sbFirstLoadTimer = null; }
   try { if (state.view === 'dashboard' && state.role === 'school') renderApp(); } catch (e2) {}
 }
-
 /* Phase 2: bulk import + promotion state (in-memory only, never persisted). */
 var importState = { rows: null, fileName: '', result: null };
 var promoState = null;
@@ -8240,14 +8280,14 @@ function logoutClear() {
 var NAV = {
   school: [
     ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['teachers', '👩‍🏫', 'teachers'], ['staff', '👔', 'staff'], ['classes', '🏫', 'classes'], ['admissions', '📋', 'admissions'], ['attendance', '✅', 'attendance'],
-    ['fees', '💰', 'fees'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'],
+    ['fees', '💰', 'fees'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['timetable', '🗓️', 'timetable'],
     ['notices', '📢', 'notices'], ['reports', '📄', 'reports'], ['activityLog', '📜', 'activityLog'], ['settings', '⚙️', 'settings']
   ],
   student: [
-    ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['fees', '💰', 'fees'], ['results', '📊', 'results'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
+    ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['fees', '💰', 'fees'], ['results', '📊', 'results'], ['homework', '📚', 'homework'], ['timetable', '🗓️', 'timetable'], ['notices', '📢', 'notices']
   ],
   teacher: [
-    ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['attendance', '✅', 'attendance'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
+    ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['attendance', '✅', 'attendance'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['timetable', '🗓️', 'timetable'], ['notices', '📢', 'notices']
   ],
   // v85 (Phase 4): the five new roles. Each starts with dashboard +
   // notices only; their own views land in their step (parent v86,
@@ -8255,7 +8295,7 @@ var NAV = {
   // NAV is the visible menu; PERMS below is the enforcement.
   principal: [
     ['dashboard', '🏠', 'dashboard'], ['students', '🎒', 'students'], ['teachers', '👩‍🏫', 'teachers'], ['attendance', '✅', 'attendance'],
-    ['fees', '💰', 'fees'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices'], ['reports', '📄', 'reports'], ['activityLog', '📜', 'activityLog']
+    ['fees', '💰', 'fees'], ['exams', '📝', 'exams'], ['homework', '📚', 'homework'], ['timetable', '🗓️', 'timetable'], ['notices', '📢', 'notices'], ['reports', '📄', 'reports'], ['activityLog', '📜', 'activityLog']
   ],
   accountant: [
     ['dashboard', '🏠', 'dashboard'], ['fees', '💰', 'fees'], ['reports', '📄', 'reports'], ['notices', '📢', 'notices'] // v92: fees-focused nav — no students, no settings
@@ -8264,7 +8304,7 @@ var NAV = {
     ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices'] // v93: attendance + homework for their own classes only
   ],
   parent: [
-    ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['fees', '💰', 'fees'], ['results', '📊', 'results'], ['homework', '📚', 'homework'], ['notices', '📢', 'notices']
+    ['dashboard', '🏠', 'dashboard'], ['attendance', '✅', 'attendance'], ['fees', '💰', 'fees'], ['results', '📊', 'results'], ['homework', '📚', 'homework'], ['timetable', '🗓️', 'timetable'], ['notices', '📢', 'notices']
   ],
   superadmin: [
     ['dashboard', '🏠', 'dashboard'], ['schools', '🏫', 'schools'], ['notices', '📢', 'notices'] // v94: the schools list is the super admin's first real module
@@ -8276,13 +8316,13 @@ var NAV = {
 // exactly their current views; the five new roles start with dashboard
 // + notices and grow in their own step.
 var PERMS = {
-  school: ['dashboard', 'students', 'teachers', 'staff', 'classes', 'admissions', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog', 'settings'], // v90: the school admin manages staff accounts here
-  teacher: ['dashboard', 'students', 'attendance', 'exams', 'homework', 'notices'],
-  student: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'],
-  principal: ['dashboard', 'students', 'teachers', 'attendance', 'fees', 'exams', 'homework', 'notices', 'reports', 'activityLog'], // v88: the principal oversees the whole school, read-only; v129: the Activity Log is read-only, so the principal may open it too
+  school: ['dashboard', 'students', 'teachers', 'staff', 'classes', 'admissions', 'attendance', 'fees', 'exams', 'homework', 'timetable', 'notices', 'reports', 'activityLog', 'settings'], // v90: the school admin manages staff accounts here
+  teacher: ['dashboard', 'students', 'attendance', 'exams', 'homework', 'timetable', 'notices'],
+  student: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'timetable', 'notices'],
+  principal: ['dashboard', 'students', 'teachers', 'attendance', 'fees', 'exams', 'homework', 'timetable', 'notices', 'reports', 'activityLog'], // v88: the principal oversees the whole school, read-only; v129: the Activity Log is read-only, so the principal may open it too
   accountant: ['dashboard', 'fees', 'reports', 'notices'], // v92: the accountant works fees + reports (receipts ride the fees page)
   staff: ['dashboard', 'attendance', 'homework', 'notices'], // v93: a staff member works attendance + homework for their own classes
-  parent: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'notices'], // v86: the parent portal reuses the student views, view-only
+  parent: ['dashboard', 'attendance', 'fees', 'results', 'homework', 'timetable', 'notices'], // v86: the parent portal reuses the student views, view-only
   superadmin: ['dashboard', 'schools', 'notices'], // v94: the super admin's first UI — the schools list
 };
 function canAccessView(role, view) {
@@ -8298,7 +8338,7 @@ var VIEW_TITLES = {
   classes: ['Classes', 'Class sections & subjects'], // v119 (Phase 5, Module 5): the school admin manages the class list here
   students: ['Student Management', 'St. Xavier School, Patna'], admissions: ['Admission Requests', 'New applications & approvals'], attendance: ['Attendance', 'Mark & view attendance'],
   fees: ['Fees', 'Fee collection & pending dues'], exams: ['Examinations', 'Exams & marks entry'],
-  homework: ['Homework', 'Assign & track homework'], notices: ['Notices', 'Notice board']
+  homework: ['Homework', 'Assign & track homework'], timetable: ['Timetable', 'Weekly class timetable'], notices: ['Notices', 'Notice board']
 };
 /* ================= in-app history (Android back button) =================
    Views are swapped in place, so without history entries the Android back
@@ -11996,6 +12036,150 @@ function deleteHomework(id) {
     toast(t('tHwDeleted'));
   });
 }
+/* ================= Timetable (weekly class timetable) =================
+   One row per class-slot: { id, cls, day 1-6 (Mon-Sat), period 1-8,
+   subject, teacher }. A slot holds at most one subject — the save
+   refuses a double-booking, and migrateTimetable dedupes on load.
+   School admin edits every class; a teacher edits only their own
+   classes; principal / student / parent read only (the student and
+   parent see their own class alone). A cloud teacher has no server
+   route for timetable rows, so they read like a principal — the
+   school admin's edits ride the normal sync (ss_timetable, SQL 55). */
+var TT_DAYS = [1, 2, 3, 4, 5, 6]; // Mon-Sat (Sunday is off)
+var TT_PERIODS = 8; // periods 1-8 in a school day
+var TT_DAY_KEYS = ['dayMon', 'dayTue', 'dayWed', 'dayThu', 'dayFri', 'daySat'];
+function ttDayLabel(day) { return t(TT_DAY_KEYS[(day || 1) - 1] || 'dayMon'); }
+function timetableForClass(cls) {
+  return (db.timetable || []).filter(function (r) { return r.cls === cls; });
+}
+function timetableSlotTaken(cls, day, period, excludeId) {
+  return (db.timetable || []).some(function (r) { return r.cls === cls && r.day === day && r.period === period && r.id !== excludeId; });
+}
+function timetableGrid(cls) {
+  // grid[day][period] = entry, for the weekly table. Days 1-6,
+  // periods 1-8; a slot holds at most one entry (enforced on save
+  // and by migrateTimetable on load).
+  var grid = {};
+  TT_DAYS.forEach(function (d) { grid[d] = {}; });
+  timetableForClass(cls).forEach(function (r) {
+    if (grid[r.day]) grid[r.day][r.period] = r;
+  });
+  return grid;
+}
+function timetablePage() {
+  var isStudent = state.role === 'student';
+  var isParent = state.role === 'parent';
+  var isTeacher = state.role === 'teacher';
+  var isPrincipal = state.role === 'principal';
+  var me = meStudent();
+  // A student/parent sees only their own class; a teacher only
+  // their assigned classes; the school + principal see every class.
+  var myCls = me ? me.cls : null;
+  var clsList = (isStudent || isParent)
+    ? (myCls ? [myCls] : [])
+    : (isTeacher ? roleClasses() : schoolClasses());
+  var cls = state.ttCls && clsList.indexOf(state.ttCls) !== -1 ? state.ttCls : (clsList[0] || '');
+  if (!cls) return '<div class="page-head"><div><h2>' + t('timetable') + '</h2><p>' + t('subTimetable') + '</p></div></div><div class="card"><div class="empty">' + t('tNoClasses') + '</div></div>';
+  // A cloud teacher has no server route for timetable rows, so they
+  // read the grid like a principal (the school admin's edits ride
+  // the normal sync).
+  var canEdit = !isStudent && !isParent && !isPrincipal && !state.cloudTeacherToken && !state.cloudStaffToken;
+  var grid = timetableGrid(cls);
+  var head = '<tr><th>' + t('fPeriod') + '</th>' + TT_DAYS.map(function (d) { return '<th>' + esc(ttDayLabel(d)) + '</th>'; }).join('') + '</tr>';
+  var rows = '';
+  for (var p = 1; p <= TT_PERIODS; p++) {
+    var cells = '';
+    TT_DAYS.forEach(function (d) {
+      var e = grid[d][p];
+      if (e) {
+        cells += '<td><b>' + esc(e.subject) + '</b>' + (e.teacher ? '<br><span class="muted">' + esc(e.teacher) + '</span>' : '') +
+          (canEdit ? '<br><button class="btn ghost sm" onclick="editTimetable(\'' + e.id + '\')">✎</button> <button class="btn ghost sm" onclick="deleteTimetable(\'' + e.id + '\')">🗑</button>' : '') + '</td>';
+      } else {
+        cells += '<td>' + (canEdit ? '<button class="btn ghost sm" onclick="timetableForm(null, \'' + esc(cls) + '\', ' + d + ', ' + p + ')">+</button>' : '—') + '</td>';
+      }
+    });
+    rows += '<tr><td><b>' + p + '</b></td>' + cells + '</tr>';
+  }
+  var clsSel = (isStudent || isParent || clsList.length <= 1) ? '' :
+    '<select onchange="state.ttCls=this.value;renderPage()">' + clsList.map(function (c) { return '<option' + (c === cls ? ' selected' : '') + '>' + c + '</option>'; }).join('') + '</select>';
+  var hasRows = timetableForClass(cls).length > 0;
+  return '<div class="page-head"><div><h2>' + t('timetable') + '</h2><p>' + t('subTimetable') + ' — Class ' + esc(cls) + '</p></div>' +
+    '<div class="toolbar">' + clsSel + (canEdit ? '<button class="btn" onclick="timetableForm()">+ ' + t('addTimetable') + '</button>' : '') + '</div></div>' +
+    '<div class="card"><div class="tbl-wrap"><table>' + head + rows + '</table></div>' +
+    (hasRows ? '' : '<div class="empty">' + t('tNoTt') + '</div>') + '</div>';
+}
+function timetableForm(editId, preCls, preDay, prePeriod) {
+  // Add/edit one period. The class is locked in edit mode (the slot
+  // belongs to that class); a "+" cell pre-fills its day/period.
+  var row = editId ? (db.timetable || []).find(function (x) { return x.id === editId; }) : null;
+  var clsList = row ? [row.cls] : ((state.role === 'teacher') ? roleClasses() : schoolClasses());
+  var cls = row ? row.cls : (preCls || state.ttCls || clsList[0] || '');
+  var clsOpts = clsList.map(function (c) { return '<option' + (c === cls ? ' selected' : '') + '>' + c + '</option>'; }).join('');
+  var day = row ? row.day : (preDay || 1);
+  var dayOpts = TT_DAYS.map(function (d) { return '<option value="' + d + '"' + (d === day ? ' selected' : '') + '>' + esc(ttDayLabel(d)) + '</option>'; }).join('');
+  var period = row ? row.period : (prePeriod || 1);
+  var perOpts = [];
+  for (var p = 1; p <= TT_PERIODS; p++) perOpts.push('<option value="' + p + '"' + (p === period ? ' selected' : '') + '>' + p + '</option>');
+  var subOpts = schoolSubjectList().map(function (x) { return '<option' + (row && row.subject === x ? ' selected' : '') + '>' + x + '</option>'; }).join('');
+  var teachers = (db.teachers || []).filter(function (x) { return !x.deleted; });
+  var tOpts = '<option value="">—</option>' + teachers.map(function (x) { return '<option' + (row && row.teacher === x.name ? ' selected' : '') + '>' + esc(x.name) + '</option>'; }).join('');
+  openModal('<h3>' + (row ? t('editTimetable') : t('addTimetable')) + '</h3><form onsubmit="return saveTimetable(event' + (row ? ', \'' + row.id + '\'' : '') + ')"><div class="form-grid">' +
+    '<div><label>' + t('fClass') + '</label><select id="fTtCls"' + (row ? ' disabled' : '') + '>' + clsOpts + '</select></div>' +
+    '<div><label>' + t('fDay') + '</label><select id="fTtDay">' + dayOpts + '</select></div>' +
+    '<div><label>' + t('fPeriod') + '</label><select id="fTtPeriod">' + perOpts.join('') + '</select></div>' +
+    '<div><label>' + t('fSubject') + '</label><select id="fTtSub">' + subOpts + '</select></div>' +
+    '<div><label>' + t('fTeacher') + '</label><select id="fTtTeacher">' + tOpts + '</select></div>' +
+    '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + (row ? t('saveBtn') : t('addTimetable')) + '</button></div></form>');
+}
+function saveTimetable(e, editId) {
+  e.preventDefault();
+  if (state.role === 'principal' || state.role === 'student' || state.role === 'parent') { toast(t('tNotAllowed')); return false; }
+  if (state.cloudTeacherToken || state.cloudStaffToken) { toast(t('tTtCloudReadOnly')); return false; }
+  var row = editId ? (db.timetable || []).find(function (x) { return x.id === editId; }) : null;
+  var cls = row ? row.cls : $('fTtCls').value;
+  if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(cls) === -1) { toast(t('tNotAllowed')); return false; }
+  var day = parseInt($('fTtDay').value, 10);
+  var period = parseInt($('fTtPeriod').value, 10);
+  if (TT_DAYS.indexOf(day) === -1 || period < 1 || period > TT_PERIODS) { toast(t('tNotSaved')); return false; }
+  if (timetableSlotTaken(cls, day, period, editId || null)) { toast(t('tTtSlotTaken')); return false; }
+  var subject = $('fTtSub').value;
+  var teacher = $('fTtTeacher').value;
+  if (row) {
+    row.day = day; row.period = period; row.subject = subject; row.teacher = teacher;
+    logAudit('Timetable updated', subject + ' • Class ' + cls + ' • ' + ttDayLabel(day) + ' • Period ' + period);
+    saveDB(db); closeModal(); renderApp();
+    toast(t('tTtUpdated'));
+    return false;
+  }
+  if (!Array.isArray(db.timetable)) db.timetable = []; // a seed/old DB gains the list here if loadDB never migrated it
+  db.timetable.unshift({ id: uniqueId('tt'), cls: cls, day: day, period: period, subject: subject, teacher: teacher });
+  logAudit('Timetable added', subject + ' • Class ' + cls + ' • ' + ttDayLabel(day) + ' • Period ' + period);
+  addActivity('🗓️', 'blue', 'Timetable added', subject + ' • Class ' + cls);
+  saveDB(db); closeModal(); renderApp();
+  toast(t('tTtSaved'));
+  return false;
+}
+function editTimetable(id) {
+  var row = (db.timetable || []).find(function (x) { return x.id === id; });
+  if (!row) return;
+  if (state.role === 'principal' || state.role === 'student' || state.role === 'parent') { toast(t('tNotAllowed')); return; }
+  if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(row.cls) === -1) { toast(t('tNotAllowed')); return; }
+  if (state.cloudTeacherToken || state.cloudStaffToken) { toast(t('tTtCloudReadOnly')); return; }
+  timetableForm(id);
+}
+function deleteTimetable(id) {
+  var row = (db.timetable || []).find(function (x) { return x.id === id; });
+  if (!row) return;
+  if (state.role === 'principal' || state.role === 'student' || state.role === 'parent') { toast(t('tNotAllowed')); return; }
+  if ((state.role === 'teacher' || state.role === 'staff') && roleClasses().indexOf(row.cls) === -1) { toast(t('tNotAllowed')); return; }
+  if (state.cloudTeacherToken || state.cloudStaffToken) { toast(t('tTtCloudReadOnly')); return; }
+  confirmModal(t('delTtMsg') + ' — ' + row.subject + ' • Class ' + row.cls + ' • ' + ttDayLabel(row.day) + ' • Period ' + row.period + '?', function () {
+    db.timetable = db.timetable.filter(function (x) { return x.id !== id; });
+    logAudit('Timetable deleted', row.subject + ' • Class ' + row.cls + ' • ' + ttDayLabel(row.day) + ' • Period ' + row.period);
+    saveDB(db); renderApp();
+    toast(t('tTtDeleted'));
+  });
+}
 function noticesPage() {
   // v126: the school can fix or remove a notice — every other role sees
   // the plain list (teachers view notices only, v35).
@@ -12249,7 +12433,7 @@ function restoreFullBackup(obj) {
   var d = JSON.parse(JSON.stringify(obj.db));
   // Run the same migrations loadDB runs, so a backup from an older
   // build still lands in the current shape (a v37 backup is a no-op).
-  d = migrateV119(migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))))))))));
+  d = migrateV119(migrateTimetable(migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))))))));
   var counts = { students: d.students.length, teachers: d.teachers.length, feeRecords: d.feeRecords.length, exams: d.exams.length, marks: d.marks.length, homework: d.homework.length, notices: d.notices.length, receipts: d.receipts.length };
   db = d;
   // Server-linked schools: drop the stale outbox + snapshot so the next
@@ -12671,6 +12855,8 @@ function classInUse(cls) {
   if (att) return t('attendance');
   var hol = (db.holidays || []).filter(function (x) { return x.cls === cls; })[0];
   if (hol) return 'Holiday';
+  var tt = (db.timetable || []).filter(function (x) { return x.cls === cls; })[0];
+  if (tt) return t('timetable') + ': ' + (tt.subject || '');
   return null;
 }
 function deleteClass(cls) {
@@ -12688,7 +12874,7 @@ function deleteClass(cls) {
   });
 }
 
-PAGE_SCHOOL.exams = examsPage; PAGE_SCHOOL.homework = homeworkPage; PAGE_SCHOOL.notices = noticesPage;
+PAGE_SCHOOL.exams = examsPage; PAGE_SCHOOL.homework = homeworkPage; PAGE_SCHOOL.timetable = timetablePage; PAGE_SCHOOL.notices = noticesPage;
 PAGE_SCHOOL.teachers = teachersPage; PAGE_SCHOOL.staff = staffPage; PAGE_SCHOOL.classes = classesPage; PAGE_SCHOOL.reports = function () { return reportsPage(); }; PAGE_SCHOOL.settings = settingsPage; PAGE_SCHOOL.admissions = admissionRequestsPage; PAGE_SCHOOL.activityLog = activityLogPage;
 
 /* ================= STUDENT view ================= */
@@ -12771,8 +12957,8 @@ function studentResultsPage() {
   if (!me) return '<div class="phone"><div class="card"><div class="empty">' + t('tNoStudentData') + '</div></div></div>';
   return '<div class="page-head"><div><h2>' + t('results') + '</h2><p>' + t('myResultsSub') + '</p></div></div>' + profileTabBody(me, 'results');
 }
-var PAGE_STUDENT = { dashboard: studentDashboard, attendance: studentAttendancePage, fees: studentFeesPage, results: studentResultsPage, homework: homeworkPage, notices: noticesPage };
-var PAGE_TEACHER = { dashboard: teacherDashboard, students: studentsPage, attendance: attendancePage, exams: examsPage, homework: homeworkPage, notices: noticesPage };
+var PAGE_STUDENT = { dashboard: studentDashboard, attendance: studentAttendancePage, fees: studentFeesPage, results: studentResultsPage, homework: homeworkPage, timetable: timetablePage, notices: noticesPage };
+var PAGE_TEACHER = { dashboard: teacherDashboard, students: studentsPage, attendance: attendancePage, exams: examsPage, homework: homeworkPage, timetable: timetablePage, notices: noticesPage };
 // v85 (Phase 4): the five new roles start with dashboard + notices.
 // Their own pages land in their step (parent v86, principal v87,
 // accountant v88, staff v89, superadmin v90).
@@ -12781,7 +12967,7 @@ var PAGE_TEACHER = { dashboard: teacherDashboard, students: studentsPage, attend
 // their edit controls hidden for a principal (see the isPrincipal
 // gating in each page). Notices and reports are read-only by
 // construction (canPost is school-only; reports only download).
-var PAGE_PRINCIPAL = { dashboard: principalDashboard, students: studentsPage, teachers: teachersPage, attendance: attendancePage, fees: feesPage, exams: examsPage, homework: homeworkPage, notices: noticesPage, reports: reportsPage, activityLog: activityLogPage }; // v129: the principal may open the read-only Activity Log
+var PAGE_PRINCIPAL = { dashboard: principalDashboard, students: studentsPage, teachers: teachersPage, attendance: attendancePage, fees: feesPage, exams: examsPage, homework: homeworkPage, timetable: timetablePage, notices: noticesPage, reports: reportsPage, activityLog: activityLogPage }; // v129: the principal may open the read-only Activity Log
 var PAGE_ACCOUNTANT = { dashboard: roleDashboard, fees: feesPage, reports: reportsPage, notices: noticesPage }; // v92: the accountant opens the fees + reports pages (the principal's read-only fees stay untouched)
 var PAGE_STAFF = { dashboard: roleDashboard, attendance: attendancePage, homework: homeworkPage, notices: noticesPage }; // v93: a staff member opens attendance + homework (scoped to their classes) + notices
 // v86 (Phase 4): the Parent role reuses the student portal's read-only
@@ -12789,7 +12975,7 @@ var PAGE_STAFF = { dashboard: roleDashboard, attendance: attendancePage, homewor
 // covers the parent role). Homework is scoped to the child's class and
 // has no Add button for a parent; toggleHwDone already refuses
 // non-students.
-var PAGE_PARENT = { dashboard: studentDashboard, attendance: studentAttendancePage, fees: studentFeesPage, results: studentResultsPage, homework: homeworkPage, notices: noticesPage };
+var PAGE_PARENT = { dashboard: studentDashboard, attendance: studentAttendancePage, fees: studentFeesPage, results: studentResultsPage, homework: homeworkPage, timetable: timetablePage, notices: noticesPage };
 var PAGE_SUPERADMIN = { dashboard: roleDashboard, schools: schoolsPage, notices: noticesPage }; // v94: the super admin opens the schools list (read-only in this step)
 
 /* ================= init ================= */

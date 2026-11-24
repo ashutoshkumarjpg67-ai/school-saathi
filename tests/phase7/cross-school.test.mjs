@@ -67,9 +67,9 @@ function policyTables() {
 }
 
 describe('RLS shape (static, from repo SQL files)', () => {
-  it('RLS is enabled on every table (27 tables, files 01-42)', () => {
+  it('RLS is enabled on every table (29 tables, files 01-55)', () => {
     const tables = allTables();
-    assert.equal(tables.length, 28, `expected 28 ss_ tables, got ${tables.length}: ${tables.join(', ')}`); // v141: + ss_parent_sessions (SQL 52)
+    assert.equal(tables.length, 29, `expected 29 ss_ tables, got ${tables.length}: ${tables.join(', ')}`); // v141: + ss_parent_sessions (SQL 52); tt: + ss_timetable (SQL 55)
     const enabled = [...new Set([...sqlCode.matchAll(/alter table public\.(ss_[a-z_0-9]+)\s+enable row level security/gi)].map((m) => m[1]))].sort();
     for (const t of tables) assert.ok(enabled.includes(t), `${t}: RLS not enabled`);
   });
