@@ -45,6 +45,13 @@ label{font-size:14px;font-weight:600;color:var(--text-2);display:block;margin-bo
 .btn.ghost:hover{background:var(--blue-soft)}
 .btn.sm{min-height:44px;padding:10px 14px;font-size:13.5px}
 .btn.danger{background:var(--red);box-shadow:0 2px 8px rgba(var(--red-rgb),.28)}
+/* Live issue 6 (24 Nov 2026): delete buttons use "btn ghost sm danger".
+   .btn.ghost (white bg, blue text) and .btn.danger (red bg) tie on
+   specificity, so the later .danger rule won the background while the
+   text stayed blue — blue-on-red, unreadable. Ghost-danger gets its own
+   rule: white bg, red text, red border. */
+.btn.ghost.danger{background:#fff;color:var(--red);border-color:var(--red)}
+.btn.ghost.danger:hover{background:var(--red-soft)}
 .btn.green{background:var(--green);box-shadow:0 2px 8px rgba(var(--green-rgb),.28)}
 .btn:disabled{opacity:.55;cursor:not-allowed;transform:none}
 
@@ -418,7 +425,7 @@ tbody tr:hover{background:var(--bg-soft)}
 /* ---- Phase 5: Fee collection receipt (v13) ---- */
 .rcpt{border:1px solid var(--muted-2);background:#fff;max-width:720px;margin:0 auto;color:#000;font-size:var(--text-sm)}
 .rcpt-head{display:flex;gap:var(--space-md);align-items:center;padding:12px 14px}
-.rcpt-logo{width:64px;height:64px;object-fit:contain;flex:none}
+.rcpt-logo{width:64px;height:64px;object-fit:contain;flex:none;background:#fff;border:1px solid var(--border);border-radius:var(--radius-md)}
 .rcpt-logo-cap{font-size:44px;line-height:1;flex:none}
 .rcpt-school{font-size:22px;font-weight:800;color:#000}
 .rcpt-addr{font-size:13px;color:var(--text-2)}
