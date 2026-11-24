@@ -8007,7 +8007,7 @@ async function v28run() {
   ctx.document.getElementById('fSupMsg').value = 'Fees page is slow';
   ctx.submitSupportRequest({ preventDefault: function () {} });
   await tick(); await tick(); await tick(); await tick();
-  var sup30 = JSON.parse(vaultDecode(ls.getItem('schoolSaathiSupportRequests')));
+  var sup30 = JSON.parse(ctx.vaultDecode(ls.getItem('schoolSaathiSupportRequests')));
   v28eq(sup30.length, 1, 'v30: support request still saves locally when a session exists');
   v28ok(!!sup30[0].id, 'v30: local support request gets a local id');
   v28eq(sbServer.ss_support_requests.length, 1, 'v30: support request posts to ss_support_requests');
@@ -8026,7 +8026,7 @@ async function v28run() {
   ctx.document.getElementById('fSupMsg').value = 'Offline request';
   ctx.submitSupportRequest({ preventDefault: function () {} });
   await tick(); await tick();
-  var sup30b = JSON.parse(vaultDecode(ls.getItem('schoolSaathiSupportRequests')));
+  var sup30b = JSON.parse(ctx.vaultDecode(ls.getItem('schoolSaathiSupportRequests')));
   v28eq(sup30b.length, 1, 'v30: support request still saves locally with no session');
   v28ok(!sbCalls.some(function (c) { return c.url.indexOf('ss_support_requests') !== -1; }), 'v30: no server post without a session');
 
