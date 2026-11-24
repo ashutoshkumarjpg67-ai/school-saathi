@@ -14,12 +14,12 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=146">
-<script src="qrgen.js?v=146" defer></script>
-<script src="js/bcrypt.js?v=146" defer></script>
-<script src="js/modules/crypto.js?v=146" defer></script>
-<script src="js/modules/i18n.js?v=146" defer></script>
-<script src="app.js?v=146" defer></script>
+<link rel="stylesheet" href="styles.css?v=147">
+<script src="qrgen.js?v=147" defer></script>
+<script src="js/bcrypt.js?v=147" defer></script>
+<script src="js/modules/crypto.js?v=147" defer></script>
+<script src="js/modules/i18n.js?v=147" defer></script>
+<script src="app.js?v=147" defer></script>
 </head>
 <body>
 
@@ -32,10 +32,6 @@
       <p class="tagline">Smart Education. Better Tomorrow.</p>
     </div>
     <div class="login-card">
-      <div class="lang-toggle" role="group" aria-label="Language" style="justify-content:flex-end;margin-bottom:6px">
-        <button type="button" id="loginLangEn" class="on" onclick="setLang('en')">EN</button>
-        <button type="button" id="loginLangHi" onclick="setLang('hi')">हिंदी</button>
-      </div>
       <div class="welcome"><b id="welcomeTitle" data-i18n="loginWelcomeBack">Welcome back</b><span id="welcomeSub" data-i18n-html="loginWelcome">Log in or sign up<br>to continue</span></div>
       <div class="auth-tabs">
         <button type="button" id="tabLogin" class="auth-tab on" onclick="switchAuth('login')" data-i18n="authLogin">Log In</button>
@@ -48,10 +44,10 @@
       <form id="loginForm" onsubmit="return doLogin(event)">
         <div class="field"><label data-i18n="loginEmail">Email</label><input id="loginId" type="email" placeholder="you@school.edu.in" data-i18n-ph="loginEmailPh" autocomplete="username"></div>
         <div class="field"><label data-i18n="loginPassword">Password</label><div class="pw-wrap"><input id="loginPw" type="password" placeholder="••••••••" data-i18n-ph="loginPwPh" autocomplete="current-password"><button type="button" class="eye-btn" onclick="togglePw('loginPw',this)" aria-label="Show password">👁</button></div></div>
-        <button class="btn" type="submit" style="width:100%" data-i18n="loginBtn">Log In</button>
+        <button class="btn w-full" type="submit" data-i18n="loginBtn">Log In</button>
       </form>
-      <p class="shared-device-note" style="text-align:center;margin-top:10px;font-size:12px;color:var(--muted)" data-i18n="sharedDeviceNote">Shared device? Your school data stays on this device until you remove it — Settings → Remove school data from this device.</p>
-      <p id="forgotRow" style="text-align:center;margin-top:10px;font-size:13px"><a href="#" onclick="showRecoverForm();return false" data-i18n="sbForgotPw">Forgot password?</a></p>
+      <p class="shared-device-note center-note mt-10" data-i18n="sharedDeviceNote">Shared device? Your school data stays on this device until you remove it — Settings → Remove school data from this device.</p>
+      <p id="forgotRow" class="center-note mt-10"><a href="#" onclick="showRecoverForm();return false" data-i18n="sbForgotPw">Forgot password?</a></p>
       <p class="signup-cta"><span data-i18n="loginNewSchool">New school?</span> <a href="#" onclick="switchAuth('signup');return false" data-i18n="loginCreateAccount">Create a school account →</a></p>
       <div class="feat-divider"><span data-i18n="featTitle">WHAT YOU GET</span></div>
       <div class="chips">
@@ -64,13 +60,13 @@
       <div id="recoverErr" class="err hidden"></div>
       <form id="recoverForm" class="hidden" onsubmit="return doRecover(event)">
         <div class="field"><label data-i18n="loginEmail">Email</label><input id="recoverEmail" type="email" placeholder="you@school.edu.in" autocomplete="email"></div>
-        <button class="btn" type="submit" style="width:100%" data-i18n="sbSendResetLink">Send Reset Link</button>
+        <button class="btn w-full" type="submit" data-i18n="sbSendResetLink">Send Reset Link</button>
       </form>
       <div id="resetErr" class="err hidden"></div>
       <form id="resetForm" class="hidden" onsubmit="return doResetPassword(event)">
         <div class="field"><label data-i18n="loginPassword">Password</label><input id="resetPw" type="password" placeholder="••••••••" autocomplete="new-password"></div>
         <div class="field"><label data-i18n="suPw2">Confirm Password</label><input id="resetPw2" type="password" placeholder="Repeat password" autocomplete="new-password"></div>
-        <button class="btn" type="submit" style="width:100%" data-i18n="sbResetPw">Set New Password</button>
+        <button class="btn w-full" type="submit" data-i18n="sbResetPw">Set New Password</button>
       </form>
       <div id="signupErr" class="err hidden"></div>
       <form id="signupForm" class="hidden" onsubmit="return doSignup(event)">
@@ -79,50 +75,50 @@
         <div class="field"><label data-i18n="suEmail">Email</label><input id="suEmail" type="email" placeholder="you@school.edu.in" autocomplete="email"></div>
         <div class="field"><label data-i18n="suPw">Password</label><input id="suPw" type="password" placeholder="At least 6 characters" autocomplete="new-password"></div>
         <div class="field"><label data-i18n="suPw2">Confirm Password</label><input id="suPw2" type="password" placeholder="Repeat password" autocomplete="new-password"></div>
-        <button class="btn" type="submit" style="width:100%" data-i18n="suBtn">Create Account</button>
+        <button class="btn w-full" type="submit" data-i18n="suBtn">Create Account</button>
       </form>
       <div id="studentErr" class="err hidden"></div>
       <form id="studentForm" class="hidden" onsubmit="return doStudentLogin(event)">
         <div class="field"><label data-i18n="admReqSchool">School</label><select id="studentSchool" onchange="onStudentSchoolChange()"></select></div>
-        <p id="studentCloudHint" class="hidden" style="text-align:center;font-size:12.5px;color:var(--muted)" data-i18n="stuCloudHint">Cloud login — this school is not on this device. Your admission number and PIN are checked on the server.</p>
+        <p id="studentCloudHint" class="hidden center-note" data-i18n="stuCloudHint">Cloud login — this school is not on this device. Your admission number and PIN are checked on the server.</p>
         <div class="field"><label data-i18n="stuAdmNo">Admission Number</label><input id="studentAdmNo" type="text" placeholder="e.g. ADM-2025-001" autocomplete="off"></div>
         <div class="field"><label data-i18n="stuPinLabel">Student PIN</label><input id="studentPin" type="password" inputmode="numeric" maxlength="6" placeholder="4–6 digits" autocomplete="off"></div>
-        <button class="btn" type="submit" style="width:100%" data-i18n="stuLoginBtn">Login as Student</button>
-        <p style="text-align:center;margin-top:10px;font-size:12.5px;color:var(--muted)" data-i18n="stuNote">Student login uses the PIN set by the school. Ask your school if you do not know it.</p>
+        <button class="btn w-full" type="submit" data-i18n="stuLoginBtn">Login as Student</button>
+        <p class="center-note mt-10" data-i18n="stuNote">Student login uses the PIN set by the school. Ask your school if you do not know it.</p>
       </form>
       <div id="parentErr" class="err hidden"></div>
       <form id="parentForm" class="hidden" onsubmit="return doParentLogin(event)">
         <div class="field"><label data-i18n="admReqSchool">School</label><select id="parentSchool" onchange="onParentSchoolChange()"></select></div>
-        <p id="parentCloudHint" class="hidden" style="text-align:center;font-size:12.5px;color:var(--muted)" data-i18n="parentCloudHint">Cloud login — this school is not on this device. Your admission number and PIN are checked on the server.</p>
+        <p id="parentCloudHint" class="hidden center-note" data-i18n="parentCloudHint">Cloud login — this school is not on this device. Your admission number and PIN are checked on the server.</p>
         <div id="parentLoginFields">
         <div class="field"><label data-i18n="stuAdmNo">Admission Number</label><input id="parentAdmNo" type="text" placeholder="e.g. ADM-2025-001" autocomplete="off"></div>
         <div class="field"><label data-i18n="stuPinLabel">Student PIN</label><input id="parentPin" type="password" inputmode="numeric" maxlength="6" placeholder="4–6 digits" autocomplete="off"></div>
-        <button class="btn" type="submit" style="width:100%" data-i18n="parentLoginBtn">Login as Parent</button>
-        <p style="text-align:center;margin-top:10px;font-size:12.5px;color:var(--muted)" data-i18n="parentForgotPinNote">Forgot your PIN? Ask your school — the school will give you a new PIN.</p>
-        <p style="text-align:center;margin-top:10px;font-size:12.5px;color:var(--muted)" data-i18n="parentNote">Parent login uses the PIN set by the school. Log in with your child’s admission number and PIN — attendance, fees and results are all here.</p>
+        <button class="btn w-full" type="submit" data-i18n="parentLoginBtn">Login as Parent</button>
+        <p class="center-note mt-10" data-i18n="parentForgotPinNote">Forgot your PIN? Ask your school — the school will give you a new PIN.</p>
+        <p class="center-note mt-10" data-i18n="parentNote">Parent login uses the PIN set by the school. Log in with your child’s admission number and PIN — attendance, fees and results are all here.</p>
         </div>
       </form>
       <div id="teacherErr" class="err hidden"></div>
       <form id="teacherForm" class="hidden" onsubmit="return doTeacherLogin(event)">
         <div class="field"><label data-i18n="admReqSchool">School</label><select id="teacherSchool" onchange="onTeacherSchoolChange()"></select></div>
-        <p id="teacherCloudHint" class="hidden" style="text-align:center;font-size:12.5px;color:var(--muted)" data-i18n="tchrCloudHint">Cloud login — this school is not on this device. Your email and password are checked on the server.</p>
+        <p id="teacherCloudHint" class="hidden center-note" data-i18n="tchrCloudHint">Cloud login — this school is not on this device. Your email and password are checked on the server.</p>
         <div class="field"><label data-i18n="loginEmail">Email</label><input id="teacherEmail" type="email" placeholder="you@school.edu.in" autocomplete="username"></div>
         <div class="field"><label data-i18n="loginPassword">Password</label><input id="teacherPw" type="password" placeholder="••••••••" autocomplete="current-password"></div>
-        <button class="btn" type="submit" style="width:100%" data-i18n="tchrLoginBtn">Login as Teacher</button>
-        <p style="text-align:center;margin-top:10px;font-size:12.5px;color:var(--muted)" data-i18n="tchrNote">Teacher accounts are created by the school admin.</p>
+        <button class="btn w-full" type="submit" data-i18n="tchrLoginBtn">Login as Teacher</button>
+        <p class="center-note mt-10" data-i18n="tchrNote">Teacher accounts are created by the school admin.</p>
       </form>
       <div id="staffErr" class="err hidden"></div>
       <form id="staffForm" class="hidden" onsubmit="return doStaffLogin(event)">
         <div class="field"><label data-i18n="admReqSchool">School</label><select id="staffSchool" onchange="onStaffSchoolChange()"></select></div>
-        <p id="staffCloudHint" class="hidden" style="text-align:center;font-size:12.5px;color:var(--muted)" data-i18n="staffCloudHint">Cloud login — this school is not on this device. Your email and password are checked on the server.</p>
+        <p id="staffCloudHint" class="hidden center-note" data-i18n="staffCloudHint">Cloud login — this school is not on this device. Your email and password are checked on the server.</p>
         <div class="field"><label data-i18n="loginEmail">Email</label><input id="staffEmail" type="email" placeholder="you@school.edu.in" autocomplete="username"></div>
         <div class="field"><label data-i18n="loginPassword">Password</label><input id="staffPw" type="password" placeholder="••••••••" autocomplete="current-password"></div>
-        <button class="btn" type="submit" style="width:100%" data-i18n="staffLoginBtn">Login as Staff</button>
-        <p style="text-align:center;margin-top:10px;font-size:12.5px;color:var(--muted)" data-i18n="staffNote">Staff accounts (Principal, Accountant, Staff) are created by the school admin.</p>
+        <button class="btn w-full" type="submit" data-i18n="staffLoginBtn">Login as Staff</button>
+        <p class="center-note mt-10" data-i18n="staffNote">Staff accounts (Principal, Accountant, Staff) are created by the school admin.</p>
       </form>
-      <p style="text-align:center;margin-top:16px;font-size:12.5px;color:var(--muted)" data-i18n="authNote">One account per school. Your data stays on this device and backs up to the server when you are online.</p>
-      <p id="sbStatus" style="text-align:center;margin-top:8px;font-size:12.5px;color:var(--muted)"></p>
-      <p style="text-align:center;margin-top:8px;font-size:13px"><a href="#" onclick="openAdmissionApply();return false" data-i18n="admReqApply">Apply for Admission</a></p>
+      <p class="center-note mt-16" data-i18n="authNote">One account per school. Your data stays on this device and backs up to the server when you are online.</p>
+      <p id="sbStatus" class="center-note mt-8"></p>
+      <p class="center-note mt-8"><a href="#" onclick="openAdmissionApply();return false" data-i18n="admReqApply">Apply for Admission</a></p>
     </div>
   </div>
 </div>
@@ -136,9 +132,9 @@
       <nav class="side-nav" id="sideNav"></nav>
       <div class="side-foot">
         <div id="sideSchoolInfo"></div>
-        <label style="color:#94A3B8;margin-top:10px">Academic Session</label>
+        <label class="lbl-dim mt-10">Academic Session</label>
         <select id="sessionSel" onchange="changeSession(this.value)"></select>
-        <div style="margin-top:12px">v146<br>© 2026 School Saathi</div>
+        <div class="mt-12">v147<br>© 2026 School Saathi</div>
       </div>
     </aside>
     <div class="main">
@@ -146,11 +142,6 @@
         <button class="hamburger" onclick="toggleSidebar(true)" aria-label="Menu">☰</button>
         <div class="top-titles"><h1 id="topTitle">Dashboard</h1><div class="crumb" id="topCrumb"></div></div>
         <div class="spacer"></div>
-        <div class="lang-toggle" role="group" aria-label="Language">
-          <button id="langEn" class="on" onclick="setLang('en')">EN</button>
-          <button id="langHi" onclick="setLang('hi')">हिंदी</button>
-        </div>
-        <button type="button" id="langOne" class="lang-one" onclick="toggleLang()" aria-label="Switch language">EN</button>
         <div class="who">
           <span class="avatar" id="whoAvatar">S</span>
           <span><b id="whoName">—</b><span id="whoRole">—</span></span>
@@ -158,6 +149,7 @@
         <button class="btn ghost sm" onclick="logout()" data-i18n="logout">Logout</button>
       </header>
       <main class="page" id="page"></main>
+      <nav class="bottom-nav" id="bottomNav" aria-label="Main navigation"></nav>
     </div>
   </div>
 </div>

@@ -53,9 +53,10 @@ describe('public Apply picker requires a deliberate school choice', () => {
     assert.equal(m[1], 'tAdmReqPickSchool');
   });
 
-  it('both languages carry the new strings', () => {
+  it('English carries the new strings (v147: Hindi table removed)', () => {
     const I18N = readFileSync(join(ROOT, 'js', 'modules', 'i18n.js'), 'utf8');
-    assert.equal(I18N.match(/admReqPickSchool:/g).length, 2, 'admReqPickSchool missing in a language');
-    assert.equal(I18N.match(/tAdmReqPickSchool:/g).length, 2, 'tAdmReqPickSchool missing in a language');
+    assert.equal(I18N.match(/admReqPickSchool:/g).length, 1, 'admReqPickSchool missing in English');
+    assert.equal(I18N.match(/tAdmReqPickSchool:/g).length, 1, 'tAdmReqPickSchool missing in English');
+    assert.ok(!I18N.includes('  hi: {'), 'Hindi table still present in i18n.js');
   });
 });

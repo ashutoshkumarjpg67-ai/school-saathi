@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 146;
+var APP_VERSION = 147;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -763,7 +763,7 @@ function sbSyncDetailsHtml() {
   var uid = (typeof state !== 'undefined' && state && state.sb && state.sb.uid) || null;
   var out = uid ? sbOutboxLoad(uid) : [];
   var lc = d.lastCycle || null, lf = d.lastFlush || null;
-  var h = '<div class="muted" style="margin-top:8px">' + esc(t('sbSyncDetailsTitle')) + '</div>';
+  var h = '<div class="muted mt-8">' + esc(t('sbSyncDetailsTitle')) + '</div>';
   h += '<div style="font-size:13px;line-height:1.7;margin-top:4px">';
   h += '<div>' + esc(t('sbSyncPendingUploads')) + ': <b>' + out.length + '</b></div>';
   if (lc) {
@@ -776,7 +776,7 @@ function sbSyncDetailsHtml() {
     h += '<div>' + esc(t('sbSyncLastFlush')) + ': ' + esc(t('sbSyncPushed')) + ' ' + esc(String(lf.pushed || 0)) + ' · ' + esc(t('sbSyncConflicts')) + ' ' + esc(String(lf.conflicts || 0)) + ' · ' + esc(t('sbSyncLeftover')) + ' ' + esc(String(lf.leftover || 0)) + ' · ' + esc(lf.ms == null ? '' : (lf.ms / 1000).toFixed(1) + 's') + (lf.calls != null ? ' · ' + esc(String(lf.calls)) + ' ' + esc(t('sbSyncCalls')) : '') + '</div>';
   }
   if (out.length) {
-    h += '<div style="margin-top:4px">' + esc(t('sbSyncQueued')) + ':</div>';
+    h += '<div class="mt-4">' + esc(t('sbSyncQueued')) + ':</div>';
     out.slice(0, 10).forEach(function (e) { h += '<div>• ' + esc(e.table) + ' — ' + esc(String(e.key)) + (e.op ? ' (' + esc(String(e.op)) + ')' : '') + (e.failReason ? ' (' + esc(String(e.failReason).slice(0, 60)) + ')' : '') + '</div>'; });
     if (out.length > 10) h += '<div>… ' + esc(t('sbSyncAndMore').replace('{n}', String(out.length - 10))) + '</div>';
   }
@@ -789,7 +789,7 @@ function sbSyncDetailsHtml() {
     var snapD = {};
     if (state && state.user && state.user.uid) snapD = sbSnapLoad(state.user.uid) || {};
     var holKeysD = snapD.ss_holidays ? Object.keys(snapD.ss_holidays) : [];
-    h += '<div style="margin-top:4px">Snapshot holidays: ' + (holKeysD.length ? esc(holKeysD.join(', ')) : '—') + '</div>';
+    h += '<div class="mt-4">Snapshot holidays: ' + (holKeysD.length ? esc(holKeysD.join(', ')) : '—') + '</div>';
     h += '<div>Local holidays: ' + esc(((typeof db !== 'undefined' && db && db.holidays) || []).map(function (hh) { return hh.id; }).join(', ') || '—') + '</div>';
     h += '<div>Online: ' + (sbIsOnline() ? 'yes' : 'no') + ' · Session: ' + ((state && state.sb && state.sb.uid) ? 'yes' : 'no') + ' · School mapped: ' + ((state && state.user && state.user.uid && (sbServerSchoolMap()[state.user.uid])) ? 'yes' : 'no') + '</div>';
   } catch (eD) {}
@@ -836,14 +836,14 @@ function sbSyncConflictsHtml() {
   // Empty when there is nothing to resolve, so Settings stays clean.
   var list = (typeof db !== 'undefined' && db && db.syncConflicts) || [];
   if (!list.length) return '';
-  var h = '<div style="margin-top:12px"><div class="muted">' + esc(t('sbConflictsTitle')) + ' (' + list.length + ')</div>';
+  var h = '<div class="mt-12"><div class="muted">' + esc(t('sbConflictsTitle')) + ' (' + list.length + ')</div>';
   h += '<p class="card-sub">' + esc(t('sbConflictsHint')) + '</p>';
   list.slice(0, 20).forEach(function (c, i) {
     var label = SB_CONFLICT_TABLE_LABELS[c.table] || c.table;
     h += '<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px;margin-top:8px">';
     h += '<div style="font-size:13px"><b>' + esc(label) + '</b> — ' + esc(String(c.key)) + (c.at ? ' · ' + esc(sbAtLabel(c.at)) : '') + '</div>';
     h += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px"><div><div class="muted">' + esc(t('sbConflictsYours')) + '</div>' + sbSyncConflictRowHtml(c.localRow) + '</div><div><div class="muted">' + esc(t('sbConflictsServer')) + '</div>' + sbSyncConflictRowHtml(c.serverRow) + '</div></div>';
-    h += '<div class="actions" style="justify-content:flex-start;margin-top:8px"><button type="button" class="btn sm" onclick="sbSyncResolveConflict(' + i + ', true)">' + esc(t('sbConflictsKeepMine')) + '</button><button type="button" class="btn ghost sm" onclick="sbSyncResolveConflict(' + i + ', false)">' + esc(t('sbConflictsUseServer')) + '</button></div>';
+    h += '<div class="actions toolbar-start mt-8"><button type="button" class="btn sm" onclick="sbSyncResolveConflict(' + i + ', true)">' + esc(t('sbConflictsKeepMine')) + '</button><button type="button" class="btn ghost sm" onclick="sbSyncResolveConflict(' + i + ', false)">' + esc(t('sbConflictsUseServer')) + '</button></div>';
     h += '</div>';
   });
   if (list.length > 20) h += '<div class="muted">… ' + esc(String(list.length - 20)) + ' more</div>';
@@ -1236,8 +1236,8 @@ function syncWelcomeHeading() {
   // password-reset forms — on a reset card it is the wrong heading. Show
   // the reset title there instead (and hide the "Log in or sign up"
   // sub-line), and restore "Welcome back" on the login form. applyI18n
-  // re-applies data-i18n on every language switch, so this runs after it
-  // in setLang too.
+  // re-applies data-i18n on load, so this runs after it
+  // in applyI18n too.
   try {
     var resetMode = ($('recoverForm') && !$('recoverForm').classList.contains('hidden')) || ($('resetForm') && !$('resetForm').classList.contains('hidden'));
     var b = $('welcomeTitle'); if (b) b.textContent = resetMode ? t('sbRecoverTitle') : t('loginWelcomeBack');
@@ -5438,7 +5438,7 @@ function sbStorageFreePhotos() {
 var db = loadDB();
 
 /* ================= state ================= */
-var state = { role: null, user: null, view: 'dashboard', lang: 'en', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, feeEditId: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, actSearch: '', actAction: 'All', actActor: 'All', actFrom: '', actTo: '', actLimit: 50, sb: null };
+var state = { role: null, user: null, view: 'dashboard', admReqFilter: 'All', feeFilter: 'All', feeType: 'All', feeSearch: '', feeLimit: 120, feeStudent: null, feeGenMonth: 'Sep', feeFormOpen: false, feePreselect: null, feeEditId: null, stuSearch: '', stuClass: 'All', stuSection: 'All', stuSession: 'All', stuGender: 'All', stuFee: 'All', stuStatus: 'All', stuPage: 1, stuSort: 'name', stuSortDir: 1, profileStudent: null, profileTab: 'overview', attCls: '10th-A', attDate: '', examId: 'ex1', stuSel: {}, collectStudent: null, collectRecordId: null, savedReceiptId: null, actSearch: '', actAction: 'All', actActor: 'All', actFrom: '', actTo: '', actLimit: 50, sb: null };
 
 /* Phase 2: bulk import + promotion state (in-memory only, never persisted). */
 var importState = { rows: null, fileName: '', result: null };
@@ -6236,13 +6236,13 @@ function importPreviewHTML() {
   var res = '';
   if (importState.result) {
     var rs = importState.result;
-    res = '<div class="card" style="margin-top:12px"><h3>' + t('impSummary') + '</h3><p>' + rs.imported + ' ' + t('impImported') + ' • ' + rs.skipped + ' ' + t('impSkipped') + '</p></div>';
+    res = '<div class="card mt-12"><h3>' + t('impSummary') + '</h3><p>' + rs.imported + ' ' + t('impImported') + ' • ' + rs.skipped + ' ' + t('impSkipped') + '</p></div>';
   }
-  return '<h3 style="margin-top:14px">' + t('impPreview') + ' — ' + rows.length + ' ' + t('recordsWord') + '</h3>' +
+  return '<h3 class="mt-14">' + t('impPreview') + ' — ' + rows.length + ' ' + t('recordsWord') + '</h3>' +
     '<p class="muted">' + valid + ' ' + t('impValid') + ' • ' + errs + ' ' + t('impError') + ' • ' + dups + ' ' + t('impDuplicate') + (impd ? ' • ' + impd + ' ' + t('impImported') : '') + (importState.fileName ? ' • ' + esc(importState.fileName) : '') + '</p>' +
     '<div class="tbl-wrap imp-scroll"><table><thead><tr><th>#</th><th>' + t('thName') + '</th><th>' + t('thClass') + '</th><th>' + t('thPhone') + '</th><th>' + t('thStatus') + '</th><th>' + t('impReason') + '</th></tr></thead><tbody>' +
     (trs || '<tr><td colspan="6"><div class="empty">' + t('impNoRows') + '</div></td></tr>') + '</tbody></table></div>' +
-    '<div class="actions" style="justify-content:flex-start">' +
+    '<div class="actions toolbar-start">' +
     '<button class="btn green" ' + (valid ? '' : 'disabled') + ' onclick="confirmImport()">' + t('impConfirm') + ' (' + valid + ')</button>' +
     (importState.result ? '<button class="btn" onclick="closeModal();renderApp()">' + t('impDone') + '</button>' : '') + '</div>' + res;
 }
@@ -6405,7 +6405,7 @@ function closeModal() { $('modalRoot').innerHTML = ''; stopPhotoWatch(); }
 var confirmCb = null;
 function confirmModal(msg, cb) {
   confirmCb = cb;
-  openModal('<h3>' + t('confirmTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + esc(msg) + '</p><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button type="button" class="btn danger" onclick="confirmYes()">' + t('confirmYes') + '</button></div>');
+  openModal('<h3>' + t('confirmTitle') + '</h3><p class="muted-sm">' + esc(msg) + '</p><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button type="button" class="btn danger" onclick="confirmYes()">' + t('confirmYes') + '</button></div>');
 }
 function confirmYes() { var cb = confirmCb; confirmCb = null; closeModal(); if (cb) cb(); }
 
@@ -6485,26 +6485,6 @@ function applyI18n() {
     el.setAttribute('placeholder', t(el.getAttribute('data-i18n-ph')));
   });
 }
-function setLang(l) {
-  state.lang = l;
-  $('langEn').classList.toggle('on', l === 'en');
-  $('langHi').classList.toggle('on', l === 'hi');
-  var lo = $('langOne'); if (lo) lo.textContent = l === 'en' ? 'EN' : 'हिं';
-  // v96: the login screen has its own toggle (the topbar is hidden
-  // until login) — keep it in sync too.
-  var lle = $('loginLangEn'); if (lle) lle.classList.toggle('on', l === 'en');
-  var llh = $('loginLangHi'); if (llh) llh.classList.toggle('on', l === 'hi');
-  applyI18n();
-  // v112: the sync status lines are set via textContent (not data-i18n),
-  // so a language switch left them in the old language until the next
-  // sync event or login. Refresh them here.
-  try { var s112 = $('sbStatus'); if (s112) s112.textContent = sbStatusText(); } catch (e112) {}
-  try { var sl112 = $('sbStatusLine'); if (sl112) sl112.textContent = sbStatusText(); } catch (e112) {}
-  syncWelcomeHeading(); // v112: the reset heading follows the language too
-  if (state.role) renderApp();
-}
-function toggleLang() { setLang(state.lang === 'en' ? 'hi' : 'en'); }
-
 /* ================= auth & shell ================= */
 function showView(which) {
   hideTip();
@@ -7758,14 +7738,14 @@ function principalDashboard() {
   return '<div class="card"><h3>' + esc(u.name || '') + '</h3><p>Principal • ' + esc(db.profile.name || '') + ', ' + esc(db.profile.city || '') + '</p>' +
     '<p class="card-sub">Read-only overview — you can view the whole school, but nothing can be changed from this login.</p></div>' +
     '<div class="tile-grid">' +
-    '<div class="tile blue" style="cursor:pointer" onclick="go(\'students\')"><div class="n">' + db.students.length + '</div><div class="l">' + t('totalStudents') + '</div></div>' +
-    '<div class="tile green" style="cursor:pointer" onclick="go(\'teachers\')"><div class="n">' + db.teachers.filter(function (t) { return !t.deleted; }).length + '</div><div class="l">' + t('totalTeachers') + '</div></div>' +
+    '<div class="tile blue pointer" onclick="go(\'students\')"><div class="n">' + db.students.length + '</div><div class="l">' + t('totalStudents') + '</div></div>' +
+    '<div class="tile green pointer" onclick="go(\'teachers\')"><div class="n">' + db.teachers.filter(function (t) { return !t.deleted; }).length + '</div><div class="l">' + t('totalTeachers') + '</div></div>' +
     '<div class="tile orange"><div class="n">₹' + ft.collected + '</div><div class="l">' + t('feeCollected') + '</div></div>' +
     '<div class="tile red"><div class="n">₹' + ft.pending + '</div><div class="l">' + t('pendingFee') + '</div></div>' +
     '</div>' +
-    '<div class="card" style="margin-top:16px"><h3>' + t('todayAtt') + '</h3><p class="card-sub">' + (ta.total ? donutPct(ta.present, ta.total) + '% ' + t('presBtn') : t('attNotMarked')) + ' • ' + db.students.length + ' ' + t('studentsW') + '</p>' + // v139: subtitle matches the donut (today), not the all-time average — the old avgAtt subtitle contradicted the donut centre whenever today differed from the average
+    '<div class="card mt-16"><h3>' + t('todayAtt') + '</h3><p class="card-sub">' + (ta.total ? donutPct(ta.present, ta.total) + '% ' + t('presBtn') : t('attNotMarked')) + ' • ' + db.students.length + ' ' + t('studentsW') + '</p>' + // v139: subtitle matches the donut (today), not the all-time average — the old avgAtt subtitle contradicted the donut centre whenever today differed from the average
     donutSVG([{ value: ta.present, color: GREEN, label: t('presBtn'), pct: donutPct(ta.present, ta.total) }, { value: ta.absent, color: RED, label: t('absBtn'), pct: donutPct(ta.absent, ta.total) }, { value: ta.late, color: ORANGE, label: t('lateBtn'), pct: donutPct(ta.late, ta.total) }], 190, donutPct(ta.present, ta.total) + '%', t('todayAtt')) + '</div>' +
-    '<div class="card" style="margin-top:16px"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div>';
+    '<div class="card mt-16"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div>';
 }
 function roleDashboard() {
   // v85 (Phase 4): the dashboard for the five new roles (principal,
@@ -7784,7 +7764,7 @@ function roleDashboard() {
   var schoolName = state.role === 'superadmin' ? 'School Saathi Platform' : (db.profile.name || '');
   return '<div class="card"><h3>' + esc(u.name || '') + '</h3><p>' + esc(roleLabel) + ' • ' + esc(schoolName) + '</p>' +
     '<p class="card-sub">Your modules arrive in the next steps of Phase 4. For now you can open:</p>' +
-    '<div style="display:flex;gap:8px;flex-wrap:wrap">' + links + '</div></div>';
+    '<div class="row-flex">' + links + '</div></div>';
 }
 function teacherDashboard() {
   var te = teacherRecord();
@@ -7803,18 +7783,18 @@ function teacherDashboard() {
   }).join('');
   var classTiles = myClasses.map(function (c) {
     var n = myStudents.filter(function (s) { return s.cls === c; }).length;
-    return '<div class="tile blue" style="cursor:pointer" onclick="openTeacherClass(' + jsAttr(c) + ')"><div class="n">' + n + '</div><div class="l">' + esc(c) + '</div></div>';
+    return '<div class="tile blue pointer" onclick="openTeacherClass(' + jsAttr(c) + ')"><div class="n">' + n + '</div><div class="l">' + esc(c) + '</div></div>';
   }).join('');
   return '<div class="phone"><div class="card"><div class="stu-hero">' + avatarHTML(null, te.name, 'avatar') + '</div>' +
     '<h3>' + esc(te.name) + '</h3><p>' + esc(te.subject || '') + ' • ' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div>' +
     '<div class="tile-grid">' +
     '<div class="tile green"><div class="n">' + myClasses.length + '</div><div class="l">' + t('tchrMyClasses') + '</div></div>' +
-    '<div class="tile yellow" style="cursor:pointer" onclick="openTeacherClass(\'\')"><div class="n">' + myStudents.length + '</div><div class="l">' + t('tchrStudents') + '</div></div>' +
+    '<div class="tile yellow pointer" onclick="openTeacherClass(\'\')"><div class="n">' + myStudents.length + '</div><div class="l">' + t('tchrStudents') + '</div></div>' +
     '<div class="tile purple"><div class="n">' + attToday + '</div><div class="l">' + t('presBtn') + ' ' + t('todayW') + '</div></div>' +
     '<div class="tile blue"><div class="n">' + hwDue + '</div><div class="l">' + t('tileHw') + '</div></div>' +
     '</div></div>' +
-    '<div class="card" style="margin-top:16px"><h3>' + t('tchrMyClasses') + '</h3><p class="card-sub">' + (myClasses.length ? esc(myClasses.join(', ')) : t('tchrNoClassesYet')) + '</p>' + (classTiles || '') + '</div>' +
-    '<div class="card" style="margin-top:16px"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div></div>';
+    '<div class="card mt-16"><h3>' + t('tchrMyClasses') + '</h3><p class="card-sub">' + (myClasses.length ? esc(myClasses.join(', ')) : t('tchrNoClassesYet')) + '</p>' + (classTiles || '') + '</div>' +
+    '<div class="card mt-16"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div></div>';
 }
 function doLogin(e) {
   e.preventDefault();
@@ -8307,6 +8287,15 @@ function renderApp() {
   $('sideNav').innerHTML = nav.map(function (n) {
     return '<button class="' + (state.view === n[0] ? 'active' : '') + '" onclick="go(\'' + n[0] + '\')"><span class="ic">' + n[1] + '</span>' + esc(t(n[2])) + '</button>';
   }).join('');
+  // v147: phone-first bottom nav — the first 4 of this role's NAV + More
+  // (opens the sidebar drawer, where the rest of the destinations live).
+  // Hidden on desktop by CSS; the sidebar stays the nav there.
+  var bn = $('bottomNav');
+  if (bn) {
+    bn.innerHTML = nav.slice(0, 4).map(function (n) {
+      return '<button class="' + (state.view === n[0] ? 'active' : '') + '" onclick="go(\'' + n[0] + '\')"><span class="ic">' + n[1] + '</span>' + esc(t(n[2])) + '</button>';
+    }).join('') + '<button onclick="toggleSidebar(true)"><span class="ic">\u22EF</span>' + esc(t('moreNav')) + '</button>';
+  }
   var u = state.user;
   var me = (state.role === 'student' || state.role === 'parent') ? meStudent() : null; // v86: a parent's sidebar avatar is the child's photo too
   var whoPhoto = me ? sbDisplayPhoto(me.photo) : null; // v139: sidebar avatar goes through the signed-URL cache like every other avatar
@@ -8409,7 +8398,7 @@ function resetAllData() {
   // returns on the next sync. Say so, and offer the server wipe after
   // the double gate.
   var onServer = !!(state.sb && state.sb.uid);
-  openModal('<h3>' + t('resetPwTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t(onServer ? 'resetPwHintServer' : 'resetPwHint') + '</p>' +
+  openModal('<h3>' + t('resetPwTitle') + '</h3><p class="muted-sm">' + t(onServer ? 'resetPwHintServer' : 'resetPwHint') + '</p>' +
     '<form onsubmit="return submitResetPw(event)"><div class="form-grid"><div class="full"><label>' + t('resetPwLabel') + '</label>' +
     '<input id="resetPwInput" type="password" autocomplete="current-password" placeholder="••••••••"></div></div>' +
     '<div id="resetPwErr" class="err hidden"></div>' +
@@ -8434,7 +8423,7 @@ function submitResetPw(e) {
 // A mismatch aborts with a clear message and deletes nothing. The name
 // is never shown in the prompt (typing it from memory is the point).
 function openResetNamePrompt() {
-  openModal('<h3>' + t('resetNameTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('resetNameHint') + '</p>' +
+  openModal('<h3>' + t('resetNameTitle') + '</h3><p class="muted-sm">' + t('resetNameHint') + '</p>' +
     '<form onsubmit="return submitResetName(event)"><div class="form-grid"><div class="full"><label>' + t('resetNameLabel') + '</label>' +
     '<input id="resetNameInput" autocomplete="off" placeholder="' + t('resetNameLabel') + '"></div></div>' +
     '<div id="resetNameErr" class="err hidden"></div>' +
@@ -8458,7 +8447,7 @@ function submitResetName(e) {
   return false;
 }
 function openResetServerChoice() {
-  openModal('<h3>' + t('resetConfirmTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('resetConfirmMsgServer') + '</p>' +
+  openModal('<h3>' + t('resetConfirmTitle') + '</h3><p class="muted-sm">' + t('resetConfirmMsgServer') + '</p>' +
     '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
     '<button type="button" class="btn" onclick="closeModal();confirmModal(t(\'resetConfirmMsg\'), resetAllConfirmed)">' + t('resetDeviceOnly') + '</button>' +
     '<button type="button" class="btn danger" onclick="closeModal();resetAllServerWipe()">' + t('resetWipeServerBtn') + '</button></div>');
@@ -8586,7 +8575,7 @@ function removeSchoolData() {
 // the device, and every other app on this origin, is untouched.
 function deleteAccount() {
   if (!state.role || !state.user || state.role !== 'school') return;
-  openModal('<h3>' + t('delPwTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('delPwHint') + '</p>' +
+  openModal('<h3>' + t('delPwTitle') + '</h3><p class="muted-sm">' + t('delPwHint') + '</p>' +
     '<form onsubmit="return submitDeletePw(event)"><div class="form-grid"><div class="full"><label>' + t('resetPwLabel') + '</label>' +
     '<input id="delPwInput" type="password" autocomplete="current-password" placeholder="••••••••"></div></div>' +
     '<div id="delPwErr" class="err hidden"></div>' +
@@ -8607,7 +8596,7 @@ function submitDeletePw(e) {
   return false;
 }
 function openDeleteNamePrompt() {
-  openModal('<h3>' + t('delNameTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('delNameHint') + '</p>' +
+  openModal('<h3>' + t('delNameTitle') + '</h3><p class="muted-sm">' + t('delNameHint') + '</p>' +
     '<form onsubmit="return submitDeleteName(event)"><div class="form-grid"><div class="full"><label>' + t('resetNameLabel') + '</label>' +
     '<input id="delNameInput" autocomplete="off" placeholder="' + t('resetNameLabel') + '"></div></div>' +
     '<div id="delNameErr" class="err hidden"></div>' +
@@ -8635,7 +8624,7 @@ function submitDeleteName(e) {
 function openDeleteServerChoice() {
   // The server choice is explained BEFORE confirming: server deletion is
   // permanent and removes the account from all devices, not just this one.
-  openModal('<h3>' + t('delServerTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('delServerMsg') + '</p>' +
+  openModal('<h3>' + t('delServerTitle') + '</h3><p class="muted-sm">' + t('delServerMsg') + '</p>' +
     '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
     '<button type="button" class="btn" onclick="closeModal();confirmModal(t(\'delConfirmMsg\'), deleteAccountConfirmed)">' + t('resetDeviceOnly') + '</button>' +
     '<button type="button" class="btn danger" onclick="closeModal();deleteAccountOnServer()">' + t('delServerBtn') + '</button></div>');
@@ -8706,7 +8695,7 @@ function deleteAccountConfirmed(serverDeleted) {
   toast(t(serverDeleted ? 'delServerDone' : 'delDone'));
 }
 function openSupportForm() {
-  openModal('<h3>' + t('raiseSupport') + '</h3><p style="color:var(--muted);font-size:14px">' + t('contactSub') + '</p>' +
+  openModal('<h3>' + t('raiseSupport') + '</h3><p class="muted-sm">' + t('contactSub') + '</p>' +
     '<form onsubmit="return submitSupportRequest(event)"><div class="form-grid">' +
     '<div><label>' + t('supYourName') + '</label><input id="fSupName" value="' + esc(state.user ? state.user.name : '') + '"></div>' +
     '<div class="full"><label>' + t('fMessage') + '</label><input id="fSupMsg"></div></div>' +
@@ -8762,6 +8751,12 @@ function schoolDashboard() {
   var logoHtml = db.profile.logo ? '<img class="dash-logo" src="' + esc(db.profile.logo) + '" alt="">' : '';
   return '<div class="page-head"><div class="prof-head">' + logoHtml + '<div><h2>' + t('schoolDashboard') + '</h2><p>' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p></div></div>' +
     '<div class="toolbar"><button class="btn sm" onclick="downloadReportCSV(\'fees\')">⬇ ' + t('downloadReport') + '</button></div></div>' +
+  '<div class="action-grid">' +
+    '<button class="action-card" onclick="go(\'attendance\')"><div class="ic">✅</div><b>' + t('qaMarkAtt') + '</b><span>' + t('qaMarkAttD') + '</span></button>' +
+    '<button class="action-card gold" onclick="go(\'fees\')"><div class="ic">💰</div><b>' + t('collectFeeBtn') + '</b><span>₹' + ft.pending.toLocaleString('en-IN') + ' ' + t('pendingW') + '</span></button>' +
+    '<button class="action-card blue" onclick="go(\'students\')"><div class="ic">🎒</div><b>' + t('qaAddStudent') + '</b><span>' + t('qaAddStudentD') + '</span></button>' +
+    '<button class="action-card green" onclick="go(\'exams\')"><div class="ic">📝</div><b>' + t('qaEnterMarks') + '</b><span>' + t('qaEnterMarksD') + '</span></button>' +
+  '</div>' +
   '<div class="stats">' +
     statCard('🎒', 'blue', t('totalStudents'), db.students.length, '', 'up') +
     statCard('👩‍🏫', 'green', t('totalTeachers'), db.teachers.filter(function (t) { return !t.deleted; }).length, '', 'up') +
@@ -8774,14 +8769,8 @@ function schoolDashboard() {
     '<div class="row"><span class="dot" style="background:' + RED + '"></span>' + t('absBtn') + '<b>' + num(ta.absent) + '</b></div>' +
     '<div class="row"><span class="dot" style="background:' + ORANGE + '"></span>' + t('lateBtn') + '<b>' + num(ta.late) + '</b></div></div>' +
   '</div></div>' +
-  '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted" style="margin-top:8px"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div></div>' +
-  '<div class="grid2"><div class="card"><div class="head-row"><div><h3>' + t('recentAct') + '</h3></div><a href="#" onclick="go(\'activityLog\');return false">' + t('viewAll') + '</a></div><div class="act-list">' + acts + '</div></div>' +
-  '<div class="card"><h3>' + t('quickLinks') + '</h3><p class="card-sub">' + t('jumpTask') + '</p><div class="qa-grid">' +
-    '<div class="qa" onclick="go(\'students\')"><div class="ic">🎒</div><b>' + t('qaAddStudent') + '</b><span>' + t('qaAddStudentD') + '</span></div>' +
-    '<div class="qa" onclick="go(\'attendance\')"><div class="ic">✅</div><b>' + t('qaMarkAtt') + '</b><span>' + t('qaMarkAttD') + '</span></div>' +
-    '<div class="qa" onclick="go(\'exams\')"><div class="ic">📝</div><b>' + t('qaEnterMarks') + '</b><span>' + t('qaEnterMarksD') + '</span></div>' +
-    '<div class="qa" onclick="go(\'reports\')"><div class="ic">📄</div><b>' + t('qaGenReport') + '</b><span>' + t('qaGenReportD') + '</span></div>' +
-  '</div></div></div>';
+  '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted mt-8"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div></div>' +
+  '<div class="card"><div class="head-row"><div><h3>' + t('recentAct') + '</h3></div><a href="#" onclick="go(\'activityLog\');return false">' + t('viewAll') + '</a></div><div class="act-list">' + acts + '</div></div>';
 }
 /* ================= Activity / Audit Log (v24, v129) =================
    The dashboard "Recent Activities" card reads the real audit trail
@@ -8864,8 +8853,8 @@ function activityLogPage() {
   }).join('');
   return '<div class="page-head"><div><h2>' + t('activityLog') + '</h2><p>' + t('actLogSub') + '</p></div>' +
     '<div class="toolbar"><button class="btn ghost" onclick="go(\'dashboard\')">\u2190 ' + t('dashboard') + '</button></div></div>' +
-    '<div class="card"><div class="toolbar" style="flex-wrap:wrap">' +
-    '<input id="actSearchInput" placeholder="' + t('actSearchPh') + '" value="' + esc(state.actSearch || '') + '" oninput="onActSearch(this)" style="min-width:200px">' +
+    '<div class="card"><div class="toolbar">' +
+    '<input id="actSearchInput" placeholder="' + t('actSearchPh') + '" value="' + esc(state.actSearch || '') + '" oninput="onActSearch(this)" class="minw-200">' +
     '<select onchange="state.actAction=this.value;state.actLimit=50;renderPage()">' + opt(actions, state.actAction || 'All', t('allActions')) + '</select>' +
     '<select onchange="state.actActor=this.value;state.actLimit=50;renderPage()">' + opt(actors, state.actActor || 'All', t('allActors')) + '</select>' +
     '<label class="muted">' + t('actFrom') + ' <input type="date" value="' + esc(state.actFrom || '') + '" onchange="state.actFrom=this.value;state.actLimit=50;renderPage()"></label>' +
@@ -8876,7 +8865,7 @@ function activityLogPage() {
     '<p class="muted">' + t('showingRec') + ' ' + shown.length + ' ' + t('ofRec') + ' ' + rows.length + ' ' + t('recordsWord') + '</p>' +
     '<div class="tbl-wrap"><table><thead><tr><th>' + t('thDate') + '</th><th>' + t('thAction') + '</th><th>' + t('thDetails') + '</th><th>' + t('actBy') + '</th></tr></thead><tbody>' +
     (trs || '<tr><td colspan="4"><div class="empty">' + t('noActivity') + '</div></td></tr>') + '</tbody></table></div>' +
-    (rows.length > limit ? '<div style="margin-top:12px"><button class="btn ghost" onclick="state.actLimit=(state.actLimit||50)+50;renderPage()">' + t('loadMore') + '</button></div>' : '') +
+    (rows.length > limit ? '<div class="mt-12"><button class="btn ghost" onclick="state.actLimit=(state.actLimit||50)+50;renderPage()">' + t('loadMore') + '</button></div>' : '') +
     '</div>';
 }
 function studentsPage() {
@@ -8913,7 +8902,7 @@ function studentsPage() {
   var allPageSel = rows.length > 0 && rows.every(function (s) { return !!(state.stuSel || {})[s.id]; });
   var to = Math.min(list.length, state.stuPage * STU_PAGE_SIZE);
   return '<div class="page-head"><div><h2>' + t('students') + '</h2><p>' + list.length + ' ' + t('ofWord') + ' ' + visibleStudents().length + ' ' + t('studentsW') + '</p></div>' +
-    '<div class="toolbar"><input id="stuSearchInput" placeholder="' + t('stuSearchPh') + '" value="' + esc(state.stuSearch) + '" oninput="onStuSearch(this)" style="min-width:200px">' +
+    '<div class="toolbar"><input id="stuSearchInput" placeholder="' + t('stuSearchPh') + '" value="' + esc(state.stuSearch) + '" oninput="onStuSearch(this)" class="minw-200">' +
     '<select onchange="state.stuClass=this.value;state.stuPage=1;renderPage()">' + opt(isTeacher ? teacherClasses() : schoolClasses(), state.stuClass, t('allClasses')) + '</select>' +
     '<select onchange="state.stuSection=this.value;state.stuPage=1;renderPage()">' + opt(SECTIONS, state.stuSection, t('allSections')) + '</select>' +
     '<select onchange="state.stuSession=this.value;state.stuPage=1;renderPage()">' + opt(sessionOptions(), state.stuSession, t('allSessions')) + '</select>' +
@@ -8932,20 +8921,20 @@ function studentsPage() {
     (isTeacher ? '' : statCard('⏰', 'red', t('stPendFee'), st.pendFee, '', 'down')) +
     statCard('📊', 'blue', t('stAvgAtt'), st.avgAtt, '', 'up', { suffix: '%' }) +
     '</div>' +
-    '<div class="grid2" style="margin-top:16px"><div class="card"><h3>' + t('stByClass') + '</h3><p class="muted">' + t('stByClassSub') + '</p><div style="margin-top:10px">' + classBarsHTML(st.byClass) + '</div></div>' +
+    '<div class="grid2 mt-16"><div class="card"><h3>' + t('stByClass') + '</h3><p class="muted">' + t('stByClassSub') + '</p><div class="mt-10">' + classBarsHTML(st.byClass) + '</div></div>' +
     '<div class="card"><h3>' + t('stGenderDist') + '</h3><p class="muted">' + t('stGenderSub') + '</p><div style="display:flex;align-items:center;gap:16px;margin-top:10px">' +
     donutSVG([{ value: st.boys, color: BLUE, label: t('stBoys'), pct: donutPct(st.boys, st.total) }, { value: st.girls, color: '#EC4899', label: t('stGirls'), pct: donutPct(st.girls, st.total) }, { value: st.unspec, color: '#94A3B8', label: t('stNotSpec'), pct: donutPct(st.unspec, st.total) }], 150, String(st.total), t('studentsW')) +
     '<div><div class="type-row"><b>' + t('stBoys') + '</b><span>' + st.boys + '</span></div>' +
     '<div class="type-row"><b>' + t('stGirls') + '</b><span>' + st.girls + '</span></div>' +
     '<div class="type-row"><b>' + t('stNotSpec') + '</b><span>' + st.unspec + '</span></div></div></div></div></div>' +
-    ((selCount && !isTeacher) ? '<div class="card id-bulk-bar"><span><b>' + selCount + '</b> ' + t('promoSelected') + '</span><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" onclick="printIdCardsBulk()">🪪 ' + t('idcPrintCards') + ' (' + selCount + ')</button><button class="btn ghost sm" onclick="clearStuSel()">' + t('idcClearSel') + '</button></span></div>' : '') +
-    '<div class="card" style="margin-top:16px"><div class="tbl-wrap"><table><thead><tr>' +
+    ((selCount && !isTeacher) ? '<div class="card id-bulk-bar"><span><b>' + selCount + '</b> ' + t('promoSelected') + '</span><span class="row-flex"><button class="btn" onclick="printIdCardsBulk()">🪪 ' + t('idcPrintCards') + ' (' + selCount + ')</button><button class="btn ghost sm" onclick="clearStuSel()">' + t('idcClearSel') + '</button></span></div>' : '') +
+    '<div class="card mt-16"><div class="tbl-wrap"><table><thead><tr>' +
     (isTeacher || isPrincipal ? '' : '<th class="sel-col"><input type="checkbox" ' + (allPageSel ? 'checked' : '') + ' onchange="toggleStuSelAll(this.checked)" aria-label="' + t('idcSelectAll') + '"></th>') + // v88: the select-all checkbox hides for a principal too
-    '<th onclick="sortStu(\'name\')" style="cursor:pointer">' + t('thName') + sortArrow('name') + '</th>' +
+    '<th onclick="sortStu(\'name\')" class="pointer">' + t('thName') + sortArrow('name') + '</th>' +
     '<th>' + t('thAdmNo') + '</th>' +
-    '<th onclick="sortStu(\'class\')" style="cursor:pointer">' + t('thClass') + sortArrow('class') + '</th>' +
+    '<th onclick="sortStu(\'class\')" class="pointer">' + t('thClass') + sortArrow('class') + '</th>' +
     '<th>' + t('thRoll') + '</th><th>' + t('thFather') + '</th><th>' + t('thPhone') + '</th>' +
-    '<th onclick="sortStu(\'att\')" style="cursor:pointer">' + t('thAtt') + sortArrow('att') + '</th>' +
+    '<th onclick="sortStu(\'att\')" class="pointer">' + t('thAtt') + sortArrow('att') + '</th>' +
     (isTeacher ? '' : '<th>' + t('thFee') + '</th>') + '<th>' + t('thStatus') + '</th>' + ((isTeacher || isPrincipal) ? '' : '<th>' + t('actionsW') + '</th>') + '</tr></thead><tbody>' + // v88b: the ACTIONS header hides for a principal too (the cells were already empty)
     (trs || '<tr><td colspan="' + (isTeacher ? 8 : isPrincipal ? 9 : 11) + '"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '</tbody></table></div>' + // v88b: the principal has 9 columns (no select-all, no actions)
     '<div class="toolbar" style="margin-top:12px;justify-content:space-between"><span class="muted">' + t('showingRec') + ' ' + from + '–' + to + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('studentsW') + '</span>' +
@@ -9041,7 +9030,7 @@ function studentForm(id) {
     '<div><label>' + t('fAadhaar') + '</label><input id="fStAadhaar" inputmode="numeric" value="' + esc(s ? (s.aadhaar || '') : '') + '" placeholder="12-digit (optional)"><p class="muted">' + t('aadhaarHint') + '</p></div>' +
     '<div class="full"><label>' + t('fDocsOther') + '</label><input id="fStDocsOther" value="' + esc(d.other || '') + '"></div>' +
     '<div class="full"><p class="muted">' + t('docsNote') + '</p></div>' +
-    '</div><div class="actions" style="flex-wrap:wrap">' +
+    '</div><div class="actions flex-wrap">' +
     (s ? '<button type="button" class="btn danger" onclick="cancelAdmission(\'' + s.id + '\')">' + t('cancelAdm') + '</button>' : '') +
     '<button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
     '<button type="button" class="btn ghost" onclick="return saveStudent(event,\'' + (id || '') + '\',\'draft\')">' + t('saveDraft') + '</button>' +
@@ -9388,11 +9377,11 @@ function promotionPage() {
   }).join('');
   var resHtml = '';
   if (p.result) {
-    resHtml = '<div class="card" style="margin-top:16px"><h3>' + t('promoDone') + '</h3><p>' + p.result.promoted + ' ' + t('promoPromoted') + ' • ' + p.result.retained + ' ' + t('promoRetained') + ' • ' + p.result.skipped + ' ' + t('impSkipped') + '</p></div>';
+    resHtml = '<div class="card mt-16"><h3>' + t('promoDone') + '</h3><p>' + p.result.promoted + ' ' + t('promoPromoted') + ' • ' + p.result.retained + ' ' + t('promoRetained') + ' • ' + p.result.skipped + ' ' + t('impSkipped') + '</p></div>';
   }
   return '<div class="page-head"><div><h2>' + t('promoTitle') + '</h2><p>' + t('promoNote') + '</p></div>' +
     '<div class="toolbar"><button class="btn ghost" onclick="promoState=null;renderPage()">← ' + t('backDir') + '</button></div></div>' +
-    (p.mode === 'single' ? '<p class="muted" style="margin-bottom:12px">' + t('promoSingleNote') + '</p>' : '') +
+    (p.mode === 'single' ? '<p class="muted mb-12">' + t('promoSingleNote') + '</p>' : '') +
     '<div class="card"><div class="form-grid">' +
     '<div><label>' + t('promoFromSession') + '</label><select id="promoFromSession" onchange="onPromoFromChange()">' + sessOpts(p.fromSession) + '</select></div>' +
     '<div><label>' + t('promoFromClass') + '</label><select id="promoFromClass" onchange="onPromoFromChange()">' + clsOpts(p.fromCls) + '</select></div>' +
@@ -9400,11 +9389,11 @@ function promotionPage() {
     '<div><label>' + t('promoToClass') + '</label><select id="promoToClass" onchange="onPromoToChange()">' + cpOpts(p.toCls) + '</select></div>' +
     '<div><label>' + t('promoToSection') + '</label><select id="promoToSection" onchange="onPromoToChange()">' + secOpts(p.toSec) + '</select></div>' +
     '</div></div>' +
-    '<div class="card" style="margin-top:16px"><div class="head-row"><div><h3>' + list.length + ' ' + t('studentsW') + '</h3><p class="card-sub">' + selCount + ' ' + t('promoSelected') + '</p></div>' +
+    '<div class="card mt-16"><div class="head-row"><div><h3>' + list.length + ' ' + t('studentsW') + '</h3><p class="card-sub">' + selCount + ' ' + t('promoSelected') + '</p></div>' +
     '<div class="toolbar"><button class="btn ghost sm" onclick="togglePromoAll(true)">' + t('promoSelectAll') + '</button>' +
     '<button class="btn ghost sm" onclick="togglePromoAll(false)">' + t('promoSelectNone') + '</button></div></div>' +
     '<div class="promo-list">' + (rows || '<div class="empty">' + t('promoNoStudents') + '</div>') + '</div>' +
-    '<div class="actions" style="justify-content:flex-start;margin-top:16px"><button class="btn green" onclick="doPromote(\'promote\')">' + t('promoPromote') + '</button>' +
+    '<div class="actions toolbar-start mt-16"><button class="btn green" onclick="doPromote(\'promote\')">' + t('promoPromote') + '</button>' +
     '<button class="btn ghost" onclick="doPromote(\'retain\')">' + t('promoRetain') + '</button></div></div>' + resHtml;
 }
 function deactivateStudent(id) {
@@ -9492,7 +9481,7 @@ function studentProfilePage(id) {
     : '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">← ' + t('backDir') + '</button><button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button></div>';
   return '<div class="page-head"><div class="prof-head">' + avatarHTML(s.photo, s.name, 'big-avatar') + '<div><h2>' + esc(s.name) + '</h2><p>' + esc(s.cls) + ' • ' + t('thAdmNo') + ' ' + esc(s.admissionNo || '—') + ' • ' + t('thEnr') + ' ' + esc(s.enr || '—') + ' • <span class="badge ' + badgeCls + '">' + stt + '</span></p></div></div>' +
     toolbar + '</div>' +
-    tabBar + '<div style="margin-top:16px">' + profileTabBody(s, state.profileTab || 'overview') + '</div>';
+    tabBar + '<div class="mt-16">' + profileTabBody(s, state.profileTab || 'overview') + '</div>';
 }
 function profileTabBody(s, tab) {
   var d = s.documents || {};
@@ -9508,11 +9497,11 @@ function profileTabBody(s, tab) {
     var base = '<div class="card">' + kv(t('fFather'), esc(s.fatherName || '—')) + kv(t('fMother'), esc(s.motherName || '—')) + kv(t('fGuardian'), esc(s.guardian)) + kv(t('fPhone'), esc(s.phone)) + kv(t('fPhone2'), esc(s.mobile2 || '—')) + kv(t('fParentEmail'), esc(s.parentEmail || '—')) + kv(t('fOccupation'), esc(s.occupation || '—')) + '</div>';
     if (state.role !== 'school') return base;
     var pinSet54 = pinHasPin(s); // v54 (A2): the PIN value is never rendered — at most "PIN set / not set"
-    var pinBox = '<div class="card" style="margin-top:16px"><h3>' + t('stuPinTitle') + '</h3>' +
+    var pinBox = '<div class="card mt-16"><h3>' + t('stuPinTitle') + '</h3>' +
       '<div class="kv"><b>' + t('stuPinNow') + '</b><span>' + (pinSet54 ? t('stuPinSet') : '—') + '</span></div>' +
       '<p class="muted" style="margin:8px 0">' + t('tPinAuto') + (pinSet54 ? '' : ' ' + t('stuPinNone')) + '</p>' +
       '<div class="form-grid"><div><label>' + t('stuPinNew') + '</label><input id="fStuPinNew" type="password" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="4–6 digits"></div></div>' +
-      '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="setStudentPin(\'' + s.id + '\')">' + t('stuPinSetBtn') + '</button>' +
+      '<div class="toolbar mt-12"><button class="btn" onclick="setStudentPin(\'' + s.id + '\')">' + t('stuPinSetBtn') + '</button>' +
       '<button class="btn" onclick="generateStudentPin(\'' + s.id + '\')">' + t('stuPinGenerate') + '</button>' +
       '<button class="btn ghost" onclick="clearStudentPin(\'' + s.id + '\')">' + t('stuPinClear') + '</button></div></div>';
     return base + pinBox;
@@ -9544,8 +9533,8 @@ function profileTabBody(s, tab) {
     }).join('');
     return '<div class="stats">' + statCard('🧾', 'blue', t('totalBilled'), sum.billed, '', 'up', { prefix: '₹' }) + statCard('✅', 'green', t('totalPaid'), sum.paid, '', 'up', { prefix: '₹' }) + statCard('⏰', 'red', t('totalPending'), sum.pend, '', 'down', { prefix: '₹' }) + '</div>' +
       '<div class="card"><h3>' + t('feeByType') + '</h3>' + (btRows || '<p class="muted">' + t('tNoFeeRecs') + '</p>') + '</div>' +
-      '<div class="card" style="margin-top:16px"><h3>' + t('feeRecsH') + '</h3><div class="tbl-wrap fee-hist-tbl"><table><thead><tr><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thReceipt') + '</th></tr></thead><tbody>' + (frs || '<tr><td colspan="6"><div class="empty">' + t('tNoFeeRecs') + '</div></td></tr>') + '</tbody></table></div>' +
-      (state.role !== 'school' ? '' : '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="viewStudentFees(\'' + s.id + '\')">' + t('openFees') + '</button></div>') + '</div>';
+      '<div class="card mt-16"><h3>' + t('feeRecsH') + '</h3><div class="tbl-wrap fee-hist-tbl"><table><thead><tr><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thReceipt') + '</th></tr></thead><tbody>' + (frs || '<tr><td colspan="6"><div class="empty">' + t('tNoFeeRecs') + '</div></td></tr>') + '</tbody></table></div>' +
+      (state.role !== 'school' ? '' : '<div class="toolbar mt-12"><button class="btn" onclick="viewStudentFees(\'' + s.id + '\')">' + t('openFees') + '</button></div>') + '</div>';
   }
   if (tab === 'results') {
     var exs = db.exams.filter(function (e) { return e.cls === s.cls && isActiveExam(e); }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
@@ -9566,7 +9555,7 @@ function profileTabBody(s, tab) {
   }
   if (tab === 'docs') {
     var docRow = function (label, ok) { return '<div class="kv"><b>' + label + '</b><span class="badge ' + (ok ? 'green' : 'grey') + '">' + (ok ? t('docStatus') : t('docMissing')) + '</span></div>'; };
-    return '<div class="card">' + docRow(t('fBirthCert'), !!d.birthCert) + docRow(t('fTc'), !!d.tc) + kv(t('fTcNo'), esc(d.tcNumber || '—')) + kv(t('fDocsOther'), esc(d.other || '—')) + '<p class="muted" style="margin-top:10px">' + t('docsNote') + '</p></div>';
+    return '<div class="card">' + docRow(t('fBirthCert'), !!d.birthCert) + docRow(t('fTc'), !!d.tc) + kv(t('fTcNo'), esc(d.tcNumber || '—')) + kv(t('fDocsOther'), esc(d.other || '—')) + '<p class="muted mt-10">' + t('docsNote') + '</p></div>';
   }
   if (tab === 'activity') {
     var acts = (db.auditLog || []).filter(function (a) {
@@ -9591,7 +9580,7 @@ function profileTabBody(s, tab) {
   var pendRecs38 = (db.feeRecords || []).filter(function (r) { return r.studentId === s.id && r.status === 'Pending'; });
   var pendHtml38 = '';
   if (pendRecs38.length && state.role !== 'student') {
-    pendHtml38 = '<div class="card" style="margin-top:16px"><h3>' + t('pendingW') + '</h3>' + pendRecs38.map(function (r) {
+    pendHtml38 = '<div class="card mt-16"><h3>' + t('pendingW') + '</h3>' + pendRecs38.map(function (r) {
       return '<div class="type-row"><b>' + esc(r.month) + ' • ' + esc(feeTypeLabel(feeTypeOf(r))) + '</b><span>' + inr(r.amount) + ' ' + waReminderBtn(r.id, s.id) + '</span></div>';
     }).join('') + '</div>';
   }
@@ -9634,7 +9623,7 @@ function generateStudentPin(id) {
   try { srvId = sbServerSchoolMap()[state.user.uid] || null; } catch (e2) { srvId = null; }
   if (srvId && sbIsOnline()) sbAdminResetParentPin(srvId, s.admissionNo || '', pin);
   renderPage();
-  openModal('<h3>' + t('stuPinIssuedTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('stuPinShowOnce') + '</p><p style="font-size:34px;letter-spacing:8px;text-align:center;margin:16px 0"><b>' + esc(pin) + '</b></p><div class="actions"><button type="button" class="btn" onclick="closeModal()">' + t('stuPinGotIt') + '</button></div>');
+  openModal('<h3>' + t('stuPinIssuedTitle') + '</h3><p class="muted-sm">' + t('stuPinShowOnce') + '</p><p style="font-size:34px;letter-spacing:8px;text-align:center;margin:16px 0"><b>' + esc(pin) + '</b></p><div class="actions"><button type="button" class="btn" onclick="closeModal()">' + t('stuPinGotIt') + '</button></div>');
 }
 function clearStudentPin(id) {
   var s = db.students.find(function (x) { return x.id === id; });
@@ -9885,7 +9874,7 @@ function attendancePage() {
     '<input type="date" value="' + esc(state.attDate) + '" max="' + todayIST() + '" onchange="onAttDate(this.value)" style="min-width:160px">' +
     attTools + '</div></div>' + // v88b: a principal never sees the Save Attendance button; v100: mark-all + holiday tools live in attTools
     '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thRoll') + '</th><th>' + t('thStatus') + '</th><th>' + t('waNotifyCol') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
-    (state.role === 'teacher' ? '' : '<p class="muted" style="margin-top:12px">School-wide today: ' + num(ta.present) + ' Present • ' + num(ta.absent) + ' Absent • ' + num(ta.late) + ' Late (' + donutPct(ta.present, ta.total) + '% attendance).</p>') + '</div>' + holidaysCard100(cls);
+    (state.role === 'teacher' ? '' : '<p class="muted mt-12">School-wide today: ' + num(ta.present) + ' Present • ' + num(ta.absent) + ' Absent • ' + num(ta.late) + ' Late (' + donutPct(ta.present, ta.total) + '% attendance).</p>') + '</div>' + holidaysCard100(cls);
 }
 function onAttDate(v) {
   if (v > todayIST()) { toast(t('tFutureDate')); state.attDate = todayIST(); }
@@ -10148,9 +10137,9 @@ function holidaysCard100(cls) {
   if (!list.length) return '';
   var rows = list.map(function (h) {
     return '<div class="hw-item"><div><b>' + esc(h.date) + '</b><span>' + esc(h.reason || t('holidayWord')) + '</span></div>' +
-      (state.role === 'school' ? '<button class="btn ghost sm" style="margin-left:auto" onclick="removeHoliday(\'' + h.id + '\')">' + t('removeHoliday') + '</button>' : '') + '</div>';
+      (state.role === 'school' ? '<button class="btn ghost sm ml-auto" onclick="removeHoliday(\'' + h.id + '\')">' + t('removeHoliday') + '</button>' : '') + '</div>';
   }).join('');
-  return '<div class="card" style="margin-top:16px"><h3>' + t('holidaysH') + ' — Class ' + esc(cls) + '</h3>' + rows + '</div>';
+  return '<div class="card mt-16"><h3>' + t('holidaysH') + ' — Class ' + esc(cls) + '</h3>' + rows + '</div>';
 }
 function feesPage() {
   if (state.collectStudent) return collectFeePage(state.collectStudent);
@@ -10178,18 +10167,18 @@ function feesPage() {
       return '<button class="' + (f === x ? 'on' : '') + '" onclick="state.feeFilter=\'' + x + '\';state.feeLimit=120;renderPage()">' + (x === 'All' ? t('allW') : x === 'Pending' ? t('pendingW') : t('collectedW')) + '</button>';
     }).join('') + '</div>' +
     '<select onchange="state.feeType=this.value;state.feeLimit=120;renderPage()" aria-label="Fee type">' + typeOpts + '</select>' +
-    '<input id="feeSearchInput" placeholder="' + t('searchFee') + '" value="' + esc(state.feeSearch) + '" oninput="state.feeSearch=this.value;filterFees(this.value)" style="min-width:200px">' +
+    '<input id="feeSearchInput" placeholder="' + t('searchFee') + '" value="' + esc(state.feeSearch) + '" oninput="state.feeSearch=this.value;filterFees(this.value)" class="minw-200">' +
     '<button class="btn ghost" onclick="printFeeList()">🖨 ' + t('printList') + '</button></div></div>' +
     '<div class="stats">' +
     statCard('💰', 'orange', t('feeCollected'), ft.collected, '', 'up', { prefix: '₹' }) +
     statCard('⏰', 'red', t('pendingFee'), ft.pending, '', 'down', { prefix: '₹' }) +
     '</div>' +
     '<div class="card"><h3>' + t('feeByType') + '</h3><p class="card-sub">' + t('feeByTypeSub') + '</p><div class="type-rows">' + (btRows || '<div class="empty">' + t('tNoFeeRecs') + '</div>') + '</div></div>' +
-    '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted" style="margin-top:8px"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div>' +
+    '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted mt-8"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div>' +
     '<div class="card"><div class="tbl-wrap fee-list-tbl"><table><thead><tr><th>' + t('thStudent') + '</th><th>' + t('thEnr') + '</th><th>' + t('thClass') + '</th><th>' + t('thMonth') + '</th><th>' + t('thType') + '</th><th>' + t('thAmount') + '</th><th>' + t('thDate') + '</th><th>' + t('thStatus') + '</th><th>' + t('thReceipt') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody id="feeBody">' +
     (rows || '<tr><td colspan="10"><div class="empty">' + t('tNoMatch') + '</div></td></tr>') + '<tr id="feeNoMatch" style="display:none"><td colspan="10"><div class="empty">' + t('tNoMatch') + '</div></td></tr></tbody></table></div>' +
-    '<p class="muted" id="feeCount" style="margin-top:10px">' + t('showingRec') + ' ' + shown + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('recordsWord') + '</p>' +
-    (list.length > shown ? '<div style="margin-top:10px"><button class="btn ghost" onclick="state.feeLimit=(state.feeLimit||120)+120;renderPage()">' + t('loadMore') + '</button></div>' : '') + '</div>' +
+    '<p class="muted mt-10" id="feeCount">' + t('showingRec') + ' ' + shown + ' ' + t('ofRec') + ' ' + list.length + ' ' + t('recordsWord') + '</p>' +
+    (list.length > shown ? '<div class="mt-10"><button class="btn ghost" onclick="state.feeLimit=(state.feeLimit||120)+120;renderPage()">' + t('loadMore') + '</button></div>' : '') + '</div>' +
     (state.role === 'school' ? feeFormCard() + feeStructureCard() : ''); // v88: the fee-entry + fee-structure cards are school-only — a principal never sees them; v92: an accountant never sees them either
 }
 
@@ -10304,7 +10293,7 @@ function feeFormCard() {
     var curM = new Date().toLocaleString('en', { month: 'short' });
     if (MONTHS_ACAD.indexOf(curM) === -1) curM = 'Sep';
     var moOpts = MONTHS_ACAD.map(function (m) { return '<option ' + (m === (er122 ? er122.month : curM) ? 'selected' : '') + '>' + m + '</option>'; }).join('');
-    body = '<form onsubmit="return saveFeeRecord(event)" style="margin-top:14px"><div class="form-grid">' +
+    body = '<form onsubmit="return saveFeeRecord(event)" class="mt-14"><div class="form-grid">' +
       '<div><label>' + t('fStudent') + '</label><select id="fFeeStudent"' + (er122 ? ' disabled' : '') + '>' + stuOpts + '</select></div>' +
       '<div><label>' + t('fMonth') + '</label><select id="fFeeMonth">' + moOpts + '</select></div>' +
       '<div><label>' + t('fType') + '</label><select id="fFeeType" onchange="toggleCustom(\'fFeeType\',\'fFeeCustomWrap\')">' + feeTypeSelectOpts(er122 ? (erCustom122 ? '__custom' : er122.type) : undefined) + '</select></div>' +
@@ -10312,7 +10301,7 @@ function feeFormCard() {
       '<div><label>' + t('fStatus') + '</label><select id="fFeeStatus"><option value="Pending"' + (er122 && er122.status === 'Pending' ? ' selected' : '') + '>' + t('pendingW') + '</option><option value="Collected"' + (er122 && er122.status === 'Collected' ? ' selected' : '') + '>' + t('collectedW') + '</option></select></div>' +
       '<div><label>' + t('fDate') + '</label><input id="fFeeDate" type="date" value="' + (er122 ? (er122.date || todayIST()) : todayIST()) + '"></div>' +
       '<div class="full' + (erCustom122 ? '' : ' hidden') + '" id="fFeeCustomWrap"><label>' + t('customType') + '</label><input id="fFeeCustom" placeholder="' + t('typeCustomPh') + '" value="' + (erCustom122 ? esc(er122.type) : '') + '"></div>' +
-      '</div><div class="actions" style="justify-content:flex-start"><button class="btn" type="submit">' + t('saveFeeBtn') + '</button></div></form>';
+      '</div><div class="actions toolbar-start"><button class="btn" type="submit">' + t('saveFeeBtn') + '</button></div></form>';
   }
   return '<div class="card"><div class="head-row"><div><h3>' + (state.feeEditId ? t('editFee') : t('addFee')) + '</h3><p class="card-sub">' + (state.feeEditId ? t('editFeeSub') : t('addFeeSub')) + '</p></div>' + btn + '</div>' + body + '</div>';
 }
@@ -10379,11 +10368,11 @@ function feeStructureCard() {
     '<div><label>' + t('rcptAnnual') + ' (₹)</label><input type="number" min="0" step="50" id="fsEx-annualCharges" value="' + ex.annualCharges + '"></div>' +
     '<div><label>' + t('rcptBusFee') + ' / ' + t('fMonth') + ' (₹)</label><input type="number" min="0" step="50" id="fsEx-transportFee" value="' + ex.transportFee + '"></div>' +
     '</div></div>' +
-    '<div class="toolbar" style="margin-top:14px"><select id="fsNewCls">' + clsOpts + '</select>' +
+    '<div class="toolbar mt-14"><select id="fsNewCls">' + clsOpts + '</select>' +
     '<select id="fsNewType" onchange="toggleCustom(\'fsNewType\',\'fsNewCustomWrap\')">' + feeTypeSelectOpts() + '</select>' +
     '<input id="fsNewAmt" type="number" min="1" step="50" placeholder="e.g. 1500" style="max-width:130px">' +
     '<button class="btn ghost sm" onclick="addFeeStructureRow()">+ ' + t('addRow') + '</button></div>' +
-    '<div class="full hidden" id="fsNewCustomWrap" style="margin-top:10px"><input id="fsNewCustom" placeholder="' + t('typeCustomPh') + '" style="max-width:260px"></div>' +
+    '<div class="full hidden mt-10" id="fsNewCustomWrap"><input id="fsNewCustom" placeholder="' + t('typeCustomPh') + '" style="max-width:260px"></div>' +
     '<div class="toolbar" style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px"><label style="margin:0">' + t('fMonth') + '</label>' +
     '<select id="fGenMonth" onchange="state.feeGenMonth=this.value">' + moOpts + '</select>' +
     '<button class="btn green" onclick="generateFees()">' + t('genFees') + '</button></div></div>';
@@ -10515,7 +10504,7 @@ function printRowsToArea(title, sub, headHtml, bodyHtml, totalsHtml) {
   var printLogoHtml = db.profile.logo ? '<img class="print-logo" src="' + esc(db.profile.logo) + '" alt="">' : '';
   $('printArea').innerHTML = '<div class="print-stmt"><div class="print-head">' + printLogoHtml + '<div><h1>' + esc(db.profile.name) + '</h1><p class="muted">' + esc(db.profile.address || '') + ' • ' + esc(db.profile.phone || '') + '</p></div></div>' +
     '<h2>' + esc(title) + '</h2><p>' + sub + '</p><table><thead><tr>' + headHtml + '</tr></thead><tbody>' + bodyHtml + '</tbody></table>' + totalsHtml +
-    '<p class="muted" style="margin-top:14px">' + t('printGenOn') + ' ' + todayIST() + '</p></div>';
+    '<p class="muted mt-14">' + t('printGenOn') + ' ' + todayIST() + '</p></div>';
   if (window.print) window.print();
 }
 function printStudentStatement(sid) {
@@ -11305,9 +11294,9 @@ function deletedExamsSection() {
   if (!del.length) return '';
   var rows = del.map(function (e) {
     return '<div class="hw-item"><div><b>' + esc(e.name) + '</b><span>' + esc(e.cls) + ' • ' + esc(e.subject) + ' • ' + esc(e.date) + '</span></div>' +
-      '<button class="btn" style="margin-left:auto" onclick="restoreExam(\'' + e.id + '\')">' + t('restoreExam') + '</button></div>';
+      '<button class="btn ml-auto" onclick="restoreExam(\'' + e.id + '\')">' + t('restoreExam') + '</button></div>';
   }).join('');
-  return '<div class="card" style="margin-top:16px"><h3>' + t('examDeletedH') + '</h3><p class="card-sub">' + t('examDelNote') + '</p>' + rows + '</div>';
+  return '<div class="card mt-16"><h3>' + t('examDeletedH') + '</h3><p class="card-sub">' + t('examDelNote') + '</p>' + rows + '</div>';
 }
 function saveMarks(examId) {
   var ex = db.exams.find(function (e) { return e.id === examId; });
@@ -11481,11 +11470,11 @@ function bulkMarksCard100(ex) {
   if (state.role === 'principal') return '';
   var others = db.exams.filter(function (e) { return isActiveExam(e) && e.cls === ex.cls && e.id !== ex.id; });
   var opts = others.map(function (e) { return '<option value="' + e.id + '">' + esc(e.name) + ' (' + esc(e.date) + ')</option>'; }).join('');
-  return '<div class="card" style="margin-top:16px"><h3>' + t('bulkMarksH') + '</h3>' +
+  return '<div class="card mt-16"><h3>' + t('bulkMarksH') + '</h3>' +
     '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px"><input type="number" id="fillAllMarksInput" min="0" max="' + ex.total + '" step="0.5" placeholder="—" style="width:90px"><button class="btn" onclick="fillAllMarks(\'' + ex.id + '\')">' + t('fillAllMarks') + '</button>' +
     (others.length ? '<select id="copyExamSelect">' + opts + '</select><button class="btn" onclick="copyMarksFromExam(\'' + ex.id + '\')">' + t('copyFromExam') + '</button>' : '<span class="muted">' + t('tNoPrevExam') + '</span>') + '</div>' +
-    '<textarea id="pasteMarksBox" rows="4" placeholder="' + t('pasteMarksHint') + '" style="width:100%"></textarea>' +
-    '<div style="margin-top:8px"><button class="btn" onclick="pasteMarks(\'' + ex.id + '\')">' + t('pasteMarks') + '</button></div></div>';
+    '<textarea id="pasteMarksBox" rows="4" placeholder="' + t('pasteMarksHint') + '" class="w-full"></textarea>' +
+    '<div class="mt-8"><button class="btn" onclick="pasteMarks(\'' + ex.id + '\')">' + t('pasteMarks') + '</button></div></div>';
 }
 function examForm(editId) {
   // v37: exam creation (audit item 6). A teacher only ever sees their
@@ -11514,7 +11503,7 @@ function examForm(editId) {
     '<div><label>' + t('fSubject') + '</label><select id="fExSub">' + subOpts + '</select></div>' +
     '<div><label>' + t('fDate') + '</label><input id="fExDate" type="date" value="' + (editing ? esc(editing.date) : todayIST()) + '" required></div>' +
     '<div><label>' + t('examTotal') + ' *</label><input id="fExTotal" type="number" min="1" step="1" value="' + (editing ? editing.total : 100) + '" required></div>' +
-    '</div>' + (editing ? '<p class="muted" style="margin-top:8px">' + t('examClsLocked') + ' ' + t('examMarksKept') + '</p>' : '') +
+    '</div>' + (editing ? '<p class="muted mt-8">' + t('examClsLocked') + ' ' + t('examMarksKept') + '</p>' : '') +
     '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button><button class="btn" type="submit">' + (editing ? t('saveBtn') : t('createExam')) + '</button></div></form>');
 }
 function saveExam(e) {
@@ -11994,13 +11983,13 @@ function settingsPage() {
   '<input type="file" id="fPfLogo" accept="image/*" onchange="onSchoolLogo(this)">' +
   '<button type="button" class="btn ghost sm" onclick="clearSchoolLogo()">' + t('removeLogo') + '</button></div>' +
   '<p class="muted">' + t('logoHint') + '</p></div>' +
-  '</div><div class="actions" style="justify-content:flex-start"><button class="btn" type="submit">' + t('saveSettingsBtn') + '</button>' +
+  '</div><div class="actions toolbar-start"><button class="btn" type="submit">' + t('saveSettingsBtn') + '</button>' +
   '<button type="button" class="btn danger" onclick="resetAllData()">' + t('resetAllData') + '</button>' +
   '<button type="button" class="btn" onclick="removeSchoolData()">' + t('removeDeviceData') + '</button>' +
   '<button type="button" class="btn danger" onclick="deleteAccount()">' + t('delAccount') + '</button></div></form></div>' +
-  '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('sbTitle') + '</h3><p class="card-sub" id="sbStatusLine">' + sbStatusText() + '</p><div id="sbSyncDetails">' + sbSyncDetailsHtml() + '</div><div id="sbSyncConflicts">' + sbSyncConflictsHtml() + '</div><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="sbRetryMigration(this)">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload(this)">' + t('sbDownloadNow') + '</button>' + (state.user && state.user.role === 'school' && !state.user.sbUid ? '<button type="button" class="btn ghost" onclick="openLinkServerModal()">' + t('sbLinkServer') + '</button>' : '') + (sbSessionExpired ? '<button type="button" class="btn ghost" onclick="logout()">' + t('authLogin') + '</button>' : '') + '</div></div>' +
-  '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('fullBackup') + '</h3><p class="card-sub">' + t('fullBackupSub') + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="exportFullBackup()">' + t('backupExport') + '</button><label class="btn ghost" style="cursor:pointer">' + t('backupImport') + '<input type="file" accept="application/json,.json" style="display:none" onchange="onBackupFileChosen(this)"></label></div></div>' +
-  '<div class="card" style="max-width:680px;margin-top:16px"><h3>' + t('raiseSupport') + '</h3><p class="card-sub">' + t('contactSub') + '</p><div class="actions" style="justify-content:flex-start"><button type="button" class="btn" onclick="openSupportForm()">' + t('raiseSupport') + '</button></div></div>';
+  '<div class="card maxw-680 mt-16"><h3>' + t('sbTitle') + '</h3><p class="card-sub" id="sbStatusLine">' + sbStatusText() + '</p><div id="sbSyncDetails">' + sbSyncDetailsHtml() + '</div><div id="sbSyncConflicts">' + sbSyncConflictsHtml() + '</div><div class="actions toolbar-start"><button type="button" class="btn" onclick="sbRetryMigration(this)">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload(this)">' + t('sbDownloadNow') + '</button>' + (state.user && state.user.role === 'school' && !state.user.sbUid ? '<button type="button" class="btn ghost" onclick="openLinkServerModal()">' + t('sbLinkServer') + '</button>' : '') + (sbSessionExpired ? '<button type="button" class="btn ghost" onclick="logout()">' + t('authLogin') + '</button>' : '') + '</div></div>' +
+  '<div class="card maxw-680 mt-16"><h3>' + t('fullBackup') + '</h3><p class="card-sub">' + t('fullBackupSub') + '</p><div class="actions toolbar-start"><button type="button" class="btn" onclick="exportFullBackup()">' + t('backupExport') + '</button><label class="btn ghost pointer">' + t('backupImport') + '<input type="file" accept="application/json,.json" style="display:none" onchange="onBackupFileChosen(this)"></label></div></div>' +
+  '<div class="card maxw-680 mt-16"><h3>' + t('raiseSupport') + '</h3><p class="card-sub">' + t('contactSub') + '</p><div class="actions toolbar-start"><button type="button" class="btn" onclick="openSupportForm()">' + t('raiseSupport') + '</button></div></div>';
 }
 function saveSettings(e) {
   e.preventDefault();
@@ -12400,13 +12389,13 @@ function studentDashboard() {
     '<h3>' + esc(me.name) + '</h3><p>Class ' + esc(me.cls) + ' • ' + esc(db.profile.name) + ', ' + esc(db.profile.city) + '</p>' +
     '<div class="toolbar" style="justify-content:center;margin-top:10px"><button class="btn" onclick="openStudentProfile(\'' + me.id + '\')">' + t('actView') + '</button></div></div>' +
     '<div class="tile-grid">' +
-    '<div class="tile green" onclick="go(\'attendance\')" style="cursor:pointer"><div class="n">' + studentAttPct(me) + '%</div><div class="l">' + t('tileAtt') + '</div></div>' +
-    '<div class="tile yellow" onclick="go(\'fees\')" style="cursor:pointer"><div class="n">' + studentFeeStatus(me.id) + '</div><div class="l">' + t('tileFees') + '</div></div>' +
-    '<div class="tile purple" onclick="go(\'results\')" style="cursor:pointer"><div class="n">' + resShow66 + '%</div><div class="l">' + t('tileResults') + '</div></div>' +
-    '<div class="tile blue" onclick="go(\'homework\')" style="cursor:pointer"><div class="n">' + myHw.length + '</div><div class="l">' + t('tileHw') + ' (' + doneCount + ' ' + t('doneSuffix') + ')</div></div>' +
+    '<div class="tile green pointer" onclick="go(\'attendance\')"><div class="n">' + studentAttPct(me) + '%</div><div class="l">' + t('tileAtt') + '</div></div>' +
+    '<div class="tile yellow pointer" onclick="go(\'fees\')"><div class="n">' + studentFeeStatus(me.id) + '</div><div class="l">' + t('tileFees') + '</div></div>' +
+    '<div class="tile purple pointer" onclick="go(\'results\')"><div class="n">' + resShow66 + '%</div><div class="l">' + t('tileResults') + '</div></div>' +
+    '<div class="tile blue pointer" onclick="go(\'homework\')"><div class="n">' + myHw.length + '</div><div class="l">' + t('tileHw') + ' (' + doneCount + ' ' + t('doneSuffix') + ')</div></div>' +
     '</div></div>' +
-    '<div class="card" style="margin-top:16px"><h3>' + t('myHomework') + '</h3><p class="card-sub">' + t('myHwSub') + '</p>' + hwItems + '</div>' +
-    '<div class="card" style="margin-top:16px"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div></div>';
+    '<div class="card mt-16"><h3>' + t('myHomework') + '</h3><p class="card-sub">' + t('myHwSub') + '</p>' + hwItems + '</div>' +
+    '<div class="card mt-16"><h3>' + t('noticesH') + '</h3><p class="card-sub">' + t('latestNotices') + '</p>' + notices + '</div></div>';
 }
 // v65: parent features live in the student portal — no separate parent
 // login. A parent logs in with the child's admission number + PIN (the
@@ -12561,7 +12550,7 @@ function showFatalError(msg) {
       box = document.createElement('div');
       box.id = 'fatalError';
       box.style.cssText = 'position:fixed;inset:0;z-index:9999;background:#0A1E4B;color:#fff;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;';
-      box.innerHTML = '<div><h2 style="margin:0 0 8px">Something went wrong</h2><p style="opacity:.85;margin:0 0 16px">School Saathi hit an unexpected error. Your data is saved on this device — please reload to continue.</p><p style="opacity:.85;margin:0 0 16px">कुछ गलत हो गया है। कृपया पेज दोबारा लोड करें।</p><button style="background:#F5B731;color:#0A1E4B;border:0;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer" onclick="location.reload()">Reload • दोबारा लोड करें</button></div>';
+      box.innerHTML = '<div><h2 style="margin:0 0 8px">Something went wrong</h2><p style="opacity:.85;margin:0 0 16px">School Saathi hit an unexpected error. Your data is saved on this device — please reload to continue.</p><button style="background:#F5B731;color:#0A1E4B;border:0;border-radius:8px;padding:10px 18px;font-size:15px;cursor:pointer" onclick="location.reload()">Reload</button></div>';
       document.body.appendChild(box);
     }
     if (msg) { try { console.error('[School Saathi] ' + msg); } catch (e2) {} }

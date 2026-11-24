@@ -345,17 +345,20 @@ const test = `
   eq(sessionStorage.getItem(SESSION_KEY), null, 'session cleared from sessionStorage on logout too');
   eq(await restoreSession(), false, 'restoreSession false after logout');
 
-  // ---- 11. i18n: Hindi toggle + key coverage ----
-  state.lang = 'hi';
-  eq(t('fees'), 'शुल्क', 'hi: fees');
-  eq(t('logout'), 'लॉगआउट', 'hi: logout');
-  state.lang = 'en';
+  // ---- 11. i18n: English-only (v147) — Hindi mode removed entirely. ----
+  // t() reads the English table only; there is no 'hi' table, no setLang
+  // and no toggle anywhere. Every key resolves to its English string.
+  eq(t('fees'), 'Fees', 'en: fees');
+  eq(t('logout'), 'Logout', 'en: logout');
+  eq(typeof I18N.hi, 'undefined', 'v147: no Hindi strings table');
+  eq(typeof setLang, 'undefined', 'v147: setLang is gone');
+  eq(typeof toggleLang, 'undefined', 'v147: toggleLang is gone');
   var missing = [];
-  // v28: server-auth strings are intentionally English-only (EN_ONLY).
-  var EN_ONLY = ['sbForgotPw', 'sbRecoverTitle', 'sbSendResetLink', 'sbResetPw', 'sbRecoverSent', 'sbRecoverFailed', 'sbResetDone', 'sbResetFailed', 'sbTooMany', 'sbEmailConfirm', 'sbEmailConfirmed', 'sbOfflineLogin', 'sbTitle', 'sbBackupNow', 'sbStatusSynced', 'sbStatusPending', 'sbStatusUploading', 'sbStatusFailed', 'sbStatusOffline', 'sbStatusNotSchool', 'sbBackupDone', 'sbBackupFailed', 'sbNoSchool', 'sbDownloadNow', 'sbDownloadStart', 'sbDownloadDone', 'sbDownloadFailed', 'sbDownloadSkipped', 'sbDownloadOffline', 'sbDownloadNoServer', 'sbStatusSyncing', 'sbStatusPendingSync', 'sbSyncDone', 'sbSyncFailed', 'sbSyncOffline', 'sbSyncConflict'];
-  Object.keys(I18N.en).forEach(function (k) { if (I18N.hi[k] === undefined && EN_ONLY.indexOf(k) === -1) missing.push('hi missing: ' + k); });
-  Object.keys(I18N.hi).forEach(function (k) { if (I18N.en[k] === undefined) missing.push('en missing: ' + k); });
-  ok(missing.length === 0, 'i18n key parity en/hi' + (missing.length ? ' — ' + missing.join('; ') : ''));
+  Object.keys(I18N.en).forEach(function (k) { if (!I18N.en[k]) missing.push('en empty: ' + k); });
+  var deva = [];
+  Object.keys(I18N.en).forEach(function (k) { if (/[\u0900-\u097F]/.test(String(I18N.en[k]))) deva.push(k); });
+  ok(missing.length === 0, 'i18n: every English key has a string' + (missing.length ? ' — ' + missing.join('; ') : ''));
+  ok(deva.length === 0, 'v147: no Devanagari in any English string' + (deva.length ? ' — ' + deva.join(', ') : ''));
 
   // ---- 12. chart guards ----
   var emptyBar = barChartSVG([]);
@@ -866,17 +869,15 @@ const test = `
   ok(dirHtml.indexOf('Boys') !== -1 && dirHtml.indexOf('Girls') !== -1, 'directory shows gender distribution');
   ok(dirHtml.indexOf('>21<') !== -1, 'directory shows boys count 21');
 
-  // ---- 34. i18n: new Phase 1 strings translate to Hindi ----
-  state.lang = 'hi';
-  eq(t('secPersonal'), 'व्यक्तिगत विवरण', 'hi: secPersonal');
-  eq(t('tabOverview'), 'सारांश', 'hi: tabOverview');
-  eq(t('stTotal'), 'कुल छात्र', 'hi: stTotal');
-  eq(t('actView'), 'प्रोफ़ाइल देखें', 'hi: actView');
-  eq(t('idCardSoon'), 'ID कार्ड जनरेटर Phase 3 में आएगा।', 'hi: idCardSoon');
-  eq(t('saveAddAnother'), 'सहेजें और नया जोड़ें', 'hi: saveAddAnother');
+  // ---- 34. i18n: Phase 1 strings are English-only (v147) ----
+  eq(t('secPersonal'), 'Personal Details', 'en: secPersonal');
+  eq(t('tabOverview'), 'Overview', 'en: tabOverview');
+  eq(t('stTotal'), 'Total Students', 'en: stTotal');
+  eq(t('actView'), 'View Profile', 'en: actView');
+  eq(t('idCardSoon'), 'ID Card generator comes in Phase 3.', 'en: idCardSoon');
+  eq(t('saveAddAnother'), 'Save & Add Another', 'en: saveAddAnother');
   state.stuSearch = ''; state.stuClass = 'All'; state.stuSection = 'All'; state.stuSession = 'All'; state.stuGender = 'All'; state.stuFee = 'All'; state.stuStatus = 'All'; state.stuPage = 1; state.profileStudent = null;
-  ok(studentsPage().indexOf('कुल छात्र') !== -1, 'directory renders Hindi stat labels');
-  state.lang = 'en';
+  ok(studentsPage().indexOf('Total Students') !== -1, 'directory renders English stat labels');
 
   // ---- 35. CSV parser: quotes, commas, CRLF, empty lines ----
   var csv1 = parseCSV('a,b,c\\n1,2,3');
@@ -1064,16 +1065,14 @@ const test = `
   ok(studentsPage().indexOf('Promote Student') !== -1, 'profile offers Promote for Active student');
   state.profileStudent = null;
 
-  // ---- 39. i18n: new Phase 2 strings translate to Hindi ----
-  state.lang = 'hi';
-  eq(t('impTitle'), 'छात्रों का बल्क आयात', 'hi: impTitle');
-  eq(t('impConfirm'), 'सही पंक्तियाँ आयात करें', 'hi: impConfirm');
-  eq(t('promoTitle'), 'छात्रों को प्रोन्नत करें', 'hi: promoTitle');
-  eq(t('promoPromote'), 'चयनित को प्रोन्नत करें', 'hi: promoPromote');
-  eq(t('promoNoop'), 'लक्ष्य कक्षा और सत्र वर्तमान जैसे ही हैं — बदलने को कुछ नहीं।', 'hi: promoNoop');
+  // ---- 39. i18n: Phase 2 strings are English-only (v147) ----
+  eq(t('impTitle'), 'Bulk Import Students', 'en: impTitle');
+  eq(t('impConfirm'), 'Import Valid Rows', 'en: impConfirm');
+  eq(t('promoTitle'), 'Promote Students', 'en: promoTitle');
+  eq(t('promoPromote'), 'Promote Selected', 'en: promoPromote');
+  eq(t('promoNoop'), 'Target class and session are the same as current — nothing to change.', 'en: promoNoop');
   state.stuSearch = ''; state.stuClass = 'All'; state.stuSection = 'All'; state.stuSession = 'All'; state.stuGender = 'All'; state.stuFee = 'All'; state.stuStatus = 'All'; state.stuPage = 1; state.profileStudent = null; promoState = null;
-  ok(studentsPage().indexOf('छात्र आयात करें') !== -1, 'directory renders Hindi import button');
-  state.lang = 'en';
+  ok(studentsPage().indexOf('Import Students') !== -1, 'directory renders English import button');
 
 
   // ---- 40. ID cards: real QR, card HTML, selection + print flow, promotion previousClass ----
@@ -1162,20 +1161,18 @@ const test = `
   eq(feeTotals().collected, ft40a.collected, 'ID cards + promotion keep collected total');
   eq(feeTotals().pending, ft40a.pending, 'ID cards + promotion keep pending total');
 
-  // ---- 41. i18n: new Phase 3 strings translate to Hindi ----
-  state.lang = 'hi';
-  eq(t('idcPreview'), 'ID कार्ड पूर्वावलोकन', 'hi: idcPreview');
-  eq(t('idcPrint'), 'छापें', 'hi: idcPrint');
-  eq(t('idcPrintCards'), 'ID कार्ड छापें', 'hi: idcPrintCards');
-  eq(t('idcClearSel'), 'चयन हटाएँ', 'hi: idcClearSel');
-  eq(t('idcReady'), 'ID कार्ड छपाई के लिए तैयार', 'hi: idcReady');
-  eq(t('idcEmergency'), 'आपातकालीन संपर्क', 'hi: idcEmergency');
-  eq(t('idcReturn'), 'मिले तो कृपया लौटाएँ', 'hi: idcReturn');
-  eq(t('idcNoQr'), 'QR कोड नहीं बन सका।', 'hi: idcNoQr');
+  // ---- 41. i18n: Phase 3 strings are English-only (v147) ----
+  eq(t('idcPreview'), 'ID Card Preview', 'en: idcPreview');
+  eq(t('idcPrint'), 'Print', 'en: idcPrint');
+  eq(t('idcPrintCards'), 'Print ID Cards', 'en: idcPrintCards');
+  eq(t('idcClearSel'), 'Clear selection', 'en: idcClearSel');
+  eq(t('idcReady'), 'ID cards ready to print', 'en: idcReady');
+  eq(t('idcEmergency'), 'Emergency Contact', 'en: idcEmergency');
+  eq(t('idcReturn'), 'If found, please return to', 'en: idcReturn');
+  eq(t('idcNoQr'), 'QR code could not be generated.', 'en: idcNoQr');
   state.profileStudent = null; promoState = null; state.stuSel = { stu1: true };
-  ok(studentsPage().indexOf('ID कार्ड छापें (1)') !== -1, 'directory renders Hindi bulk ID card button');
+  ok(studentsPage().indexOf('Print ID Cards (1)') !== -1, 'directory renders English bulk ID card button');
   state.stuSel = {};
-  state.lang = 'en';
 
 
   // ---- 42. v35: student login (admission no. + PIN) replaces the parent login ----
@@ -1533,24 +1530,22 @@ const test = `
   ok(db.auditLog.some(function (a) { return a.action === 'Admission request approved'; }), 'P14 audit has admission-request entries');
   state.profileStudent = null; state.admReqFilter = 'All';
 
-  // ---- 45. i18n: new v35 login strings translate to Hindi ----
-  state.lang = 'hi';
-  eq(t('authStudent'), 'छात्र', 'hi: authStudent');
-  eq(t('authTeacher'), 'शिक्षक', 'hi: authTeacher');
-  eq(t('stuLoginBtn'), 'छात्र के रूप में लॉगिन करें', 'hi: stuLoginBtn');
-  eq(t('tchrLoginBtn'), 'शिक्षक के रूप में लॉगिन करें', 'hi: tchrLoginBtn');
-  eq(t('tInvalidStudent'), 'प्रवेश संख्या या PIN गलत है।', 'hi: tInvalidStudent');
-  eq(t('tNotAllowed'), 'आपकी लॉगिन इस सेक्शन को नहीं खोल सकती।', 'hi: tNotAllowed');
-  eq(t('tOwnProfileOnly'), 'आप केवल अपनी प्रोफ़ाइल देख सकते हैं।', 'hi: tOwnProfileOnly');
-  eq(t('tchrDashboard'), 'शिक्षक डैशबोर्ड', 'hi: tchrDashboard');
-  eq(t('teachers'), 'शिक्षक', 'hi: teachers');
-  eq(t('admReqApply'), 'प्रवेश के लिए आवेदन करें', 'hi: admReqApply');
-  eq(t('admReqApprove'), 'स्वीकृत करें', 'hi: admReqApprove');
-  eq(t('admReqReject'), 'अस्वीकृत करें', 'hi: admReqReject');
-  eq(t('tPinSet'), 'छात्र PIN सेट हो गया।', 'hi: tPinSet');
-  eq(t('tPinCleared'), 'छात्र PIN हटा दिया गया।', 'hi: tPinCleared');
-  eq(t('stuPinTitle'), 'छात्र PIN', 'hi: stuPinTitle');
-  state.lang = 'en';
+  // ---- 45. i18n: v35 login strings are English-only (v147) ----
+  eq(t('authStudent'), 'Student', 'en: authStudent');
+  eq(t('authTeacher'), 'Teacher', 'en: authTeacher');
+  eq(t('stuLoginBtn'), 'Login as Student', 'en: stuLoginBtn');
+  eq(t('tchrLoginBtn'), 'Login as Teacher', 'en: tchrLoginBtn');
+  eq(t('tInvalidStudent'), 'Invalid admission number or PIN.', 'en: tInvalidStudent');
+  eq(t('tNotAllowed'), 'Your login cannot open this section.', 'en: tNotAllowed');
+  eq(t('tOwnProfileOnly'), 'You can only view your own profile.', 'en: tOwnProfileOnly');
+  eq(t('tchrDashboard'), 'Teacher Dashboard', 'en: tchrDashboard');
+  eq(t('teachers'), 'Teachers', 'en: teachers');
+  eq(t('admReqApply'), 'Apply for Admission', 'en: admReqApply');
+  eq(t('admReqApprove'), 'Approve', 'en: admReqApprove');
+  eq(t('admReqReject'), 'Reject', 'en: admReqReject');
+  eq(t('tPinSet'), 'Student PIN set.', 'en: tPinSet');
+  eq(t('tPinCleared'), 'Student PIN cleared.', 'en: tPinCleared');
+  eq(t('stuPinTitle'), 'Student PIN', 'en: stuPinTitle');
 
   // ---- 46. Phase 5: fee collection receipt (v13) ----
   state.role = 'school'; state.user = TEST_ACCOUNTS.school; state.view = 'fees';
@@ -1667,15 +1662,13 @@ const test = `
   eq(state.collectStudent, null, 'parent role cannot open the collect page');
   state.role = 'school'; state.user = TEST_ACCOUNTS.school; state.parentStudentId = null;
 
-  // ---- 47. i18n: new Phase 5 strings translate to Hindi ----
-  state.lang = 'hi';
-  eq(t('rcptTitle'), 'शुल्क रसीद', 'hi: rcptTitle');
-  eq(t('collectFeeBtn'), 'शुल्क वसूलें', 'hi: collectFeeBtn');
-  eq(t('payModeCash'), 'नकद', 'hi: payModeCash');
-  eq(t('rcptCollectorSign'), 'वसूलकर्ता के हस्ताक्षर', 'hi: rcptCollectorSign');
-  eq(t('tFeeCollected'), 'शुल्क वसूल लिया गया।', 'hi: tFeeCollected');
-  eq(t('rcptTotalWords'), 'कुल (शब्दों में)', 'hi: rcptTotalWords');
-  state.lang = 'en';
+  // ---- 47. i18n: Phase 5 strings are English-only (v147) ----
+  eq(t('rcptTitle'), 'FEE RECEIPT', 'en: rcptTitle');
+  eq(t('collectFeeBtn'), 'Collect Fee', 'en: collectFeeBtn');
+  eq(t('payModeCash'), 'Cash', 'en: payModeCash');
+  eq(t('rcptCollectorSign'), "Collector's Signature", 'en: rcptCollectorSign');
+  eq(t('tFeeCollected'), 'Fee collected.', 'en: tFeeCollected');
+  eq(t('rcptTotalWords'), 'Total in Words', 'en: rcptTotalWords');
 
   // ---- 48. v18: receipt lines table fits 390px AND 500px (no horizontal scroll) ----
   // v14 scoped the compact rules to 480px, so at 500px the PAID column was cut off.
@@ -2370,17 +2363,15 @@ const test = `
   eq(typeof PAGE_STUDENT.attendance, 'function', 'v65: the student attendance page exists');
   eq(typeof PAGE_STUDENT.fees, 'function', 'v65: the student fees page exists');
   eq(typeof PAGE_STUDENT.results, 'function', 'v65: the student results page exists');
-  // (b) I18N in both languages, including the parent hint on the login note.
+  // (b) I18N is English-only (v147), including the parent hint on the login note.
   state.lang = 'en';
   eq(t('results'), 'Results', 'v65: the Results nav label exists in English');
   ok(t('myAttSub').indexOf('attendance') !== -1, 'v65: the attendance page sub exists in English');
   ok(t('myFeesSub').indexOf('fee') !== -1, 'v65: the fees page sub exists in English');
   ok(t('myResultsSub').indexOf('exam') !== -1, 'v65: the results page sub exists in English');
   ok(t('stuNote').indexOf('Parents') !== -1, 'v65: the student login note tells parents to use the child\u2019s credentials (English)');
-  state.lang = 'hi';
-  eq(t('results'), 'परिणाम', 'v65: the Results nav label exists in Hindi');
-  ok(t('stuNote').indexOf('माता-पिता') !== -1, 'v65: the student login note tells parents to use the child\u2019s credentials (Hindi)');
-  state.lang = 'en';
+  // v147: Hindi mode is gone — the Results label is English only.
+  eq(t('results'), 'Results', 'v65: the Results nav label is English only');
   // (c) The pages render from a cloud slice — the parent-on-a-fresh-device
   // case. Richer than the v61 fixture: a Collected month + a Pending
   // month, a Present day + an Absent day, two exams with marks.
@@ -2684,12 +2675,12 @@ const test = `
   eq(feeTypeOf(gen53[0]), 'Tuition', 'v21: generated record is Tuition');
   // Phone CSS: fixed layout, compact cells, nowrap date, shared compact table rule.
   ok(__css.indexOf('.fee-hist-tbl table{table-layout:fixed;min-width:0}') !== -1, 'v21: fee-history table has a fixed-layout phone rule');
-  ok(__css.indexOf('.fee-hist-tbl th:nth-child(4),.fee-hist-tbl td:nth-child(4){width:74px;white-space:nowrap;font-size:11px}') !== -1, 'v21: fee-history date column stays on one line on phones');
-  ok(__css.indexOf('.tbl-wrap th,.tbl-wrap td{padding:6px 8px;font-size:12.5px}') !== -1, 'v21: shared compact table rule exists at phone width');
+  ok(__css.indexOf('.fee-hist-tbl th:nth-child(4),.fee-hist-tbl td:nth-child(4){width:74px;white-space:nowrap;font-size:12px}') !== -1, 'v21/v147: fee-history date column stays on one line on phones (12px)');
+  ok(__css.indexOf('.tbl-wrap th,.tbl-wrap td{padding:6px 8px;font-size:13.5px}') !== -1, 'v21: shared compact table rule exists at phone width');
   // ---- 54. v22: fee profile + fees list date columns stay on one line on phones ----
-  ok(__css.indexOf('.fee-prof-tbl th:nth-child(4),.fee-prof-tbl td:nth-child(4){white-space:nowrap;font-size:11px}') !== -1, 'v22: fee profile date column stays on one line on phones');
-  ok(__css.indexOf('.fee-list-tbl th:nth-child(7),.fee-list-tbl td:nth-child(7){white-space:nowrap;font-size:11px}') !== -1, 'v22: fees list date column stays on one line on phones');
-  ok(__css.indexOf('.fee-hist-tbl th:nth-child(4),.fee-hist-tbl td:nth-child(4){width:74px;white-space:nowrap;font-size:11px}') !== -1, 'v22: v21 fee-history date rule is still present');
+  ok(__css.indexOf('.fee-prof-tbl th:nth-child(4),.fee-prof-tbl td:nth-child(4){white-space:nowrap;font-size:12px}') !== -1, 'v22/v147: fee profile date column stays on one line on phones (12px)');
+  ok(__css.indexOf('.fee-list-tbl th:nth-child(7),.fee-list-tbl td:nth-child(7){white-space:nowrap;font-size:12px}') !== -1, 'v22/v147: fees list date column stays on one line on phones (12px)');
+  ok(__css.indexOf('.fee-hist-tbl th:nth-child(4),.fee-hist-tbl td:nth-child(4){width:74px;white-space:nowrap;font-size:12px}') !== -1, 'v22: v21 fee-history date rule is still present');
   ok(__css.indexOf('.fee-hist-tbl table{table-layout:fixed;min-width:0}') !== -1, 'v22: v21 fee-history fixed-layout rule is still present');
   var fp54 = studentFeeProfile(stu53.id);
   ok(fp54.indexOf('fee-prof-tbl') !== -1, 'v22: fee profile table carries the phone-compact class');
@@ -3687,16 +3678,15 @@ const test = `
   ok(studentFeeProfile(ownStu38.id).indexOf("waFeeReminder('fee-wa-own')") !== -1, 'v38 (i): the student fee profile shows a reminder button');
   state.feeSearch = '';
 
-  // (i) the Hindi reminder is Devanagari and carries the same fields
-  state.lang = 'hi';
+  // (i) the fee reminder is English and carries the same fields (v147: Hindi templates are gone)
   window.__opened.length = 0;
-  eq(waFeeReminder('fee-wa-own'), true, 'v38 (i): the Hindi fee reminder opens');
-  var txtHi38 = decodeURIComponent(window.__opened[0].split('?text=')[1]);
-  ok(txtHi38.indexOf('नमस्ते') !== -1, 'v38 (i): the Hindi reminder greets in Hindi');
-  ok(txtHi38.indexOf('फीस') !== -1, 'v38 (i): the Hindi reminder says फीस');
-  ok(txtHi38.indexOf('धन्यवाद') !== -1, 'v38 (i): the Hindi reminder closes in Hindi');
-  ok(txtHi38.indexOf(ownStu38.name) !== -1 && txtHi38.indexOf('Oct') !== -1 && txtHi38.indexOf(inr(900)) !== -1, 'v38 (i): the Hindi reminder still carries student, month and amount');
-  state.lang = 'en';
+  eq(waFeeReminder('fee-wa-own'), true, 'v38 (i): the fee reminder opens');
+  var txtEn38 = decodeURIComponent(window.__opened[0].split('?text=')[1]);
+  ok(txtEn38.indexOf('Fee reminder') !== -1, 'v38 (i): the reminder says Fee reminder');
+  ok(txtEn38.indexOf('Namaste') !== -1, 'v38 (i): the reminder greets with Namaste');
+  ok(txtEn38.indexOf('Thank you') !== -1, 'v38 (i): the reminder closes with Thank you');
+  ok(txtEn38.indexOf(ownStu38.name) !== -1 && txtEn38.indexOf('Oct') !== -1 && txtEn38.indexOf(inr(900)) !== -1, 'v38 (i): the reminder still carries student, month and amount');
+  ok(!/[\u0900-\u097F]/.test(txtEn38), 'v147: the reminder has no Devanagari');
 
   // (iv) a missing or invalid number disables the button and refuses the action
   var savedPhone38 = ownStu38.phone;
@@ -3817,11 +3807,11 @@ const test = `
   // substring inside it, which is not a claim that it was sent.
   ok(waAudits38.every(function (a) { return (' ' + a.details + ' ').indexOf(' sent ') === -1; }), 'v38 (vii): no WhatsApp audit entry ever says sent');
 
-  // (viii) templates never carry Aadhaar, PINs or passwords — either language
+  // (viii) templates never carry Aadhaar, PINs or passwords — English only (v147: no Hindi table)
   var waKeys38 = ['waFeeReminderMsg', 'waAbsentMsg', 'waLateMsg', 'waReceiptMsg', 'waGreetMsg'];
-  ok(waKeys38.every(function (k) { return I18N.en[k] && I18N.hi[k] && I18N.en[k].indexOf('Aadhaar') === -1 && I18N.en[k].indexOf('PIN') === -1 && I18N.en[k].indexOf('Password') === -1 && I18N.hi[k].indexOf('आधार') === -1 && I18N.hi[k].indexOf('PIN') === -1 && I18N.hi[k].indexOf('पासवर्ड') === -1; }), 'v38 (viii): no template mentions Aadhaar, PIN or password');
-  ok(['waReminderBtn', 'waNotifyBtn', 'waShareReceiptBtn', 'waChatBtn', 'waNotifyCol', 'waNoNumber', 'waOpened', 'waNotAbsent', 'waSchoolContact'].concat(waKeys38).every(function (k) { return I18N.en[k] && I18N.hi[k]; }), 'v38 (viii): every new WhatsApp string has an English and a Hindi key');
-  ok(I18N.hi.waFeeReminderMsg.indexOf('नमस्ते') !== -1 && I18N.hi.waAbsentMsg.indexOf('नहीं आया') !== -1 && I18N.hi.waLateMsg.indexOf('देर से') !== -1 && I18N.hi.waReceiptMsg.indexOf('रसीद') !== -1, 'v38 (viii): the Hindi templates are in Devanagari with the right wording');
+  ok(waKeys38.every(function (k) { return I18N.en[k] && I18N.en[k].indexOf('Aadhaar') === -1 && I18N.en[k].indexOf('PIN') === -1 && I18N.en[k].indexOf('Password') === -1; }), 'v38 (viii): no template mentions Aadhaar, PIN or password');
+  ok(['waReminderBtn', 'waNotifyBtn', 'waShareReceiptBtn', 'waChatBtn', 'waNotifyCol', 'waNoNumber', 'waOpened', 'waNotAbsent', 'waSchoolContact'].concat(waKeys38).every(function (k) { return I18N.en[k]; }), 'v38 (viii): every new WhatsApp string has an English key');
+  ok(I18N.en.waFeeReminderMsg.indexOf('Fee reminder') !== -1 && I18N.en.waAbsentMsg.indexOf('absent') !== -1 && I18N.en.waLateMsg.indexOf('late') !== -1 && I18N.en.waReceiptMsg.indexOf('receipt') !== -1, 'v38 (viii): the English templates have the right wording');
 
   // ---- 64. v39: receipt view reachable from stable places; sync failures name the table ----
   // (a) the receipt lookup: same student + same month, latest first, type-matching wins
@@ -3895,8 +3885,8 @@ const test = `
   ok(failTxt64b.indexOf('Backup failed') !== -1 && failTxt64b.indexOf('undefined') === -1 && failTxt64b.indexOf('()') === -1, 'v39 (f): a failure with no detail stays clean');
   sbSetStatus('synced');
 
-  // (g) the new Receipt header exists in both languages
-  ok(!!I18N.en.thReceipt && !!I18N.hi.thReceipt, 'v39 (g): the Receipt column header has English and Hindi keys');
+  // (g) the new Receipt header exists in English (v147: no Hindi keys)
+  ok(!!I18N.en.thReceipt, 'v39 (g): the Receipt column header has an English key');
 
   // ---- 65. v40: counter_no is an INTEGER column — the Collect Fee label 'COUNTER-1' must never be POSTed as a string ----
   // Live proof (9 Nov 2026, diagnostic replay of the exact app POST):
@@ -4085,8 +4075,8 @@ const test = `
   ok(document.getElementById('sbStatus').textContent.indexOf('Backed up to the server.') !== -1, 'v43 (d): writing synced updates the login-screen status line in place too');
   ok(document.getElementById('sbStatusLine').textContent.indexOf('Last attempt: ') !== -1, 'v43 (d): the Settings line in place carries the Last Attempt time');
 
-  // (e) the Last attempt label has both languages
-  ok(!!I18N.en.sbLastAttempt && !!I18N.hi.sbLastAttempt, 'v43 (e): the Last attempt label has English and Hindi keys');
+  // (e) the Last attempt label has an English key (v147)
+  ok(!!I18N.en.sbLastAttempt, 'v43 (e): the Last attempt label has an English key');
 
   // ---- 69. v44: the students 409 adopt + the truthful manual-backup toast ----
   // Live shape (9 Nov 2026, v43 browser check): every cycle failed with
@@ -4100,10 +4090,9 @@ const test = `
   // the v44 async block below; this section covers the toast strings, the
   // toast showing, and the v43 failure now being stale.)
 
-  // (a) the manual-backup toast strings exist in both languages (the Hindi
-  // keys are new in v44 — the toast fell back to English before)
-  ok(!!I18N.en.sbBackupDone && !!I18N.hi.sbBackupDone, 'v44 (a): Backup complete. has English and Hindi keys');
-  ok(!!I18N.en.sbBackupFailed && !!I18N.hi.sbBackupFailed, 'v44 (a): Backup did not finish has English and Hindi keys');
+  // (a) the manual-backup toast strings exist in English (v147: Hindi keys are gone)
+  ok(!!I18N.en.sbBackupDone, 'v44 (a): Backup complete. has an English key');
+  ok(!!I18N.en.sbBackupFailed, 'v44 (a): Backup did not finish has an English key');
 
   // (b) toast() shows the message immediately, and a second toast replaces the first
   toast(t('sbBackupDone'));
@@ -6212,31 +6201,25 @@ const test = `
   ok(np96b.indexOf('Test Notice') !== -1, 'v96: a notices list still renders its items');
   ok(np96b.indexOf(t('tNoNotices')) === -1, 'v96: a non-empty notices list does not show the empty state');
   db.notices = savedNotices96;
-  // (ii) setLang does not throw when the login-screen toggle is absent
-  // (the vm DOM has no login buttons) — the guards keep it safe.
-  setLang('hi');
-  eq(state.lang, 'hi', 'v96: setLang switches to Hindi');
-  setLang('en');
-  eq(state.lang, 'en', 'v96: setLang switches back to English');
+  // (ii) v147: setLang / toggleLang are gone with Hindi mode — the app is
+  // English-only and t() never switches language.
+  eq(typeof setLang, 'undefined', 'v147: setLang is gone');
+  eq(typeof toggleLang, 'undefined', 'v147: toggleLang is gone');
+  eq(t('fees'), 'Fees', 'v147: t() still resolves English strings');
   // Reset the filter state this block set.
   state.stuSearch = ''; state.stuClass = 'All'; state.stuSection = 'All'; state.stuSession = 'All'; state.stuGender = 'All'; state.stuFee = 'All'; state.stuStatus = 'All'; state.stuPage = 1;
   state.attDate = todayIST(); state.attCls = '6th-A';
   state.feeFilter = 'All'; state.feeType = 'All'; state.feeSearch = ''; state.feeLimit = 120;
   state.examId = null; state.collectStudent = null; state.feeStudent = null;
   loginAs(TEST_ACCOUNTS.school);
-  // ---- v112: small polish — status line + reset heading follow the language ----
+  // ---- v112: small polish — status line + reset heading are English ----
   // (i) The login screen's sync status line is set via textContent (not
-  // data-i18n), so a language switch left it in the old language until
-  // the next sync event. setLang now refreshes it. (The test school is
-  // local-only, so sbSetStatus coerces to the local-only line — the
-  // refresh is language-agnostic, and that line is translated too.)
-  setLang('en');
+  // data-i18n). v147: Hindi mode is gone, so the line is always English —
+  // there is no language switch to refresh after. (The test school is
+  // local-only, so sbSetStatus coerces to the local-only line.)
   sbSetStatus('failed', '');
-  ok($('sbStatus').textContent.indexOf('Not linked to the server') !== -1, 'v112: the status line is English in English mode');
-  setLang('hi');
-  ok($('sbStatus').textContent.indexOf('सर्वर से जुड़ा नहीं है') !== -1, 'v112: the status line turns Hindi on the language switch');
-  setLang('en');
-  ok($('sbStatus').textContent.indexOf('Not linked to the server') !== -1, 'v112: the status line turns back to English');
+  ok($('sbStatus').textContent.indexOf('Not linked to the server') !== -1, 'v112: the status line is English');
+  ok($('sbStatus').textContent.indexOf('Not linked to the server') !== -1, 'v112: the status line stays English (v147: no Hindi mode)');
   // (ii) The login card's "Welcome back" heading stays visible above the
   // password-reset forms — on a reset card it is the wrong heading. The
   // heading now shows the reset title there, and "Welcome back" returns
@@ -6244,9 +6227,7 @@ const test = `
   showRecoverForm();
   eq($('welcomeTitle').textContent, t('sbRecoverTitle'), 'v112: the reset form shows the Reset Password heading');
   eq($('welcomeSub').style.display, 'none', 'v112: the reset form hides the welcome sub-line');
-  setLang('hi');
-  eq($('welcomeTitle').textContent, 'पासवर्ड रीसेट करें', 'v112: the reset heading follows the language switch');
-  setLang('en');
+  eq($('welcomeTitle').textContent, t('sbRecoverTitle'), 'v112: the reset heading stays English (v147: no Hindi mode)');
   switchAuth('login');
   eq($('welcomeTitle').textContent, t('loginWelcomeBack'), 'v112: back on the login form, the heading is Welcome back again');
   ok($('welcomeSub').style.display !== 'none', 'v112: back on the login form, the welcome sub-line is visible again');
@@ -7024,20 +7005,19 @@ while ((m = re.exec(src)) !== null) tKeys.add(m[1]);
 const reEsc = /\bt\(\\'([^']+)\\'\)/g;
 while ((m = reEsc.exec(src)) !== null) tKeys.add(m[1]);
 const i18n = ctx.I18N;
-// v28: server-auth strings are intentionally English-only (the app's
-// language toggle falls back to en for them), so they are exempt from the
-// hi-coverage rule. Every other key still needs both languages.
-const EN_ONLY_KEYS = new Set(['sbForgotPw', 'sbRecoverTitle', 'sbSendResetLink', 'sbResetPw', 'sbRecoverSent', 'sbRecoverFailed', 'sbResetDone', 'sbResetFailed', 'sbTooMany', 'sbEmailConfirm', 'sbEmailConfirmed', 'sbOfflineLogin', 'sbTitle', 'sbBackupNow', 'sbStatusSynced', 'sbStatusPending', 'sbStatusUploading', 'sbStatusFailed', 'sbStatusOffline', 'sbStatusNotSchool', 'sbBackupDone', 'sbBackupFailed', 'sbNoSchool', 'sbDownloadNow', 'sbDownloadStart', 'sbDownloadDone', 'sbDownloadFailed', 'sbDownloadSkipped', 'sbDownloadOffline', 'sbDownloadNoServer', 'sbStatusSyncing', 'sbStatusPendingSync', 'sbSyncDone', 'sbSyncFailed', 'sbSyncOffline', 'sbSyncConflict']);
+// v147: English-only — there is no 'hi' table and no toggle, so every
+// t() key used in code must exist in the English table (nothing is
+// exempt any more; the old EN_ONLY_KEYS exemption is gone with Hindi).
 const missingKeys = [];
+if (i18n.hi !== undefined) missingKeys.push('Hindi table still exists in I18N');
 tKeys.forEach(k => {
   if (!(k in i18n.en)) missingKeys.push('en missing key used in code: ' + k);
-  if (!(k in i18n.hi) && !EN_ONLY_KEYS.has(k)) missingKeys.push('hi missing key used in code: ' + k);
 });
 if (missingKeys.length) {
   console.log('FAIL i18n code-usage coverage: ' + missingKeys.join('; '));
   process.exitCode = 1;
 } else {
-  console.log('PASS i18n: all ' + tKeys.size + ' t() keys exist in en + hi');
+  console.log('PASS i18n: all ' + tKeys.size + ' t() keys exist in en (English-only, v147)');
 }
 const nativeConfirm = (src.match(/(^|[^A-Za-z0-9_$.])confirm\s*\(/g) || []).length;
 const mathRandom = (src.match(/Math\.random/g) || []).length;
@@ -7078,10 +7058,10 @@ console.log(cryptoSrc.includes('function timingSafeEqual') && cryptoSrc.includes
   ? 'PASS crypto.js verifyPw uses timingSafeEqual on the s256$ + djb2 branches'
   : 'FAIL verifyPw does not use timingSafeEqual');
 if (!(cryptoSrc.includes('function timingSafeEqual') && cryptoSrc.includes('timingSafeEqual(sha256Hex') && cryptoSrc.includes('timingSafeEqual(hashPw(pw)'))) process.exitCode = 1;
-console.log(html.includes('printArea') && html.includes('langOne') && html.includes('toggleLang')
-  ? 'PASS index.html has printArea + langOne + toggleLang'
-  : 'FAIL index.html missing printArea/langOne/toggleLang');
-if (!(html.includes('printArea') && html.includes('langOne') && html.includes('toggleLang'))) process.exitCode = 1;
+console.log(html.includes('printArea')
+  ? 'PASS index.html has printArea (v147: langOne + toggleLang are gone with Hindi mode)'
+  : 'FAIL index.html missing printArea');
+if (!(html.includes('printArea'))) process.exitCode = 1;
 console.log(html.includes('studentForm') && html.includes('tabStudent') && html.includes('teacherForm') && html.includes('tabTeacher') && html.includes('admReqApply') && html.includes('stuAdmNo')
   ? 'PASS index.html has Student + Teacher tabs and login forms + Apply for Admission link'
   : 'FAIL index.html missing student/teacher login forms / apply link');
@@ -7103,15 +7083,15 @@ console.log((src.split("indexOf('s256\$') === 0 || String(acc.pwHash).indexOf('b
   ? 'PASS v95: the teacher + staff sync only ever send bcrypt or s256 hashes (both gates present)'
   : 'FAIL v95: a sync path sends a hash without the bcrypt/s256 gate');
 if ((src.split("indexOf('s256\$') === 0 || String(acc.pwHash).indexOf('bcrypt\$') === 0").length - 1) !== 2) process.exitCode = 1;
-// ---- v96: login screen has its own language toggle ----
-console.log(html.includes('loginLangEn') && html.includes('loginLangHi') && html.includes("setLang('hi')")
-  ? 'PASS v96: the login screen has an EN/Hindi toggle'
-  : 'FAIL v96: the login screen is missing its language toggle');
-if (!(html.includes('loginLangEn') && html.includes('loginLangHi'))) process.exitCode = 1;
-console.log(i18nSrc.includes("tNoNotices: 'No notices yet.'") && i18nSrc.includes("tNoNotices: 'अभी कोई नोटिस नहीं है।'")
-  ? 'PASS v96: the tNoNotices key exists in English and Hindi'
-  : 'FAIL v96: the tNoNotices key is missing in a language');
-if (!(i18nSrc.includes("tNoNotices: 'No notices yet.'") && i18nSrc.includes("tNoNotices: 'अभी कोई नोटिस नहीं है।'"))) process.exitCode = 1;
+// ---- v96 (v147): no language toggle anywhere — English-only ----
+console.log(!html.includes('loginLangHi') && !html.includes("setLang('hi')") && !html.includes('toggleLang')
+  ? 'PASS v96: the login screen has no Hindi toggle (v147)'
+  : 'FAIL v96: a Hindi language toggle is still in the HTML');
+if (html.includes('loginLangHi') || html.includes("setLang('hi')") || html.includes('toggleLang')) process.exitCode = 1;
+console.log(i18nSrc.includes("tNoNotices: 'No notices yet.'") && !/[\u0900-\u097F]/.test(i18nSrc)
+  ? 'PASS v96: the tNoNotices key exists in English and i18n has no Devanagari'
+  : 'FAIL v96: the tNoNotices key is missing or i18n still has Devanagari');
+if (!(i18nSrc.includes("tNoNotices: 'No notices yet.'") && !/[\u0900-\u097F]/.test(i18nSrc))) process.exitCode = 1;
 // ---- v97: audit rows for cloud attendance/homework/marks ----
 console.log(src.includes('function sbLogAuditCloud') && src.includes("sbRest('POST', 'rpc/ss_log_audit'") && src.includes("logAudit('Marks saved'") && src.includes("logAudit('Homework assigned'")
   ? 'PASS v97: app.js has the cloud audit helper (SQL 34 RPC) + the marks/homework audit calls'
@@ -7186,10 +7166,52 @@ console.log(src.includes('numberToWords') && src.includes('migrateV13') && src.i
 if (!(src.includes('numberToWords') && src.includes('migrateV13') && src.includes('collectFeePage') && src.includes('saveCollectFee') && src.includes('receiptHTML') && src.includes('buildCollectLines') && src.includes('printReceipt'))) process.exitCode = 1;
 
 const css = readRel('styles.css');
-console.log(css.includes('@media print') && css.includes('.lang-one') && css.includes('.type-row') && css.includes('.mini-avatar') && css.includes('.print-head') && css.includes('.side-logo') && css.includes('.modal.wide') && css.includes('.tab-btn') && css.includes('.menu-list') && css.includes('.class-bar') && css.includes('.sec-title') && css.includes('.imp-scroll') && css.includes('.promo-row') && css.includes('.id-card') && css.includes('.id-sheet') && css.includes('.id-bulk-bar') && css.includes('.rcpt') && css.includes('.rcpt-title') && css.includes('.rcpt-sign') && css.includes('.fee-hist-tbl') && css.includes('.fee-prof-tbl') && css.includes('.fee-list-tbl')
-  ? 'PASS styles.css has print + lang-one + type-row + photo/logo rules + receipt rules + fee-history / fee-profile / fees-list phone rules'
-  : 'FAIL styles.css missing print/lang-one/type-row/photo/logo/receipt/fee-history/fee-profile/fees-list rules');
-if (!(css.includes('@media print') && css.includes('.lang-one') && css.includes('.type-row') && css.includes('.mini-avatar') && css.includes('.print-head') && css.includes('.side-logo') && css.includes('.modal.wide') && css.includes('.tab-btn') && css.includes('.menu-list') && css.includes('.class-bar') && css.includes('.sec-title') && css.includes('.imp-scroll') && css.includes('.promo-row') && css.includes('.id-card') && css.includes('.id-sheet') && css.includes('.id-bulk-bar') && css.includes('.rcpt') && css.includes('.rcpt-title') && css.includes('.rcpt-sign') && css.includes('.fee-hist-tbl') && css.includes('.fee-prof-tbl') && css.includes('.fee-list-tbl'))) process.exitCode = 1;
+console.log(css.includes('@media print') && css.includes('.type-row') && css.includes('.mini-avatar') && css.includes('.print-head') && css.includes('.side-logo') && css.includes('.modal.wide') && css.includes('.tab-btn') && css.includes('.menu-list') && css.includes('.class-bar') && css.includes('.sec-title') && css.includes('.imp-scroll') && css.includes('.promo-row') && css.includes('.id-card') && css.includes('.id-sheet') && css.includes('.id-bulk-bar') && css.includes('.rcpt') && css.includes('.rcpt-title') && css.includes('.rcpt-sign') && css.includes('.fee-hist-tbl') && css.includes('.fee-prof-tbl') && css.includes('.fee-list-tbl')
+  ? 'PASS styles.css has print + type-row + photo/logo rules + receipt rules + fee-history / fee-profile / fees-list phone rules (v147: lang-one is gone with Hindi mode)'
+  : 'FAIL styles.css missing print/type-row/photo/logo/receipt/fee-history/fee-profile/fees-list rules');
+if (!(css.includes('@media print') && css.includes('.type-row') && css.includes('.mini-avatar') && css.includes('.print-head') && css.includes('.side-logo') && css.includes('.modal.wide') && css.includes('.tab-btn') && css.includes('.menu-list') && css.includes('.class-bar') && css.includes('.sec-title') && css.includes('.imp-scroll') && css.includes('.promo-row') && css.includes('.id-card') && css.includes('.id-sheet') && css.includes('.id-bulk-bar') && css.includes('.rcpt') && css.includes('.rcpt-title') && css.includes('.rcpt-sign') && css.includes('.fee-hist-tbl') && css.includes('.fee-prof-tbl') && css.includes('.fee-list-tbl'))) process.exitCode = 1;
+
+// ---- v147: UI overhaul — font bug, bottom nav, bigger text, action-first dashboard, English-only ----
+// (1) Font bug: --font-sans must be a real system stack, never self-referencing.
+console.log(!css.includes('--font-sans:var(--font-sans)')
+  ? 'PASS v147: --font-sans is a real system stack, not self-referencing'
+  : 'FAIL v147: --font-sans still self-references (font falls back to phone default)');
+if (css.includes('--font-sans:var(--font-sans)')) process.exitCode = 1;
+// (3) Bigger text: base 16px, and 44px minimum tap targets on buttons/inputs.
+console.log(css.includes('--text-base:16px') && css.includes('--text-md:15px') && css.includes('min-height:44px')
+  ? 'PASS v147: base text 16px, buttons/inputs min-height 44px'
+  : 'FAIL v147: text tokens or 44px tap targets missing');
+if (!(css.includes('--text-base:16px') && css.includes('--text-md:15px') && css.includes('min-height:44px'))) process.exitCode = 1;
+// (2) Bottom nav: element in index.html + CSS rules + renderApp builds it from NAV.
+var html147 = require('fs').readFileSync('index.html', 'utf8');
+console.log(html147.includes('id="bottomNav"') && css.includes('.bottom-nav') && src.includes("var bn = $('bottomNav')")
+  ? 'PASS v147: bottom nav exists (index.html + CSS + renderApp from NAV)'
+  : 'FAIL v147: bottom nav missing in index.html, styles.css or renderApp');
+if (!(html147.includes('id="bottomNav"') && css.includes('.bottom-nav') && src.includes("var bn = $('bottomNav')"))) process.exitCode = 1;
+// (5) Dashboard actions first: inside schoolDashboard() the action row comes
+// BEFORE the stats grid, and the old bottom Quick Links card is gone.
+// (String check at top level — app functions live in the VM context, not here.)
+var sd147 = src.slice(src.indexOf('function schoolDashboard()'), src.indexOf('function schoolDashboard()') + 6000);
+var dash147ok = sd147.indexOf('action-grid') !== -1 && sd147.indexOf('action-grid') < sd147.indexOf('class="stats"') && sd147.indexOf('quickLinks') === -1;
+console.log(dash147ok
+  ? 'PASS v147: dashboard action cards sit above the stats, Quick Links card removed'
+  : 'FAIL v147: dashboard action row is not above the stats, or Quick Links still there');
+if (!dash147ok) process.exitCode = 1;
+// (Hindi removal, v147) No Devanagari anywhere in the shipped UI files.
+var deva = /[\u0900-\u097F]/;
+var i18n147 = require('fs').readFileSync('js/modules/i18n.js', 'utf8');
+console.log(!deva.test(src) && !deva.test(html147) && !deva.test(css) && !deva.test(i18n147)
+  ? 'PASS v147: zero Devanagari in app.js, index.html, styles.css, i18n.js (English-only)'
+  : 'FAIL v147: Devanagari still present in a shipped UI file');
+if (deva.test(src) || deva.test(html147) || deva.test(css) || deva.test(i18n147)) process.exitCode = 1;
+// (Merged from main, PR #77) Session-expiry gaps fix: the clock-skew
+// constant exists and restoreSession rejects a future-dated `at` and
+// tells the user to log in again instead of dropping them silently.
+var sess147ok = src.includes('SESSION_CLOCK_SKEW_MS') && src.includes('sv.at > Date.now() + SESSION_CLOCK_SKEW_MS') && src.includes("toast(t('sbStatusSessionExpired'))");
+console.log(sess147ok
+  ? 'PASS v147: session-expiry gaps fix present (clock-skew guard + expiry toast)'
+  : 'FAIL v147: session-expiry gaps fix missing (SESSION_CLOCK_SKEW_MS / future-dated check / toast)');
+if (!sess147ok) process.exitCode = 1;
 console.log(css.includes('760px') && css.includes('#0A1E4B') && css.includes('#EA8600') && css.includes('.auth-tab')
   ? 'PASS styles.css keeps navy/gold theme + 760px breakpoint + auth tabs'
   : 'FAIL styles.css missing navy/gold / 760px / auth-tab rules');
