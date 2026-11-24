@@ -4397,7 +4397,8 @@ const test = `
   sbClearSession();
   var sess75 = sbStoreSession({ access_token: 'tok-75', refresh_token: 'ref-75', expires_at: Date.now() + 3600000, user: { id: 'u-75' } });
   ok(!!sess75 && sess75.access_token === 'tok-75', 'v75: sbStoreSession stores the session');
-  ok(!!sessionStorage.getItem(SB_SESSION_KEY) && sessionStorage.getItem(SB_SESSION_KEY).indexOf('tok-75') !== -1, 'v75: the bearer token is in sessionStorage');
+  ok(!!vaultDecode(sessionStorage.getItem(SB_SESSION_KEY)) && vaultDecode(sessionStorage.getItem(SB_SESSION_KEY)).indexOf('tok-75') !== -1, 'v75: the bearer token is in sessionStorage');
+  eq(sessionStorage.getItem(SB_SESSION_KEY).indexOf('tok-75'), -1, 'v75: the sealed session does not leak the token in plaintext');
   eq(localStorage.getItem(SB_SESSION_KEY), null, 'v75: the bearer token is NOT in localStorage');
   eq(sbLoadSession() && sbLoadSession().access_token, 'tok-75', 'v75: sbLoadSession reads the session from sessionStorage');
   // Adopt-once: a pre-v75 localStorage copy is adopted and then gone.
@@ -4405,7 +4406,7 @@ const test = `
   localStorage.setItem(SB_SESSION_KEY, JSON.stringify({ access_token: 'tok-75-old', refresh_token: 'ref-75-old' }));
   eq(sbLoadSession() && sbLoadSession().access_token, 'tok-75-old', 'v75: an old localStorage session is adopted once');
   eq(localStorage.getItem(SB_SESSION_KEY), null, 'v75: the adopted localStorage copy is removed');
-  ok(!!sessionStorage.getItem(SB_SESSION_KEY) && sessionStorage.getItem(SB_SESSION_KEY).indexOf('tok-75-old') !== -1, 'v75: the adopted session now lives in sessionStorage');
+  ok(!!vaultDecode(sessionStorage.getItem(SB_SESSION_KEY)) && vaultDecode(sessionStorage.getItem(SB_SESSION_KEY)).indexOf('tok-75-old') !== -1, 'v75: the adopted session now lives in sessionStorage');
   sbClearSession();
   eq(sessionStorage.getItem(SB_SESSION_KEY), null, 'v75: sbClearSession clears the sessionStorage copy');
   eq(localStorage.getItem(SB_SESSION_KEY), null, 'v75: sbClearSession clears the localStorage copy too');
@@ -4414,7 +4415,7 @@ const test = `
   var slice75t = mapCloudTeacherPayload(p75t);
   var acct75t = { role: 'teacher', name: 'Sess Teacher', sub: 'Teacher • Sess Teacher', email: 'cloud-teacher:srv-75:te-75', uid: 'cloud-teacher-te-75', teacherId: 'te-75', schoolUid: 'srv-75', cloud: true, schoolServerId: 'srv-75' };
   loginCloudTeacher(acct75t, slice75t, 'tok-75', { silent: true });
-  ok(!!sessionStorage.getItem(CLOUD_TEACHER_KEY) && sessionStorage.getItem(CLOUD_TEACHER_KEY).indexOf('tok-75') !== -1, 'v75: the teacher snapshot is in sessionStorage');
+  ok(!!vaultDecode(sessionStorage.getItem(CLOUD_TEACHER_KEY)) && vaultDecode(sessionStorage.getItem(CLOUD_TEACHER_KEY)).indexOf('tok-75') !== -1, 'v75: the teacher snapshot is in sessionStorage');
   eq(localStorage.getItem(CLOUD_TEACHER_KEY), null, 'v75: the teacher snapshot is NOT in localStorage');
   logout(); await waitLogout();
   loginAs(TEST_ACCOUNTS.school);
