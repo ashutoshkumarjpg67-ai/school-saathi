@@ -56,8 +56,8 @@ var FEE_MONTHS = [ // seed-only monthly ledger (seedDB splits it into feeRecords
    tied to it gets a no-school message, never an admin view. */
 var ACC_KEY = 'schoolSaathiAccounts';
 /* Phase 2 (v71): crypto / identity helpers (hashPw, randomHex, uniqueId, sha256Hex, hashPwNew, verifyPw, hashPin, aadhaarLast4, ...) moved to js/modules/crypto.js — loaded before app.js. */
-function loadAccounts() { try { var r = localStorage.getItem(ACC_KEY); if (r) { var a = JSON.parse(r); if (Array.isArray(a)) return a; } } catch (e) {} return []; }
-function saveAccounts(list) { try { localStorage.setItem(ACC_KEY, JSON.stringify(list)); } catch (e) {} }
+function loadAccounts() { try { var r = vaultDecode(localStorage.getItem(ACC_KEY)); if (r) { var a = JSON.parse(r); if (Array.isArray(a)) return a; } } catch (e) {} return []; }
+function saveAccounts(list) { try { localStorage.setItem(ACC_KEY, vaultEncode(JSON.stringify(list))); } catch (e) {} }
 function findAccount(email) {
   email = (email || '').trim().toLowerCase();
   var list = loadAccounts();
@@ -516,15 +516,17 @@ function sbSetNewPassword(recoveryToken, pw) {
 // remove the localStorage copy) so nobody is logged out by the update.
 // sessSet/sessRemove keep both storages clean.
 function sessGet(key) {
-  try { var r = sessionStorage.getItem(key); if (r) return r; } catch (e) {}
+  // v147: session snapshots are sealed at rest (vault.js). Legacy
+  // plaintext still decodes, so old snapshots keep working.
+  try { var r = sessionStorage.getItem(key); if (r) { var d = vaultDecode(r); if (d !== null) return d; } } catch (e) {}
   try {
     var old = localStorage.getItem(key);
-    if (old) { try { sessionStorage.setItem(key, old); } catch (e2) {} try { localStorage.removeItem(key); } catch (e3) {} return old; }
+    if (old) { var od = vaultDecode(old); if (od !== null) { try { sessionStorage.setItem(key, vaultEncode(od)); } catch (e2) {} try { localStorage.removeItem(key); } catch (e3) {} return od; } }
   } catch (e4) {}
   return null;
 }
 function sessSet(key, val) {
-  try { sessionStorage.setItem(key, val); } catch (e) {}
+  try { sessionStorage.setItem(key, vaultEncode(val)); } catch (e) {}
   try { localStorage.removeItem(key); } catch (e2) {}
 }
 function sessRemove(key) {
@@ -632,7 +634,7 @@ function sbSetStatus(st, detail) {
   // v43: the stored status is stamped with the build that wrote it, so
   // a failure from an older build can be recognised as stale (see
   // sbStatusText). The stamp is part of the stored record, never shown.
-  try { localStorage.setItem(SB_STATUS_KEY, JSON.stringify({ state: st, at: new Date().toISOString(), detail: detail || '', v: APP_VERSION })); } catch (e) {}
+  try { localStorage.setItem(SB_STATUS_KEY, vaultEncode(JSON.stringify({ state: st, at: new Date().toISOString(), detail: detail || '', v: APP_VERSION }))); } catch (e) {}
   // v43: keep the two visible status lines in step with the stored
   // state. Both lines are rendered once (Settings on navigation, login
   // screen on showLogin) and no re-render follows a background cycle,
@@ -686,7 +688,7 @@ function sbOfflineChipRefresh() {
   } catch (e2) {}
 }
 function sbLoadStatus() {
-  try { var r = localStorage.getItem(SB_STATUS_KEY); return r ? JSON.parse(r) : null; } catch (e) { return null; }
+  try { var r = vaultDecode(localStorage.getItem(SB_STATUS_KEY)); return r ? JSON.parse(r) : null; } catch (e) { return null; }
 }
 function sbAtLabel(iso) {
   // v43: "09/11/2026 22:15" in the DEVICE's local time, from the stored
@@ -896,17 +898,17 @@ function sbSyncResolveConflict(idx, keepMine) {
   sbSyncDetailsRefresh();
 }
 function sbLoadMig(uid) {
-  try { var r = localStorage.getItem(SB_MIGRATED_KEY + ':' + uid); return r ? JSON.parse(r) : null; } catch (e) { return null; }
+  try { var r = vaultDecode(localStorage.getItem(SB_MIGRATED_KEY + ':' + uid)); return r ? JSON.parse(r) : null; } catch (e) { return null; }
 }
 function sbSaveMig(uid, v) {
-  try { localStorage.setItem(SB_MIGRATED_KEY + ':' + uid, JSON.stringify(v)); } catch (e) {}
+  try { localStorage.setItem(SB_MIGRATED_KEY + ':' + uid, vaultEncode(JSON.stringify(v))); } catch (e) {}
 }
 function sbServerSchoolMap() {
-  try { var r = localStorage.getItem(SB_SCHOOL_MAP_KEY); return r ? JSON.parse(r) : {}; } catch (e) { return {}; }
+  try { var r = vaultDecode(localStorage.getItem(SB_SCHOOL_MAP_KEY)); return r ? JSON.parse(r) : {}; } catch (e) { return {}; }
 }
 function sbSaveServerSchool(localUid, serverId) {
   var m = sbServerSchoolMap(); m[localUid] = serverId;
-  try { localStorage.setItem(SB_SCHOOL_MAP_KEY, JSON.stringify(m)); } catch (e) {}
+  try { localStorage.setItem(SB_SCHOOL_MAP_KEY, vaultEncode(JSON.stringify(m))); } catch (e) {}
 }
 function sbGetServerSchoolId(sbUid, token) {
   // GET-only: the server school row owned by this Supabase user, or null.
@@ -1131,7 +1133,7 @@ function sbLinkServerAccount(account, pw, linkEmail) {
   if (!account || account.role !== 'school' || account.sbUid) return Promise.resolve({ done: false, reason: 'already-linked' });
   if (!sbIsOnline()) return Promise.resolve({ done: false, reason: 'offline' });
   var retryAt = 0;
-  try { retryAt = parseInt(localStorage.getItem(SB_LINK_RETRY_KEY) || '0', 10) || 0; } catch (e) {}
+  try { retryAt = parseInt(vaultDecode(localStorage.getItem(SB_LINK_RETRY_KEY)) || '0', 10) || 0; } catch (e) {}
   if (Date.now() < retryAt) return Promise.resolve({ done: false, reason: 'backoff' });
   var localEmail = (account.email || '').trim().toLowerCase();
   var email = (linkEmail || account.email || '').trim().toLowerCase();
@@ -1148,7 +1150,7 @@ function sbLinkServerAccount(account, pw, linkEmail) {
   }
   return sbSignUp(email, pw, account.school, account.name).then(function (res) {
     if (res.status === 429) {
-      try { localStorage.setItem(SB_LINK_RETRY_KEY, String(Date.now() + 5 * 60 * 1000)); } catch (e2) {}
+      try { localStorage.setItem(SB_LINK_RETRY_KEY, vaultEncode(String(Date.now() + 5 * 60 * 1000))); } catch (e2) {}
       sbSetStatus('not-linked', 'rate-limited');
       return { done: false, reason: 'rate-limited' };
     }
@@ -3004,10 +3006,10 @@ var SB_OUTBOX_KEY = 'schoolSaathiOutbox';
 var SB_SYNC_DIAG_KEY = 'schoolSaathiSyncDiag';
 var sbSyncRestCalls = 0;
 function sbSyncDiagLoad() {
-  try { var d = JSON.parse(localStorage.getItem(SB_SYNC_DIAG_KEY) || 'null'); return d && typeof d === 'object' ? d : {}; } catch (e) { return {}; }
+  try { var d = JSON.parse(vaultDecode(localStorage.getItem(SB_SYNC_DIAG_KEY)) || 'null'); return d && typeof d === 'object' ? d : {}; } catch (e) { return {}; }
 }
 function sbSyncDiagSave(d) {
-  try { localStorage.setItem(SB_SYNC_DIAG_KEY, JSON.stringify(d)); } catch (e) {}
+  try { localStorage.setItem(SB_SYNC_DIAG_KEY, vaultEncode(JSON.stringify(d))); } catch (e) {}
 }
 function sbSyncDiagSet(patch) {
   var d = sbSyncDiagLoad();
@@ -3026,9 +3028,9 @@ var sbTombUidCurrent = null; // v105: the Supabase uid whose tombstones the curr
 
 function sbOutboxKey(uid) { return SB_OUTBOX_KEY + ':' + uid; }
 function sbOutboxLoad(uid) {
-  try { var r = localStorage.getItem(sbOutboxKey(uid)); var a = r ? JSON.parse(r) : []; return Array.isArray(a) ? a : []; } catch (e) { return []; }
+  try { var r = vaultDecode(localStorage.getItem(sbOutboxKey(uid))); var a = r ? JSON.parse(r) : []; return Array.isArray(a) ? a : []; } catch (e) { return []; }
 }
-function sbOutboxSave(uid, list) { try { localStorage.setItem(sbOutboxKey(uid), JSON.stringify(list)); } catch (e) {} }
+function sbOutboxSave(uid, list) { try { localStorage.setItem(sbOutboxKey(uid), vaultEncode(JSON.stringify(list))); } catch (e) {} }
 function sbOutboxAdd(uid, entry) {
   // One pending entry per (table, key): a newer change to the same row
   // replaces the older one, so the outbox never replays stale payloads.
@@ -3078,25 +3080,25 @@ function sbOutboxClear(uid) { try { localStorage.removeItem(sbOutboxKey(uid)); }
 // a legitimate re-add.
 var SB_TOMB_KEY = 'schoolSaathiTombstones';
 var SB_TOMB_TTL_MS = 24 * 60 * 60 * 1000;
-function sbTombLoad(uid) { try { var r = localStorage.getItem(SB_TOMB_KEY + ':' + uid); var o = r ? JSON.parse(r) : {}; return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; } }
-function sbTombSave(uid, map) { try { localStorage.setItem(SB_TOMB_KEY + ':' + uid, JSON.stringify(map)); } catch (e) {} }
+function sbTombLoad(uid) { try { var r = vaultDecode(localStorage.getItem(SB_TOMB_KEY + ':' + uid)); var o = r ? JSON.parse(r) : {}; return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; } }
+function sbTombSave(uid, map) { try { localStorage.setItem(SB_TOMB_KEY + ':' + uid, vaultEncode(JSON.stringify(map))); } catch (e) {} }
 function sbTombPrune(map) { var now = Date.now(), out = {}, t, k; for (t in map) { if (!map[t] || typeof map[t] !== 'object') continue; out[t] = {}; for (k in map[t]) { if (map[t][k] && (now - map[t][k] < SB_TOMB_TTL_MS)) out[t][k] = map[t][k]; } if (!Object.keys(out[t]).length) delete out[t]; } return out; }
 function sbTombAdd(uid, table, key) { if (!uid || !table || !key) return; try { var m = sbTombPrune(sbTombLoad(uid)); if (!m[table]) m[table] = {}; m[table][key] = Date.now(); sbTombSave(uid, m); } catch (e) {} }
 function sbTombRemove(uid, table, key) { if (!uid || !table || !key) return; try { var m = sbTombPrune(sbTombLoad(uid)); if (m[table] && m[table][key]) { delete m[table][key]; if (!Object.keys(m[table]).length) delete m[table]; sbTombSave(uid, m); } } catch (e) {} }
 function sbTombHas(uid, table, key) { if (!uid || !table || !key) return false; try { var m = sbTombPrune(sbTombLoad(uid)); return !!(m[table] && m[table][key]); } catch (e) { return false; } }
 function sbSrvIdsLoad(uid) {
-  try { var r = localStorage.getItem(SB_SRVID_KEY + ':' + uid); var o = r ? JSON.parse(r) : {}; return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; }
+  try { var r = vaultDecode(localStorage.getItem(SB_SRVID_KEY + ':' + uid)); var o = r ? JSON.parse(r) : {}; return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; }
 }
-function sbSrvIdsSave(uid, map) { try { localStorage.setItem(SB_SRVID_KEY + ':' + uid, JSON.stringify(map)); } catch (e) {} }
+function sbSrvIdsSave(uid, map) { try { localStorage.setItem(SB_SRVID_KEY + ':' + uid, vaultEncode(JSON.stringify(map))); } catch (e) {} }
 function sbSrvIdsClear(uid) { try { localStorage.removeItem(SB_SRVID_KEY + ':' + uid); } catch (e) {} }
 function sbSrvIdGet(uid, table, key) { var m = sbSrvIdsLoad(uid); return (m[table] && m[table][key]) || null; }
 function sbSrvIdSet(uid, table, key, serverId) {
   var m = sbSrvIdsLoad(uid); if (!m[table]) m[table] = {}; m[table][key] = serverId; sbSrvIdsSave(uid, m);
 }
 function sbSnapLoad(uid) {
-  try { var r = localStorage.getItem(SB_SNAP_KEY + ':' + uid); var o = r ? JSON.parse(r) : null; return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; }
+  try { var r = vaultDecode(localStorage.getItem(SB_SNAP_KEY + ':' + uid)); var o = r ? JSON.parse(r) : null; return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; }
 }
-function sbSnapSave(uid, snap) { try { localStorage.setItem(SB_SNAP_KEY + ':' + uid, JSON.stringify(snap)); } catch (e) {} }
+function sbSnapSave(uid, snap) { try { localStorage.setItem(SB_SNAP_KEY + ':' + uid, vaultEncode(JSON.stringify(snap))); } catch (e) {} }
 function sbSnapClear(uid) { try { localStorage.removeItem(SB_SNAP_KEY + ':' + uid); } catch (e) {} }
 function sbSyncResetMemory() {
   if (sbSyncTimer) { clearTimeout(sbSyncTimer); sbSyncTimer = null; }
@@ -4879,9 +4881,9 @@ function sbSyncStart(account, sbUid, token) {
 // leaves the queue only after the server confirms it.
 var SB_ADMREQ_PENDING_KEY = 'schoolSaathiAdmReqPending';
 function sbAdmReqPendingLoad() {
-  try { var r = localStorage.getItem(SB_ADMREQ_PENDING_KEY); var a = r ? JSON.parse(r) : []; return Array.isArray(a) ? a : []; } catch (e) { return []; }
+  try { var r = vaultDecode(localStorage.getItem(SB_ADMREQ_PENDING_KEY)); var a = r ? JSON.parse(r) : []; return Array.isArray(a) ? a : []; } catch (e) { return []; }
 }
-function sbAdmReqPendingSave(list) { try { localStorage.setItem(SB_ADMREQ_PENDING_KEY, JSON.stringify(list)); } catch (e) {} }
+function sbAdmReqPendingSave(list) { try { localStorage.setItem(SB_ADMREQ_PENDING_KEY, vaultEncode(JSON.stringify(list))); } catch (e) {} }
 function sbAdmReqQueue(schoolId, req) {
   var list = sbAdmReqPendingLoad();
   if (!list.some(function (x) { return x.req && x.req.id === req.id; })) { list.push({ schoolId: schoolId, req: req }); sbAdmReqPendingSave(list); }
@@ -4922,9 +4924,9 @@ function sbPostAdmission(serverSchoolId, req) {
 // online). A request leaves the queue only after the server confirms it.
 var SB_SUPPORT_PENDING_KEY = 'schoolSaathiSupportPending';
 function sbSupportPendingLoad() {
-  try { var r = localStorage.getItem(SB_SUPPORT_PENDING_KEY); var a = r ? JSON.parse(r) : []; return Array.isArray(a) ? a : []; } catch (e) { return []; }
+  try { var r = vaultDecode(localStorage.getItem(SB_SUPPORT_PENDING_KEY)); var a = r ? JSON.parse(r) : []; return Array.isArray(a) ? a : []; } catch (e) { return []; }
 }
-function sbSupportPendingSave(list) { try { localStorage.setItem(SB_SUPPORT_PENDING_KEY, JSON.stringify(list)); } catch (e) {} }
+function sbSupportPendingSave(list) { try { localStorage.setItem(SB_SUPPORT_PENDING_KEY, vaultEncode(JSON.stringify(list))); } catch (e) {} }
 function sbSupportQueue(req) {
   var list = sbSupportPendingLoad();
   if (!list.some(function (x) { return x.id === req.id; })) { list.push(req); sbSupportPendingSave(list); }
@@ -5257,10 +5259,10 @@ function migrateV13(d) {
   return d;
 }
 function readDbByKey(key) {
-  try { var raw = localStorage.getItem(key); if (!raw) return null; var d = JSON.parse(raw); return (d && d.v === 2) ? d : null; }
+  try { var raw = vaultDecode(localStorage.getItem(key)); if (!raw) return null; var d = JSON.parse(raw); return (d && d.v === 2) ? d : null; }
   catch (e) { return null; }
 }
-function writeDbByKey(key, d) { try { localStorage.setItem(key, JSON.stringify(d)); } catch (e) {} }
+function writeDbByKey(key, d) { try { localStorage.setItem(key, vaultEncode(JSON.stringify(d))); } catch (e) {} }
 function loadDB(override) {
   // B17 (H-8): a corrupt stored DB used to be silently replaced by an
   // empty one (and the failed save overwrote DB_KEY). Now: try the
@@ -5268,14 +5270,19 @@ function loadDB(override) {
   // say so out loud instead of silently starting empty.
   var pendingBak = null; // unknown-version payload, preserved as .bak AFTER the fresh save below
   try {
-    var raw = localStorage.getItem(DB_KEY);
-    if (raw) {
+    // v147: the stored DB is sealed at rest (vault.js). rawStored is the
+    // envelope as stored (.bak / .quarantine keep it verbatim); raw is
+    // the decoded plaintext. A sealed value that fails its tag decodes
+    // to null and takes the corrupt path below, like corrupt JSON.
+    var rawStored = localStorage.getItem(DB_KEY);
+    if (rawStored) {
+      var raw = vaultDecode(rawStored);
       var d = null;
-      try { d = JSON.parse(raw); } catch (eParse) { d = null; }
+      try { d = raw ? JSON.parse(raw) : null; } catch (eParse) { d = null; }
       if (d && d.v === 2) { var m = migrateV119(migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))))))); saveDB(m); return m; }
       if (d) {
         // Parsed but unknown version: keep a backup, never wipe silently.
-        pendingBak = raw;
+        pendingBak = rawStored;
       } else {
         // Corrupt JSON: the .bak holds the last successfully saved DB.
         var recovered = sbLoadBak();
@@ -5285,7 +5292,7 @@ function loadDB(override) {
         }
         // .bak is corrupt/missing too: quarantine the torn payload so
         // it can still be recovered by hand, and warn persistently.
-        try { localStorage.setItem(DB_KEY + '.quarantine', raw); } catch (eQ) {}
+        try { localStorage.setItem(DB_KEY + '.quarantine', rawStored); } catch (eQ) {}
         sbStorageWarnSet('corrupt');
         try { toast(t('sbDataCorrupt')); } catch (eT2) {}
       }
@@ -5310,7 +5317,7 @@ function sbLoadBak() {
   // successful save). Returns the migrated DB, or null when the .bak
   // is missing, corrupt, or the wrong version.
   try {
-    var raw = localStorage.getItem(DB_KEY + '.bak');
+    var raw = vaultDecode(localStorage.getItem(DB_KEY + '.bak'));
     if (!raw) return null;
     var d = JSON.parse(raw);
     if (!d || d.v !== 2) return null;
@@ -5333,7 +5340,10 @@ function saveDB(db) {
   // A failing .bak write never breaks the primary save.
   var ok = false;
   try {
-    var s = JSON.stringify(db);
+    // v147: the DB (and its .bak twin) are sealed at rest. vaultEncode
+    // falls back to plaintext if sealing ever fails, so a save can
+    // never fail because of the vault.
+    var s = vaultEncode(JSON.stringify(db));
     localStorage.setItem(DB_KEY, s);
     ok = true;
     try { localStorage.setItem(DB_KEY + '.bak', s); } catch (eBak) {}
@@ -5363,12 +5373,12 @@ var sbStorageWarnCur = null; // in-memory current warning — the source of trut
 var sbStorageWarnDismissed = false; // session-only: a dismiss hides the bar until the next reload
 function sbStorageWarnLoad() {
   if (sbStorageWarnCur) return sbStorageWarnCur;
-  try { var r = localStorage.getItem(SB_STORAGE_WARN_KEY); return r ? JSON.parse(r) : null; }
+  try { var r = vaultDecode(localStorage.getItem(SB_STORAGE_WARN_KEY)); return r ? JSON.parse(r) : null; }
   catch (e) { return null; }
 }
 function sbStorageWarnSet(kind, detail) {
   sbStorageWarnCur = { kind: kind, at: new Date().toISOString(), detail: detail || '' };
-  try { localStorage.setItem(SB_STORAGE_WARN_KEY, JSON.stringify(sbStorageWarnCur)); } catch (e) {}
+  try { localStorage.setItem(SB_STORAGE_WARN_KEY, vaultEncode(JSON.stringify(sbStorageWarnCur))); } catch (e) {}
   sbStorageWarnDismissed = false;
   sbStorageWarnRender();
 }
@@ -6505,10 +6515,10 @@ function persistSession() {
     if (state.role && state.user) {
       var at = Date.now();
       try {
-        var prev = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null');
+        var prev = JSON.parse(vaultDecode(localStorage.getItem(SESSION_KEY)) || 'null');
         if (prev && prev.role === state.role && prev.email === state.user.email && typeof prev.at === 'number' && !isNaN(prev.at)) at = prev.at;
       } catch (e) {}
-      localStorage.setItem(SESSION_KEY, JSON.stringify({ role: state.role, email: state.user.email, view: state.view, at: at }));
+      localStorage.setItem(SESSION_KEY, vaultEncode(JSON.stringify({ role: state.role, email: state.user.email, view: state.view, at: at })));
     } else localStorage.removeItem(SESSION_KEY);
   } catch (e) { /* private mode — session just won't survive */ }
 }
@@ -6538,16 +6548,21 @@ function loginAs(a, opts) {
 function restoreSession() {
   try {
     var raw = null;
-    try { raw = localStorage.getItem(SESSION_KEY); } catch (e) {}
+    try { raw = vaultDecode(localStorage.getItem(SESSION_KEY)); } catch (e) {}
     if (!raw) {
       // One-time migration: an older build kept the session in
       // sessionStorage. Adopt it once so nobody is logged out by the update.
       try {
         var old = sessionStorage.getItem(SESSION_KEY);
         if (old) {
-          raw = old;
-          try { localStorage.setItem(SESSION_KEY, old); } catch (e2) {}
-          try { sessionStorage.removeItem(SESSION_KEY); } catch (e3) {}
+          // v147: the adopted value may be plaintext (old builds) or
+          // sealed; decode it, then store it back sealed.
+          var oldDec = vaultDecode(old);
+          if (oldDec) {
+            raw = oldDec;
+            try { localStorage.setItem(SESSION_KEY, vaultEncode(oldDec)); } catch (e2) {}
+            try { sessionStorage.removeItem(SESSION_KEY); } catch (e3) {}
+          }
         }
       } catch (e4) {}
     }
@@ -6821,8 +6836,8 @@ var PIN_FAIL_KEY = 'schoolSaathiPinFails';
 var PIN_MAX_FAILS = 5;
 var PIN_LOCK_MS = 15 * 60 * 1000;
 function pinFailKey(schoolUid, studentId) { return (schoolUid || '') + ':' + (studentId || ''); }
-function pinFailsLoad() { try { var r = localStorage.getItem(PIN_FAIL_KEY); if (r) { var m = JSON.parse(r); if (m && typeof m === 'object') return m; } } catch (e) {} return {}; }
-function pinFailsSave(m) { try { localStorage.setItem(PIN_FAIL_KEY, JSON.stringify(m)); } catch (e) {} }
+function pinFailsLoad() { try { var r = vaultDecode(localStorage.getItem(PIN_FAIL_KEY)); if (r) { var m = JSON.parse(r); if (m && typeof m === 'object') return m; } } catch (e) {} return {}; }
+function pinFailsSave(m) { try { localStorage.setItem(PIN_FAIL_KEY, vaultEncode(JSON.stringify(m))); } catch (e) {} }
 function pinLockUntil(schoolUid, studentId) { var r = pinFailsLoad()[pinFailKey(schoolUid, studentId)]; if (r && r.lockedUntil && Date.now() < r.lockedUntil) return r.lockedUntil; return 0; }
 function pinFailRecord(schoolUid, studentId) {
   var m = pinFailsLoad(); var k = pinFailKey(schoolUid, studentId); var r = m[k] || { n: 0, lockedUntil: 0 };
@@ -6843,8 +6858,8 @@ var LOGIN_FAIL_KEY = 'schoolSaathiLoginFails';
 var LOGIN_MAX_FAILS = 5;
 var LOGIN_LOCK_MS = 15 * 60 * 1000;
 function loginFailKey(email) { return String(email || '').trim().toLowerCase(); }
-function loginFailsLoad() { try { var r = localStorage.getItem(LOGIN_FAIL_KEY); if (r) { var m = JSON.parse(r); if (m && typeof m === 'object') return m; } } catch (e) {} return {}; }
-function loginFailsSave(m) { try { localStorage.setItem(LOGIN_FAIL_KEY, JSON.stringify(m)); } catch (e) {} }
+function loginFailsLoad() { try { var r = vaultDecode(localStorage.getItem(LOGIN_FAIL_KEY)); if (r) { var m = JSON.parse(r); if (m && typeof m === 'object') return m; } } catch (e) {} return {}; }
+function loginFailsSave(m) { try { localStorage.setItem(LOGIN_FAIL_KEY, vaultEncode(JSON.stringify(m))); } catch (e) {} }
 function loginLockUntil(email) { var r = loginFailsLoad()[loginFailKey(email)]; if (r && r.lockedUntil && Date.now() < r.lockedUntil) return r.lockedUntil; return 0; }
 function loginFailRecord(email) {
   var m = loginFailsLoad(); var k = loginFailKey(email); var r = m[k] || { n: 0, lockedUntil: 0 };
@@ -8455,7 +8470,7 @@ function openResetServerChoice() {
 function sbClearServerSchool(localUid) {
   var m = sbServerSchoolMap();
   delete m[localUid];
-  try { localStorage.setItem(SB_SCHOOL_MAP_KEY, JSON.stringify(m)); } catch (e) {}
+  try { localStorage.setItem(SB_SCHOOL_MAP_KEY, vaultEncode(JSON.stringify(m))); } catch (e) {}
 }
 function sbWipeServerSchool(token) {
   // v34 (P1-5): the server-side wipe for Reset All Data. Calls the
@@ -8717,11 +8732,11 @@ function submitSupportRequest(e) {
   // Store admin UI.
   var req = { id: uniqueId('sr'), ts: new Date().toISOString(), name: name, message: msg, status: 'Open', by: state.user ? state.user.name : '' };
   var list = [];
-  try { list = JSON.parse(localStorage.getItem('schoolSaathiSupportRequests') || '[]'); } catch (e2) { list = []; }
+  try { list = JSON.parse(vaultDecode(localStorage.getItem('schoolSaathiSupportRequests')) || '[]'); } catch (e2) { list = []; }
   if (!Array.isArray(list)) list = [];
   list.unshift(req);
   if (list.length > 50) list.length = 50;
-  localStorage.setItem('schoolSaathiSupportRequests', JSON.stringify(list));
+  localStorage.setItem('schoolSaathiSupportRequests', vaultEncode(JSON.stringify(list)));
   if (!sbIsOnline() || !state.sb || !state.sb.uid) {
     sbSupportQueue(req);
     closeModal();

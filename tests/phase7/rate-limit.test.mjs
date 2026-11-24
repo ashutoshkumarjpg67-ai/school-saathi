@@ -72,7 +72,8 @@ describe('local student-PIN lockout (app.js, v54)', () => {
     for (let i = 0; i < 5; i++) app.run(`pinFailRecord('school-1', 'stu33')`);
     const raw = app.storage.getItem('schoolSaathiPinFails');
     assert.ok(raw, 'fail record must be stored');
-    const m = JSON.parse(raw);
+    // v147: the record is sealed at rest — decode before parsing.
+    const m = JSON.parse(app.run(`vaultDecode(localStorage.getItem('schoolSaathiPinFails'))`));
     assert.ok(m['school-1:stu33'].lockedUntil > Date.now());
   });
 

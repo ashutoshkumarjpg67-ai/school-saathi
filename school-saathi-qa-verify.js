@@ -29,6 +29,7 @@ const src = fs.readFileSync(APP, 'utf8');
 const qrgenSrc = readRel('qrgen.js');
 // Phase 2: app.js modules load before app.js in the vm, same order as index.html.
 const cryptoSrc = readRel('js/modules/crypto.js');
+const vaultSrc = readRel('js/modules/vault.js'); // v147: at-rest encryption — same order as index.html
 const i18nSrc = readRel('js/modules/i18n.js');
 const bcryptSrc = readRel('js/bcrypt.js');
 // Phase 1: the demo-seed fixtures moved out of app.js at v67 into
@@ -1835,7 +1836,7 @@ const test = `
   state.role = null; state.user = null; state.view = 'dashboard'; state.parentStudentId = null;
   eq(await restoreSession(), true, 'v19: session restores after an app restart');
   eq(state.view, 'fees', 'v19: restored session lands back on the last view');
-  eq(JSON.parse(localStorage.getItem(SESSION_KEY)).view, 'fees', 'v19: stored view stays the restored view (not dashboard)');
+  eq(JSON.parse(vaultDecode(localStorage.getItem(SESSION_KEY))).view, 'fees', 'v19: stored view stays the restored view (not dashboard)');
   logout(); await waitLogout();
   eq(localStorage.getItem(SESSION_KEY), null, 'v19: logout clears the session');
   // Back after logout cannot re-enter.
@@ -2794,7 +2795,7 @@ const test = `
   ok(__els['modalRoot'].innerHTML.indexOf('fSupMsg') !== -1, 'v28: support form has a message field');
   $('fSupName').value = 'Test School'; $('fSupMsg').value = 'Test request: fees page is slow';
   submitSupportRequest({ preventDefault: function () {} });
-  var sup56 = JSON.parse(localStorage.getItem('schoolSaathiSupportRequests'));
+  var sup56 = JSON.parse(vaultDecode(localStorage.getItem('schoolSaathiSupportRequests')));
   eq(sup56.length, 1, 'v28: one support request is stored (no seeds)');
   eq(sup56[0].message, 'Test request: fees page is slow', 'v28: stored request keeps the message');
   eq(sup56[0].status, 'Open', 'v28: new support request starts Open');
@@ -2802,7 +2803,7 @@ const test = `
   openSupportForm();
   $('fSupName').value = 'Test School'; $('fSupMsg').value = '';
   submitSupportRequest({ preventDefault: function () {} });
-  eq(JSON.parse(localStorage.getItem('schoolSaathiSupportRequests')).length, 1, 'v28: empty support request is not stored');
+  eq(JSON.parse(vaultDecode(localStorage.getItem('schoolSaathiSupportRequests'))).length, 1, 'v28: empty support request is not stored');
 
   // ---- 57. v28: support submit stores only the submitted request, Overview % agrees, attendance in audit log ----
   // Support store: no seeds anymore — a submit stores exactly what was sent.
@@ -2811,7 +2812,7 @@ const test = `
   openSupportForm();
   $('fSupName').value = 'Test School'; $('fSupMsg').value = 'New test request';
   submitSupportRequest({ preventDefault: function () {} });
-  var sup57 = JSON.parse(localStorage.getItem('schoolSaathiSupportRequests'));
+  var sup57 = JSON.parse(vaultDecode(localStorage.getItem('schoolSaathiSupportRequests')));
   eq(sup57.length, 1, 'v28: submit stores exactly one request (no seeds)');
   eq(sup57[0].message, 'New test request', 'v28: submitted request is newest first');
   eq(sup57[0].status, 'Open', 'v28: new request starts Open');
@@ -3145,7 +3146,7 @@ const test = `
     $('fSupName').value = 'V36 Reporter';
     $('fSupMsg').value = 'V36 support message ' + s36;
     submitSupportRequest(ev36);
-    var srList36 = JSON.parse(localStorage.getItem('schoolSaathiSupportRequests') || '[]');
+    var srList36 = JSON.parse(vaultDecode(localStorage.getItem('schoolSaathiSupportRequests')) || '[]');
     srIds36.push(srList36[0].id);
   }
   var arIds36 = [];
@@ -4294,7 +4295,7 @@ const test = `
   await tick74(); await tick74(); await tick74();
   eq(rpcCalls74.some(function (u) { return u.indexOf('ss_teacher_student_photo') !== -1; }), true, 'v74: opening a profile without a photo calls the photo RPC');
   eq(db.students[0].photo, 'data:image/png;base64,PHOTO74', 'v74: the fetched photo lands on the student record');
-  var snap74 = JSON.parse(sessionStorage.getItem(CLOUD_TEACHER_KEY) || '{}');
+  var snap74 = JSON.parse(vaultDecode(sessionStorage.getItem(CLOUD_TEACHER_KEY)) || '{}');
   eq(snap74.slice && snap74.slice.students && snap74.slice.students[0] && snap74.slice.students[0].photo, 'data:image/png;base64,PHOTO74', 'v74: the fetched photo is saved in the cloud snapshot');
   // (c) A second open does NOT fetch again (the photo is already there).
   rpcCalls74 = [];
@@ -4396,7 +4397,8 @@ const test = `
   sbClearSession();
   var sess75 = sbStoreSession({ access_token: 'tok-75', refresh_token: 'ref-75', expires_at: Date.now() + 3600000, user: { id: 'u-75' } });
   ok(!!sess75 && sess75.access_token === 'tok-75', 'v75: sbStoreSession stores the session');
-  ok(!!sessionStorage.getItem(SB_SESSION_KEY) && sessionStorage.getItem(SB_SESSION_KEY).indexOf('tok-75') !== -1, 'v75: the bearer token is in sessionStorage');
+  ok(!!vaultDecode(sessionStorage.getItem(SB_SESSION_KEY)) && vaultDecode(sessionStorage.getItem(SB_SESSION_KEY)).indexOf('tok-75') !== -1, 'v75: the bearer token is in sessionStorage');
+  eq(sessionStorage.getItem(SB_SESSION_KEY).indexOf('tok-75'), -1, 'v75: the sealed session does not leak the token in plaintext');
   eq(localStorage.getItem(SB_SESSION_KEY), null, 'v75: the bearer token is NOT in localStorage');
   eq(sbLoadSession() && sbLoadSession().access_token, 'tok-75', 'v75: sbLoadSession reads the session from sessionStorage');
   // Adopt-once: a pre-v75 localStorage copy is adopted and then gone.
@@ -4404,7 +4406,7 @@ const test = `
   localStorage.setItem(SB_SESSION_KEY, JSON.stringify({ access_token: 'tok-75-old', refresh_token: 'ref-75-old' }));
   eq(sbLoadSession() && sbLoadSession().access_token, 'tok-75-old', 'v75: an old localStorage session is adopted once');
   eq(localStorage.getItem(SB_SESSION_KEY), null, 'v75: the adopted localStorage copy is removed');
-  ok(!!sessionStorage.getItem(SB_SESSION_KEY) && sessionStorage.getItem(SB_SESSION_KEY).indexOf('tok-75-old') !== -1, 'v75: the adopted session now lives in sessionStorage');
+  ok(!!vaultDecode(sessionStorage.getItem(SB_SESSION_KEY)) && vaultDecode(sessionStorage.getItem(SB_SESSION_KEY)).indexOf('tok-75-old') !== -1, 'v75: the adopted session now lives in sessionStorage');
   sbClearSession();
   eq(sessionStorage.getItem(SB_SESSION_KEY), null, 'v75: sbClearSession clears the sessionStorage copy');
   eq(localStorage.getItem(SB_SESSION_KEY), null, 'v75: sbClearSession clears the localStorage copy too');
@@ -4413,7 +4415,7 @@ const test = `
   var slice75t = mapCloudTeacherPayload(p75t);
   var acct75t = { role: 'teacher', name: 'Sess Teacher', sub: 'Teacher • Sess Teacher', email: 'cloud-teacher:srv-75:te-75', uid: 'cloud-teacher-te-75', teacherId: 'te-75', schoolUid: 'srv-75', cloud: true, schoolServerId: 'srv-75' };
   loginCloudTeacher(acct75t, slice75t, 'tok-75', { silent: true });
-  ok(!!sessionStorage.getItem(CLOUD_TEACHER_KEY) && sessionStorage.getItem(CLOUD_TEACHER_KEY).indexOf('tok-75') !== -1, 'v75: the teacher snapshot is in sessionStorage');
+  ok(!!vaultDecode(sessionStorage.getItem(CLOUD_TEACHER_KEY)) && vaultDecode(sessionStorage.getItem(CLOUD_TEACHER_KEY)).indexOf('tok-75') !== -1, 'v75: the teacher snapshot is in sessionStorage');
   eq(localStorage.getItem(CLOUD_TEACHER_KEY), null, 'v75: the teacher snapshot is NOT in localStorage');
   logout(); await waitLogout();
   loginAs(TEST_ACCOUNTS.school);
@@ -6764,12 +6766,12 @@ const test = `
   eq(__els['studentErr'].textContent, t('tPinLocked'), 'v54 (A1): a locked student sees the lockout message');
   for (var j54 = 0; j54 < 5; j54++) tryLogin54('ADM-9999-XXX', '0000');
   eq(pinLockUntil('test-school', 'ADM-9999-XXX'), 0, 'v54 (A1): wrong guesses on an unknown admission number never create a lock');
-  var fails54 = JSON.parse(localStorage.getItem('schoolSaathiPinFails') || '{}');
+  var fails54 = JSON.parse(vaultDecode(localStorage.getItem('schoolSaathiPinFails')) || '{}');
   fails54[pinFailKey('test-school', 'stu-lock-54')].lockedUntil = Date.now() - 1000;
-  localStorage.setItem('schoolSaathiPinFails', JSON.stringify(fails54));
+  localStorage.setItem('schoolSaathiPinFails', vaultEncode(JSON.stringify(fails54)));
   eq(tryLogin54('ADM-2025-054', '6824'), 'student', 'v54 (A1): the correct PIN logs in once the lock has expired');
   logout(); await waitLogout();
-  var failsAfter54 = JSON.parse(localStorage.getItem('schoolSaathiPinFails') || '{}');
+  var failsAfter54 = JSON.parse(vaultDecode(localStorage.getItem('schoolSaathiPinFails')) || '{}');
   ok(!failsAfter54[pinFailKey('test-school', 'stu-lock-54')], 'v54 (A1): a successful login clears the failure record');
   // (iv) A2: the PIN value is never rendered — profile, edit form, backup.
   state.role = 'school'; state.user = TEST_ACCOUNTS.school;
@@ -6995,7 +6997,7 @@ const test = `
   if (fails.length) { console.log('FAILED: ' + fails.join(' | ')); process.exitCode = 1; }
 })();
 `;
-vm.runInContext(qrgenSrc + '\n;' + bcryptSrc + '\n;' + cryptoSrc + '\n;' + i18nSrc + '\n;' + src + '\n;' + seedFixturesSrc + '\n;' + test, ctx);
+vm.runInContext(qrgenSrc + '\n;' + bcryptSrc + '\n;' + cryptoSrc + '\n;' + vaultSrc + '\n;' + i18nSrc + '\n;' + src + '\n;' + seedFixturesSrc + '\n;' + test, ctx);
 
 // ---- Node-side checks: i18n t() key coverage + greps ----
 const tKeys = new Set();
@@ -8006,7 +8008,7 @@ async function v28run() {
   ctx.document.getElementById('fSupMsg').value = 'Fees page is slow';
   ctx.submitSupportRequest({ preventDefault: function () {} });
   await tick(); await tick(); await tick(); await tick();
-  var sup30 = JSON.parse(ls.getItem('schoolSaathiSupportRequests'));
+  var sup30 = JSON.parse(ctx.vaultDecode(ls.getItem('schoolSaathiSupportRequests')));
   v28eq(sup30.length, 1, 'v30: support request still saves locally when a session exists');
   v28ok(!!sup30[0].id, 'v30: local support request gets a local id');
   v28eq(sbServer.ss_support_requests.length, 1, 'v30: support request posts to ss_support_requests');
@@ -8025,7 +8027,7 @@ async function v28run() {
   ctx.document.getElementById('fSupMsg').value = 'Offline request';
   ctx.submitSupportRequest({ preventDefault: function () {} });
   await tick(); await tick();
-  var sup30b = JSON.parse(ls.getItem('schoolSaathiSupportRequests'));
+  var sup30b = JSON.parse(ctx.vaultDecode(ls.getItem('schoolSaathiSupportRequests')));
   v28eq(sup30b.length, 1, 'v30: support request still saves locally with no session');
   v28ok(!sbCalls.some(function (c) { return c.url.indexOf('ss_support_requests') !== -1; }), 'v30: no server post without a session');
 
