@@ -510,24 +510,30 @@ function sbSetNewPassword(recoveryToken, pw) {
   return sbAuthFetch('/auth/v1/user', { method: 'PUT', token: recoveryToken, body: { password: pw } });
 }
 // v75 (P1-3): session-scoped storage for tokens and cloud snapshots.
-// The Supabase bearer token and the cloud teacher/student snapshots live
-// in sessionStorage (they end with the tab) instead of localStorage.
-// sessGet adopts a pre-v75 localStorage copy once (copy to sessionStorage,
-// remove the localStorage copy) so nobody is logged out by the update.
-// sessSet/sessRemove keep both storages clean.
+// v152 (logout-on-close fix): the Supabase bearer token and the cloud
+// teacher/student/staff snapshots now ALSO live in localStorage, sealed by
+// the vault (v147) — sessionStorage dies with the tab/PWA, so a token kept
+// only there logged every server-linked school out on the next reopen
+// (restoreSession validated the server session, found nothing to refresh
+// from, and wiped the good local session too). localStorage is the durable
+// copy; sessionStorage stays as the fast in-tab read. sessGet re-seeds
+// sessionStorage from localStorage when the tab is fresh but KEEPS the
+// localStorage copy — the old one-time adoption (copy + delete) is what
+// made the logout survive exactly one reopen. Logout still clears both
+// storages (sessRemove), so a logged-out token stops working.
 function sessGet(key) {
   // v147: session snapshots are sealed at rest (vault.js). Legacy
   // plaintext still decodes, so old snapshots keep working.
   try { var r = sessionStorage.getItem(key); if (r) { var d = vaultDecode(r); if (d !== null) return d; } } catch (e) {}
   try {
     var old = localStorage.getItem(key);
-    if (old) { var od = vaultDecode(old); if (od !== null) { try { sessionStorage.setItem(key, vaultEncode(od)); } catch (e2) {} try { localStorage.removeItem(key); } catch (e3) {} return od; } }
+    if (old) { var od = vaultDecode(old); if (od !== null) { try { sessionStorage.setItem(key, vaultEncode(od)); } catch (e2) {} return od; } }
   } catch (e4) {}
   return null;
 }
 function sessSet(key, val) {
-  try { sessionStorage.setItem(key, vaultEncode(val)); } catch (e) {}
-  try { localStorage.removeItem(key); } catch (e2) {}
+  try { localStorage.setItem(key, vaultEncode(val)); } catch (e) {}
+  try { sessionStorage.setItem(key, vaultEncode(val)); } catch (e2) {}
 }
 function sessRemove(key) {
   try { sessionStorage.removeItem(key); } catch (e) {}
@@ -576,15 +582,17 @@ function sbValidateSchoolSession() {
   var checked = sbGetValidToken().then(function (tok) {
     if (!tok) {
       // v104: NO stored session is not "offline" — the school is not
-      // authenticated (a new tab: the Supabase session lives in
-      // sessionStorage, which is per-tab, so a reload in a fresh tab
-      // has nothing to refresh from). Restoring such a school into
-      // the dashboard leaves sbSyncActive() null forever: every save
-      // silently skips its diff, nothing ever queues, and the UI
-      // still says "Backed up to the server" (live 12 Nov: Remove
-      // Holiday failed five checks in a row). Drop to the login
-      // screen. A stored session whose token cannot be refreshed is
-      // genuinely offline (keep) unless the server rejected it (drop).
+      // authenticated. Restoring such a school into the dashboard
+      // leaves sbSyncActive() null forever: every save silently skips
+      // its diff, nothing ever queues, and the UI still says "Backed up
+      // to the server" (live 12 Nov: Remove Holiday failed five checks
+      // in a row). Drop to the login screen. A stored session whose
+      // token cannot be refreshed is genuinely offline (keep) unless
+      // the server rejected it (drop).
+      // v152: the session now persists in vault-sealed localStorage
+      // (sessSet/sessGet), so a fresh tab CAN refresh from it — this
+      // branch only fires when there genuinely is no stored session
+      // (e.g. first login after this fix, or storage cleared).
       if (!sbLoadSession()) return false;
       return !sbSessionExpired;
     }
@@ -8688,6 +8696,12 @@ function renderApp() {
   // below. A render with no logged-in user is always stale (the login
   // screen already stands), so there is nothing to draw.
   if (!state.user) return;
+  // v152 (logo-save fix): a picked-but-unsaved logo lives only while the
+  // Settings page is open — leaving Settings drops it, exactly like the
+  // other transient form state go() clears. This is the single choke
+  // point (it covers go() and Back navigation); settingsPage itself must
+  // NOT reset it, or the 30 s re-mint tick drops the logo mid-visit.
+  if (state.view !== 'settings') pendingLogo = null;
   // v148 (bug 1): apply a nav press queued on mousedown (see queueNav)
   // BEFORE building the nav, so the active tab and the rendered page
   // already reflect it — a press swallowed mid-click by a re-render
@@ -12666,8 +12680,18 @@ function onBackupFileChosen(input) {
   reader.readAsText(f);
 }
 function settingsPage() {
-  pendingLogo = null;
+  // v152 (logo-save fix): do NOT reset pendingLogo here — this page is
+  // re-rendered by the 30 s photo re-mint tick (sbSyncAutoTick ->
+  // sbPhotoReMintTick -> renderApp), and the reset silently dropped a logo
+  // picked but not yet saved (Save still toasted "Settings saved"). The
+  // pending logo is cleared by saveSettings after it is applied, by
+  // clearSchoolLogo, and by renderApp when leaving Settings.
   var p = db.profile;
+  // v152: a picked-but-unsaved logo survives re-renders — show it in the
+  // preview (pendingLogo '' = remove intent, show the placeholder).
+  var logoPrev = pendingLogo !== null
+    ? (pendingLogo ? '<img class="photo-prev" src="' + esc(pendingLogo) + '" alt="">' : '<span class="photo-prev">🎓</span>')
+    : (p.logo ? '<img class="photo-prev" src="' + esc(p.logo) + '" alt="">' : '<span class="photo-prev">🎓</span>');
   return '<div class="page-head"><div><h2>' + t('settings') + '</h2><p>' + t('subSettingsS') + '</p></div></div>' +
   '<div class="card" style="max-width:680px"><h3>' + esc(p.name) + '</h3><p class="card-sub">' + t('settingsSub') + '</p>' +
   '<form onsubmit="return saveSettings(event)"><div class="form-grid">' +
@@ -12678,7 +12702,7 @@ function settingsPage() {
   '<div><label>' + t('fEmail') + '</label><input id="fPfEm" value="' + esc(p.email) + '"></div>' +
   '<div><label>' + t('fSession') + '</label><select id="fPfSe">' + sessionSelectOpts(p.session) + '</select></div>' +
   '<div class="full"><label>' + t('fAddress') + '</label><input id="fPfAd" value="' + esc(p.address) + '"></div>' +
-  '<div class="full"><label>' + t('logoLabel') + '</label><div class="photo-row"><span id="fPfLogoPrev">' + (p.logo ? '<img class="photo-prev" src="' + esc(p.logo) + '" alt="">' : '<span class="photo-prev">🎓</span>') + '</span>' +
+  '<div class="full"><label>' + t('logoLabel') + '</label><div class="photo-row"><span id="fPfLogoPrev">' + logoPrev + '</span>' +
   '<input type="file" id="fPfLogo" accept="image/*" onchange="onSchoolLogo(this)">' +
   '<button type="button" class="btn ghost sm" onclick="clearSchoolLogo()">' + t('removeLogo') + '</button></div>' +
   '<p class="muted">' + t('logoHint') + '</p></div>' +
