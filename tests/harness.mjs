@@ -1,7 +1,7 @@
 // tests/harness.mjs — in-repo test harness (Phase 1, audit CR-8).
 //
 // Loads the browser app (qrgen.js, js/bcrypt.js, js/modules/crypto.js,
-// js/modules/i18n.js, app.js) plus the seeded fixtures
+// js/modules/vault.js, js/modules/i18n.js, app.js) plus the seeded fixtures
 // (scripts/seed-fixtures.js) inside a node:vm context with minimal
 // browser stubs, in the same order index.html loads them. No network,
 // no DOM, no dependency — Node built-ins only.
@@ -30,6 +30,7 @@ const LOAD_ORDER = [
   'qrgen.js',
   'js/bcrypt.js',
   'js/modules/crypto.js',
+  'js/modules/vault.js',
   'js/modules/i18n.js',
   'app.js',
   'scripts/seed-fixtures.js',

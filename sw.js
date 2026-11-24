@@ -13,6 +13,7 @@ var APP_SHELL = [
   'styles.css?v=147',
   'app.js?v=147',
   'js/modules/crypto.js?v=147',
+  'js/modules/vault.js?v=147',
   'js/modules/i18n.js?v=147',
   'js/bcrypt.js?v=147',
   'qrgen.js?v=147',

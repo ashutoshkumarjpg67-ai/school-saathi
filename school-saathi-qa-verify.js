@@ -29,6 +29,7 @@ const src = fs.readFileSync(APP, 'utf8');
 const qrgenSrc = readRel('qrgen.js');
 // Phase 2: app.js modules load before app.js in the vm, same order as index.html.
 const cryptoSrc = readRel('js/modules/crypto.js');
+const vaultSrc = readRel('js/modules/vault.js'); // v147: at-rest encryption — same order as index.html
 const i18nSrc = readRel('js/modules/i18n.js');
 const bcryptSrc = readRel('js/bcrypt.js');
 // Phase 1: the demo-seed fixtures moved out of app.js at v67 into
@@ -6995,7 +6996,7 @@ const test = `
   if (fails.length) { console.log('FAILED: ' + fails.join(' | ')); process.exitCode = 1; }
 })();
 `;
-vm.runInContext(qrgenSrc + '\n;' + bcryptSrc + '\n;' + cryptoSrc + '\n;' + i18nSrc + '\n;' + src + '\n;' + seedFixturesSrc + '\n;' + test, ctx);
+vm.runInContext(qrgenSrc + '\n;' + bcryptSrc + '\n;' + cryptoSrc + '\n;' + vaultSrc + '\n;' + i18nSrc + '\n;' + src + '\n;' + seedFixturesSrc + '\n;' + test, ctx);
 
 // ---- Node-side checks: i18n t() key coverage + greps ----
 const tKeys = new Set();
