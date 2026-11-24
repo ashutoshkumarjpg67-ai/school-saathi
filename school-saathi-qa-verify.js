@@ -5539,7 +5539,7 @@ const test = `
   eq(PAGE_ACCOUNTANT.notices, noticesPage, 'v85: the accountant notices page is noticesPage');
   eq(PAGE_STAFF.dashboard, roleDashboard, 'v85: the staff dashboard is roleDashboard');
   eq(PAGE_PARENT.dashboard, studentDashboard, 'v86: the parent dashboard reuses the student dashboard');
-  eq(PAGE_SUPERADMIN.dashboard, roleDashboard, 'v85: the super admin dashboard is roleDashboard');
+  eq(PAGE_SUPERADMIN.dashboard, superAdminDashboard, 'v85: the super admin dashboard is superAdminDashboard'); // the super admin grew its own dashboard (platform totals + read-only schools list) — roleDashboard only ever showed it a placeholder
   // roleDashboard renders the role + school and only the allowed views.
   // v88: the check runs as an accountant (dashboard + notices only), so
   // a denied view must not appear as a button.
@@ -6144,11 +6144,13 @@ const test = `
   state.superSchools = [];
   ok(schoolsPage().indexOf(t('tNoSchools')) !== -1, 'v94: the empty schools page says No schools yet');
   // The super admin dashboard names the platform, never the demo school.
-  state.superSchools = null;
+  // It renders through the real page function (superAdminDashboard),
+  // not the roleDashboard placeholder it replaced.
+  state.superSchools = [];
   state.view = 'dashboard';
-  var dash94 = roleDashboard();
+  var dash94 = PAGE_SUPERADMIN.dashboard();
   ok(dash94.indexOf('Super Admin') !== -1, 'v94: the super admin dashboard names the role');
-  ok(dash94.indexOf('School Saathi Platform') !== -1, 'v94: the super admin dashboard names the platform');
+  ok(dash94.indexOf('Platform overview') !== -1, 'v94: the super admin dashboard names the platform');
   ok(dash94.indexOf('St. Xavier') === -1, 'v94: the super admin dashboard never shows the demo school name');
   // The top crumb for a super admin says Super Admin Dashboard.
   eq(t('superAdminDash'), 'Super Admin Dashboard', 'v94: the super admin dashboard label exists');
