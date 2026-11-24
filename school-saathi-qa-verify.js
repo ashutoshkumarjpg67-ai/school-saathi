@@ -7242,12 +7242,12 @@ console.log(sess147ok
   : 'FAIL v147: session-expiry gaps fix missing (SESSION_CLOCK_SKEW_MS / future-dated check / toast)');
 if (!sess147ok) process.exitCode = 1;
 // ---- v148: live-check bug fixes (24 Nov 2026, Test Sunrise School) ----
-// (0) Version markers: version.json says 150 (APP_VERSION / sw.js /
+// (0) Version markers: version.json says 152 (APP_VERSION / sw.js /
 // ?v= are pinned generically against EXPECTED_VERSION above).
-console.log(EXPECTED_VERSION === 151
-  ? 'PASS v151: version.json says 151'
-  : 'FAIL v151: version.json does not say 151 (got ' + EXPECTED_VERSION + ')');
-if (EXPECTED_VERSION !== 151) process.exitCode = 1;
+console.log(EXPECTED_VERSION === 152
+  ? 'PASS v152: version.json says 152'
+  : 'FAIL v152: version.json does not say 152 (got ' + EXPECTED_VERSION + ')');
+if (EXPECTED_VERSION !== 152) process.exitCode = 1;
 // (1) Nav presses queue on mousedown and the next render applies them.
 var q148ok = src.includes('function queueNav(view)') && src.includes('onmousedown="queueNav(') && src.includes('if (pendingNav) { var pv148 = pendingNav;');
 console.log(q148ok
@@ -7337,6 +7337,47 @@ console.log(c149d
   ? 'PASS v149 bug 4: Last-flush line reports the recorded conflict total, not this flush\'s new count'
   : 'FAIL v149 bug 4: flush diag still writes this flush\'s conflict count');
 if (!c149d) process.exitCode = 1;
+// ---- v152: Bug A compression-wait + re-mint guard (24 Nov 2026) ----
+// A Save tapped while a large logo/photo was still compressing silently
+// skipped the file while toasting success. The saves now defer and retry
+// once the compression lands; re-mint re-renders never rebuild over a
+// pending pick; closeModal clears a dead pending photo. (Spider PR #87's
+// logout fix — tokens in localStorage + sessionStorage — is kept as-is:
+// the session drop line below is pinned, and BAT's v151 settingsPage
+// duplicate must stay absent.)
+var c152a = src.includes('var logoCompressing = 0, photoCompressing = 0;') && src.includes('var logoSavePending = false, photoSavePending = null;');
+console.log(c152a
+  ? 'PASS v152 Bug A: compression counters + deferred-save flags exist'
+  : 'FAIL v152 Bug A: logoCompressing/photoCompressing counters or logoSavePending/photoSavePending flags missing');
+if (!c152a) process.exitCode = 1;
+var c152b = src.includes('if (logoCompressing > 0)') && src.includes('logoSavePending = true') && src.includes('function retryLogoSave()')
+  && src.includes('if (photoCompressing > 0)') && src.includes('photoSavePending = { id: id, mode: mode }') && src.includes('function retryPhotoSave(ps)');
+console.log(c152b
+  ? 'PASS v152 Bug A: saveSettings/saveStudent defer while compressing and retry once it lands'
+  : 'FAIL v152 Bug A: deferral / retry wiring missing from saveSettings or saveStudent');
+if (!c152b) process.exitCode = 1;
+var c152c = src.includes('function sbHasPendingFile()') && src.includes('function sbReMintRender()')
+  && (src.match(/sbReMintRender\(\)/g) || []).length >= 6;
+console.log(c152c
+  ? 'PASS v152 Bug B guard: sbHasPendingFile + sbReMintRender guard all 5 re-mint call sites'
+  : 'FAIL v152 Bug B guard: sbReMintRender / sbHasPendingFile missing or not all re-mint sites use the guard');
+if (!c152c) process.exitCode = 1;
+var cm152 = src.slice(src.indexOf('function closeModal()'), src.indexOf('function closeModal()') + 500);
+var c152d = cm152.includes('pendingPhoto = null');
+console.log(c152d
+  ? 'PASS v152 Bug B guard: closeModal clears a pending photo'
+  : 'FAIL v152 Bug B guard: closeModal does not clear pendingPhoto');
+if (!c152d) process.exitCode = 1;
+var c152e = i18n147.includes('tLogoProcessing') && i18n147.includes('tPhotoProcessing');
+console.log(c152e
+  ? 'PASS v152 i18n: tLogoProcessing / tPhotoProcessing keys exist'
+  : 'FAIL v152 i18n: tLogoProcessing or tPhotoProcessing key missing');
+if (!c152e) process.exitCode = 1;
+var c152f = src.includes('if (!sbLoadSession()) return false;') && !src.includes('logoPrev151') && !src.includes('oldLogoIn151');
+console.log(c152f
+  ? 'PASS v152 scope: Spider PR #87 session line kept, no BAT v151 settingsPage duplicate'
+  : 'FAIL v152 scope: session drop line changed or v151 settingsPage duplicate present');
+if (!c152f) process.exitCode = 1;
 console.log(css.includes('760px') && css.includes('#0A1E4B') && css.includes('#EA8600') && css.includes('.auth-tab')
   ? 'PASS styles.css keeps navy/gold theme + 760px breakpoint + auth tabs'
   : 'FAIL styles.css missing navy/gold / 760px / auth-tab rules');
@@ -7850,8 +7891,8 @@ function v28hcall(html, fn, want, name) { const r = hcallCheck(html, fn, want); 
   v28ok(fn.includes('not_allowed'), 'v137: cross-scope requests are refused (403 not_allowed)');
   v28ok(src.includes('var whoPhoto = me ? sbDisplayPhoto(me.photo) : null;'), 'v139: sidebar avatar goes through the signed-URL cache');
   v28ok(src.includes('esc(sbDisplayPhoto(schoolLogo))') && src.includes('esc(sbDisplayPhoto(prof.logo))'), 'v139: topbar and sidebar logos go through the signed-URL cache');
-  v28ok(src.includes('sbCacheSignedPhoto(stu.photo_url, d.url, d.expires_in); if (typeof renderApp'), 'v139: parent/student photo sign re-renders the whole shell');
-  v28ok(src.includes('if (typeof renderApp === \'function\') renderApp(); // v139: renderApp so the sidebar logo picks up the signed URL too'), 'v139: owner batch sign re-renders the whole shell');
+  v28ok(src.includes('sbCacheSignedPhoto(stu.photo_url, d.url, d.expires_in); sbReMintRender();'), 'v139: parent/student photo sign re-renders the whole shell (v152: via the sbReMintRender guard, which calls renderApp when nothing is pending)');
+  v28ok(src.includes('sbReMintRender(); // v139: renderApp so the sidebar logo picks up the signed URL too'), 'v139: owner batch sign re-renders the whole shell (v152: via the sbReMintRender guard)');
   v28ok(fn.includes('ss_staff_sessions') && fn.includes(".from('ss_staff')") && fn.includes('staff_token'), 'v140: staff/principal tokens verify against ss_staff_sessions with expiry and revocation');
   v28ok(fn.includes("staff.role === 'accountant'") && fn.includes("classScope = staff.role === 'staff'"), 'v140: accountants get no photos; class-scoped staff keep their class scope');
   v28ok(fn.includes('if (classScope && !(row.cls && classScope.includes(row.cls))) continue'), 'v140: batch school signing filters to the class scope');

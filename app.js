@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 151;
+var APP_VERSION = 152;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -379,6 +379,18 @@ if (typeof window !== 'undefined' && window.addEventListener) {
     try { if (typeof sbRefreshSignedPhotos === 'function') sbRefreshSignedPhotos(); } catch (e) {}
   });
 }
+// v152 (Bug B): a background photo re-mint must never rebuild the
+// app while a photo/logo pick is pending — the rebuild destroys the
+// file input (and the pending value with it), so the user's pick is
+// silently lost on Save. The signed URLs are still cached; the next
+// ordinary render applies them.
+function sbHasPendingFile() {
+  try { return pendingLogo !== null || pendingPhoto !== null; } catch (e) { return false; }
+}
+function sbReMintRender() {
+  if (sbHasPendingFile()) return;
+  if (typeof renderApp === 'function') renderApp();
+}
 function sbRefreshSignedPhotos() {
   try {
     sbSyncAutoStart(); // v142: the re-mint due-check rides the 30s tick, so any session that signs photos must have the tick running (login and restore, every role)
@@ -393,7 +405,7 @@ function sbRefreshSignedPhotos() {
       var pme = (db && db.students ? db.students : []).find(function (x) { return x.id === state.user.studentId; });
       if (pme && pme.srvId && sbIsSbPhotoUrl(pme.photo)) {
         sbPhotoSignRequest({ action: 'student', student_id: pme.srvId, parent_token: state.cloudParentToken }).then(function (d) {
-          if (d && d.url) { sbCacheSignedPhoto(pme.photo, d.url, d.expires_in); if (typeof renderApp === 'function') renderApp(); }
+          if (d && d.url) { sbCacheSignedPhoto(pme.photo, d.url, d.expires_in); sbReMintRender(); }
         });
       }
       return;
@@ -412,7 +424,7 @@ function sbRefreshSignedPhotos() {
         var c = sbSignedPhotoCache[orig];
         if (!c || !c.sid || c.exp > teacherDue) return;
         sbPhotoSignRequest({ action: 'student', student_id: c.sid, teacher_token: state.cloudTeacherToken }).then(function (d) {
-          if (d && d.url) { sbCacheSignedPhoto(orig, d.url, d.expires_in, c.sid); if (typeof renderApp === 'function') renderApp(); }
+          if (d && d.url) { sbCacheSignedPhoto(orig, d.url, d.expires_in, c.sid); sbReMintRender(); }
         });
       });
       return;
@@ -429,7 +441,7 @@ function sbRefreshSignedPhotos() {
           var orig = (k === 'logo') ? sbStoragePublicUrl('school-logos', sid + '/logo.png') : sbStoragePublicUrl('student-photos', sid + '/' + k + '.jpg');
           sbCacheSignedPhoto(orig, d.urls[k], d.expires_in);
         });
-        if (typeof renderApp === 'function') renderApp(); // v140: re-render so staff avatars pick up the signed URLs
+        sbReMintRender(); // v140: re-render so staff avatars pick up the signed URLs
       });
       return;
     }
@@ -442,7 +454,7 @@ function sbRefreshSignedPhotos() {
           var orig = (k === 'logo') ? sbStoragePublicUrl('school-logos', sid + '/logo.png') : sbStoragePublicUrl('student-photos', sid + '/' + k + '.jpg');
           sbCacheSignedPhoto(orig, d.urls[k], d.expires_in);
         });
-        if (typeof renderApp === 'function') renderApp(); // v139: renderApp so the sidebar logo picks up the signed URL too
+        sbReMintRender(); // v139: renderApp so the sidebar logo picks up the signed URL too
       });
     });
   } catch (e) {}
@@ -455,7 +467,7 @@ function sbPrefetchCloudPhoto(payload, serverId, adm, pin) {
     var stu = payload && payload.student;
     if (!stu || !stu.id || !sbIsSbPhotoUrl(stu.photo_url) || stu.photo_data_url) return;
     sbPhotoSignRequest({ action: 'student', student_id: stu.id, school_id: serverId, admission_no: adm, pin: pin }).then(function (d) {
-      if (d && d.url) { sbCacheSignedPhoto(stu.photo_url, d.url, d.expires_in); if (typeof renderApp === 'function') renderApp(); } // v139: renderApp so the sidebar avatar picks up the signed URL too
+      if (d && d.url) { sbCacheSignedPhoto(stu.photo_url, d.url, d.expires_in); sbReMintRender(); } // v139: renderApp so the sidebar avatar picks up the signed URL too
     });
   } catch (e) {}
 }
@@ -5885,6 +5897,14 @@ function compressAttempts(w, h, opts) {
 }
 var PHOTO_MAX = 512, PHOTO_CAP = 120 * 1024, LOGO_MAX = 256, LOGO_CAP = 250 * 1024;
 var pendingPhoto = null, pendingLogo = null;
+// v152 (Bug A): compression is async — a Save tapped while a file is
+// still compressing must WAIT for it, never silently drop the pick.
+// logoCompressing/photoCompressing count the in-flight compressions
+// (a second pick while one is running starts another); logoSavePending
+// is a settings save deferred until the logo lands, photoSavePending
+// holds the {id, mode} of a student save deferred until the photo lands.
+var logoCompressing = 0, photoCompressing = 0;
+var logoSavePending = false, photoSavePending = null;
 function compressImageFile(file, opts, cb) {
   // v82: the guard must NOT require Image — the small-file fast path
   // (FileReader only) is the whole point of v82, and it must work even
@@ -5941,10 +5961,17 @@ function onStudentPhoto(input) {
   var rawUrl = null;
   try { if (typeof URL !== 'undefined' && URL.createObjectURL) rawUrl = URL.createObjectURL(file); } catch (e) {}
   if (rawUrl && prev) prev.innerHTML = '<img class="photo-prev" src="' + esc(rawUrl) + '" alt="">';
+  photoCompressing++;
   compressImageFile(file, { max: PHOTO_MAX, cap: PHOTO_CAP, format: 'jpeg' }, function (url, err) {
-    if (!url) { toast(err === 'too-big' ? t('tPhotoTooBig') : t('tPhotoError')); input.value = ''; if (prev) prev.innerHTML = photoPrevHTML(null, $('fStName') ? $('fStName').value : ''); return; }
-    pendingPhoto = url;
-    if (prev) prev.innerHTML = photoPrevHTML(url, $('fStName') ? $('fStName').value : '');
+    if (!url) { toast(err === 'too-big' ? t('tPhotoTooBig') : t('tPhotoError')); input.value = ''; if (prev) prev.innerHTML = photoPrevHTML(null, $('fStName') ? $('fStName').value : ''); }
+    else {
+      pendingPhoto = url;
+      if (prev) prev.innerHTML = photoPrevHTML(url, $('fStName') ? $('fStName').value : '');
+    }
+    // v152 (Bug A): the compression landed — run a save that was
+    // deferred while it was in flight (it saves WITH the photo now).
+    photoCompressing = Math.max(0, photoCompressing - 1);
+    if (photoSavePending) { var ps152 = photoSavePending; photoSavePending = null; retryPhotoSave(ps152); }
   });
 }
 function clearStudentPhoto() {
@@ -5962,10 +5989,17 @@ function onSchoolLogo(input) {
   var rawUrl = null;
   try { if (typeof URL !== 'undefined' && URL.createObjectURL) rawUrl = URL.createObjectURL(file); } catch (e) {}
   if (rawUrl && prev) prev.innerHTML = '<img class="photo-prev" src="' + esc(rawUrl) + '" alt="">';
+  logoCompressing++;
   compressImageFile(file, { max: LOGO_MAX, cap: LOGO_CAP, format: 'png' }, function (url, err) {
-    if (!url) { toast(err === 'too-big' ? t('tLogoTooBig') : t('tPhotoError')); input.value = ''; if (prev) prev.innerHTML = '<span class="photo-prev">🎓</span>'; return; }
-    pendingLogo = url;
-    if (prev) prev.innerHTML = '<img class="photo-prev" src="' + esc(url) + '" alt="">';
+    if (!url) { toast(err === 'too-big' ? t('tLogoTooBig') : t('tPhotoError')); input.value = ''; if (prev) prev.innerHTML = '<span class="photo-prev">🎓</span>'; }
+    else {
+      pendingLogo = url;
+      if (prev) prev.innerHTML = '<img class="photo-prev" src="' + esc(url) + '" alt="">';
+    }
+    // v152 (Bug A): the compression landed — run a save that was
+    // deferred while it was in flight (it saves WITH the logo now).
+    logoCompressing = Math.max(0, logoCompressing - 1);
+    if (logoSavePending) { logoSavePending = false; retryLogoSave(); }
   });
 }
 /* v83 (Phase 3): the file input's `change` event is the ONLY trigger for
@@ -6002,6 +6036,19 @@ function clearSchoolLogo() {
   var inp = $('fPfLogo'); if (inp) inp.value = '';
   var prev = $('fPfLogoPrev');
   if (prev) prev.innerHTML = '<span class="photo-prev">🎓</span>';
+}
+function retryLogoSave() {
+  // v152 (Bug A): re-run the settings save deferred while the logo
+  // was still compressing. If the user has already left Settings
+  // there is no form to save — drop the retry.
+  try { if (!$('fPfName')) return; } catch (e) { return; }
+  saveSettings({ preventDefault: function () {} });
+}
+function retryPhotoSave(ps) {
+  // v152 (Bug A): re-run the student save deferred while the photo
+  // was still compressing. If the form is already closed, drop it.
+  try { if (!$('fStName')) return; } catch (e) { return; }
+  saveStudent({ preventDefault: function () {} }, ps.id, ps.mode);
 }
 function inr(n) { return '₹' + Number(n).toLocaleString('en-IN'); }
 function num(n) { return Number(n).toLocaleString('en-IN'); }
@@ -6814,7 +6861,14 @@ function downloadCSV(filename, rows) {
   setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
 }
 function openModal(html, wide) { $('modalRoot').innerHTML = '<div class="modal-back" onclick="if(event.target===this)closeModal()"><div class="modal' + (wide ? ' wide' : '') + '">' + html + '</div></div>'; }
-function closeModal() { $('modalRoot').innerHTML = ''; stopPhotoWatch(); }
+function closeModal() {
+  $('modalRoot').innerHTML = '';
+  stopPhotoWatch();
+  // v152 (Bug B): closing the modal abandons the in-progress form,
+  // including a picked-but-unsaved photo — drop it, or the re-mint
+  // guard (sbHasPendingFile) would stay stuck on a dead pick.
+  pendingPhoto = null;
+}
 var confirmCb = null;
 function confirmModal(msg, cb) {
   confirmCb = cb;
@@ -9553,6 +9607,20 @@ function saveStudent(e, id, mode) {
   if (id && !admDateVal) { var ex0 = db.students.find(function (x) { return x.id === id; }); if (ex0) data.admissionDate = ex0.admissionDate || ''; }
   var dup = findDupStudent(data, id || null);
   if (dup) return failInto(errEl, t('tDupFound') + dup.name + ' (' + (dup.admissionNo || dup.enr || '') + ' • ' + dup.cls + ')', true);
+  // v152 (Bug A): never save while a picked photo is still
+  // compressing — the save would silently drop it. If the change
+  // event never fired, start compression now; if it finishes
+  // synchronously (already resolved), fall through and save
+  // normally — only an in-flight compression defers the save.
+  var photoIn152 = $('fStPhoto');
+  if (photoIn152 && photoIn152.files && photoIn152.files[0]) {
+    if (!photoCompressing && pendingPhoto === null) onStudentPhoto(photoIn152);
+    if (photoCompressing > 0) {
+      photoSavePending = { id: id, mode: mode };
+      toast(t('tPhotoProcessing'));
+      return false;
+    }
+  }
   function finishSave() {
     pendingPhoto = null;
     stopPhotoWatch();
@@ -12787,6 +12855,20 @@ function settingsPage() {
 function saveSettings(e) {
   e.preventDefault();
   if (state.role !== 'school') { toast(t('tNotAllowed')); return false; }
+  // v152 (Bug A): never save while a picked logo is still
+  // compressing — the save would silently drop it. If the change
+  // event never fired, start compression now; if it finishes
+  // synchronously (already resolved), fall through and save
+  // normally — only an in-flight compression defers the save.
+  var logoIn152 = $('fPfLogo');
+  if (logoIn152 && logoIn152.files && logoIn152.files[0]) {
+    if (!logoCompressing && pendingLogo === null) onSchoolLogo(logoIn152);
+    if (logoCompressing > 0) {
+      logoSavePending = true;
+      toast(t('tLogoProcessing'));
+      return false;
+    }
+  }
   var p = db.profile;
   // v129 (Module 16): settings changes are significant admin actions — audit
   // them with the old → new values, so a renamed school or a changed session

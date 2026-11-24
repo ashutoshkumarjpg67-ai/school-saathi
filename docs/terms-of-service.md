@@ -1,6 +1,6 @@
 # School Saathi — Terms of Service
 
-> **Last updated: 24 November 2026 · App version 151** (base: origin/main
+> **Last updated: 24 November 2026 · App version 152** (base: origin/main
 > `e9a47c7`, v146, plus the v147 policy pages).
 >
 > These terms are published at
