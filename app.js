@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 145;
+var APP_VERSION = 146;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -7006,31 +7006,37 @@ function sbParentPinFailed(serverId, admNo) {
     return (r && r.data) || null;
   }).catch(function () { return null; });
 }
-// v114: the lockout-clear RPC now needs proof - the PIN (after a login)
-// or the DOB (after a local PIN reset). The old no-proof call let anyone
-// clear any admission number's lockout.
-function sbParentPinOk(serverId, admNo, pin, dob) {
+// v146: the lockout-clear RPC needs proof — the PIN just verified after
+// a login. The DOB proof (v114, for the DOB reset) is gone with the
+// reset itself (SQL 54): a DOB must never clear a lock.
+function sbParentPinOk(serverId, admNo, pin) {
   var _okBody = {};
   _okBody.p_school_id = serverId;
   _okBody.p_admission_no = admNo;
   if (pin != null) _okBody.p_pin = pin;
-  if (dob != null) _okBody.p_dob = dob;
   return sbRest('POST', 'rpc/ss_parent_pin_ok', SB_ANON_KEY, _okBody).then(function (r) {
     return (r && r.data) || null;
   }).catch(function () { return null; });
 }
-// v99 (cons fix): parent PIN self-service (SQL 37) — admission number +
-// date of birth, verified on the server. The new PIN is hashed
-// server-side; the plaintext is never stored.
-function sbParentPinResetByDob(serverId, admNo, dob, pin) {
-  var _resetBody = {};
-  _resetBody.p_school_id = serverId;
-  _resetBody.p_admission_no = admNo;
-  _resetBody.p_dob = dob;
-  _resetBody.p_new_pin = pin;
-  return sbRest('POST', 'rpc/ss_parent_pin_reset_by_dob', SB_ANON_KEY, _resetBody).then(function (r) {
-    if (!r || !r.ok || !r.data || typeof r.data !== 'object') return null;
-    return r.data;
+// v146: admin-issued parent PIN reset (SQL 54). The school generates a
+// 6-digit random PIN and shares it with the parent out-of-band; this
+// RPC sets the SAME PIN on the server (hashed server-side), clears the
+// lockout and audits. Authenticated ONLY: it runs on the school's
+// GoTrue session token, never the anon key, and the RPC itself checks
+// the caller owns the school. Best-effort after the local hash is set
+// — if it fails or the device is offline, the student upsert carries
+// the same hash on the next sync.
+function sbAdminResetParentPin(serverId, admNo, pin) {
+  return sbGetValidToken().then(function (tok) {
+    if (!tok) return null;
+    var _adminBody = {};
+    _adminBody.p_school_id = serverId;
+    _adminBody.p_admission_no = admNo;
+    _adminBody.p_new_pin = pin;
+    return sbRest('POST', 'rpc/ss_admin_reset_parent_pin', tok, _adminBody).then(function (r) {
+      if (!r || !r.ok || !r.data || typeof r.data !== 'object') return null;
+      return r.data;
+    }).catch(function () { return null; });
   }).catch(function () { return null; });
 }
 function sbPublicSchools() {
@@ -7119,12 +7125,8 @@ function doStudentCloudLogin(serverId, adm, pin, err) {
 // child's attendance, fees, results, homework and notices, and nothing
 // else. The parent never edits, never sees other students, and never
 // sees the school's totals.
-var parentResetMode = false;
 function doParentLogin(e) {
   e.preventDefault();
-  // In reset mode the Enter key submits this form too — route it to the
-  // reset handler instead of the login.
-  if (parentResetMode) return doParentPinReset(e);
   var adm = $('parentAdmNo').value.trim();
   var pin = $('parentPin').value.trim();
   var err = $('parentErr');
@@ -7209,124 +7211,6 @@ function doParentLocalLogin(schoolUid, srvId, adm, pin, err) {
   var acct = { role: 'parent', name: found.student.name, sub: t('parentSub') + ' • ' + found.student.name, email: 'parent:' + schoolUid + ':' + found.student.id, uid: 'parent-' + found.student.id, studentId: found.student.id, schoolUid: schoolUid };
   err.classList.add('hidden');
   loginAs(acct);
-  return false;
-}
-// v99 (cons fix): parent PIN self-service — admission number + date of
-// birth, the two facts already on file. No SMS/email route exists, and
-// the admin's Set PIN stays the fallback for students with no DOB on
-// record. The cloud path verifies the DOB on the server (SQL 37); the
-// local path verifies it against the record on this device.
-function showParentPinReset() {
-  parentResetMode = true;
-  $('parentLoginFields').classList.add('hidden');
-  $('parentResetFields').classList.remove('hidden');
-  $('parentErr').classList.add('hidden');
-}
-function hideParentPinReset() {
-  parentResetMode = false;
-  $('parentResetFields').classList.add('hidden');
-  $('parentLoginFields').classList.remove('hidden');
-  $('parentErr').classList.add('hidden');
-  try { $('parentResetPin').value = ''; $('parentResetPin2').value = ''; } catch (e) {}
-}
-function doParentPinReset(e) {
-  if (e) e.preventDefault();
-  var adm = $('parentResetAdm').value.trim();
-  var dob = $('parentResetDob').value;
-  var pin1 = digitsOnly($('parentResetPin').value);
-  var pin2 = digitsOnly($('parentResetPin2').value);
-  var err = $('parentErr');
-  var schoolUid = $('parentSchool') ? $('parentSchool').value : '';
-  if (!adm || !dob || !isValidDateStr(dob)) {
-    err.textContent = t('tFillAll');
-    err.classList.remove('hidden');
-    return false;
-  }
-  if (pin1.length < 4 || pin1.length > 6) {
-    err.textContent = t('tPinLen');
-    err.classList.remove('hidden');
-    return false;
-  }
-  if (pin1 !== pin2) {
-    err.textContent = t('tPinMismatch');
-    err.classList.remove('hidden');
-    return false;
-  }
-  if (schoolUid && schoolUid.indexOf('cloud:') === 0) {
-    sbParentPinResetByDob(schoolUid.slice(6), adm, dob, pin1).then(function (res) {
-      if (!res || !res.ok) {
-        // One generic error: never reveal whether the number or the DOB
-        // was the problem — except the lock itself, which the user must
-        // wait out, and no-DOB, which needs the admin.
-        if (res && res.locked) err.textContent = t('tPinLocked');
-        else if (res && res.error === 'no_dob') err.textContent = t('tPinResetNoDob');
-        else err.textContent = t('tInvalidStudent');
-        err.classList.remove('hidden');
-        return;
-      }
-      toast(t('tPinResetDone'));
-      hideParentPinReset();
-    });
-    return false;
-  }
-  var found = schoolUid ? findStudentByAdmNoInSchool(adm, schoolUid) : null;
-  var stu = found ? found.student : null;
-  if (!stu) {
-    err.textContent = t('tInvalidStudent');
-    err.classList.remove('hidden');
-    return false;
-  }
-  if (pinLockUntil(schoolUid, stu.id)) {
-    err.textContent = t('tPinLocked');
-    err.classList.remove('hidden');
-    return false;
-  }
-  if (!stu.dob) {
-    err.textContent = t('tPinResetNoDob');
-    err.classList.remove('hidden');
-    return false;
-  }
-  var srvId = null;
-  try { srvId = schoolUid ? (sbServerSchoolMap()[schoolUid] || null) : null; } catch (e2) { srvId = null; }
-  // v99: a server lock binds the local reset too — a locked parent must
-  // not keep guessing DOBs on this device. Fail-open as usual.
-  if (srvId && sbIsOnline()) {
-    sbParentPinPrecheck(srvId, adm).then(function (pre) {
-      if (pre && pre.locked) {
-        err.textContent = t('tPinLocked');
-        err.classList.remove('hidden');
-        return;
-      }
-      doParentPinResetLocal(schoolUid, srvId, found, stu, dob, pin1, err);
-    }).catch(function () { doParentPinResetLocal(schoolUid, srvId, found, stu, dob, pin1, err); });
-    return false;
-  }
-  doParentPinResetLocal(schoolUid, srvId, found, stu, dob, pin1, err);
-  return false;
-}
-function doParentPinResetLocal(schoolUid, srvId, found, stu, dob, pin1, err) {
-  if (stu.dob !== dob) {
-    pinFailRecord(schoolUid, stu.id);
-    if (srvId && sbIsOnline()) sbParentPinFailed(srvId, stu.admissionNo || '');
-    err.textContent = t('tInvalidStudent');
-    err.classList.remove('hidden');
-    return false;
-  }
-  stu.parentPinHash = hashPin(pin1);
-  delete stu.parentPin;
-  // Audit row on the school's own copy, so the admin sees the reset —
-  // the actor is the parent, not whoever happens to be logged in.
-  try {
-    if (!Array.isArray(found.db.auditLog)) found.db.auditLog = [];
-    found.db.auditLog.unshift({ ts: new Date().toISOString(), actor: stu.name + ' (parent)', action: 'Parent PIN reset', details: 'Admission ' + (stu.admissionNo || '') + ' • ' + (stu.cls || '') });
-    if (found.db.auditLog.length > 200) found.db.auditLog.length = 200;
-  } catch (e3) {}
-  try { writeDbByKey(found.dbKey, found.db); } catch (e4) {}
-  pinFailClear(schoolUid, stu.id);
-  // v114: the DOB just verified is the proof for clearing the counter.
-  if (srvId && sbIsOnline()) sbParentPinOk(srvId, stu.admissionNo || '', null, dob);
-  toast(t('tPinResetDone'));
-  hideParentPinReset();
   return false;
 }
 function doParentCloudLogin(serverId, adm, pin, err) {
@@ -9623,6 +9507,7 @@ function profileTabBody(s, tab) {
       '<p class="muted" style="margin:8px 0">' + t('tPinAuto') + (pinSet54 ? '' : ' ' + t('stuPinNone')) + '</p>' +
       '<div class="form-grid"><div><label>' + t('stuPinNew') + '</label><input id="fStuPinNew" type="password" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="4–6 digits"></div></div>' +
       '<div class="toolbar" style="margin-top:12px"><button class="btn" onclick="setStudentPin(\'' + s.id + '\')">' + t('stuPinSetBtn') + '</button>' +
+      '<button class="btn" onclick="generateStudentPin(\'' + s.id + '\')">' + t('stuPinGenerate') + '</button>' +
       '<button class="btn ghost" onclick="clearStudentPin(\'' + s.id + '\')">' + t('stuPinClear') + '</button></div></div>';
     return base + pinBox;
   }
@@ -9716,11 +9601,34 @@ function setStudentPin(id) {
   var s = db.students.find(function (x) { return x.id === id; });
   if (!s || state.role !== 'school') return;
   var v = digitsOnly($('fStuPinNew') ? $('fStuPinNew').value : '');
-  if (v.length < 4 || v.length > 6) { toast(t('tPinLen')); return; }
+  if (v.length !== 6) { toast(t('tPinLen6')); return; } // v146: new PINs are 6 digits (4-digit was too weak)
   s.parentPinHash = hashPin(v); delete s.parentPin; // v54 (A1): stored as a salted hash, never plaintext
   logAudit('Student PIN set', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
   saveDB(db); renderPage();
   toast(t('tPinSet'));
+}
+// v146: admin-issued parent PIN reset — the ONLY reset path now (the
+// DOB self-service is gone, SQL 54). The school generates a fresh
+// 6-digit random PIN and shares it with the parent out-of-band (in
+// person / phone / the school's own WhatsApp). The PIN is shown ONCE
+// here — it is never stored in plaintext, never rendered again, and
+// never sent anywhere except the admin RPC (over TLS) and the student
+// upsert (as a salted hash). The local lock is cleared at once; the
+// server lock clears through the admin RPC when online, else on the
+// parent's first successful login with the new PIN.
+function generateStudentPin(id) {
+  var s = db.students.find(function (x) { return x.id === id; });
+  if (!s || state.role !== 'school') return;
+  var pin = randomPin();
+  s.parentPinHash = hashPin(pin); delete s.parentPin;
+  logAudit('Parent PIN reset (admin-issued)', s.name + ' • ' + (s.admissionNo || '') + ' • ' + s.cls);
+  try { pinFailClear(state.user.uid, s.id); } catch (e) {}
+  saveDB(db);
+  var srvId = null;
+  try { srvId = sbServerSchoolMap()[state.user.uid] || null; } catch (e2) { srvId = null; }
+  if (srvId && sbIsOnline()) sbAdminResetParentPin(srvId, s.admissionNo || '', pin);
+  renderPage();
+  openModal('<h3>' + t('stuPinIssuedTitle') + '</h3><p style="color:var(--muted);font-size:14px">' + t('stuPinShowOnce') + '</p><p style="font-size:34px;letter-spacing:8px;text-align:center;margin:16px 0"><b>' + esc(pin) + '</b></p><div class="actions"><button type="button" class="btn" onclick="closeModal()">' + t('stuPinGotIt') + '</button></div>');
 }
 function clearStudentPin(id) {
   var s = db.students.find(function (x) { return x.id === id; });

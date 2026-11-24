@@ -1,3 +1,10 @@
+## v146 — parent PIN reset by DOB removed; school-issued random PIN only
+
+- **DOB reset is gone:** the parent login no longer offers a PIN reset with admission number + date of birth — both are known to classmates and teachers, so anyone could set a child's parent PIN. A parent who forgot the PIN is now told to ask the school.
+- **Admin-issued reset:** the school admin's student-profile PIN card gains "Generate new PIN" — a fresh 6-digit random PIN, shown once to share with the parent out-of-band (in person / phone / the school's own WhatsApp). Only the salted hash is stored; the reset is audited and clears the lockout. The same PIN is set on the server through the new `ss_admin_reset_parent_pin` RPC (school-owner check, authenticated session only) when online; offline it rides the student upsert.
+- **6-digit PINs:** new and changed PINs must be 6 digits (4-digit was too weak). Existing 4–5 digit PINs keep working until changed. `randomPin()` now mints 6 digits.
+- **Server side (SQL 54, apply in the SQL Editor):** drops `ss_parent_pin_reset_by_dob` and the DOB proof in `ss_parent_pin_ok` (a DOB alone could clear the lockout once the reset was gone). Until SQL 54 is applied, the old RPC still exists on the server even though no app version calls it.
+
 ## v136 — public Apply picker: deliberate school choice
 
 - **Placeholder option:** the public Apply-for-Admission picker pre-selected the first listed school, so an untouched School field silently applied there. A disabled empty-value "Select school" placeholder now leads the list; submitting without a choice shows a dedicated "Please choose a school" message (EN + HI). A school the parent already picked survives the async server-list refresh. Server side, the SQL 46 listable-school policy already rejects inserts without a valid listable school_id.

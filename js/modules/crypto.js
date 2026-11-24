@@ -48,9 +48,11 @@ function uniqueId(prefix) {
   return (prefix || '') + Date.now().toString(36) + '-' + __uidCounter.toString(36) + '-' + randomHex(3);
 }
 function randomPin() {
-  // A 4-digit student PIN, 1000-9999, from crypto randomness (v36: new
-  // students never get a phone-derived default PIN).
-  return String(parseInt(randomHex(2), 16) % 9000 + 1000);
+  // A 6-digit student PIN, 100000-999999, from crypto randomness (v36: new
+  // students never get a phone-derived default PIN; v146: 6 digits —
+  // 4-digit PINs were too weak, and new/changed PINs must be 6 digits.
+  // Existing 4-5 digit PINs keep working until changed.)
+  return String(parseInt(randomHex(3), 16) % 900000 + 100000);
 }
 /* v36: SHA-256 in plain JS (sync). The login paths are synchronous and
    WebCrypto's digest is async, so a hand-rolled SHA-256 keeps every

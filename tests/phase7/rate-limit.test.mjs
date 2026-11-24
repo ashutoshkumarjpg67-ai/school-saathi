@@ -203,12 +203,14 @@ describe('server rate limits on the other login surfaces (static)', () => {
     assert.match(src, /revoke execute on function public\.ss_parent_pin_ok\(uuid, text\) from public;/);
   });
 
-  it('parent PIN reset by DOB (SQL 37): a locked number cannot reset, and the DOB must match', () => {
-    const src = readSql('37_parent_pin_reset_by_dob.sql');
-    assert.match(src, /if v_locked is not null and v_locked > now\(\) then\s+return jsonb_build_object\('ok', false, 'locked', true/,
-      'locked admission numbers must stay locked through the reset flow');
-    assert.match(src, /if v_stu\.dob is null then\s+return jsonb_build_object\('ok', false, 'error', 'no_dob'\)/,
-      'a student with no DOB on file cannot reset by DOB');
-    assert.match(src, /revoke execute on function public\.ss_parent_pin_reset_by_dob\(uuid, text, date, text\) from public;/);
+  it('parent PIN reset by DOB is dropped (SQL 54): the DOB route is gone and no DOB clears a lock', () => {
+    // SQL 37 stays in the repo as history, but the live route is dead:
+    // SQL 54 drops the reset function and the DOB proof in
+    // ss_parent_pin_ok, and the admin-issued reset is authenticated-only.
+    const src = readSql('54_drop_dob_pin_reset.sql');
+    assert.match(src, /drop function if exists public\.ss_parent_pin_reset_by_dob\(uuid, text, date, text\);/);
+    assert.match(src, /drop function if exists public\.ss_parent_pin_ok\(uuid, text, text, date\);/);
+    assert.equal((src.match(/p_dob/g) || []).length, 1, 'the only p_dob is the filename in the header — no DOB parameter survives in any function');
+    assert.match(src, /grant execute on function public\.ss_admin_reset_parent_pin\(uuid, text, text\) to authenticated;/);
   });
 });

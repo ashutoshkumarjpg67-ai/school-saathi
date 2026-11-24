@@ -1265,13 +1265,13 @@ const test = `
   eq(__els['studentErr'].textContent, t('tInvalidStudent'), 'v35 (ii): unknown number shows the SAME generic error');
   // The school admin sets a custom PIN from the profile; the audit log records it.
   state.role = 'school'; state.user = TEST_ACCOUNTS.school;
-  $('fStuPinNew').value = '4321';
+  $('fStuPinNew').value = '432100';
   setStudentPin(riya42.id);
-  ok(verifyPin('4321', riya42) && !riya42.parentPin, 'v54 (A1): school can set a custom student PIN (stored as a hash, never plaintext)');
+  ok(verifyPin('432100', riya42) && !riya42.parentPin, 'v54 (A1): school can set a custom student PIN (stored as a hash, never plaintext)');
   ok(db.auditLog.some(function (a) { return a.action === 'Student PIN set'; }), 'v35: setting a PIN logs an audit entry');
   $('studentSchool').value = 'test-school';
   $('studentAdmNo').value = riya42.admissionNo;
-  $('studentPin').value = '4321';
+  $('studentPin').value = '432100';
   doStudentLogin({ preventDefault: function () {} });
   eq(state.role, 'student', 'v35: custom PIN works for student login');
   // The student session restores after a refresh.
@@ -1286,7 +1286,7 @@ const test = `
   state.role = 'school'; state.user = TEST_ACCOUNTS.school;
   $('fStuPinNew').value = '12';
   setStudentPin(riya42.id);
-  ok(verifyPin('4321', riya42), 'v54 (A1): too-short PIN is rejected and the old PIN stays');
+  ok(verifyPin('432100', riya42), 'v54 (A1): too-short PIN is rejected and the old PIN stays');
   clearStudentPin(riya42.id);
   ok(!riya42.parentPinHash && !riya42.parentPin, 'v54 (A1): school can clear the student PIN (hash removed)');
   logout(); await waitLogout();
@@ -1299,7 +1299,7 @@ const test = `
   state.role = null; state.user = null;
   eq(await restoreSession(), false, 'v35: a cleared PIN invalidates a stored student session');
   eq(state.role, null, 'v35: failed student restore leaves no session');
-  riya42.parentPinHash = hashPin('4321'); delete riya42.parentPin; // H-3: restore Riya's PIN as a hash of the admin-set PIN
+  riya42.parentPinHash = hashPin('432100'); delete riya42.parentPin; // H-3: restore Riya's PIN as a hash of the admin-set PIN
   saveDB(db);
 
   // ---- 43. Phase 4: admission requests ----
@@ -3266,23 +3266,23 @@ const test = `
   // The sanctioned path under H-3: the admin sets a PIN, then the
   // student logs in with it.
   state.role = 'school'; state.user = TEST_ACCOUNTS.school;
-  $('fStuPinNew').value = '4321';
+  $('fStuPinNew').value = '432100';
   setStudentPin(riya36.id);
-  ok(verifyPin('4321', riya36), 'H-3: after the admin sets the PIN, it verifies');
+  ok(verifyPin('432100', riya36), 'H-3: after the admin sets the PIN, it verifies');
   logout(); await waitLogout();
   fillSchoolPicker('studentSchool');
   $('studentSchool').value = 'test-school';
   $('studentAdmNo').value = riya36.admissionNo;
-  $('studentPin').value = '4321';
+  $('studentPin').value = '432100';
   doStudentLogin(ev36);
   eq(state.role, 'student', 'H-3: the student logs in with the admin-set PIN');
   logout(); await waitLogout();
   // admin-set PIN works; editing with a blank PIN field keeps it
   state.role = 'school'; state.user = TEST_ACCOUNTS.school;
   pinStu36 = db.students.find(function (s) { return s.name === 'V36 One'; }); // re-find: the student login reloaded db from storage, the old reference is stale
-  $('fStuPinNew').value = '4321';
+  $('fStuPinNew').value = '432100';
   setStudentPin(pinStu36.id);
-  ok(verifyPin('4321', pinStu36) && !pinStu36.parentPin, 'v54 (A1): the admin-set PIN is stored as a hash');
+  ok(verifyPin('432100', pinStu36) && !pinStu36.parentPin, 'v54 (A1): the admin-set PIN is stored as a hash');
   $('fStName').value = 'V36 One';
   $('fStCls').value = '6th'; $('fStSec').value = 'A'; $('fStRoll').value = '91';
   $('fStG').value = 'Guardian V36 One';
@@ -3293,7 +3293,7 @@ const test = `
   $('fStPinLogin').value = '';
   saveStudent(ev36, pinStu36.id);
   var pinStuAfter36 = db.students.find(function (s) { return s.id === pinStu36.id; });
-  ok(verifyPin('4321', pinStuAfter36), 'v54 (A1): editing with a blank PIN field keeps the existing PIN');
+  ok(verifyPin('432100', pinStuAfter36), 'v54 (A1): editing with a blank PIN field keeps the existing PIN');
 
   // (v) Aadhaar: migration strips a full number to last-4; a fresh
   // save never stores the full number; the upload mapper never sends it
@@ -3487,10 +3487,10 @@ const test = `
   // v54 (A1): three37 was created with a random PIN that is now hashed and
   // unreadable — the admin sets a known PIN first, then the student logs in with it
   state.role = 'school'; state.user = TEST_ACCOUNTS.school;
-  $('fStuPinNew').value = '4321';
+  $('fStuPinNew').value = '432100';
   setStudentPin(three37.id);
   $('studentAdmNo').value = three37.admissionNo;
-  $('studentPin').value = '4321';
+  $('studentPin').value = '432100';
   doStudentLogin(ev37);
   eq(state.role, 'student', 'v37 (i): the 3rd-A student logs in');
   var resTab37 = profileTabBody(three37, 'results');
@@ -6416,7 +6416,8 @@ const test = `
   // counter needs a GoTrue token, which a local login never has.
   var rpcCalls99 = [];
   var preCount99 = 0;
-  var resetBody99 = null;
+  var adminRpc99 = null;
+  var adminRpcAuth99 = null;
   function fetch99(url, init) {
     var u = String(url);
     rpcCalls99.push(u);
@@ -6446,10 +6447,9 @@ const test = `
       if (soBody.p_pin === '4321') return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: true, token: 'ptok-145', student: { id: 'srv-stu33', local_id: 'stu33', name: 'Riya99 Cloud', cls: '5th-A' }, exams: [], fees: [], attendance: [], homework: [], notices: [] }); } });
       return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: false, locked: false }); } });
     }
-    if (u.indexOf('ss_parent_pin_reset_by_dob') !== -1) {
-      try { resetBody99 = JSON.parse(init.body || '{}'); } catch (e) { resetBody99 = null; }
-      if (resetBody99 && resetBody99.p_admission_no === 'ADM-LOCKED-99') return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: false, locked: true }); } });
-      if (resetBody99 && resetBody99.p_dob === '2000-01-01') return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: false, locked: false }); } });
+    if (u.indexOf('ss_admin_reset_parent_pin') !== -1) {
+      try { adminRpc99 = JSON.parse(init.body || '{}'); } catch (e) { adminRpc99 = null; }
+      try { adminRpcAuth99 = (init.headers && init.headers.Authorization) || ''; } catch (e2) { adminRpcAuth99 = ''; }
       return Promise.resolve({ ok: true, status: 200, json: function () { return Promise.resolve({ ok: true }); } });
     }
     if (u.indexOf('/auth/v1/token') !== -1) return Promise.resolve({ ok: false, status: 400, json: function () { return Promise.resolve({ error: 'invalid_grant' }); } });
@@ -6539,72 +6539,50 @@ const test = `
   await tick99(); await tick99(); await tick99(); await tick99();
   eq($('parentErr').textContent, t('tPinLocked'), 'v99: a locked admission number shows the lock text on the parent login');
   eq(state.role, null, 'v99: a locked admission number does not log in as parent');
-  // (c) Parent PIN reset by DOB (local school): wrong DOB refuses and
-  // records a failure; the right DOB sets a new PIN; a student with no
-  // DOB on file is sent to the admin.
-  showParentPinReset();
-  eq($('parentLoginFields').classList.contains('hidden'), true, 'v99: the reset view hides the login fields');
-  eq($('parentResetFields').classList.contains('hidden'), false, 'v99: the reset view shows the reset fields');
+  // (c) v146: the DOB reset is GONE. No reset form exists on the parent
+  // login, no reset function exists in the app, and the parent who
+  // forgot the PIN is told to ask the school (the note under the login
+  // button). The old RPC is never called from anywhere.
+  eq(typeof showParentPinReset, 'undefined', 'v146: showParentPinReset no longer exists');
+  eq(typeof hideParentPinReset, 'undefined', 'v146: hideParentPinReset no longer exists');
+  eq(typeof doParentPinReset, 'undefined', 'v146: doParentPinReset no longer exists');
+  eq(typeof doParentPinResetLocal, 'undefined', 'v146: doParentPinResetLocal no longer exists');
+  // (The HTML side — no reset fields, the ask-the-school note present —
+  // is covered by the static INDEX-PIN-RESET check below; this fake DOM
+  // auto-creates any id and starts every textContent empty, so element
+  // asserts here would prove nothing.)
+  // (d) v146: admin-issued reset. The school generates a fresh 6-digit
+  // random PIN from the student profile; the PIN is shown once in a
+  // modal, the hash is stored, the audit row is written, the local lock
+  // is cleared, and the server RPC is called with the school session
+  // token (never the anon key) when the school is server-linked.
+  loginAs(TEST_ACCOUNTS.school);
+  riya99 = db.students.find(function (s) { return s.id === 'stu33'; });
+  riya99.parentPinHash = hashPin('4321'); delete riya99.parentPin;
+  saveDB(db);
+  var i99; for (i99 = 0; i99 < 5; i99++) pinFailRecord('test-school', 'stu33');
+  ok(pinLockUntil('test-school', 'stu33') > 0, 'v146: the test student starts locked locally');
   rpcCalls99 = [];
-  $('parentResetAdm').value = riya99.admissionNo;
-  $('parentResetDob').value = '2000-01-01';
-  $('parentResetPin').value = '5555';
-  $('parentResetPin2').value = '5555';
-  $('parentErr').textContent = '';
-  doParentPinReset({ preventDefault: function () {} });
-  await tick99(); await tick99(); await tick99(); await tick99();
-  eq($('parentErr').textContent, t('tInvalidStudent'), 'v99: a wrong DOB refuses the PIN reset with the generic error');
-  eq(rpcCalls99.some(function (u) { return u.indexOf('ss_parent_pin_failed') !== -1; }), true, 'v99: a wrong DOB records a failure on the server');
-  rpcCalls99 = [];
-  $('parentResetDob').value = '2012-03-04';
-  $('parentErr').textContent = '';
-  doParentPinReset({ preventDefault: function () {} });
-  await tick99(); await tick99(); await tick99(); await tick99();
-  eq($('toast').textContent, t('tPinResetDone'), 'v99: the right DOB resets the PIN and toasts the success');
-  eq(parentResetMode, false, 'v99: a successful reset returns to the login view');
-  eq(rpcCalls99.some(function (u) { return u.indexOf('ss_parent_pin_ok') !== -1; }), true, 'v99: a successful local reset clears the server counter');
-  var riyaAfter99 = findStudentByAdmNoInSchool(riya99.admissionNo, 'test-school');
-  ok(riyaAfter99 && verifyPin('5555', riyaAfter99.student), 'v99: the reset PIN verifies on the stored record');
-  ok(riyaAfter99 && riyaAfter99.db.auditLog.some(function (a) { return a.action === 'Parent PIN reset'; }), 'v99: the reset writes an audit row on the school copy');
-  showParentPinReset();
-  $('parentResetAdm').value = 'ADM-2025-034';
-  $('parentResetDob').value = '2012-03-04';
-  $('parentResetPin').value = '5555';
-  $('parentResetPin2').value = '5555';
-  $('parentErr').textContent = '';
-  doParentPinReset({ preventDefault: function () {} });
-  await tick99(); await tick99(); await tick99(); await tick99();
-  eq($('parentErr').textContent, t('tPinResetNoDob'), 'v99: a student with no DOB on file is sent to the admin');
-  // (d) Cloud school: the reset goes through the server RPC, and a
-  // locked response shows the lock text.
-  showParentPinReset();
-  $('parentSchool').value = 'cloud:srv-school-99';
-  rpcCalls99 = [];
-  resetBody99 = null;
-  $('parentResetAdm').value = 'ADM-2025-033';
-  $('parentResetDob').value = '2012-03-04';
-  $('parentResetPin').value = '6666';
-  $('parentResetPin2').value = '6666';
-  $('parentErr').textContent = '';
-  doParentPinReset({ preventDefault: function () {} });
-  await tick99(); await tick99(); await tick99(); await tick99();
-  eq(rpcCalls99.some(function (u) { return u.indexOf('ss_parent_pin_reset_by_dob') !== -1; }), true, 'v99: a cloud parent PIN reset calls the reset RPC');
-  eq(resetBody99 && resetBody99.p_admission_no, 'ADM-2025-033', 'v99: the cloud reset sends the admission number');
-  eq(resetBody99 && resetBody99.p_dob, '2012-03-04', 'v99: the cloud reset sends the date of birth');
-  eq(resetBody99 && resetBody99.p_new_pin, '6666', 'v99: the cloud reset sends the new PIN');
-  eq($('toast').textContent, t('tPinResetDone'), 'v99: a cloud parent PIN reset toasts the success');
-  eq(parentResetMode, false, 'v99: a cloud parent PIN reset returns to the login view');
-  showParentPinReset();
-  $('parentSchool').value = 'cloud:srv-school-99';
-  $('parentResetAdm').value = 'ADM-LOCKED-99';
-  $('parentResetDob').value = '2012-03-04';
-  $('parentResetPin').value = '6666';
-  $('parentResetPin2').value = '6666';
-  $('parentErr').textContent = '';
-  doParentPinReset({ preventDefault: function () {} });
-  await tick99(); await tick99(); await tick99(); await tick99();
-  eq($('parentErr').textContent, t('tPinLocked'), 'v99: a locked cloud reset shows the lock text');
-  hideParentPinReset();
+  adminRpc99 = null; adminRpcAuth99 = null;
+  sbStoreSession({ access_token: 'tok-admin-99', refresh_token: '', expires_in: 3600, user: { id: 'u-school-99', email: 'school99@test' } });
+  generateStudentPin('stu33');
+  await tick99(); await tick99(); await tick99(); await tick99(); await tick99(); await tick99();
+  var modalHtml99 = $('modalRoot').innerHTML;
+  var pinMatch99 = modalHtml99.match(/>([0-9]{6})</); // no \\d: the harness template halves backslashes, [0-9] survives
+  ok(pinMatch99, 'v146: the generated PIN is shown once in the modal');
+  var newPin99 = pinMatch99 ? pinMatch99[1] : '';
+  var riyaGen99 = findStudentByAdmNoInSchool(riya99.admissionNo, 'test-school');
+  ok(riyaGen99 && verifyPin(newPin99, riyaGen99.student), 'v146: the shown PIN verifies on the stored record');
+  ok(riyaGen99 && !verifyPin('4321', riyaGen99.student), 'v146: the old PIN no longer verifies after the reset');
+  ok(riyaGen99 && riyaGen99.db.auditLog.some(function (a) { return a.action === 'Parent PIN reset (admin-issued)'; }), 'v146: the reset writes an audit row on the school copy');
+  eq(pinLockUntil('test-school', 'stu33'), 0, 'v146: the reset clears the local lock');
+  eq(rpcCalls99.some(function (u) { return u.indexOf('ss_admin_reset_parent_pin') !== -1; }), true, 'v146: a server-linked admin reset calls the admin RPC');
+  eq(adminRpc99 && adminRpc99.p_admission_no, riya99.admissionNo, 'v146: the admin RPC sends the admission number');
+  eq(adminRpc99 && adminRpc99.p_new_pin, newPin99, 'v146: the admin RPC sends the same PIN the modal showed');
+  eq(adminRpcAuth99, 'Bearer tok-admin-99', 'v146: the admin RPC bearer is the school session token, not the anon key');
+  closeModal();
+  sbClearSession();
+
   // (e) Marks saved for one student reads "1 student", not "1 students",
   // in the toast and in the audit row. A fresh exam is used: saveMarks
   // counts every non-empty input, changed or not, so the ex1 inputs
@@ -6916,9 +6894,9 @@ const test = `
   eq(tryLogin55('ADM-2025-056', '3175'), null, 'H-3: a stripped record does NOT log in with the phone PIN anymore');
   // The sanctioned recovery: the admin sets the PIN, then the login works.
   state.role = 'school'; state.user = TEST_ACCOUNTS.school;
-  $('fStuPinNew').value = '3175';
+  $('fStuPinNew').value = '317500';
   setStudentPin('stu-55-strip2');
-  eq(tryLogin55('ADM-2025-056', '3175'), 'student', 'H-3: after the admin sets the PIN, the stripped record logs in again');
+  eq(tryLogin55('ADM-2025-056', '317500'), 'student', 'H-3: after the admin sets the PIN, the stripped record logs in again');
   logout(); await waitLogout();
   var seedStu55 = { id: 'stu-55-seed', name: 'V55 Seed Phone', cls: '6th-A', roll: 57, phone: '9810000000', guardian: 'Mr. Seed', att: 100, result: 0, fee: 'Pending', enr: 'ENR-057', admissionNo: 'ADM-2025-057', status: 'Active', session: '2025–26', parentPin: null };
   db.students.push(seedStu55); saveDB(db);
@@ -7163,6 +7141,18 @@ console.log(sql40.includes('is distinct from p_dob') && sql40.includes('p_dob is
   ? 'PASS v114: SQL 40 fixes the NULL-DOB bypass, the proof-less lockout clear, and the whole-row teacher payload, with PUBLIC revoked on all three'
   : 'FAIL v114: SQL 40 missing a fix or a grant');
 if (!(sql40.includes('is distinct from p_dob') && sql40.includes('p_dob is null') && sql40.includes('drop function if exists public.ss_parent_pin_ok(uuid, text)') && sql40.includes('p_pin text default null') && sql40.includes('p_dob date default null') && !sql40.includes('jsonb_agg(to_jsonb(s))') && sql40.includes('revoke execute on function public.ss_parent_pin_reset_by_dob') && sql40.includes('revoke execute on function public.ss_parent_pin_ok(uuid, text, text, date)') && sql40.includes('revoke execute on function public.ss_teacher_cloud_login') && sql40goalEq)) process.exitCode = 1;
+var sql54 = readRel('supabase/54_drop_dob_pin_reset.sql');
+var sql54ok = sql54.includes('drop function if exists public.ss_parent_pin_reset_by_dob(uuid, text, date, text)') && sql54.includes('drop function if exists public.ss_parent_pin_ok(uuid, text, text, date)') && sql54.includes('create or replace function public.ss_admin_reset_parent_pin(') && sql54.includes('public.ss_school_owner(p_school_id) is distinct from auth.uid()') && sql54.includes('grant execute on function public.ss_admin_reset_parent_pin(uuid, text, text) to authenticated;') && (sql54.match(/p_dob/g) || []).length === 1 && sql54.includes('revoke execute on function public.ss_parent_pin_ok(uuid, text, text) from public;'); // the single p_dob is the filename in the header line — no DOB parameter survives in any function
+console.log(sql54ok ? 'SQL54-PIN-RESET-OK' : 'SQL54-PIN-RESET-FAIL');
+if (!sql54ok) process.exitCode = 1;
+var appJs54 = readRel('app.js');
+var appJs54ok = appJs54.indexOf('ss_parent_pin_reset_by_dob') === -1 && appJs54.indexOf('sbParentPinResetByDob') === -1 && appJs54.indexOf('showParentPinReset') === -1 && appJs54.indexOf('ss_admin_reset_parent_pin') !== -1 && appJs54.indexOf('generateStudentPin') !== -1;
+console.log(appJs54ok ? 'APPJS-PIN-RESET-OK' : 'APPJS-PIN-RESET-FAIL');
+if (!appJs54ok) process.exitCode = 1;
+var idx54 = readRel('index.html');
+var idx54ok = idx54.indexOf('showParentPinReset') === -1 && idx54.indexOf('parentResetFields') === -1 && idx54.indexOf('parentForgotPinNote') !== -1;
+console.log(idx54ok ? 'INDEX-PIN-RESET-OK' : 'INDEX-PIN-RESET-FAIL');
+if (!idx54ok) process.exitCode = 1;
 var sql25 = readRel('supabase/25_platform_settings_no_delete.sql');
 console.log(sql25.includes('create policy ss_settings_admin_select') && sql25.includes('create policy ss_settings_admin_insert') && sql25.includes('create policy ss_settings_admin_update') && !sql25.includes('for select, insert, update to authenticated')
   ? 'PASS v114: SQL 25 is three valid single-command policies (no multi-command FOR)'
@@ -7170,10 +7160,10 @@ console.log(sql25.includes('create policy ss_settings_admin_select') && sql25.in
 if (!(sql25.includes('create policy ss_settings_admin_select') && sql25.includes('create policy ss_settings_admin_insert') && sql25.includes('create policy ss_settings_admin_update') && !sql25.includes('for select, insert, update to authenticated'))) process.exitCode = 1;
 var repIdx114 = src.indexOf("t('subReports')");
 var repSeg114 = repIdx114 === -1 ? '' : src.slice(repIdx114, repIdx114 + 200);
-console.log(src.includes('function sbParentPinOk(serverId, admNo, pin, dob)') && src.includes('sbParentPinOk(srvId, adm, pin)') && src.includes("sbParentPinOk(srvId, stu.admissionNo || '', null, dob)") && src.includes('sbParentPinOk(serverId, adm, pin)') && repSeg114.includes('esc(db.profile.name)')
-  ? 'PASS v114: app.js passes PIN/DOB proof to the lockout-clear RPC at all three call sites and escapes the school name on the Reports page'
-  : 'FAIL v114: app.js missing a proof-carrying _ok call or the Reports escape');
-if (!(src.includes('function sbParentPinOk(serverId, admNo, pin, dob)') && src.includes('sbParentPinOk(srvId, adm, pin)') && src.includes("sbParentPinOk(srvId, stu.admissionNo || '', null, dob)") && src.includes('sbParentPinOk(serverId, adm, pin)') && repSeg114.includes('esc(db.profile.name)'))) process.exitCode = 1;
+console.log(src.includes('function sbParentPinOk(serverId, admNo, pin)') && src.includes('sbParentPinOk(srvId, adm, pin)') && src.includes('sbParentPinOk(serverId, adm, pin)') && src.indexOf('null, dob') === -1 && src.indexOf('sbParentPinOk(srvId, stu.admissionNo') === -1 && repSeg114.includes('esc(db.profile.name)')
+  ? 'PASS v146: app.js passes PIN proof to the lockout-clear RPC at both call sites, no DOB proof remains, and escapes the school name on the Reports page'
+  : 'FAIL v146: app.js missing a proof-carrying _ok call, a DOB proof remains, or the Reports escape');
+if (!(src.includes('function sbParentPinOk(serverId, admNo, pin)') && src.includes('sbParentPinOk(srvId, adm, pin)') && src.includes('sbParentPinOk(serverId, adm, pin)') && src.indexOf('null, dob') === -1 && src.indexOf('sbParentPinOk(srvId, stu.admissionNo') === -1 && repSeg114.includes('esc(db.profile.name)'))) process.exitCode = 1;
 console.log(html.includes('parentForm') && html.includes('tabParent') && html.includes('parentAdmNo')
   ? 'PASS v86: index.html has the Parent tab and parent login form'
   : 'FAIL v86: index.html is missing the Parent tab / parent login form');
@@ -11024,20 +11014,20 @@ async function v28run() {
   var loc56v = ctx.db.students.find(function (s) { return s.id === 'stu-56v21'; });
   v28ok(!!srv56v && srv56v.parent_pin && srv56v.parent_pin.indexOf('bcrypt$') === 0 && !ctx.verifyPin('0000', { parentPinHash: srv56v.parent_pin }), 'H-3: after cycle 1, the server holds a RANDOM repaired hash, not 0000');
   v28ok(!!loc56v && !ctx.verifyPin('0000', loc56v), 'H-3: after cycle 1, the local record does NOT verify with 0000');
-  ctx.document.getElementById('fStuPinNew').value = '3175';
+  ctx.document.getElementById('fStuPinNew').value = '317500';
   ctx.state.role = 'school';
   ctx.setStudentPin('stu-56v21');
-  v28ok(ctx.verifyPin('3175', ctx.db.students.find(function (s) { return s.id === 'stu-56v21'; })), 'v56 async: right after the admin set, the local PIN verifies with 2108');
+  v28ok(ctx.verifyPin('317500', ctx.db.students.find(function (s) { return s.id === 'stu-56v21'; })), 'v56 async: right after the admin set, the local PIN verifies with 2108');
   await ctx.sbSyncCycle();
   await drain53();
   srv56v = sbServer.ss_students.find(function (r) { return r.local_id === 'stu-56v21'; });
   loc56v = ctx.db.students.find(function (s) { return s.id === 'stu-56v21'; });
-  v28ok(!!srv56v && ctx.verifyPin('3175', { parentPinHash: srv56v.parent_pin }), 'v56 async: after cycle 2, the SERVER holds the 2108 hash (the flush no longer re-uploads the stale 0000)');
+  v28ok(!!srv56v && ctx.verifyPin('317500', { parentPinHash: srv56v.parent_pin }), 'v56 async: after cycle 2, the SERVER holds the 2108 hash (the flush no longer re-uploads the stale 0000)');
   v28ok(!!srv56v && !ctx.verifyPin('0000', { parentPinHash: srv56v.parent_pin }), 'v56 async: after cycle 2, the server does NOT still hold the stale 0000 hash');
-  v28ok(!!loc56v && ctx.verifyPin('3175', loc56v), 'v56 async: after cycle 2, the LOCAL record verifies with 2108');
+  v28ok(!!loc56v && ctx.verifyPin('317500', loc56v), 'v56 async: after cycle 2, the LOCAL record verifies with 2108');
   v28ok(ctx.sbOutboxLoad(uid53).length === 0, 'v56 async: after cycle 2, the outbox is drained');
   ctx.document.getElementById('studentAdmNo').value = 'ADM-2025-156';
-  ctx.document.getElementById('studentPin').value = '3175';
+  ctx.document.getElementById('studentPin').value = '317500';
   ctx.document.getElementById('studentSchool').value = 'u-vm-1';
   ctx.state.role = null; ctx.state.user = null;
   ctx.doStudentLogin({ preventDefault: function () {} });

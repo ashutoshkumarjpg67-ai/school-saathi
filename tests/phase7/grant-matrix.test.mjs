@@ -88,7 +88,7 @@ const EXPECTED_PUBLIC = [
 
 describe('grant matrix (from repo SQL 01-39)', () => {
   it('36 RPCs exist in the repo (roadmap Appendix C listed 20 at v67)', () => {
-    assert.equal(MATRIX.size, 37, [...MATRIX.keys()].sort().join(', ')); // v141: + ss_parent_session_open, ss_parent_revoke_session, ss_parent_sessions_pin_wipe (SQL 52)
+    assert.equal(MATRIX.size, 37, [...MATRIX.keys()].sort().join(', ')); // v141: + ss_parent_session_open, ss_parent_revoke_session, ss_parent_sessions_pin_wipe (SQL 52); v146: SQL 54 drops ss_parent_pin_reset_by_dob + the 4-arg ss_parent_pin_ok and adds ss_admin_reset_parent_pin + the 3-arg ss_parent_pin_ok — net 0, still 37
   });
 
   it('PUBLIC execute remains only on the trigger function (SQL 39 closed the other 7)', () => {
@@ -130,9 +130,8 @@ describe('grant matrix (from repo SQL 01-39)', () => {
       'ss_list_public_schools()',
       'ss_log_audit(uuid,text,text,text,text,text,text)',
       'ss_parent_pin_failed(uuid,text)',
-      'ss_parent_pin_ok(uuid,text,text,date)',
+      'ss_parent_pin_ok(uuid,text,text)',
       'ss_parent_pin_precheck(uuid,text)',
-      'ss_parent_pin_reset_by_dob(uuid,text,date,text)',
       'ss_public_schools()',
       'ss_school_login_failed(text)',
       'ss_school_login_precheck(text)',
@@ -151,10 +150,11 @@ describe('grant matrix (from repo SQL 01-39)', () => {
     ]);
   });
 
-  it('authenticated-only functions are exactly the 7 post-SQL-39 functions', () => {
+  it('authenticated-only functions are exactly the 8 post-SQL-39 functions', () => {
     // The 5 revoked functions that had no anon grant (SQL 39, PR #48)
-    // joined the super-admin check and the login reset here.
-    assert.deepEqual(byRoles(['authenticated']), ['is_ss_admin()', 'ss_is_super_admin()', 'ss_next_adm_no(uuid)', 'ss_next_receipt_no(uuid)', 'ss_school_login_ok(text)', 'ss_school_owner(uuid)', 'ss_wipe_school(uuid)']);
+    // joined the super-admin check and the login reset here, plus the
+    // admin-issued PIN reset (SQL 54, v146).
+    assert.deepEqual(byRoles(['authenticated']), ['is_ss_admin()', 'ss_admin_reset_parent_pin(uuid,text,text)', 'ss_is_super_admin()', 'ss_next_adm_no(uuid)', 'ss_next_receipt_no(uuid)', 'ss_school_login_ok(text)', 'ss_school_owner(uuid)', 'ss_wipe_school(uuid)']);
   });
 
   it('no function grants EXECUTE to any other role (only anon / authenticated / public exist)', () => {
@@ -177,7 +177,7 @@ describe('SECURITY DEFINER hygiene (static)', () => {
 
   it('every SECURITY DEFINER function sets search_path (no search_path-hijack hole)', () => {
     const blocks = fnBlocks();
-    assert.equal(blocks.length, 61, 'expected 61 CREATE FUNCTION blocks in SQL 01-53'); // v130: SQL 44 redefines ss_staff_cloud_login; v135: SQL 46 (+2), 47 (+1), 48 (+2); v141: SQL 52 (+3); SQL 53 (+1, ss_public_schools redefined)
+    assert.equal(blocks.length, 63, 'expected 63 CREATE FUNCTION blocks in SQL 01-54'); // v130: SQL 44 redefines ss_staff_cloud_login; v135: SQL 46 (+2), 47 (+1), 48 (+2); v141: SQL 52 (+3); SQL 53 (+1, ss_public_schools redefined); v146: SQL 54 (+2, ss_admin_reset_parent_pin + the 3-arg ss_parent_pin_ok)
     for (const { name, head } of blocks) {
       if (/security definer/i.test(head)) {
         assert.match(head, /set search_path/i, `${name}: SECURITY DEFINER without search_path`);
