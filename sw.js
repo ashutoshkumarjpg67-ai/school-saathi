@@ -10,6 +10,8 @@ var CACHE_NAME = 'school-saathi-v147';
 var APP_SHELL = [
   './',
   'index.html',
+  'index.html',
+  'landing.html',
   'styles.css?v=147',
   'app.js?v=147',
   'js/modules/crypto.js?v=147',

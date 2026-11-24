@@ -52,6 +52,7 @@ describe('source parses', () => {
     'scripts/check-version.mjs',
     'scripts/seed-fixtures.js',
     'tests/harness.mjs',
+    'tests/landing.test.mjs',
     'tests/smoke.test.mjs',
     'tests/session-expiry.test.mjs',
   ];
