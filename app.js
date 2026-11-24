@@ -39,6 +39,7 @@ var APP_VERSION = 146;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
+var SESSION_CLOCK_SKEW_MS = 5 * 60 * 1000; // Session-expiry gaps fix: `at` stamped more than this far in the future (device clock set back, or a hand-edited store) is treated as expired — otherwise Date.now() - at stays negative and the session never expires. 5 min covers ordinary clock drift; DST/timezone changes never move Date.now().
 var NAVY = '#0A1E4B', BLUE = '#2563EB', GREEN = '#16A34A', ORANGE = '#EA8600', RED = '#DC2626';
 var FEE_MONTHS = [ // seed-only monthly ledger (seedDB splits it into feeRecords) — sums MUST equal 8,45,000 collected / 1,20,000 pending. Never stored on a real school DB (no db.feeMonths field).
   { m: 'Apr', collected: 165000, pending: 25000 },
@@ -6578,9 +6579,14 @@ function restoreSession() {
     // expired, so every pre-fix session needs one fresh login after the
     // update. `at` is not a signature — anyone who can edit localStorage
     // can forge it; the server check below is the real boundary for
-    // online school accounts.
-    if (typeof sv.at !== 'number' || isNaN(sv.at) || Date.now() - sv.at > SESSION_MAX_AGE_MS) {
+    // online school accounts. A future-dated `at` (beyond clock-skew
+    // tolerance) is expired too, so a clock set back cannot keep a
+    // session alive forever. The user is told to log in again — the
+    // same message the server-side rejection shows — instead of being
+    // dropped silently onto the login screen.
+    if (typeof sv.at !== 'number' || isNaN(sv.at) || Date.now() - sv.at > SESSION_MAX_AGE_MS || sv.at > Date.now() + SESSION_CLOCK_SKEW_MS) {
       clearStoredSession();
+      try { toast(t('sbStatusSessionExpired')); } catch (e) {}
       return Promise.resolve(false);
     }
     if (sv.role === 'teacher' && typeof sv.email === 'string' && sv.email.indexOf('cloud-teacher:') === 0) {
