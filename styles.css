@@ -338,6 +338,11 @@ tbody tr:hover{background:var(--bg-soft)}
   .print-stmt table{width:100%;border-collapse:collapse}
   .print-stmt th,.print-stmt td{border:1px solid var(--border-strong);padding:6px 8px;text-align:left;font-size:12.5px}
   .print-stmt .tot{display:flex;gap:18px;margin-top:12px;font-weight:700;flex-wrap:wrap}
+  .print-stmt .rc-meta{display:grid;grid-template-columns:1fr 1fr;gap:4px 18px;margin:10px 0;font-size:13px}
+  .print-stmt .rc-meta b{display:inline-block;min-width:96px}
+  .print-stmt .sign-row{display:flex;justify-content:space-between;margin-top:36px;font-size:13px}
+  .print-stmt .sign-row>div{text-align:center}
+  .print-stmt .sign-line{border-top:1px solid #000;width:180px;margin:0 auto 5px}
 }
 
 /* ---------- photos + school logo (v8) ---------- */
