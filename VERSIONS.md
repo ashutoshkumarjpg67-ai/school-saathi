@@ -1,3 +1,11 @@
+## v156 — Scale & performance: faster vault/boot, Storage URL preference, quota recovery, IndexedDB mirror & DB perf
+
+- **Faster vault & boot (`js/modules/vault.js`, `app.js`):** `vaultUtf8Encode`/`vaultUtf8Decode` now use native `TextEncoder`/`TextDecoder` (with chunked JS fallback) and `vaultChaChaCrypt` pre-allocates `Uint8Array`. `loadDB()` skips the redundant re-seal + double `localStorage` write when the stored DB is already sealed and unchanged (~39% faster steady-state boot on 520 students).
+- **Large-school storage resilience (`saveDB`):** on `QuotaExceededError`, `saveDB()` evicts `.bak` and `.quarantine` (~50% of the 5 MB quota) and retries the primary save before warning. Every save also mirrors the sealed DB asynchronously to IndexedDB (`sbIdbMirrorSet`/`sbIdbMirrorGet`), and `sbLocalStorageUsageKB()` reports current usage.
+- **Phase 7 F3 fixed (`app.js`):** student photos and school logos now prefer Storage URLs (`photo_url`/`logo_url`) over heavier base64 Data URLs when both exist, keeping Data URLs as offline fallback.
+- **Supabase DB & CI (`supabase/57_*.sql`, `58_*.sql`, `school-saathi-qa-verify.js`):** 22 RLS policies optimized with `(select auth.uid())`, 6 missing FK indexes added, `service_role` table grants added for `delete-account` Edge Function, and QA harness timer hang fixed.
+- **Version bump:** all markers 155 → 156 (cache-busts `app.js?v=156` and `vault.js?v=156` so all PWA clients receive the improvements).
+
 ## v155 — stronger passwords on every entry point (free alternative to Supabase leaked-password protection)
 
 - **Why:** Supabase's leaked-password check (HaveIBeenPwned) is Pro-plan only and the org is on Free. The same goal is met in the app: weak and common passwords are refused.
