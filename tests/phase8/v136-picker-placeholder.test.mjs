@@ -53,10 +53,12 @@ describe('public Apply picker requires a deliberate school choice', () => {
     assert.equal(m[1], 'tAdmReqPickSchool');
   });
 
-  it('English carries the new strings (v147: Hindi table removed)', () => {
+  it('English and Hindi carry the new strings (v160: Hindi restored)', () => {
     const I18N = readFileSync(join(ROOT, 'js', 'modules', 'i18n.js'), 'utf8');
-    assert.equal(I18N.match(/admReqPickSchool:/g).length, 1, 'admReqPickSchool missing in English');
-    assert.equal(I18N.match(/tAdmReqPickSchool:/g).length, 1, 'tAdmReqPickSchool missing in English');
-    assert.ok(!I18N.includes('  hi: {'), 'Hindi table still present in i18n.js');
+    assert.ok(I18N.includes('admReqPickSchool:'), 'admReqPickSchool missing in English');
+    assert.ok(I18N.includes('tAdmReqPickSchool:'), 'tAdmReqPickSchool missing in English');
+    assert.ok(I18N.includes('  hi: {'), 'Hindi table missing in i18n.js');
+    assert.ok(I18N.includes('"admReqPickSchool":'), 'admReqPickSchool missing in Hindi');
+    assert.ok(I18N.includes('"tAdmReqPickSchool":'), 'tAdmReqPickSchool missing in Hindi');
   });
 });

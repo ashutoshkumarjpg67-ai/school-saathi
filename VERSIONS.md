@@ -1,3 +1,9 @@
+## v160 — Bilingual English + Hindi UI restored (933/933 keys)
+
+- **Full Hindi dictionary (`js/modules/i18n.js`):** Restored all 871 pre-v147 Hindi strings and translated all 63 newer keys (Timetable, Report Card, Super Admin, Danger Zone, Legal, v155 strong passwords) for 100% EN/HI key parity (933 keys).
+- **Language toggle (`index.html`, `app.js`):** Added clean `EN / हिंदी` toggle buttons on both the login card and the app topbar (`setLang()` / `toggleLang()`), persisted in `localStorage` (`schoolSaathiLang`). Defaults to English.
+- **Tests:** new `tests/phase8/v160-hindi-ui.test.mjs` (3 tests); version markers 159 → 160.
+
 ## v159 — Cloudflare Turnstile bot protection on Signup & Public Admission
 
 - **Turnstile widget (`School Saathi`, sitekey `0x4AAAAAAGUl8mHM68xzm35Z`, mode `managed`):** Registered for `school-saathi.pages.dev`, `ashutoshkumarjpg67-ai.github.io`, `localhost`, and `127.0.0.1`.

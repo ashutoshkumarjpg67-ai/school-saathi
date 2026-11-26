@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 159;
+var APP_VERSION = 160;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -7120,6 +7120,22 @@ function applyI18n() {
   document.querySelectorAll('[data-i18n-ph]').forEach(function (el) {
     el.setAttribute('placeholder', t(el.getAttribute('data-i18n-ph')));
   });
+  try {
+    var nextLbl = (typeof curLang !== 'undefined' && curLang === 'hi') ? 'EN' : 'हिंदी';
+    var lb = $('langBtn'); if (lb) lb.textContent = nextLbl;
+    var llb = $('loginLangBtn'); if (llb) llb.textContent = nextLbl;
+    if (document && document.documentElement) document.documentElement.lang = (typeof curLang !== 'undefined' ? curLang : 'en');
+  } catch (eL) {}
+}
+function setLang(lang) {
+  curLang = (lang === 'hi') ? 'hi' : 'en';
+  try { localStorage.setItem(LANG_KEY, curLang); } catch (e) {}
+  try { applyI18n(); } catch (e2) {}
+  try { if (typeof state !== 'undefined' && state && state.role) renderApp(); } catch (e3) {}
+  return curLang;
+}
+function toggleLang() {
+  return setLang((typeof curLang !== 'undefined' && curLang === 'hi') ? 'en' : 'hi');
 }
 /* ================= auth & shell ================= */
 function showView(which) {
