@@ -1,3 +1,10 @@
+## v163 — Live QA polish: School Logo sync persistence, Dark Mode contrast, scroll reset & Report Card accessibility
+
+- **School Logo persistence (`app.js`):** Clearing stale `logoUrl` on replacement in `saveProfile()` and updating both `db.profile.logoUrl` + `db.profile.logo` with immediate `renderApp()` + `sbSyncScheduleFlush()` in `sbUploadSchoolLogoBg()` so uploaded logos persist reliably across sync cycles.
+- **Dark Mode contrast (`styles.css`):** Fixed low-contrast headings (`h1`/`h2`/`h3`, `.page-head h2`, `.card h3`, `.donut-val`, `.kpi-val`), sidebar nav labels, donut track stroke, and table headers in `[data-theme="dark"]`.
+- **Navigation & UI polish (`app.js`, `styles.css`):** Reset scroll position (`window.scrollTo(0, 0)`) on sidebar navigation (`go()`), added `id` + `aria-label` to Report Card dropdowns, added empty-state copy for `Recent Activities`, and added button spacing (`.card .btn + .btn`).
+- **Version markers:** 162 → 163.
+
 ## v162 — Turnstile CAPTCHA wired into Login & Password Recovery (fix `captcha_failed`)
 
 - **Root cause fix (`index.html`, `app.js`):** With Cloudflare Turnstile enabled in Supabase Auth Attack Protection, GoTrue requires `gotrue_meta_security.captcha_token` on `/auth/v1/token?grant_type=password` and `/auth/v1/recover` in addition to `/auth/v1/signup`. Added `#loginTurnstile` and `#recoverTurnstile` explicit widgets, passed `captcha_token` in `sbSignIn()` and `sbRecover()`, reset single-use tokens after failed attempts, and prevented `captcha_failed` 400 responses from incrementing `ss_school_login_attempts` or showing a misleading "wrong password" error.

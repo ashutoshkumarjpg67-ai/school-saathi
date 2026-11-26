@@ -532,3 +532,9 @@ body.landing{-webkit-user-select:text;user-select:text;-webkit-touch-callout:def
 [data-theme="dark"] .btn.ghost{background:#1E293B;color:#93C5FD;border-color:#3B82F6}
 [data-theme="dark"] .btn.ghost.danger{background:#1E293B;color:#FCA5A5;border-color:#EF4444}
 [data-theme="dark"] .topbar,[data-theme="dark"] .card,[data-theme="dark"] .modal{background:var(--card);color:var(--text);border-color:var(--border)}
+[data-theme="dark"] h1,[data-theme="dark"] h2,[data-theme="dark"] h3,[data-theme="dark"] .page-head h2,[data-theme="dark"] .card h3,[data-theme="dark"] .kpi-val,[data-theme="dark"] .donut-val,[data-theme="dark"] .dash-hero h2,[data-theme="dark"] .topbar-title{color:var(--text)}
+[data-theme="dark"] .sidebar button,[data-theme="dark"] .sidebar .nav-item{color:#E2E8F0}
+[data-theme="dark"] .donut-track{stroke:#334155}
+[data-theme="dark"] table th{background:#1E293B;color:#CBD5E1;border-color:var(--border-2)}
+[data-theme="dark"] table td{border-color:var(--border)}
+.card .btn+.btn{margin-left:8px}
