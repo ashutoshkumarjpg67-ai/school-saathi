@@ -72,9 +72,9 @@ export function createAppContext() {
   };
   const sandbox = {
     console,
-    setTimeout,
+    setTimeout: (...args) => { const t = setTimeout(...args); if (t && t.unref) t.unref(); return t; },
     clearTimeout,
-    setInterval,
+    setInterval: (...args) => { const t = setInterval(...args); if (t && t.unref) t.unref(); return t; },
     clearInterval,
     localStorage,
     document: documentStub,
