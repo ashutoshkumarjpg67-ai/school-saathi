@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 155;
+var APP_VERSION = 156;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -5763,6 +5763,43 @@ function sbIdbMirrorSet(key, val) {
       } catch (eTx) {}
     };
   } catch (e) {}
+}
+function sbIdbMirrorGet(key, cb) {
+  try {
+    if (typeof indexedDB === 'undefined' || !indexedDB || !indexedDB.open) { if (cb) cb(null); return; }
+    var req = indexedDB.open('schoolSaathiIDB', 1);
+    req.onupgradeneeded = function () {
+      var idb = req.result;
+      if (!idb.objectStoreNames.contains('kv')) idb.createObjectStore('kv');
+    };
+    req.onsuccess = function () {
+      try {
+        var idb = req.result;
+        var tx = idb.transaction('kv', 'readonly');
+        var g = tx.objectStore('kv').get(key);
+        g.onsuccess = function () { try { idb.close(); } catch (eC) {} if (cb) cb(g.result || null); };
+        g.onerror = function () { try { idb.close(); } catch (eC) {} if (cb) cb(null); };
+      } catch (eTx) { if (cb) cb(null); }
+    };
+    req.onerror = function () { if (cb) cb(null); };
+  } catch (e) { if (cb) cb(null); }
+}
+function sbLocalStorageUsageKB() {
+  try {
+    var total = 0, i, k, v;
+    if (typeof localStorage === 'undefined' || !localStorage) return 0;
+    if (typeof localStorage.length === 'number' && typeof localStorage.key === 'function') {
+      for (i = 0; i < localStorage.length; i++) {
+        k = localStorage.key(i);
+        v = k ? localStorage.getItem(k) : '';
+        total += (k ? k.length : 0) + (v ? v.length : 0);
+      }
+    } else {
+      var cur = localStorage.getItem(DB_KEY);
+      if (cur) total += DB_KEY.length + cur.length;
+    }
+    return Math.round((total * 2) / 1024); // UTF-16 bytes -> KB
+  } catch (e) { return 0; }
 }
 function saveDB(db) {
   // B17 (H-8): the .bak is rewritten on every successful save (not

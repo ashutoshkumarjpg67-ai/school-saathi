@@ -64,9 +64,17 @@ describe('scale & perf — saveDB quota recovery + IndexedDB mirror', () => {
     assert.equal(app.storage.getItem('schoolSaathiDBv1.quarantine'), null);
   });
 
-  it('sbIdbMirrorSet is present and fail-silent without indexedDB', () => {
+  it('sbIdbMirrorSet, sbIdbMirrorGet, and sbLocalStorageUsageKB work safely without indexedDB', () => {
     const app = createAppContext();
     assert.equal(typeof app.get('sbIdbMirrorSet'), 'function');
+    assert.equal(typeof app.get('sbIdbMirrorGet'), 'function');
+    assert.equal(typeof app.get('sbLocalStorageUsageKB'), 'function');
     assert.doesNotThrow(() => app.run(`sbIdbMirrorSet('k', 'v')`));
+    let got = 'unset';
+    app.run(`window.__idbGot = 'unset'; sbIdbMirrorGet('k', function (v) { window.__idbGot = v; });`);
+    got = app.run('window.__idbGot');
+    assert.equal(got, null);
+    app.run('db = emptyDb(); saveDB(db);');
+    assert.ok(app.run('sbLocalStorageUsageKB()') >= 0);
   });
 });
