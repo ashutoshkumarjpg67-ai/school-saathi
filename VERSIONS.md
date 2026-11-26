@@ -1,3 +1,10 @@
+## v157 — Architecture & scale: modular storage/realtime, >5 MB IndexedDB overflow + hydration, and Supabase Realtime live sync
+
+- **Modularization (`js/modules/storage.js`, `js/modules/realtime.js`):** Extracted storage/IndexedDB overflow and live Realtime sync into dedicated classic-script modules loaded before `app.js` (zero bundler, precached in `sw.js`, copied by `build-www.sh`).
+- **>5 MB IndexedDB overflow & boot hydration (`storage.js`, `app.js`):** When a large school exceeds `localStorage` quota even after evicting `.bak`/`.quarantine`, `saveDB()` stores a tiny pointer (`ss_idb_ptr:<key>`) in `localStorage` and persists the full sealed DB in IndexedDB (`schoolSaathiIDB`). On boot, `loadDB()` detects the pointer and asynchronously hydrates `db` from IndexedDB (`sbIdbHydrateDB`).
+- **Real-time multi-device sync (`realtime.js`, `supabase/59_realtime_publication.sql`):** Zero-dependency native `WebSocket` client subscribing to Supabase Realtime `postgres_changes` filtered by `school_id=eq.<id>` across the 9 core tables (with JWT auth, 30 s heartbeat, 1.5 s debounced live sync trigger, backoff reconnect, and clean teardown on logout). CSP updated to allow `wss://bsjqeeeemwimzldrehpw.supabase.co`.
+- **Tests:** new `tests/phase8/v157-architecture-scale.test.mjs` (3 tests); version markers 156 → 157.
+
 ## v156 — Scale & performance: faster vault/boot, Storage URL preference, quota recovery, IndexedDB mirror & DB perf
 
 - **Faster vault & boot (`js/modules/vault.js`, `app.js`):** `vaultUtf8Encode`/`vaultUtf8Decode` now use native `TextEncoder`/`TextDecoder` (with chunked JS fallback) and `vaultChaChaCrypt` pre-allocates `Uint8Array`. `loadDB()` skips the redundant re-seal + double `localStorage` write when the stored DB is already sealed and unchanged (~39% faster steady-state boot on 520 students).

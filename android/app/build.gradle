@@ -1,10 +1,10 @@
 apply plugin: 'com.android.application'
 
-// v156: versionCode/versionName pinned to the web release (APP_VERSION 156).
+// v157: versionCode/versionName pinned to the web release (APP_VERSION 157).
 // Play Store needs versionCode to rise on every release — bump these two
 // lines together with version.json on the next release. (PR #74 derived
 // these from version.json, which would give versionName "148.0.0"; kept
-// hardcoded here so versionName stays "1.56".)
+// hardcoded here so versionName stays "1.57".)
 
 android {
     namespace = "in.schoolsaathi.app"
@@ -13,8 +13,8 @@ android {
         applicationId "in.schoolsaathi.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 156
-        versionName "1.56"
+        versionCode 157
+        versionName "1.57"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

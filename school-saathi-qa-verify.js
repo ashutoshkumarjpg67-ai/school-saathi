@@ -30,6 +30,8 @@ const qrgenSrc = readRel('qrgen.js');
 // Phase 2: app.js modules load before app.js in the vm, same order as index.html.
 const cryptoSrc = readRel('js/modules/crypto.js');
 const vaultSrc = readRel('js/modules/vault.js'); // v147: at-rest encryption — same order as index.html
+const storageSrc = readRel('js/modules/storage.js'); // v157: IndexedDB overflow & hydration
+const realtimeSrc = readRel('js/modules/realtime.js'); // v157: Supabase Realtime live sync
 const i18nSrc = readRel('js/modules/i18n.js');
 const bcryptSrc = readRel('js/bcrypt.js');
 // Phase 1: the demo-seed fixtures moved out of app.js at v67 into
@@ -7017,7 +7019,7 @@ const test = `
   if (fails.length) { console.log('FAILED: ' + fails.join(' | ')); process.exitCode = 1; }
 })();
 `;
-vm.runInContext(qrgenSrc + '\n;' + bcryptSrc + '\n;' + cryptoSrc + '\n;' + vaultSrc + '\n;' + i18nSrc + '\n;' + src + '\n;' + seedFixturesSrc + '\n;' + test, ctx);
+vm.runInContext(qrgenSrc + '\n;' + bcryptSrc + '\n;' + cryptoSrc + '\n;' + vaultSrc + '\n;' + storageSrc + '\n;' + realtimeSrc + '\n;' + i18nSrc + '\n;' + src + '\n;' + seedFixturesSrc + '\n;' + test, ctx);
 
 // ---- Node-side checks: i18n t() key coverage + greps ----
 const tKeys = new Set();
@@ -7242,12 +7244,12 @@ console.log(sess147ok
   : 'FAIL v147: session-expiry gaps fix missing (SESSION_CLOCK_SKEW_MS / future-dated check / toast)');
 if (!sess147ok) process.exitCode = 1;
 // ---- v148: live-check bug fixes (24 Nov 2026, Test Sunrise School) ----
-// (0) Version markers: version.json says 156 (APP_VERSION / sw.js /
+// (0) Version markers: version.json says 157 (APP_VERSION / sw.js /
 // ?v= are pinned generically against EXPECTED_VERSION above).
-console.log(EXPECTED_VERSION === 156
-  ? 'PASS v156: version.json says 156'
-  : 'FAIL v156: version.json does not say 156 (got ' + EXPECTED_VERSION + ')');
-if (EXPECTED_VERSION !== 156) process.exitCode = 1;
+console.log(EXPECTED_VERSION === 157
+  ? 'PASS v157: version.json says 157'
+  : 'FAIL v157: version.json does not say 157 (got ' + EXPECTED_VERSION + ')');
+if (EXPECTED_VERSION !== 157) process.exitCode = 1;
 // (1) Nav presses queue on mousedown and the next render applies them.
 var q148ok = src.includes('function queueNav(view)') && src.includes('onmousedown="queueNav(') && src.includes('if (pendingNav) { var pv148 = pendingNav;');
 console.log(q148ok
