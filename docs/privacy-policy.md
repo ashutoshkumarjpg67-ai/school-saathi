@@ -1,6 +1,6 @@
 # School Saathi — Privacy Policy
 
-> **Last updated: 26 November 2026 · App version 159** (base: origin/main
+> **Last updated: 26 November 2026 · App version 160** (base: origin/main
 > `e9a47c7`, v146, plus the v147 policy pages).
 >
 > This policy is published at

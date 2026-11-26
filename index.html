@@ -14,16 +14,16 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=159">
-<script src="qrgen.js?v=159" defer></script>
-<script src="js/bcrypt.js?v=159" defer></script>
-<script src="js/modules/crypto.js?v=159" defer></script>
-<script src="js/modules/vault.js?v=159" defer></script>
-<script src="js/modules/storage.js?v=159" defer></script>
-<script src="js/modules/realtime.js?v=159" defer></script>
-<script src="js/modules/turnstile.js?v=159" defer></script>
-<script src="js/modules/i18n.js?v=159" defer></script>
-<script src="app.js?v=159" defer></script></head>
+<link rel="stylesheet" href="styles.css?v=160">
+<script src="qrgen.js?v=160" defer></script>
+<script src="js/bcrypt.js?v=160" defer></script>
+<script src="js/modules/crypto.js?v=160" defer></script>
+<script src="js/modules/vault.js?v=160" defer></script>
+<script src="js/modules/storage.js?v=160" defer></script>
+<script src="js/modules/realtime.js?v=160" defer></script>
+<script src="js/modules/turnstile.js?v=160" defer></script>
+<script src="js/modules/i18n.js?v=160" defer></script>
+<script src="app.js?v=160" defer></script></head>
 <body>
 
 <!-- ============ LOGIN ============ -->
@@ -35,6 +35,7 @@
       <p class="tagline">Smart Education. Better Tomorrow.</p>
     </div>
     <div class="login-card">
+      <div class="row-flex mb-12"><span class="ml-auto"><button type="button" class="btn ghost sm" id="loginLangBtn" onclick="toggleLang()" aria-label="Switch language">हिंदी</button></span></div>
       <div class="welcome"><b id="welcomeTitle" data-i18n="loginWelcomeBack">Welcome back</b><span id="welcomeSub" data-i18n-html="loginWelcome">Log in or sign up<br>to continue</span></div>
       <div class="auth-tabs">
         <button type="button" id="tabLogin" class="auth-tab on" onclick="switchAuth('login')" data-i18n="authLogin">Log In</button>
@@ -139,7 +140,7 @@
         <div id="sideSchoolInfo"></div>
         <label class="lbl-dim mt-10">Academic Session</label>
         <select id="sessionSel" onchange="changeSession(this.value)"></select>
-        <div class="mt-12">v159<br>© 2026 School Saathi</div>
+        <div class="mt-12">v160<br>© 2026 School Saathi</div>
       </div>
     </aside>
     <div class="main">
@@ -151,6 +152,7 @@
           <span class="avatar" id="whoAvatar">S</span>
           <span><b id="whoName">—</b><span id="whoRole">—</span></span>
         </div>
+        <button class="btn ghost sm" id="langBtn" onclick="toggleLang()" aria-label="Switch language">हिंदी</button>
         <button class="btn ghost sm" id="themeBtn" onclick="toggleTheme()" aria-label="Toggle dark mode">Dark</button>
         <button class="btn ghost sm" onclick="logout()" data-i18n="logout">Logout</button>
       </header>
