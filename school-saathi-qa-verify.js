@@ -89,7 +89,7 @@ const ctx = {
   console, process, document: documentStub,
   localStorage: ls, sessionStorage: ss,
   navigator: {}, location: { protocol: 'https:' },
-  setTimeout, clearTimeout, AbortController, // v34: the vm context has no AbortController of its own — the app's 30s fetch timeout needs it
+  setTimeout: (...args) => { const t = setTimeout(...args); if (t && t.unref) t.unref(); return t; }, clearTimeout, AbortController, // v34: the vm context has no AbortController of its own — the app's 30s fetch timeout needs it
   crypto: require('crypto').webcrypto, // v36: the app's randomHex uses crypto.getRandomValues (no Math.random in app.js)
   addEventListener(ev, fn) { (docListeners[ev] = docListeners[ev] || []).push(fn); }, // v32: window-level listeners (online/focus) land in the same registry
   setInterval: (fn, ms) => { const id = __timers.length + 1; __timers.push({ id, fn, ms }); return id; },
@@ -12899,14 +12899,15 @@ Promise.resolve(ctx.__syncDone).then(function () {
     v28Done = true; clearTimeout(v28Guard);
     console.log('\n==== V35 RESULT: ' + v28passes + ' passed, ' + v28fails.length + ' failed ====');
     if (v28fails.length) { console.log('V34 FAILED: ' + v28fails.join(' | ')); process.exitCode = 1; }
+    process.exit(process.exitCode || 0);
   }).catch(function (err) {
     v28Done = true; clearTimeout(v28Guard);
     console.log('FAIL v28 async runner crashed: ' + (err && err.message));
-    process.exitCode = 1;
+    process.exit(1);
   });
 }, function (err) {
   v28Done = true; clearTimeout(v28Guard);
   console.log('FAIL sync runner crashed: ' + (err && err.stack || err && err.message || err));
-  process.exitCode = 1;
+  process.exit(1);
 });
 
