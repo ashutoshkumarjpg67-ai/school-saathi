@@ -1,3 +1,12 @@
+## v154 — stronger passwords on every entry point (free alternative to Supabase leaked-password protection)
+
+- **Why:** Supabase's leaked-password check (HaveIBeenPwned) is Pro-plan only and the org is on Free. The same goal is met in the app: weak and common passwords are refused.
+- **Rule (`pwProblem()` in app.js):** a new password must be at least 8 characters (was 6), must not be on a short list of common passwords (`password123`, `12345678`, `schoolsaathi`, …), and must not be one repeated character. New i18n key `tPwWeak`; `tPwShort` now says 8.
+- **Where:** new school signup, password reset, teacher create/edit, staff/principal/accountant create/edit.
+- **Existing users are not locked out:** the two cloud LOGIN guards (`doTeacherCloudLogin`, `doStaffCloudLogin`) keep their 6-char floor, so a 6–7 character password set earlier still logs in. The new rule applies the next time that password is created or changed.
+- **Tests:** new `tests/phase8/v154-password-strength.test.mjs` (8 tests); version markers in the v148/v149/v150/v152/v153 tests and the QA harness gate moved to 154.
+- **Version bump:** all markers 153 → 154 (version.json, APP_VERSION, sw.js CACHE_NAME + ?v=154, index.html/landing.html ?v=154 + sidebar badge v154, package.json 154.0.0, Android versionCode 154 / versionName "1.54", privacy-policy/terms headers 154). No SQL or Supabase changes.
+
 ## v153 — Attendance empty-class message + Generate Fees defaults to the current month
 
 - **Attendance empty class (live-confirmed 24 Nov 2026, demo account, v152):** opening Attendance on a class with no enrolled students showed only the bare table headers (STUDENT / ROLL / STATUS / NOTIFY) with no message. `attendancePage()` now renders the same empty-state row pattern as Admission Requests (`<tr><td colspan="4"><div class="empty">` + new `attNoStudents` i18n key, "No students in this class yet."). The header counts ("0 Present…") and the school-wide footer are unchanged.
