@@ -34,6 +34,7 @@ const LOAD_ORDER = [
   'js/modules/storage.js',
   'js/modules/realtime.js',
   'js/modules/turnstile.js',
+  'js/modules/push.js',
   'js/modules/i18n.js',
   'app.js',
   'scripts/seed-fixtures.js',

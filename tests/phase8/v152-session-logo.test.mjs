@@ -205,15 +205,15 @@ describe('v152 Bug B guard — re-mint never rebuilds over a pending pick', () =
 });
 
 describe('v154 version markers', () => {
-  it('APP_VERSION, version.json and package.json are all 160', () => {
+  it('APP_VERSION, version.json and package.json are all 161', () => {
     const app = createAppContext();
-    assert.equal(app.get('APP_VERSION'), 160);
-    assert.equal(VERSION_JSON.version, 160);
-    assert.equal(PACKAGE_JSON.version, '160.0.0');
+    assert.equal(app.get('APP_VERSION'), 161);
+    assert.equal(VERSION_JSON.version, 161);
+    assert.equal(PACKAGE_JSON.version, '161.0.0');
   });
 
-  it('sw.js cache is school-saathi-v160 with ?v=153 assets', () => {
-    assert.match(SW_SRC, /CACHE_NAME = 'school-saathi-v160'/);
-    assert.ok(SW_SRC.includes('app.js?v=160'), 'app.js?v=160 missing from sw.js precache');
+  it('sw.js cache is school-saathi-v161 with ?v=153 assets', () => {
+    assert.match(SW_SRC, /CACHE_NAME = 'school-saathi-v161'/);
+    assert.ok(SW_SRC.includes('app.js?v=161'), 'app.js?v=161 missing from sw.js precache');
   });
 });

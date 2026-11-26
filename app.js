@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 160;
+var APP_VERSION = 161;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -5191,6 +5191,9 @@ function sbSyncCycleRun(account, sbUid, token) {
         var rtSid = sbLoadServerSchool(sbUid);
         if (rtSid && typeof sbRealtimeStart === 'function') {
           sbRealtimeStart(SB_URL, SB_ANON_KEY, token, rtSid, function () { sbSyncScheduleFlush(); });
+        }
+        if (rtSid && typeof sbPushRegister === 'function') {
+          sbPushRegister(rtSid, state.role || 'school', (state.user && state.user.uid) || '', '', token);
         }
       } catch (eRt) {}
     }
@@ -12765,6 +12768,7 @@ function saveNotice(e, editId) {
   logAudit('Notice published', ntTitle126 + ' • ' + ntDate126);
   addActivity('📢', 'orange', 'New notice published', ntTitle126);
   saveDB(db); closeModal(); renderApp();
+  if (typeof sbPushSend === 'function') { sbPushSend(ntTitle126, ntBody126 || ntTitle126); }
   toast(t('tNoticePub'));
   return false;
 }
