@@ -1,3 +1,10 @@
+## v159 — Cloudflare Turnstile bot protection on Signup & Public Admission
+
+- **Turnstile widget (`School Saathi`, sitekey `0x4AAAAAAGUl8mHM68xzm35Z`, mode `managed`):** Registered for `school-saathi.pages.dev`, `ashutoshkumarjpg67-ai.github.io`, `localhost`, and `127.0.0.1`.
+- **Frontend (`js/modules/turnstile.js`, `index.html`, `app.js`):** Explicit-render Turnstile widgets on New School Signup (`#suTurnstile`, action `signup`, passed to Supabase Auth `gotrue_meta_security.captcha_token`) and Public Admission Apply (`#admTurnstile`, action `admission_apply`). CSP updated to allow `https://challenges.cloudflare.com`.
+- **Backend (`supabase/functions/submit-admission/index.ts`):** Deployed Edge Function that calls canonical Cloudflare `siteverify` (checking `success === true`, `action === 'admission_apply'`, and production `hostname` allowlist, fail-closed `403`) before inserting into `ss_admission_requests`.
+- **Tests:** new `tests/phase8/v159-turnstile.test.mjs` (3 tests); version markers 158 → 159.
+
 ## v158 — Dark Mode, Supabase Free-plan keepalive, staging sync & QA alignment
 
 - **Dark Mode (`styles.css`, `index.html`, `app.js`):** Clean `[data-theme="dark"]` palette across surfaces, inputs, cards, modals, and topbar with a text-only `Dark`/`Light` toggle persisted in `localStorage` (`schoolSaathiTheme`).
