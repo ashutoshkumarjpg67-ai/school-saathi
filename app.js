@@ -5681,7 +5681,15 @@ function loadDB(override) {
       var raw = vaultDecode(rawStored);
       var d = null;
       try { d = raw ? JSON.parse(raw) : null; } catch (eParse) { d = null; }
-      if (d && d.v === 2) { var m = migrateV119(migrateTimetable(migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d)))))))))))); saveDB(m); return m; }
+      if (d && d.v === 2) {
+        var m = migrateV119(migrateTimetable(migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(d))))))))))));
+        // Scale perf: skip redundant re-seal + double localStorage write on clean boot
+        // when the stored DB is already sealed and migrations changed nothing.
+        var wasSealed = (typeof VAULT_PREFIX === 'string') && rawStored.indexOf(VAULT_PREFIX) === 0;
+        if (!wasSealed || JSON.stringify(m) !== raw) saveDB(m);
+        else MEM_FALLBACK = m;
+        return m;
+      }
       if (d) {
         // Parsed but unknown version: keep a backup, never wipe silently.
         pendingBak = rawStored;
@@ -5736,18 +5744,53 @@ function sbIsQuotaError(e) {
   if (!e) return false;
   return e.name === 'QuotaExceededError' || e.code === 22 || /quota/i.test(String(e.message || ''));
 }
+// IndexedDB async mirror for large schools: localStorage caps at ~5 MB, whereas
+// IndexedDB holds hundreds of MB. Best-effort, never blocks or breaks sync saveDB.
+function sbIdbMirrorSet(key, val) {
+  try {
+    if (typeof indexedDB === 'undefined' || !indexedDB || !indexedDB.open) return;
+    var req = indexedDB.open('schoolSaathiIDB', 1);
+    req.onupgradeneeded = function () {
+      var idb = req.result;
+      if (!idb.objectStoreNames.contains('kv')) idb.createObjectStore('kv');
+    };
+    req.onsuccess = function () {
+      try {
+        var idb = req.result;
+        var tx = idb.transaction('kv', 'readwrite');
+        tx.objectStore('kv').put(val, key);
+        tx.oncomplete = function () { try { idb.close(); } catch (eC) {} };
+      } catch (eTx) {}
+    };
+  } catch (e) {}
+}
 function saveDB(db) {
   // B17 (H-8): the .bak is rewritten on every successful save (not
   // only on version change), so it always holds the last good DB.
   // A failing .bak write never breaks the primary save.
+  // Scale: if localStorage is full because .bak/.quarantine hold an older
+  // full copy (~50% of the 5 MB quota), free them and retry the primary save
+  // before falling back to memory + warning. Also mirror to IndexedDB.
   var ok = false;
+  var s = '';
   try {
     // v147: the DB (and its .bak twin) are sealed at rest. vaultEncode
     // falls back to plaintext if sealing ever fails, so a save can
     // never fail because of the vault.
-    var s = vaultEncode(JSON.stringify(db));
-    localStorage.setItem(DB_KEY, s);
-    ok = true;
+    s = vaultEncode(JSON.stringify(db));
+    try {
+      localStorage.setItem(DB_KEY, s);
+      ok = true;
+    } catch (eFirst) {
+      if (sbIsQuotaError(eFirst)) {
+        try { localStorage.removeItem(DB_KEY + '.bak'); } catch (eRm1) {}
+        try { localStorage.removeItem(DB_KEY + '.quarantine'); } catch (eRm2) {}
+        localStorage.setItem(DB_KEY, s);
+        ok = true;
+      } else {
+        throw eFirst;
+      }
+    }
     try { localStorage.setItem(DB_KEY + '.bak', s); } catch (eBak) {}
   } catch (e) {
     MEM_FALLBACK = db;
@@ -5755,6 +5798,7 @@ function saveDB(db) {
     // silently — raise a sticky warning with a way out.
     if (sbIsQuotaError(e)) sbStorageWarnSet('quota');
   }
+  if (s) sbIdbMirrorSet(DB_KEY, s);
   MEM_FALLBACK = db;
   // A successful save means the device is no longer full (photos were
   // removed or space was freed elsewhere) — clear the quota warning.

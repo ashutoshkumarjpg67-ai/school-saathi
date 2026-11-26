@@ -136,7 +136,10 @@ function vaultB64ToBytes(s) {
   }
   return out;
 }
+var VAULT_TE = (typeof TextEncoder !== 'undefined') ? new TextEncoder() : null;
+var VAULT_TD = (typeof TextDecoder !== 'undefined') ? new TextDecoder('utf-8') : null;
 function vaultUtf8Encode(str) {
+  if (VAULT_TE) return VAULT_TE.encode(str);
   var bytes = [], i, c;
   for (i = 0; i < str.length; i++) {
     c = str.charCodeAt(i);
@@ -151,19 +154,21 @@ function vaultUtf8Encode(str) {
   return bytes;
 }
 function vaultUtf8Decode(bytes) {
-  var out = '', i = 0;
+  if (VAULT_TD) return VAULT_TD.decode(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+  var parts = [], out = '', i = 0;
   while (i < bytes.length) {
     var b = bytes[i++];
-    if (b < 128) out += String.fromCharCode(b);
-    else if (b >= 192 && b < 224) { var b2 = bytes[i++] || 0; out += String.fromCharCode(((b & 31) << 6) | (b2 & 63)); }
-    else if (b >= 224 && b < 240) { var c2 = bytes[i++] || 0, c3 = bytes[i++] || 0; out += String.fromCharCode(((b & 15) << 12) | ((c2 & 63) << 6) | (c3 & 63)); }
+    if (b < 128) parts.push(String.fromCharCode(b));
+    else if (b >= 192 && b < 224) { var b2 = bytes[i++] || 0; parts.push(String.fromCharCode(((b & 31) << 6) | (b2 & 63))); }
+    else if (b >= 224 && b < 240) { var c2 = bytes[i++] || 0, c3 = bytes[i++] || 0; parts.push(String.fromCharCode(((b & 15) << 12) | ((c2 & 63) << 6) | (c3 & 63))); }
     else if (b >= 240 && b < 248) {
       var d2 = bytes[i++] || 0, d3 = bytes[i++] || 0, d4 = bytes[i++] || 0;
       var cp = (((b & 7) << 18) | ((d2 & 63) << 12) | ((d3 & 63) << 6) | (d4 & 63)) - 65536;
-      out += String.fromCharCode(55296 + (cp >> 10), 56320 + (cp & 1023));
+      parts.push(String.fromCharCode(55296 + (cp >> 10), 56320 + (cp & 1023)));
     }
+    if (parts.length >= 16384) { out += parts.join(''); parts = []; }
   }
-  return out;
+  return out + parts.join('');
 }
 /* ChaCha20 (RFC 8439 §2), sync, 32-bit ops only. state: 16 words —
    constants, 8 key words, counter, 3 nonce words. 20 rounds (10 double
@@ -203,11 +208,11 @@ function vaultChaChaCrypt(keyHex, nonceBytes, dataBytes) {
   var kw = [], nw = [], i;
   for (i = 0; i < 8; i++) kw.push((keyBytes[i * 4] | (keyBytes[i * 4 + 1] << 8) | (keyBytes[i * 4 + 2] << 16) | (keyBytes[i * 4 + 3] << 24)) | 0);
   for (i = 0; i < 3; i++) nw.push((nonceBytes[i * 4] | (nonceBytes[i * 4 + 1] << 8) | (nonceBytes[i * 4 + 2] << 16) | (nonceBytes[i * 4 + 3] << 24)) | 0);
-  var out = [], counter = 1, pos = 0;
+  var out = new Uint8Array(dataBytes.length), counter = 1, pos = 0;
   while (pos < dataBytes.length) {
     var block = vaultChaChaBlock(kw, counter, nw);
     counter = (counter + 1) >>> 0;
-    for (i = 0; i < 64 && pos < dataBytes.length; i++, pos++) out.push(dataBytes[pos] ^ block[i]);
+    for (i = 0; i < 64 && pos < dataBytes.length; i++, pos++) out[pos] = dataBytes[pos] ^ block[i];
   }
   return out;
 }
