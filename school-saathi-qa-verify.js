@@ -7242,12 +7242,12 @@ console.log(sess147ok
   : 'FAIL v147: session-expiry gaps fix missing (SESSION_CLOCK_SKEW_MS / future-dated check / toast)');
 if (!sess147ok) process.exitCode = 1;
 // ---- v148: live-check bug fixes (24 Nov 2026, Test Sunrise School) ----
-// (0) Version markers: version.json says 153 (APP_VERSION / sw.js /
+// (0) Version markers: version.json says 154 (APP_VERSION / sw.js /
 // ?v= are pinned generically against EXPECTED_VERSION above).
-console.log(EXPECTED_VERSION === 153
-  ? 'PASS v153: version.json says 153'
-  : 'FAIL v153: version.json does not say 153 (got ' + EXPECTED_VERSION + ')');
-if (EXPECTED_VERSION !== 153) process.exitCode = 1;
+console.log(EXPECTED_VERSION === 154
+  ? 'PASS v154: version.json says 154'
+  : 'FAIL v154: version.json does not say 154 (got ' + EXPECTED_VERSION + ')');
+if (EXPECTED_VERSION !== 154) process.exitCode = 1;
 // (1) Nav presses queue on mousedown and the next render applies them.
 var q148ok = src.includes('function queueNav(view)') && src.includes('onmousedown="queueNav(') && src.includes('if (pendingNav) { var pv148 = pendingNav;');
 console.log(q148ok
@@ -7398,6 +7398,28 @@ console.log(c153c
   ? 'PASS v153 fix 3: timetable pull intact — read failure still throws loudly, no silent-skip workaround'
   : 'FAIL v153 fix 3: timetable pull / read-throw missing (a workaround may be hiding the missing server table)');
 if (!c153c) process.exitCode = 1;
+// ---- v154: performance refinement (26 Nov 2026) ----
+// Boot, saves, the students list and the sync cycle were paying full
+// re-scans / full re-seals on every action. Behaviour is unchanged;
+// the checks pin the mechanisms, not timings. The sync snapshot is
+// stored as PLAIN JSON (hashes + row keys only, no personal data) —
+// the deliberate trade-off behind the biggest win; one-line revert:
+// restore vaultEncode in sbSnapSave.
+var c154a = src.includes('function feeStatusMap()') && src.includes('function studentAttCounts(s)') && src.includes("hol[h.date + '|' + h.cls]");
+console.log(c154a
+  ? 'PASS v154 perf 1: feeStatusMap() + studentAttCounts() present, holiday keys pre-collected into a lookup'
+  : 'FAIL v154 perf 1: feeStatusMap/studentAttCounts missing or the holiday lookup is gone');
+if (!c154a) process.exitCode = 1;
+var c154b = src.includes('function sbSnapSave(uid, snap)') && src.includes('localStorage.setItem(SB_SNAP_KEY');
+console.log(c154b
+  ? 'PASS v154 perf 2: sbSnapSave writes the snapshot as plain JSON (hashes only, no seal)'
+  : 'FAIL v154 perf 2: sbSnapSave snapshot write missing');
+if (!c154b) process.exitCode = 1;
+var c154c = src.includes('sbSyncDiffSkipped = true;') && src.includes('sbSyncCatchUpDiff()');
+console.log(c154c
+  ? 'PASS v154 perf 3: per-save sync diff deferred to the debounced cycle, flush runs the catch-up diff first'
+  : 'FAIL v154 perf 3: deferred-diff mechanism missing');
+if (!c154c) process.exitCode = 1;
 console.log(css.includes('760px') && css.includes('#0A1E4B') && css.includes('#EA8600') && css.includes('.auth-tab')
   ? 'PASS styles.css keeps navy/gold theme + 760px breakpoint + auth tabs'
   : 'FAIL styles.css missing navy/gold / 760px / auth-tab rules');

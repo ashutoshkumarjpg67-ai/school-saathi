@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 153;
+var APP_VERSION = 154;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -3300,7 +3300,20 @@ function sbSrvIdSet(uid, table, key, serverId) {
 function sbSnapLoad(uid) {
   try { var r = vaultDecode(localStorage.getItem(SB_SNAP_KEY + ':' + uid)); var o = r ? JSON.parse(r) : null; return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; }
 }
-function sbSnapSave(uid, snap) { try { localStorage.setItem(SB_SNAP_KEY + ':' + uid, vaultEncode(JSON.stringify(snap))); } catch (e) {} }
+function sbSnapSave(uid, snap) {
+  // Perf (v154): the snapshot is stored as PLAIN JSON, not sealed.
+  // The snapshot holds only { table: { key: sha256-hash } } — content
+  // hashes plus local row keys. It contains no names, amounts, photos
+  // or any other personal data (and it is fully reconstructible from
+  // the sealed DB), so sealing it buys no privacy — but it cost ~18 s
+  // to seal and ~14 s to unseal per sync cycle on a 500-student school
+  // (measured 26 Nov 2026: snapshot JSON ~15.7 MB), paid on every
+  // cycle AND on every pushed outbox entry (sbSyncSnapSet). The load
+  // side is unchanged: vaultDecode passes plaintext through, so a
+  // snapshot sealed by an older version still decodes, and the next
+  // save writes plaintext. The DB, outbox, accounts and sessions stay
+  // sealed exactly as before.
+  try { localStorage.setItem(SB_SNAP_KEY + ':' + uid, JSON.stringify(snap)); } catch (e) {} }
 function sbSnapClear(uid) { try { localStorage.removeItem(SB_SNAP_KEY + ':' + uid); } catch (e) {} }
 function sbSyncResetMemory() {
   if (sbSyncTimer) { clearTimeout(sbSyncTimer); sbSyncTimer = null; }
@@ -3797,7 +3810,7 @@ function sbSyncQueueDiff() {
   });
   return queued;
 }
-var sbSyncDiffSkipped = false; // B22 (M-16): offline saves skipped the diff — the next online cycle re-runs it
+var sbSyncDiffSkipped = false; // B22 (M-16): offline saves skipped the diff — the next online cycle re-runs it. v154: online saves defer it too (sbSyncOnSave), same mechanism.
 function sbSyncCatchUpDiff() {
   // B22 (M-16): run the full diff that offline saves skipped, so the
   // outbox is complete before anything uploads. The flag is cleared
@@ -3824,9 +3837,16 @@ function sbSyncOnSave() {
     // upload passes, so the outbox it produces is identical to the
     // one the per-save diff would have produced.
     if (!sbIsOnline()) { sbSyncDiffSkipped = true; sbSetStatus('pending'); return; }
-    var n = sbSyncQueueDiff();
-    if (n && sbIsOnline()) sbSyncScheduleFlush();
-    else if (n) sbSetStatus('pending');
+    // Perf (v154): the full diff (~1.6 s re-hash of every row) used to
+    // run on EVERY online save — 40 attendance taps paid it 40 times.
+    // It is deferred to the debounced cycle instead: the flag makes
+    // sbSyncCatchUpDiff() run it once at cycle start (≤600 ms later,
+    // and rapid taps coalesce into a single diff), before the repair
+    // and upload passes, so the outbox it produces is identical to the
+    // one the per-save diff would have produced — the same B22
+    // mechanism offline saves already rely on.
+    sbSyncDiffSkipped = true;
+    sbSyncScheduleFlush();
   } catch (e) { /* never break a local save */ }
 }
 function sbSyncScheduleFlush() {
@@ -4495,6 +4515,11 @@ function sbSyncFlushNow() {
   return sbSyncWithLock(function () {
     return sbGetValidToken().then(function (tok) {
       if (!tok) { sbSetStatus(sbSessionExpired ? 'session-expired' : 'offline'); return { done: false, reason: 'no-token' }; }
+      // Perf (v154) guard: a save made <600 ms earlier deferred its
+      // diff to the debounced cycle — run it now, so this push-only
+      // flush (logout / Back Up Now) pushes the latest change instead
+      // of missing it. No-op when nothing was deferred.
+      sbSyncCatchUpDiff();
       return sbSyncFlushWithToken(act, tok);
     });
   });
@@ -6165,10 +6190,17 @@ function feeRangeLabel() {
 }
 function feeChartData() {
   // Month-wise totals computed LIVE from feeRecords, not the static seed ledger.
+  // Perf (v154): feeRecordsDeduped() was rebuilt once per month (up to
+  // 12x). Dedup once and accumulate all months in a single pass; the
+  // output is identical (a month with no records still reads 0/0).
+  var totals = {};
+  feeRecordsDeduped().forEach(function (r) {
+    if (!totals[r.month]) totals[r.month] = { collected: 0, pending: 0 };
+    if (r.status === 'Collected') totals[r.month].collected += r.amount; else totals[r.month].pending += r.amount;
+  });
   return feeMonthsUsed().map(function (m) {
-    var c = 0, p = 0;
-    feeRecordsDeduped().forEach(function (r) { if (r.month === m) { if (r.status === 'Collected') c += r.amount; else p += r.amount; } });
-    return { label: m, collected: c, pending: p };
+    var t = totals[m] || { collected: 0, pending: 0 };
+    return { label: m, collected: t.collected, pending: t.pending };
   });
 }
 function feeTypeOf(r) { return r.type || 'Tuition'; }
@@ -6240,6 +6272,22 @@ function studentFeeStatus(id) {
     if (r.status === 'Collected') hasCol = true;
   }
   return hasCol ? 'Paid' : '\u2014';
+}
+function feeStatusMap() {
+  // Perf (v154): studentFeeStatus(id) scans ALL feeRecords for one
+  // student, so any loop over all students paid O(students x records)
+  // (studentStats, the fee filter, the CSV exports, fee generation).
+  // One pass builds the status for every student; lookups are O(1).
+  // Same rule as studentFeeStatus: Pending if ANY Pending record
+  // exists, else Paid if ANY Collected record exists, else '—'
+  // (callers read it as (map[id] || '—')).
+  var m = {};
+  (db.feeRecords || []).forEach(function (r) {
+    if (!r || !r.studentId) return;
+    if (r.status === 'Pending') m[r.studentId] = 'Pending';
+    else if (r.status === 'Collected' && !m[r.studentId]) m[r.studentId] = 'Paid';
+  });
+  return m;
 }
 
 // ---------------- Phase 1: Student Management helpers ----------------
@@ -6372,11 +6420,12 @@ function studentStats() {
   // records, today only — read 0%. With nothing marked at all there is
   // no average to show: null renders as "—" (see studentsPage).
   var attPres = 0, attTot = 0;
+  var fsmStats = feeStatusMap(); // Perf (v154): one pass over feeRecords, not one full scan per student
   vis.forEach(function (s) {
     var st = s.status || 'Active';
     if (st === 'Active') active++; else if (st === 'Inactive') inactive++; else if (st === 'Draft') draft++; else if (st === 'Cancelled') cancelled++;
     if (s.gender === 'Boy') boys++; else if (s.gender === 'Girl') girls++; else unspec++;
-    if (studentFeeStatus(s.id) === 'Pending') pend++;
+    if ((fsmStats[s.id] || '—') === 'Pending') pend++;
     // live issue 17: pooled marked days only — see below.
     var ac = studentAttCounts(s);
     attPres += ac.present; attTot += ac.total;
@@ -6396,13 +6445,16 @@ function classBarsHTML(byClass) {
 }
 function stuFiltered() {
   var q = (state.stuSearch || '').trim().toLowerCase();
+  // Perf (v154): the fee filter called studentFeeStatus() — a full
+  // feeRecords scan — per student. The map is built once instead.
+  var fsm = (state.stuFee !== 'All') ? feeStatusMap() : null;
   return visibleStudents().filter(function (s) {
     if (state.stuClass !== 'All' && s.cls !== state.stuClass) return false;
     if (state.stuSection !== 'All' && sectionOf(s.cls) !== state.stuSection) return false;
     if (state.stuSession !== 'All' && (s.session || '') !== state.stuSession) return false;
     if (state.stuGender !== 'All' && (s.gender || '') !== state.stuGender) return false;
     if (state.stuStatus !== 'All' && (s.status || 'Active') !== state.stuStatus) return false;
-    if (state.stuFee !== 'All' && studentFeeStatus(s.id) !== state.stuFee) return false;
+    if (state.stuFee !== 'All' && (fsm[s.id] || '—') !== state.stuFee) return false;
     if (q) {
       var hay = [s.name, s.admissionNo, s.enr, s.phone].join(' ').toLowerCase();
       if (hay.indexOf(q) === -1) return false;
@@ -6413,6 +6465,16 @@ function stuFiltered() {
 function stuSorted(list) {
   var col = state.stuSort || 'name', dir = state.stuSortDir || 1;
   var arr = list.slice();
+  // Perf (v154): sorting by attendance called studentAttPct() inside
+  // the comparator — O(n log n) full attendance scans (measured 7.6 s
+  // for 500 students in the harness). The % is computed once per
+  // student up front now; Array.sort is stable, so the order is
+  // identical to comparing the same values in the comparator.
+  var attPct = null;
+  if (col === 'att') {
+    attPct = {};
+    arr.forEach(function (s) { attPct[s.id] = studentAttPct(s); });
+  }
   arr.sort(function (a, b) {
     var r = 0;
     if (col === 'name') r = a.name.localeCompare(b.name);
@@ -6420,7 +6482,7 @@ function stuSorted(list) {
     else if (col === 'admDate') {
       var da = a.admissionDate || '', dbv = b.admissionDate || '';
       r = !da && !dbv ? 0 : !da ? 1 : !dbv ? -1 : (da < dbv ? -1 : da > dbv ? 1 : 0);
-    } else if (col === 'att') r = studentAttPct(a) - studentAttPct(b);
+    } else if (col === 'att') r = attPct[a.id] - attPct[b.id];
     return r * dir;
   });
   return arr;
@@ -6467,11 +6529,11 @@ function latestExamPct(s) {
   return null;
 }
 var STU_CSV_HEAD = ['Name', 'Admission No', 'Enr', 'Class', 'Section', 'Roll', "Father's Name", "Mother's Name", 'Guardian', 'Mobile', 'Secondary Mobile', 'Parent Email', 'Attendance %', 'Fee Status', 'Status', 'Session', 'Admission Date', 'DOB', 'Gender', 'Category', 'Blood Group', 'Address', 'District', 'State', 'PIN', 'Previous School', 'Previous Class', 'Birth Cert', 'TC', 'TC Number'];
-function studentCSVRow(s) {
+function studentCSVRow(s, fsm) {
   var d = s.documents || {};
   return [s.name, s.admissionNo || '', s.enr || '', s.cls, sectionOf(s.cls), s.roll,
     s.fatherName || s.guardian, s.motherName || '', s.guardian, s.phone, s.mobile2 || '', s.parentEmail || '',
-    studentAttPct(s), studentFeeStatus(s.id), s.status || 'Active', s.session || '', s.admissionDate || '', s.dob || '',
+    studentAttPct(s), fsm ? (fsm[s.id] || '—') : studentFeeStatus(s.id), s.status || 'Active', s.session || '', s.admissionDate || '', s.dob || '',
     s.gender || '', s.category || '', s.bloodGroup || '', s.address || '', s.district || '', s.state || '', s.pin || '',
     s.previousSchool || '', s.previousClass || '', d.birthCert ? 'Yes' : 'No', d.tc ? 'Yes' : 'No', d.tcNumber || ''];
 }
@@ -6483,7 +6545,8 @@ function downloadStudentCSV(id) {
 }
 function exportStudentsCSV() {
   var list = stuSorted(stuFiltered());
-  downloadCSV('school-saathi-students-' + todayIST() + '.csv', [STU_CSV_HEAD].concat(list.map(studentCSVRow)));
+  var fsm = feeStatusMap(); // Perf (v154): one pass for the whole export
+  downloadCSV('school-saathi-students-' + todayIST() + '.csv', [STU_CSV_HEAD].concat(list.map(function (s) { return studentCSVRow(s, fsm); })));
   toast('✓ ' + t('tCsvExported'));
 }
 
@@ -6802,10 +6865,19 @@ function todayAtt() {
 // records only, Present and Late count as attended, a holiday day
 // never counts. A student with no marked days contributes nothing.
 function studentAttCounts(s) {
+  // Perf (v154): the old loop called isHoliday() — a linear .find over
+  // db.holidays — for EVERY attendance key of EVERY student (1440 keys
+  // x 500 students = 720K finds per full pass; measured 817 ms for 500
+  // students in the harness). The holiday keys are collected into a
+  // Set once per call now, and the attendance key itself IS the
+  // 'date|cls' string, so no split is needed either. Same counts: a
+  // key is skipped exactly when holidayFor(date, cls) would have found
+  // a row for it (dates and class names never contain '|').
   var total = 0, attended = 0;
+  var hol = {};
+  (db.holidays || []).forEach(function (h) { if (h && h.date && h.cls) hol[h.date + '|' + h.cls] = true; });
   Object.keys(db.attendance || {}).forEach(function (k) {
-    var kp100 = k.split('|');
-    if (isHoliday(kp100[0], kp100[1])) return; // v100: a holiday day never counts
+    if (hol[k]) return; // v100: a holiday day never counts
     var recs = db.attendance[k] || {};
     var m = recs[s.id];
     if (!m) return;
@@ -11080,7 +11152,8 @@ function generateFees() {
     });
   });
   if (made > 0) logAudit('Fees generated', made + ' records • ' + month);
-  db.students.forEach(function (s) { s.fee = studentFeeStatus(s.id); });
+  var fsmGen = feeStatusMap(); // Perf (v154): one pass, not one full scan per student
+  db.students.forEach(function (s) { s.fee = fsmGen[s.id] || '—'; });
   saveDB(db); renderApp();
   var msg = '✓ ' + made + ' ' + t('tGenRecords') + ' ' + month + ' • ' + skipped + ' ' + t('tGenSkipped');
   if (notYetAdm) msg += ' • ' + notYetAdm + ' ' + t('tGenNotAdmitted');
@@ -12687,8 +12760,9 @@ function reportsPage() {
 function downloadReportCSV(kind) {
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   if (kind === 'students') {
+    var fsmRep = feeStatusMap(); // Perf (v154): one pass for the whole export
     downloadCSV('school-saathi-students.csv', [['Name', 'Class', 'Roll', 'Guardian', 'Phone', 'Attendance %', 'Fee Status']]
-      .concat(db.students.map(function (s) { return [s.name, s.cls, s.roll, s.guardian, s.phone, studentAttPct(s), studentFeeStatus(s.id)]; })));
+      .concat(db.students.map(function (s) { return [s.name, s.cls, s.roll, s.guardian, s.phone, studentAttPct(s), fsmRep[s.id] || '—']; })));
   } else if (kind === 'fees') {
     downloadCSV('school-saathi-fees.csv', feeCSVRows());
   } else if (kind === 'attendance') {

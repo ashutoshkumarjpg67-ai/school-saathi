@@ -86,25 +86,53 @@ function vaultBytesToHex(bytes) {
 }
 var VAULT_B64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 function vaultBytesToB64(bytes) {
-  var out = '', i;
-  for (i = 0; i < bytes.length; i += 3) {
-    var b0 = bytes[i], b1 = (i + 1 < bytes.length) ? bytes[i + 1] : 0, b2 = (i + 2 < bytes.length) ? bytes[i + 2] : 0;
-    out += VAULT_B64_ALPHABET[b0 >> 2];
-    out += VAULT_B64_ALPHABET[((b0 & 3) << 4) | (b1 >> 4)];
-    out += (i + 1 < bytes.length) ? VAULT_B64_ALPHABET[((b1 & 15) << 2) | (b2 >> 6)] : '=';
-    out += (i + 2 < bytes.length) ? VAULT_B64_ALPHABET[b2 & 63] : '=';
+  // Perf (v154): the old loop did `out +=` per 4-char group — on a
+  // multi-MB payload the growing string is re-flattened every group
+  // (quadratic; ~2.3 s of a 6.4 MB seal). Groups are collected in an
+  // array and joined once per 16K-group block: byte-identical output.
+  var parts = [], out = '', i, n = bytes.length, g = 0;
+  for (i = 0; i + 3 <= n; i += 3) {
+    var b0 = bytes[i], b1 = bytes[i + 1], b2 = bytes[i + 2];
+    parts.push(VAULT_B64_ALPHABET[b0 >> 2] + VAULT_B64_ALPHABET[((b0 & 3) << 4) | (b1 >> 4)] + VAULT_B64_ALPHABET[((b1 & 15) << 2) | (b2 >> 6)] + VAULT_B64_ALPHABET[b2 & 63]);
+    if (++g === 16384) { out += parts.join(''); parts = []; g = 0; }
   }
-  return out;
+  var rem = n - i;
+  if (rem === 1) {
+    var c0 = bytes[i];
+    parts.push(VAULT_B64_ALPHABET[c0 >> 2] + VAULT_B64_ALPHABET[(c0 & 3) << 4] + '==');
+  } else if (rem === 2) {
+    var d0 = bytes[i], d1 = bytes[i + 1];
+    parts.push(VAULT_B64_ALPHABET[d0 >> 2] + VAULT_B64_ALPHABET[((d0 & 3) << 4) | (d1 >> 4)] + VAULT_B64_ALPHABET[(d1 & 15) << 2] + '=');
+  }
+  return out + parts.join('');
 }
+var VAULT_B64_REV = (function () {
+  var r = [], i;
+  for (i = 0; i < 128; i++) r.push(-1);
+  for (i = 0; i < VAULT_B64_ALPHABET.length; i++) r[VAULT_B64_ALPHABET.charCodeAt(i)] = i;
+  return r;
+})();
 function vaultB64ToBytes(s) {
-  var out = [], i, c, v = 0, bits = 0;
-  for (i = 0; i < s.length; i++) {
-    c = s.charAt(i);
-    if (c === '=') break;
-    var idx = VAULT_B64_ALPHABET.indexOf(c);
+  // Perf (v154): the old loop did VAULT_B64_ALPHABET.indexOf(c) per
+  // character — a linear scan of the 64-char alphabet for every one
+  // of ~8.5M characters on a big seal — and pushed each byte into a
+  // growing array. A reverse lookup table + a pre-sized Uint8Array
+  // now; byte-identical output. Safe: vaultDecode verifies the tag
+  // BEFORE calling this, so the input is always well-formed base64
+  // (length a multiple of 4, padding only at the end) from our own
+  // encoder. Uint8Array indexes/lengths like the Array it replaces,
+  // so vaultChaChaCrypt / vaultUtf8Decode are unaffected.
+  var n = s.length, pad = 0;
+  if (n >= 1 && s.charAt(n - 1) === '=') pad++;
+  if (n >= 2 && s.charAt(n - 2) === '=') pad++;
+  var out = new Uint8Array(Math.floor(n * 3 / 4) - pad), o = 0, i, v = 0, bits = 0, code, idx;
+  for (i = 0; i < n; i++) {
+    code = s.charCodeAt(i);
+    if (code === 61) break; // '='
+    idx = code < 128 ? VAULT_B64_REV[code] : -1;
     if (idx < 0) return null;
     v = (v << 6) | idx; bits += 6;
-    if (bits >= 8) { bits -= 8; out.push((v >> bits) & 255); }
+    if (bits >= 8) { bits -= 8; out[o++] = (v >> bits) & 255; }
   }
   return out;
 }
@@ -141,6 +169,12 @@ function vaultUtf8Decode(bytes) {
    constants, 8 key words, counter, 3 nonce words. 20 rounds (10 double
    rounds). Verified against the RFC 8439 §2.3.2 vector in the harness
    (tests/phase8/v147-vault.test.mjs). */
+/* Perf note (v154, measured 26 Nov 2026): hoisting the quarter-round
+   out of this block was tried and REVERTED — it ran 4.7x SLOWER
+   (1,300 ms vs 277 ms per 100K blocks) because V8 inlines the local
+   closure but not a module-level helper. This original form is the
+   fast one; do not "optimise" it without an A/B in
+   school-saathi-perf/ab-vault.mjs. */
 function vaultChaChaBlock(keyWords, counter, nonceWords) {
   var st = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574,
     keyWords[0], keyWords[1], keyWords[2], keyWords[3],
