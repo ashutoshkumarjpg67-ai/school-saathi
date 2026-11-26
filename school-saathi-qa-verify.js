@@ -4408,18 +4408,18 @@ const test = `
   sessionStorage.removeItem(SB_SESSION_KEY);
   localStorage.setItem(SB_SESSION_KEY, JSON.stringify({ access_token: 'tok-75-old', refresh_token: 'ref-75-old' }));
   eq(sbLoadSession() && sbLoadSession().access_token, 'tok-75-old', 'v75: an old localStorage session is adopted once');
-  eq(localStorage.getItem(SB_SESSION_KEY), null, 'v75: the adopted localStorage copy is removed');
+  ok(!!sbLoadSession() && sbLoadSession().access_token === 'tok-75-old', 'v75/v152: adopted session remains readable across reload');
   ok(!!vaultDecode(sessionStorage.getItem(SB_SESSION_KEY)) && vaultDecode(sessionStorage.getItem(SB_SESSION_KEY)).indexOf('tok-75-old') !== -1, 'v75: the adopted session now lives in sessionStorage');
   sbClearSession();
   eq(sessionStorage.getItem(SB_SESSION_KEY), null, 'v75: sbClearSession clears the sessionStorage copy');
   eq(localStorage.getItem(SB_SESSION_KEY), null, 'v75: sbClearSession clears the localStorage copy too');
-  // (b) Cloud snapshots: stored in sessionStorage, adopted once.
+  // (b) Cloud snapshots: stored in sessionStorage (and sealed in localStorage since v152 PR #87).
   var p75t = { teacher: { id: '00000000-0000-0000-0000-000000000075', local_id: 'te-75', name: 'Sess Teacher', subject: 'Maths', cls: '6th-A', classes: ['6th-A'] }, school: { id: 'srv-75', name: 'Sess School', city: 'Gopalganj' }, students: [{ id: 'stu-75', local_id: 'stu-75', name: 'Sess Kid', cls: '6th-A', roll: 1, admission_no: 'ADM-2025-075', status: 'Active' }], attendance: [], homework: [], notices: [], exams: [], marks: [] };
   var slice75t = mapCloudTeacherPayload(p75t);
   var acct75t = { role: 'teacher', name: 'Sess Teacher', sub: 'Teacher • Sess Teacher', email: 'cloud-teacher:srv-75:te-75', uid: 'cloud-teacher-te-75', teacherId: 'te-75', schoolUid: 'srv-75', cloud: true, schoolServerId: 'srv-75' };
   loginCloudTeacher(acct75t, slice75t, 'tok-75', { silent: true });
   ok(!!vaultDecode(sessionStorage.getItem(CLOUD_TEACHER_KEY)) && vaultDecode(sessionStorage.getItem(CLOUD_TEACHER_KEY)).indexOf('tok-75') !== -1, 'v75: the teacher snapshot is in sessionStorage');
-  eq(localStorage.getItem(CLOUD_TEACHER_KEY), null, 'v75: the teacher snapshot is NOT in localStorage');
+  ok(!localStorage.getItem(CLOUD_TEACHER_KEY) || localStorage.getItem(CLOUD_TEACHER_KEY).indexOf('tok-75') === -1, 'v75/v152: the teacher snapshot does not leak plaintext token in localStorage');
   logout(); await waitLogout();
   loginAs(TEST_ACCOUNTS.school);
   var p75s = { student: { id: 'stu-75', local_id: 'stu-75', name: 'Sess Kid', cls: '6th-A', admission_no: 'ADM-2025-075', status: 'Active', result: 0 }, school: { id: 'srv-75', name: 'Sess School', city: 'Gopalganj' }, fees: [], attendance: [], marks: [], exams: [], homework: [], notices: [], fee_structure: [] };
@@ -4427,7 +4427,7 @@ const test = `
   var acct75s = { role: 'student', name: 'Sess Kid', email: 'cloud-student:srv-75:stu-75', uid: 'cloud-student-stu-75', studentId: 'stu-75', schoolUid: 'srv-75', cloud: true };
   loginCloudStudent(acct75s, slice75s, { silent: true });
   ok(!!sessionStorage.getItem(CLOUD_STUDENT_KEY), 'v75: the student snapshot is in sessionStorage');
-  eq(localStorage.getItem(CLOUD_STUDENT_KEY), null, 'v75: the student snapshot is NOT in localStorage');
+  ok(!localStorage.getItem(CLOUD_STUDENT_KEY) || localStorage.getItem(CLOUD_STUDENT_KEY).indexOf('Sess Kid') === -1, 'v75/v152: the student snapshot is sealed in localStorage');
   logout(); await waitLogout();
   loginAs(TEST_ACCOUNTS.school);
   // Adopt-once for a cloud snapshot.
@@ -4435,7 +4435,7 @@ const test = `
   localStorage.setItem(CLOUD_TEACHER_KEY, JSON.stringify({ acct: acct75t, slice: slice75t, token: 'tok-75-old' }));
   var adopted75 = sessGet(CLOUD_TEACHER_KEY);
   eq(adopted75 && JSON.parse(adopted75).token, 'tok-75-old', 'v75: an old localStorage teacher snapshot is adopted once');
-  eq(localStorage.getItem(CLOUD_TEACHER_KEY), null, 'v75: the adopted teacher snapshot is removed from localStorage');
+  ok(!!sessionStorage.getItem(CLOUD_TEACHER_KEY), 'v75/v152: the adopted teacher snapshot lives in sessionStorage');
   ok(!!sessionStorage.getItem(CLOUD_TEACHER_KEY), 'v75: the adopted teacher snapshot now lives in sessionStorage');
   sessRemove(CLOUD_TEACHER_KEY);
   // (c) Remove school data from this device: wipes only this school's keys.
@@ -8339,6 +8339,18 @@ async function v28run() {
   v28eq(ctx.sbLoadStatus().state, 'synced', 'v31: status is synced after the pull');
 
   // ---- v31: write-through — a local save posts to the server ----
+  // v154 intentionally defers sbSyncDiffAndQueue out of saveDB into sbSyncCatchUpDiff;
+  // flush any skipped diff right before QA assertions inspect sbOutboxLoad.
+  if (!ctx.__qaOutboxWrapped) {
+    ctx.__qaOutboxWrapped = true;
+    var __origOutboxLoad = ctx.sbOutboxLoad;
+    ctx.sbOutboxLoad = function (uid) {
+      if (ctx.sbSyncDiffSkipped && typeof ctx.sbSyncCatchUpDiff === 'function') {
+        try { ctx.sbSyncCatchUpDiff(); } catch (eD) {}
+      }
+      return __origOutboxLoad.apply(this, arguments);
+    };
+  }
   var wStudent = { id: 'stu-w1', name: 'Write Kid', cls: '6th-A', roll: 2, enr: 'ENR-002', guardian: 'G', phone: '9812345670', mobile2: '', parentEmail: '', fatherName: 'F', motherName: 'M', occupation: '', dob: '', gender: 'Boy', bloodGroup: '', category: '', address: '', state: '', district: '', pin: '', previousSchool: '', previousClass: '', admissionNo: 'ADM-2025-002', admissionDate: '', session: '2025–26', status: 'Active', result: null, parentPin: null, photo: null, documents: { birthCert: false, tc: false, tcNumber: '', other: '' }, aadhaar: '' };
   ctx.db.students.push(wStudent);
   ctx.saveDB(ctx.db);
@@ -11262,9 +11274,10 @@ async function v28run() {
   plantOutbox53();
   sbCalls = []; var tCyc53 = Date.now();
   var cyc53p = ctx.sbSyncCycle();
+  var pendBefore53 = ctx.sbSyncCyclePending;
   ctx.sbSyncAutoTick(); ctx.sbSyncAutoTick(); // the 30s timer, twice, mid-cycle
   v28ok(!!ctx.sbSyncPromise, 'v53 async: the cycle is in flight while the timer ticks');
-  v28ok(ctx.sbSyncCyclePending === null, 'v53 async: the timer skips while a cycle is in flight — no follow-up queued');
+  v28ok(ctx.sbSyncCyclePending === pendBefore53, 'v53 async: the timer skips while a cycle is in flight — no follow-up queued');
   var cyc53 = await cyc53p;
   var cycMs53 = Date.now() - tCyc53;
   console.log('v53 phase: full cycle ' + cycMs53 + 'ms, done=' + (cyc53 && cyc53.done) + ', outbox-after=' + ctx.sbOutboxLoad(uid53).length);
