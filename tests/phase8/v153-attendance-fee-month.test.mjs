@@ -97,15 +97,15 @@ describe('v153 — timetable read failure is server-side (no code workaround)', 
 });
 
 describe('v154 version markers', () => {
-  it('APP_VERSION, version.json and package.json are all 163', () => {
+  it('APP_VERSION, version.json and package.json are all 164', () => {
     const app = createAppContext();
-    assert.equal(app.get('APP_VERSION'), 163);
-    assert.equal(VERSION_JSON.version, 163);
-    assert.equal(PACKAGE_JSON.version, '163.0.0');
+    assert.equal(app.get('APP_VERSION'), 164);
+    assert.equal(VERSION_JSON.version, 164);
+    assert.equal(PACKAGE_JSON.version, '164.0.0');
   });
 
-  it('sw.js cache is school-saathi-v163 with ?v=153 assets', () => {
-    assert.match(SW_SRC, /CACHE_NAME = 'school-saathi-v163'/);
-    assert.ok(SW_SRC.includes('app.js?v=163'), 'app.js?v=163 missing from sw.js precache');
+  it('sw.js cache is school-saathi-v164 with ?v=153 assets', () => {
+    assert.match(SW_SRC, /CACHE_NAME = 'school-saathi-v164'/);
+    assert.ok(SW_SRC.includes('app.js?v=164'), 'app.js?v=164 missing from sw.js precache');
   });
 });

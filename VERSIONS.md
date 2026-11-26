@@ -1,3 +1,8 @@
+## v164 — Fix screen flicker, up-down jump animation, and logo disappearing on sync
+
+- **Root cause fix (`app.js`, `styles.css`):** Every background sync pull called `sbRefreshSignedPhotos()`, which minted a fresh `photo-url` signed token and unconditionally called `renderApp()` — causing `.page` to replay `animation: fadeUp .3s ease` (white flash + 8px vertical jump) and forcing `<img class="dash-logo">` to re-download on every sync tick. Now `sbRefreshSignedPhotos()` skips re-minting and re-rendering while cached signed URLs are still fresh (>90s left), and `.page` no longer replays `fadeUp` on re-render.
+- **Version markers:** 163 → 164.
+
 ## v163 — Live QA polish: School Logo sync persistence, Dark Mode contrast, scroll reset & Report Card accessibility
 
 - **School Logo persistence (`app.js`):** Clearing stale `logoUrl` on replacement in `saveProfile()` and updating both `db.profile.logoUrl` + `db.profile.logo` with immediate `renderApp()` + `sbSyncScheduleFlush()` in `sbUploadSchoolLogoBg()` so uploaded logos persist reliably across sync cycles.

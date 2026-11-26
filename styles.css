@@ -110,7 +110,7 @@ label{font-size:14px;font-weight:600;color:var(--text-2);display:block;margin-bo
 .topbar .who b{font-size:var(--text-sm);display:block;line-height:1.2}
 .topbar .who span{font-size:12.5px;color:var(--muted)}
 .hamburger{display:none;background:#fff;border:1px solid var(--border);border-radius:var(--radius-sm);width:44px;height:44px;font-size:19px}
-.page{padding:22px;max-width:1240px;width:100%;margin:0 auto;animation:fadeUp .3s ease}
+.page{padding:22px;max-width:1240px;width:100%;margin:0 auto}
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 .page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:18px}
 .page-head h2{font-size:22px;color:var(--navy);letter-spacing:-.3px}

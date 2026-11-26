@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 163;
+var APP_VERSION = 164;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -447,14 +447,32 @@ function sbRefreshSignedPhotos() {
     }
     sbGetValidToken().then(function (token) {
       if (!token) return;
+      var sidCheck = sbSchoolIdForUpload();
+      var soon164 = Date.now() + 90000;
+      var needMint164 = false;
+      if (typeof db !== 'undefined' && db) {
+        if (db.profile && sbIsSbPhotoUrl(db.profile.logo)) {
+          var lc = sbSignedPhotoCache[db.profile.logo];
+          if (!lc || lc.exp <= soon164) needMint164 = true;
+        }
+        (db.students || []).forEach(function (s) {
+          if (s && sbIsSbPhotoUrl(s.photo)) {
+            var sc = sbSignedPhotoCache[s.photo];
+            if (!sc || sc.exp <= soon164) needMint164 = true;
+          }
+        });
+      }
+      if (sidCheck && !needMint164 && Object.keys(sbSignedPhotoCache).length > 0) return;
       sbPhotoSignRequest({ action: 'school' }, token).then(function (d) {
         if (!d || !d.urls) return;
         var sid = sbSchoolIdForUpload(); if (!sid) return;
+        var changed164 = false;
         Object.keys(d.urls).forEach(function (k) {
           var orig = (k === 'logo') ? sbStoragePublicUrl('school-logos', sid + '/logo.png') : sbStoragePublicUrl('student-photos', sid + '/' + k + '.jpg');
-          sbCacheSignedPhoto(orig, d.urls[k], d.expires_in);
+          var cur = sbSignedPhotoCache[orig];
+          if (!cur || cur.exp <= soon164) { sbCacheSignedPhoto(orig, d.urls[k], d.expires_in); changed164 = true; }
         });
-        sbReMintRender(); // v139: renderApp so the sidebar logo picks up the signed URL too
+        if (changed164) sbReMintRender(); // v139: renderApp so the sidebar logo picks up the signed URL too
       });
     });
   } catch (e) {}
