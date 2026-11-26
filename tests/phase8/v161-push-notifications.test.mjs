@@ -68,7 +68,7 @@ test('v161: js/modules/push.js exposes sbPushSaveToken, sbPushRegister, and sbPu
 
 test('v161: sw.js caches push.js and handles push + notificationclick events', () => {
   const sw = readFileSync(join(ROOT, 'sw.js'), 'utf8');
-  assert.match(sw, /js\/modules\/push\.js\?v=161/);
+  assert.match(sw, /js\/modules\/push\.js\?v=\d+/);
   assert.match(sw, /addEventListener\('push'/);
   assert.match(sw, /addEventListener\('notificationclick'/);
   assert.match(sw, /showNotification/);

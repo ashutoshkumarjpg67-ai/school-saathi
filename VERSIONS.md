@@ -1,3 +1,8 @@
+## v162 — Turnstile CAPTCHA wired into Login & Password Recovery (fix `captcha_failed`)
+
+- **Root cause fix (`index.html`, `app.js`):** With Cloudflare Turnstile enabled in Supabase Auth Attack Protection, GoTrue requires `gotrue_meta_security.captcha_token` on `/auth/v1/token?grant_type=password` and `/auth/v1/recover` in addition to `/auth/v1/signup`. Added `#loginTurnstile` and `#recoverTurnstile` explicit widgets, passed `captcha_token` in `sbSignIn()` and `sbRecover()`, reset single-use tokens after failed attempts, and prevented `captcha_failed` 400 responses from incrementing `ss_school_login_attempts` or showing a misleading "wrong password" error.
+- **Version markers:** 161 → 162.
+
 ## v161 — Firebase FCM Push Notifications (Android + Web)
 
 - **Database (`supabase/60_push_tokens.sql`):** Created `public.ss_push_tokens` with `(school_id)` and `(school_id, cls)` indexes, owner-scoped RLS policy using `(select auth.uid())`, and `authenticated`/`service_role` CRUD grants. Updated `delete-account` Edge Function (`CHILD_TABLES`) to clean up `ss_push_tokens` on school deletion.
