@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 161;
+var APP_VERSION = 162;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -518,8 +518,10 @@ function sbSignUp(email, pw, school, name, captchaToken) {
   if (captchaToken) body.gotrue_meta_security = { captcha_token: captchaToken };
   return sbAuthFetch('/auth/v1/signup', { method: 'POST', body: body });
 }
-function sbSignIn(email, pw) {
-  return sbAuthFetch('/auth/v1/token?grant_type=password', { method: 'POST', body: { email: email, password: pw } });
+function sbSignIn(email, pw, captchaToken) {
+  var body = { email: email, password: pw };
+  if (captchaToken) body.gotrue_meta_security = { captcha_token: captchaToken };
+  return sbAuthFetch('/auth/v1/token?grant_type=password', { method: 'POST', body: body });
 }
 function sbSignOut(token) {
   return sbAuthFetch('/auth/v1/logout', { method: 'POST', token: token, body: {} });
@@ -527,8 +529,10 @@ function sbSignOut(token) {
 function sbRefresh(refreshToken) {
   return sbAuthFetch('/auth/v1/token?grant_type=refresh_token', { method: 'POST', body: { refresh_token: refreshToken } });
 }
-function sbRecover(email) {
-  return sbAuthFetch('/auth/v1/recover', { method: 'POST', body: { email: email } });
+function sbRecover(email, captchaToken) {
+  var body = { email: email };
+  if (captchaToken) body.gotrue_meta_security = { captcha_token: captchaToken };
+  return sbAuthFetch('/auth/v1/recover', { method: 'POST', body: body });
 }
 function sbGetUser(token) {
   return sbAuthFetch('/auth/v1/user', { method: 'GET', token: token });
@@ -1387,6 +1391,7 @@ function showRecoverForm() {
   $('loginForm').classList.add('hidden');
   $('recoverForm').classList.remove('hidden');
   $('resetForm').classList.add('hidden');
+  if (typeof sbTurnstileMount === 'function') sbTurnstileMount('recover', 'recoverTurnstile', 'recover');
   $('recoverEmail').focus();
   syncWelcomeHeading();
 }
@@ -1405,10 +1410,18 @@ function doRecover(e) {
     err.classList.remove('hidden');
     return false;
   }
-  sbRecover(email).then(function () {
+  var recTs = (typeof sbTurnstileToken === 'function') ? sbTurnstileToken('recover') : '';
+  sbRecover(email, recTs).then(function (r) {
+    if (typeof sbTurnstileReset === 'function') sbTurnstileReset('recover');
+    if (r && r.status === 400 && r.data && (r.data.error_code === 'captcha_failed' || /captcha/i.test(r.data.msg || r.data.error_description || ''))) {
+      err.textContent = 'Please complete the security check and try again.';
+      err.classList.remove('hidden');
+      return;
+    }
     err.textContent = t('sbRecoverSent');
     err.classList.remove('hidden');
   }).catch(function () {
+    if (typeof sbTurnstileReset === 'function') sbTurnstileReset('recover');
     err.textContent = t('sbRecoverFailed');
     err.classList.remove('hidden');
   });
@@ -7146,7 +7159,7 @@ function showView(which) {
   ['login', 'app'].forEach(function (id) { $(id).classList.toggle('hidden', id !== which); });
   window.scrollTo(0, 0);
 }
-function showLogin() { showView('login'); try { $('sbStatus').textContent = sbStatusText(); } catch (e) {} $('loginId').focus(); }
+function showLogin() { showView('login'); try { $('sbStatus').textContent = sbStatusText(); } catch (e) {} if (typeof sbTurnstileMount === 'function') sbTurnstileMount('login', 'loginTurnstile', 'login'); $('loginId').focus(); }
 function persistSession() {
   // The session lives in localStorage so it survives closing and reopening
   // the app (sessionStorage died with the tab/PWA, forcing a fresh login).
@@ -7388,6 +7401,7 @@ function switchAuth(tab) {
   // v35: the student form picks the school first — every school's first
   // student is ADM-2025-001, so a bare admission number matches the
   // wrong school (the same trap the v34 parent picker fixed).
+  if (tab === 'login' && typeof sbTurnstileMount === 'function') sbTurnstileMount('login', 'loginTurnstile', 'login');
   if (tab === 'signup' && typeof sbTurnstileMount === 'function') sbTurnstileMount('signup', 'suTurnstile', 'signup');
   if (tab === 'student') fillSchoolPicker('studentSchool');
   if (tab === 'teacher') fillSchoolPicker('teacherSchool', { neutral: true }); // v62: optional for teachers (the old flow had no school field)
@@ -8506,8 +8520,16 @@ function doLogin(e) {
         restoreLoginBtn();
         return;
       }
-      sbSignIn(id, pw).then(function (res) {
+      var loginTs = (typeof sbTurnstileToken === 'function') ? sbTurnstileToken('login') : '';
+      sbSignIn(id, pw, loginTs).then(function (res) {
       if (res.ok && res.data && res.data.access_token) { sbSchoolLoginOk(id, res.data.access_token); sbFinishSupabaseLogin(res.data, id, pw); return; }
+      if (typeof sbTurnstileReset === 'function') sbTurnstileReset('login');
+      var isCaptchaErr = res.status === 400 && res.data && (res.data.error_code === 'captcha_failed' || /captcha/i.test(res.data.msg || res.data.error_description || ''));
+      if (isCaptchaErr) {
+        err.textContent = 'Please complete the security check and try again.';
+        err.classList.remove('hidden');
+        return;
+      }
       // v63: record a wrong-password failure BEFORE any branch — even
       // when this device has no local account for the email (a fresh
       // device must still count attempts, or the lock would never engage

@@ -14,17 +14,17 @@
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="stylesheet" href="styles.css?v=161">
-<script src="qrgen.js?v=161" defer></script>
-<script src="js/bcrypt.js?v=161" defer></script>
-<script src="js/modules/crypto.js?v=161" defer></script>
-<script src="js/modules/vault.js?v=161" defer></script>
-<script src="js/modules/storage.js?v=161" defer></script>
-<script src="js/modules/realtime.js?v=161" defer></script>
-<script src="js/modules/turnstile.js?v=161" defer></script>
-<script src="js/modules/push.js?v=161" defer></script>
-<script src="js/modules/i18n.js?v=161" defer></script>
-<script src="app.js?v=161" defer></script></head>
+<link rel="stylesheet" href="styles.css?v=162">
+<script src="qrgen.js?v=162" defer></script>
+<script src="js/bcrypt.js?v=162" defer></script>
+<script src="js/modules/crypto.js?v=162" defer></script>
+<script src="js/modules/vault.js?v=162" defer></script>
+<script src="js/modules/storage.js?v=162" defer></script>
+<script src="js/modules/realtime.js?v=162" defer></script>
+<script src="js/modules/turnstile.js?v=162" defer></script>
+<script src="js/modules/push.js?v=162" defer></script>
+<script src="js/modules/i18n.js?v=162" defer></script>
+<script src="app.js?v=162" defer></script></head>
 <body>
 
 <!-- ============ LOGIN ============ -->
@@ -49,6 +49,7 @@
       <form id="loginForm" onsubmit="return doLogin(event)">
         <div class="field"><label data-i18n="loginEmail">Email</label><input id="loginId" type="email" placeholder="you@school.edu.in" data-i18n-ph="loginEmailPh" autocomplete="username"></div>
         <div class="field"><label data-i18n="loginPassword">Password</label><div class="pw-wrap"><input id="loginPw" type="password" placeholder="••••••••" data-i18n-ph="loginPwPh" autocomplete="current-password"><button type="button" class="eye-btn" onclick="togglePw('loginPw',this)" aria-label="Show password">👁</button></div></div>
+        <div id="loginTurnstile" class="field"></div>
         <button class="btn w-full" type="submit" data-i18n="loginBtn">Log In</button>
       </form>
       <p class="shared-device-note center-note mt-10" data-i18n="sharedDeviceNote">Shared device? Your school data stays on this device until you remove it — Settings → Remove school data from this device.</p>
@@ -64,6 +65,7 @@
       <div id="recoverErr" class="err hidden"></div>
       <form id="recoverForm" class="hidden" onsubmit="return doRecover(event)">
         <div class="field"><label data-i18n="loginEmail">Email</label><input id="recoverEmail" type="email" placeholder="you@school.edu.in" autocomplete="email"></div>
+        <div id="recoverTurnstile" class="field"></div>
         <button class="btn w-full" type="submit" data-i18n="sbSendResetLink">Send Reset Link</button>
       </form>
       <div id="resetErr" class="err hidden"></div>
@@ -141,7 +143,7 @@
         <div id="sideSchoolInfo"></div>
         <label class="lbl-dim mt-10">Academic Session</label>
         <select id="sessionSel" onchange="changeSession(this.value)"></select>
-        <div class="mt-12">v161<br>© 2026 School Saathi</div>
+        <div class="mt-12">v162<br>© 2026 School Saathi</div>
       </div>
     </aside>
     <div class="main">
