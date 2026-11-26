@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 158;
+var APP_VERSION = 159;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -513,8 +513,10 @@ function pwProblem(pw) {
   if (/^(0123456789|1234567890)/.test(pw) && pw.length <= 10) return 'tPwWeak';
   return '';
 }
-function sbSignUp(email, pw, school, name) {
-  return sbAuthFetch('/auth/v1/signup', { method: 'POST', body: { email: email, password: pw, data: { school: school, name: name } } });
+function sbSignUp(email, pw, school, name, captchaToken) {
+  var body = { email: email, password: pw, data: { school: school, name: name } };
+  if (captchaToken) body.gotrue_meta_security = { captcha_token: captchaToken };
+  return sbAuthFetch('/auth/v1/signup', { method: 'POST', body: body });
 }
 function sbSignIn(email, pw) {
   return sbAuthFetch('/auth/v1/token?grant_type=password', { method: 'POST', body: { email: email, password: pw } });
@@ -5265,11 +5267,19 @@ function sbFlushAdmReqQueue() {
   });
   return chain.then(function () { return sent; });
 }
-function sbPostAdmission(serverSchoolId, req) {
+function sbPostAdmission(serverSchoolId, req, turnstileToken) {
   var body = { school_id: serverSchoolId, local_id: req.id, name: req.name, dob: sbNullIfEmpty(req.dob),
     gender: req.gender || '', class_apply: req.classApply, guardian_name: req.guardianName || '',
     phone: req.phone, previous_school: req.previousSchool || '', status: 'Pending', reason: '',
     submitted: req.submitted || todayIST() };
+  if (turnstileToken) {
+    body['cf-turnstile-response'] = turnstileToken;
+    return sbFetch(SB_URL + '/functions/v1/submit-admission', {
+      method: 'POST',
+      headers: { 'apikey': SB_ANON_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+  }
   return sbRest('POST', 'ss_admission_requests', SB_ANON_KEY, body, 'return=minimal');
 }
 // v30: support request -> server (authenticated, best-effort). The local
@@ -7359,6 +7369,7 @@ function switchAuth(tab) {
   // v35: the student form picks the school first — every school's first
   // student is ADM-2025-001, so a bare admission number matches the
   // wrong school (the same trap the v34 parent picker fixed).
+  if (tab === 'signup' && typeof sbTurnstileMount === 'function') sbTurnstileMount('signup', 'suTurnstile', 'signup');
   if (tab === 'student') fillSchoolPicker('studentSchool');
   if (tab === 'teacher') fillSchoolPicker('teacherSchool', { neutral: true }); // v62: optional for teachers (the old flow had no school field)
   if (tab === 'parent') fillSchoolPicker('parentSchool'); // v86: same school picker as the student form
@@ -8555,7 +8566,9 @@ function doSignup(e) {
   // The local account above already works offline, so a server failure
   // (offline, rate-limited) never blocks signup.
   if (sbIsOnline()) {
-    sbSignUp(email, pw, school, name).then(function (res) {
+    var tsTok = (typeof sbTurnstileToken === 'function') ? sbTurnstileToken('signup') : '';
+    sbSignUp(email, pw, school, name, tsTok).then(function (res) {
+      if (typeof sbTurnstileReset === 'function') sbTurnstileReset('signup');
       if (res.status === 429) { toast(t('sbTooMany')); sbSetStatus('not-linked', 'rate-limited'); return; }
       if (!res.ok || !res.data || !res.data.user || !res.data.user.id) { sbSetStatus('not-linked', 'signup-failed'); return; }
       a.sbUid = res.data.user.id;
@@ -8564,7 +8577,7 @@ function doSignup(e) {
       saveAccounts(l2);
       if (res.data.access_token) { sbStoreSession(res.data); state.sb = { uid: res.data.user.id, email: email }; }
       else toast(t('sbEmailConfirm'));
-    }).catch(function () { sbSetStatus('not-linked', 'offline'); /* offline mid-flight — local account stands */ });
+    }).catch(function () { if (typeof sbTurnstileReset === 'function') sbTurnstileReset('signup'); sbSetStatus('not-linked', 'offline'); /* offline mid-flight — local account stands */ });
   }
   loginAs(a, { silent: true });
   return false;
@@ -11859,8 +11872,10 @@ function openAdmissionApply() {
     '<div><label>' + t('fGuardian') + '</label><input id="fArGuardian" placeholder="Mr. Sharma"></div>' +
     '<div><label>' + t('fPhone') + ' *</label><input id="fArPhone" inputmode="numeric" placeholder="98XXXXXXXX"></div>' +
     '<div class="full"><label>' + t('fPrevSchool') + '</label><input id="fArPrevSchool" placeholder="Previous school (if any)"></div>' +
+    '<div class="full" id="admTurnstile"></div>' +
     '</div><div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + t('cancel') + '</button>' +
     '<button class="btn" type="submit" id="admReqSubmitBtn" ' + (schools.length ? '' : 'disabled') + '>' + t('admReqApply') + '</button></div></form>', true);
+  if (typeof sbTurnstileMount === 'function') sbTurnstileMount('admission', 'admTurnstile', 'admission_apply');
   // v34 (P1-8): the school list is not only the accounts on THIS device
   // — fetch the public list from the server so any parent can apply to
   // any school. When it returns, refresh the picker and enable the form.
@@ -11896,7 +11911,9 @@ function saveAdmissionRequest(e) {
     // lives on the server only — there is no local DB for it on this
     // device. A failed post is queued and retried, never lost silently.
     var sid = sel.slice(4);
-    sbPostAdmission(sid, req).then(function (r) {
+    var admTsTok = (typeof sbTurnstileToken === 'function') ? sbTurnstileToken('admission') : '';
+    if (typeof sbTurnstileReset === 'function') sbTurnstileReset('admission');
+    sbPostAdmission(sid, req, admTsTok).then(function (r) {
       if (!r.ok) sbAdmReqQueue(sid, req);
     }).catch(function () { sbAdmReqQueue(sid, req); });
     closeModal();

@@ -223,7 +223,7 @@ describe('lightweight pages — weight budgets + CSP (v108)', () => {
     assert.ok(csp, 'index.html must carry a Content-Security-Policy');
     assert.match(csp[1], /default-src 'self'/);
     assert.match(csp[1], /script-src 'self'/, 'no third-party scripts');
-    assert.doesNotMatch(csp[1], /script-src[^;]*https?:\/\/(?!bsjqeeeemwimzldrehpw\.supabase\.co)/, 'no non-Supabase script host');
+    assert.doesNotMatch(csp[1], /script-src[^;]*https?:\/\/(?!(?:bsjqeeeemwimzldrehpw\.supabase\.co|challenges\.cloudflare\.com))/, 'no non-Supabase/Turnstile script host');
     assert.match(csp[1], /connect-src 'self' https:\/\/bsjqeeeemwimzldrehpw\.supabase\.co/);
   });
 

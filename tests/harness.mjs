@@ -33,6 +33,7 @@ const LOAD_ORDER = [
   'js/modules/vault.js',
   'js/modules/storage.js',
   'js/modules/realtime.js',
+  'js/modules/turnstile.js',
   'js/modules/i18n.js',
   'app.js',
   'scripts/seed-fixtures.js',
