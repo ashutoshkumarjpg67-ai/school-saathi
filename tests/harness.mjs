@@ -31,6 +31,8 @@ const LOAD_ORDER = [
   'js/bcrypt.js',
   'js/modules/crypto.js',
   'js/modules/vault.js',
+  'js/modules/storage.js',
+  'js/modules/realtime.js',
   'js/modules/i18n.js',
   'app.js',
   'scripts/seed-fixtures.js',

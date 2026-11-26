@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 156;
+var APP_VERSION = 157;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -5183,7 +5183,15 @@ function sbSyncCycleRun(account, sbUid, token) {
     sbSyncDetailsRefresh();
     // v148 (bug 4): drop already-recorded false-alarm conflicts after
     // a successful cycle (see sbSyncPruneIdenticalConflicts).
-    if (r.done) { try { sbSyncPruneIdenticalConflicts(account, sbUid); } catch (e148) {} }
+    if (r.done) {
+      try { sbSyncPruneIdenticalConflicts(account, sbUid); } catch (e148) {}
+      try {
+        var rtSid = sbLoadServerSchool(sbUid);
+        if (rtSid && typeof sbRealtimeStart === 'function') {
+          sbRealtimeStart(SB_URL, SB_ANON_KEY, token, rtSid, function () { sbSyncScheduleFlush(); });
+        }
+      } catch (eRt) {}
+    }
     return r;
   });
 }
@@ -5677,6 +5685,21 @@ function loadDB(override) {
     // the decoded plaintext. A sealed value that fails its tag decodes
     // to null and takes the corrupt path below, like corrupt JSON.
     var rawStored = localStorage.getItem(DB_KEY);
+    if (rawStored && typeof sbIsIdbPointer === 'function' && sbIsIdbPointer(rawStored)) {
+      // v157: >5 MB school DB lives in IndexedDB; hydrate asynchronously on boot.
+      var idbKey = DB_KEY;
+      var bootDb = MEM_FALLBACK && MEM_FALLBACK.v === 2 ? MEM_FALLBACK : emptyDb();
+      if (override) applySchoolProfile(bootDb, override);
+      if (typeof sbIdbHydrateDB === 'function') {
+        sbIdbHydrateDB(idbKey, function (hydrated) {
+          if (DB_KEY !== idbKey) return;
+          db = migrateV119(migrateTimetable(migrateV100(migrateV54(migrateV55(migrateV16(migrateV15(migrateV13(migrateV12(migrateStudentsV9(migrateFeesV7(migrateAttendance(hydrated))))))))))));
+          MEM_FALLBACK = db;
+          try { if (state && state.role) renderApp(); } catch (eR) {}
+        });
+      }
+      return bootDb;
+    }
     if (rawStored) {
       var raw = vaultDecode(rawStored);
       var d = null;
@@ -5744,70 +5767,14 @@ function sbIsQuotaError(e) {
   if (!e) return false;
   return e.name === 'QuotaExceededError' || e.code === 22 || /quota/i.test(String(e.message || ''));
 }
-// IndexedDB async mirror for large schools: localStorage caps at ~5 MB, whereas
-// IndexedDB holds hundreds of MB. Best-effort, never blocks or breaks sync saveDB.
-function sbIdbMirrorSet(key, val) {
-  try {
-    if (typeof indexedDB === 'undefined' || !indexedDB || !indexedDB.open) return;
-    var req = indexedDB.open('schoolSaathiIDB', 1);
-    req.onupgradeneeded = function () {
-      var idb = req.result;
-      if (!idb.objectStoreNames.contains('kv')) idb.createObjectStore('kv');
-    };
-    req.onsuccess = function () {
-      try {
-        var idb = req.result;
-        var tx = idb.transaction('kv', 'readwrite');
-        tx.objectStore('kv').put(val, key);
-        tx.oncomplete = function () { try { idb.close(); } catch (eC) {} };
-      } catch (eTx) {}
-    };
-  } catch (e) {}
-}
-function sbIdbMirrorGet(key, cb) {
-  try {
-    if (typeof indexedDB === 'undefined' || !indexedDB || !indexedDB.open) { if (cb) cb(null); return; }
-    var req = indexedDB.open('schoolSaathiIDB', 1);
-    req.onupgradeneeded = function () {
-      var idb = req.result;
-      if (!idb.objectStoreNames.contains('kv')) idb.createObjectStore('kv');
-    };
-    req.onsuccess = function () {
-      try {
-        var idb = req.result;
-        var tx = idb.transaction('kv', 'readonly');
-        var g = tx.objectStore('kv').get(key);
-        g.onsuccess = function () { try { idb.close(); } catch (eC) {} if (cb) cb(g.result || null); };
-        g.onerror = function () { try { idb.close(); } catch (eC) {} if (cb) cb(null); };
-      } catch (eTx) { if (cb) cb(null); }
-    };
-    req.onerror = function () { if (cb) cb(null); };
-  } catch (e) { if (cb) cb(null); }
-}
-function sbLocalStorageUsageKB() {
-  try {
-    var total = 0, i, k, v;
-    if (typeof localStorage === 'undefined' || !localStorage) return 0;
-    if (typeof localStorage.length === 'number' && typeof localStorage.key === 'function') {
-      for (i = 0; i < localStorage.length; i++) {
-        k = localStorage.key(i);
-        v = k ? localStorage.getItem(k) : '';
-        total += (k ? k.length : 0) + (v ? v.length : 0);
-      }
-    } else {
-      var cur = localStorage.getItem(DB_KEY);
-      if (cur) total += DB_KEY.length + cur.length;
-    }
-    return Math.round((total * 2) / 1024); // UTF-16 bytes -> KB
-  } catch (e) { return 0; }
-}
 function saveDB(db) {
   // B17 (H-8): the .bak is rewritten on every successful save (not
   // only on version change), so it always holds the last good DB.
   // A failing .bak write never breaks the primary save.
-  // Scale: if localStorage is full because .bak/.quarantine hold an older
-  // full copy (~50% of the 5 MB quota), free them and retry the primary save
-  // before falling back to memory + warning. Also mirror to IndexedDB.
+  // Scale (v157): if localStorage is full because .bak/.quarantine hold an older
+  // full copy (~50% of the 5 MB quota), free them and retry the primary save.
+  // If the sealed DB still exceeds localStorage (>5 MB), store a tiny pointer
+  // ('ss_idb_ptr:<key>') in localStorage and persist the full DB in IndexedDB.
   var ok = false;
   var s = '';
   try {
@@ -5822,20 +5789,31 @@ function saveDB(db) {
       if (sbIsQuotaError(eFirst)) {
         try { localStorage.removeItem(DB_KEY + '.bak'); } catch (eRm1) {}
         try { localStorage.removeItem(DB_KEY + '.quarantine'); } catch (eRm2) {}
-        localStorage.setItem(DB_KEY, s);
-        ok = true;
+        try {
+          localStorage.setItem(DB_KEY, s);
+          ok = true;
+        } catch (eSecond) {
+          if (sbIsQuotaError(eSecond) && typeof sbIdbSupported === 'function' && sbIdbSupported()) {
+            try { localStorage.setItem(DB_KEY, SB_IDB_PTR_PREFIX + DB_KEY); } catch (ePtr) {}
+            ok = true;
+          } else {
+            throw eSecond;
+          }
+        }
       } else {
         throw eFirst;
       }
     }
-    try { localStorage.setItem(DB_KEY + '.bak', s); } catch (eBak) {}
+    if (ok && !(typeof sbIsIdbPointer === 'function' && sbIsIdbPointer(localStorage.getItem(DB_KEY)))) {
+      try { localStorage.setItem(DB_KEY + '.bak', s); } catch (eBak) {}
+    }
   } catch (e) {
     MEM_FALLBACK = db;
     // B18 (H-9): a full device must never fall back to memory-only
     // silently — raise a sticky warning with a way out.
     if (sbIsQuotaError(e)) sbStorageWarnSet('quota');
   }
-  if (s) sbIdbMirrorSet(DB_KEY, s);
+  if (s && typeof sbIdbMirrorSet === 'function') sbIdbMirrorSet(DB_KEY, s);
   MEM_FALLBACK = db;
   // A successful save means the device is no longer full (photos were
   // removed or space was freed elsewhere) — clear the quota warning.
@@ -8619,6 +8597,7 @@ function logout(opts) {
 }
 function logoutClear() {
   sbLoggingOut = false; // the clear below is synchronous from here on
+  if (typeof sbRealtimeStop === 'function') { try { sbRealtimeStop(); } catch (eRtStop) {} }
   var sbUidBefore = state.sb && state.sb.uid; // v36: needed for the outbox check below, before the session is cleared
   var wasLocalOnlySchool = sbIsLocalOnlySchool(); // v37: captured before state is cleared — a local-only school logs out to the local-only line, never "Backed up"
   state.role = null; state.user = null; state.view = 'dashboard';
