@@ -520,3 +520,15 @@ body.landing{-webkit-user-select:text;user-select:text;-webkit-touch-callout:def
   .landing-main{padding:22px 16px 6px}
   .landing-sec h2{font-size:19px}
 }
+/* v158: Dark Mode overrides */
+[data-theme="dark"]{
+  --bg:#0B1120; --card:#111827; --bg-soft:#1E293B;
+  --text:#F1F5F9; --text-2:#E2E8F0; --text-3:#CBD5E1; --muted:#94A3B8; --muted-2:#64748B;
+  --border:#263348; --border-2:#334155; --border-strong:#475569;
+  --blue-soft:#1E3A5F; --blue-50:#172554; --green-soft:#14532D; --orange-soft:#451A03; --red-soft:#450A0A; --purple-soft:#3B0764; --yellow-soft:#422006;
+  --shadow:0 2px 6px rgba(0,0,0,.45),0 6px 18px rgba(0,0,0,.35);
+}
+[data-theme="dark"] input,[data-theme="dark"] select,[data-theme="dark"] textarea{background:#1E293B;color:var(--text);border-color:var(--border-2)}
+[data-theme="dark"] .btn.ghost{background:#1E293B;color:#93C5FD;border-color:#3B82F6}
+[data-theme="dark"] .btn.ghost.danger{background:#1E293B;color:#FCA5A5;border-color:#EF4444}
+[data-theme="dark"] .topbar,[data-theme="dark"] .card,[data-theme="dark"] .modal{background:var(--card);color:var(--text);border-color:var(--border)}
