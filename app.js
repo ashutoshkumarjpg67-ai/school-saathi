@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 162;
+var APP_VERSION = 163;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -496,7 +496,10 @@ function sbUploadSchoolLogoBg(dataUrl) {
     try {
       if (typeof db === 'undefined' || !db || !db.profile) return;
       db.profile.logoUrl = url;
+      db.profile.logo = url;
       saveDB(db);
+      if (typeof renderApp === 'function') renderApp();
+      if (typeof sbSyncScheduleFlush === 'function') sbSyncScheduleFlush();
     } catch (e) {}
   });
 }
@@ -9006,6 +9009,7 @@ function go(view) {
   persistSession();
   toggleSidebar(false);
   renderApp();
+  try { window.scrollTo(0, 0); } catch (eS) {}
   histPush({ view: state.view });
 }
 function toggleSidebar(open) {
@@ -9516,7 +9520,7 @@ function schoolDashboard() {
     '<div class="row"><span class="dot" style="background:' + ORANGE + '"></span>' + t('lateBtn') + '<b>' + num(ta.late) + '</b></div></div>' +
   '</div></div>' +
   '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted mt-8"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div></div>' +
-  '<div class="card"><div class="head-row"><div><h3>' + t('recentAct') + '</h3></div><a href="#" onclick="go(\'activityLog\');return false">' + t('viewAll') + '</a></div><div class="act-list">' + acts + '</div></div>');
+  '<div class="card"><div class="head-row"><div><h3>' + t('recentAct') + '</h3></div><a href="#" onclick="go(\'activityLog\');return false">' + t('viewAll') + '</a></div><div class="act-list">' + (acts || '<p class="muted">No recent activity yet.</p>') + '</div></div>');
 }
 /* ================= Activity / Audit Log (v24, v129) =================
    The dashboard "Recent Activities" card reads the real audit trail
@@ -12898,9 +12902,9 @@ function reportCardCard() {
   var clsOpts = '<option value="">' + esc(t('rcChoose')) + '</option>' + classes.map(function (c) { return '<option value="' + esc(c) + '" ' + (c === cls ? 'selected' : '') + '>' + esc(c) + '</option>'; }).join('');
   var examOpts = '<option value="">' + esc(t('rcChoose')) + '</option>' + examNames.map(function (n) { return '<option value="' + esc(n) + '" ' + (n === examName ? 'selected' : '') + '>' + esc(n) + '</option>'; }).join('');
   var stuOpts = '<option value="">' + esc(t('rcChoose')) + '</option>' + roster.map(function (s) { return '<option value="' + esc(s.id) + '" ' + (stu && s.id === stu.id ? 'selected' : '') + '>' + esc(s.name) + ' (' + esc(s.roll) + ')</option>'; }).join('');
-  var body = '<div class="toolbar"><select onchange="state.rcCls=this.value;state.rcExam=\'\';state.rcStudent=\'\';renderPage()">' + clsOpts + '</select>' +
-    '<select onchange="state.rcExam=this.value;state.rcStudent=\'\';renderPage()" ' + (cls ? '' : 'disabled') + '>' + examOpts + '</select>' +
-    '<select onchange="state.rcStudent=this.value;renderPage()" ' + (examName ? '' : 'disabled') + '>' + stuOpts + '</select></div>';
+  var body = '<div class="toolbar"><select id="rcClsSel" aria-label="Class" onchange="state.rcCls=this.value;state.rcExam=\'\';state.rcStudent=\'\';renderPage()">' + clsOpts + '</select>' +
+    '<select id="rcExamSel" aria-label="Exam" onchange="state.rcExam=this.value;state.rcStudent=\'\';renderPage()" ' + (cls ? '' : 'disabled') + '>' + examOpts + '</select>' +
+    '<select id="rcStuSel" aria-label="Student" onchange="state.rcStudent=this.value;renderPage()" ' + (examName ? '' : 'disabled') + '>' + stuOpts + '</select></div>';
   if (cls && !examNames.length) body += '<p class="muted">' + esc(t('rcNoExams')) + '</p>';
   else if (cls && !roster.length) body += '<p class="muted">' + esc(t('rcNoStudents')) + '</p>';
   else if (rc) body += '<div class="tbl-wrap">' + reportCardTableHTML(rc) + '</div><div class="actions"><button class="btn" onclick="printReportCard(' + jsAttr(stu.id) + ', ' + jsAttr(examName) + ')">🖨 ' + t('rcPrint') + '</button></div>';
@@ -13110,7 +13114,7 @@ function saveSettings(e) {
   p.principal = $('fPfPr').value.trim(); p.phone = $('fPfPh').value.trim(); p.email = $('fPfEm').value.trim();
   p.session = $('fPfSe').value; p.address = $('fPfAd').value.trim();
   if (pendingLogo !== null) {
-    if (pendingLogo) { p.logo = pendingLogo; sbUploadSchoolLogoBg(pendingLogo); }
+    if (pendingLogo) { p.logo = pendingLogo; delete p.logoUrl; sbUploadSchoolLogoBg(pendingLogo); }
     else { delete p.logo; delete p.logoUrl; }
     pendingLogo = null;
   }
