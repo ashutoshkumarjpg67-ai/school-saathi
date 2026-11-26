@@ -1,3 +1,12 @@
+## v155 — stronger passwords on every entry point (free alternative to Supabase leaked-password protection)
+
+- **Why:** Supabase's leaked-password check (HaveIBeenPwned) is Pro-plan only and the org is on Free. The same goal is met in the app: weak and common passwords are refused.
+- **Rule (`pwProblem()` in app.js):** a new password must be at least 8 characters (was 6), must not be on a short list of common passwords (`password123`, `12345678`, `schoolsaathi`, …), and must not be one repeated character. New i18n key `tPwWeak`; `tPwShort` now says 8.
+- **Where:** new school signup, password reset, teacher create/edit, staff/principal/accountant create/edit.
+- **Existing users are not locked out:** the two cloud LOGIN guards (`doTeacherCloudLogin`, `doStaffCloudLogin`) keep their 6-char floor, so a 6–7 character password set earlier still logs in. The new rule applies the next time that password is created or changed.
+- **Tests:** new `tests/phase8/v155-password-strength.test.mjs` (8 tests); version markers in the v148–v154 tests and the QA harness gate moved to 155.
+- **Version bump:** all markers 154 → 155 (version.json, APP_VERSION, sw.js CACHE_NAME + ?v=155, index.html/landing.html ?v=155 + sidebar badge v155, package.json 155.0.0, Android versionCode 155 / versionName "1.55", privacy-policy/terms headers 155). No SQL or Supabase changes. Based on main 94f75d7 (v154 performance).
+
 ## v154 — Performance: faster boot, saves, students list and sync
 
 - **What was slow (measured 26 Nov 2026, Node harness, synthetic 500-student school, DB JSON 6.39 MB; a low-end phone is ~2–4× slower):** `sbSyncSnapshotRefresh` 18–24 s per sync cycle (snapshot JSON ~15.7 MB sealed on every cycle AND on every pushed outbox entry); `stuSorted` by attendance 7.6 s; `studentsPage()` 1.4 s (8.7 s sorted by attendance); `loadDB` boot 11.0 s; `saveDB` 4.6 s; `sbSyncTableHashes` ~1.6 s on every online save.

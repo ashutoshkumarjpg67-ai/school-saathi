@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 154;
+var APP_VERSION = 155;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -499,6 +499,19 @@ function sbUploadSchoolLogoBg(dataUrl) {
       saveDB(db);
     } catch (e) {}
   });
+}
+// v154: password strength — min 8 chars, no common/guessable passwords.
+// Free alternative to Supabase's Pro-only leaked-password check. Returns an
+// i18n key for the problem, or '' when the password is acceptable.
+var PW_COMMON = ['password','password1','password12','password123','passw0rd','p@ssw0rd','12345678','123456789','1234567890','0123456789','11111111','00000000','12341234','123123123','1q2w3e4r','1qaz2wsx','qwertyui','qwerty123','qwertyuiop','abc12345','abcd1234','abcdefgh','iloveyou','admin123','admin1234','welcome1','welcome123','letmein1','school123','school1234','schoolsaathi','saathi123','teacher123','student123','principal1','india123','bihar123','patna123','test1234','changeme','default123'];
+function pwProblem(pw) {
+  pw = String(pw == null ? '' : pw);
+  if (pw.length < 8) return 'tPwShort';
+  var low = pw.toLowerCase();
+  if (PW_COMMON.indexOf(low) !== -1) return 'tPwWeak';
+  if (/^(.)\1+$/.test(pw)) return 'tPwWeak';
+  if (/^(0123456789|1234567890)/.test(pw) && pw.length <= 10) return 'tPwWeak';
+  return '';
 }
 function sbSignUp(email, pw, school, name) {
   return sbAuthFetch('/auth/v1/signup', { method: 'POST', body: { email: email, password: pw, data: { school: school, name: name } } });
@@ -1412,7 +1425,7 @@ function doResetPassword(e) {
   e.preventDefault();
   var pw = $('resetPw').value, pw2 = $('resetPw2').value;
   var err = $('resetErr');
-  if (pw.length < 6) return failInto(err, t('tPwShort'));
+  if (pwProblem(pw)) return failInto(err, t(pwProblem(pw)));
   if (pw !== pw2) return failInto(err, t('tPwMismatch'));
   if (!sbRecoveryToken) return failInto(err, t('sbResetFailed'));
   var tok = sbRecoveryToken;
@@ -8471,7 +8484,7 @@ function doSignup(e) {
       email = $('suEmail').value.trim().toLowerCase(), pw = $('suPw').value, pw2 = $('suPw2').value;
   if (!school || !name || !email || !pw || !pw2) return failInto(err, t('tFillAll'));
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return failInto(err, t('tInvalidEmail'));
-  if (pw.length < 6) return failInto(err, t('tPwShort'));
+  if (pwProblem(pw)) return failInto(err, t(pwProblem(pw)));
   if (pw !== pw2) return failInto(err, t('tPwMismatch'));
   if (findAccount(email)) return failInto(err, t('tEmailTaken'));
   var pwH = hashPwNew(pw);
@@ -13049,8 +13062,8 @@ function saveTeacher(e, id) {
   var ownAcct = te ? list.find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; }) : null;
   var existing = list.find(function (a) { return a.email === email; });
   if (existing && (!ownAcct || existing.uid !== ownAcct.uid)) return failInto(errEl, t('tchrEmailTaken'), true);
-  if (!ownAcct && pw.length < 6) return failInto(errEl, t('tPwShort'), true);
-  if (ownAcct && pw && pw.length < 6) return failInto(errEl, t('tPwShort'), true);
+  if (!ownAcct && pwProblem(pw)) return failInto(errEl, t(pwProblem(pw)), true);
+  if (ownAcct && pw && pwProblem(pw)) return failInto(errEl, t(pwProblem(pw)), true);
   if (!te) {
     te = { id: uniqueId('t'), name: name, subject: subject, cls: tchrFormClasses[0], classes: tchrFormClasses.slice() };
     db.teachers.push(te);
@@ -13153,8 +13166,8 @@ function saveStaff(e, id) {
   var ownAcct = st ? list.find(function (a) { return (a.role === 'principal' || a.role === 'accountant' || a.role === 'staff') && a.staffId === st.id; }) : null;
   var existing = list.find(function (a) { return a.email === email; });
   if (existing && (!ownAcct || existing.uid !== ownAcct.uid)) return failInto(errEl, t('tchrEmailTaken'), true);
-  if (!ownAcct && pw.length < 6) return failInto(errEl, t('tPwShort'), true);
-  if (ownAcct && pw && pw.length < 6) return failInto(errEl, t('tPwShort'), true);
+  if (!ownAcct && pwProblem(pw)) return failInto(errEl, t(pwProblem(pw)), true);
+  if (ownAcct && pw && pwProblem(pw)) return failInto(errEl, t(pwProblem(pw)), true);
   if (!st) {
     if ((db.staff || []).some(function (x) { return !x.deleted && String(x.name || '').trim().toLowerCase() === name.toLowerCase() && x.role === role; })) return failInto(errEl, t('staffDuplicate'), true);
     st = { id: uniqueId('stf'), name: name, role: role, classes: role === 'staff' ? staffFormClasses.slice() : [] };
