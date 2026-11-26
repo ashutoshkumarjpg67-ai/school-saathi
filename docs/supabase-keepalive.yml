@@ -1,0 +1,21 @@
+# Keeps the Supabase Free-tier project (School Saathi) active so it does not
+# auto-pause after 7 days of inactivity. Uses only the public anon key on the
+# public ss_platform_settings table (1-row read).
+name: Supabase Keepalive
+
+on:
+  schedule:
+    - cron: '0 6 */3 * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase REST API
+        run: |
+          code=$(curl -sS -o /dev/null -w "%{http_code}" \
+            "https://bsjqeeeemwimzldrehpw.supabase.co/rest/v1/ss_platform_settings?select=id&limit=1" \
+            -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJzanFlZWVlbXdpbXpsZHJlaHB3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQxODA0ODIsImV4cCI6MjEwOTc1NjQ4Mn0.KUV5jF6he8suH_lHUrLvXixPVdzIwHVqcPJXHh1jVkM")
+          echo "Supabase keepalive HTTP status: $code"
+          test "$code" -eq 200

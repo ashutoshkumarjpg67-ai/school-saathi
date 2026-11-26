@@ -1,3 +1,10 @@
+## v158 — Dark Mode, Supabase Free-plan keepalive, staging sync & QA alignment
+
+- **Dark Mode (`styles.css`, `index.html`, `app.js`):** Clean `[data-theme="dark"]` palette across surfaces, inputs, cards, modals, and topbar with a text-only `Dark`/`Light` toggle persisted in `localStorage` (`schoolSaathiTheme`).
+- **Supabase Keepalive (`.github/workflows/supabase-keepalive.yml`):** Scheduled GitHub Actions ping every 3 days on `ss_platform_settings` (anon key, 1-row read) so the Supabase Free-tier project never auto-pauses from 7-day inactivity.
+- **Repo & QA hygiene:** Updated `v78` F3 assertion in `school-saathi-qa-verify.js`, closed superseded Phase B PRs (`#29`, `#30`, `#33`), and fast-forwarded `staging` to `main`.
+- **Tests:** new `tests/phase8/v158-dark-mode.test.mjs` (3 tests); version markers 157 → 158.
+
 ## v157 — Architecture & scale: modular storage/realtime, >5 MB IndexedDB overflow + hydration, and Supabase Realtime live sync
 
 - **Modularization (`js/modules/storage.js`, `js/modules/realtime.js`):** Extracted storage/IndexedDB overflow and live Realtime sync into dedicated classic-script modules loaded before `app.js` (zero bundler, precached in `sw.js`, copied by `build-www.sh`).

@@ -87,16 +87,16 @@ function disarm(app) {
 }
 
 describe('v154 version markers', () => {
-  it('APP_VERSION, version.json and package.json are all 157', () => {
+  it('APP_VERSION, version.json and package.json are all 158', () => {
     const app = createAppContext();
-    assert.equal(app.get('APP_VERSION'), 157);
-    assert.equal(VERSION_JSON.version, 157);
-    assert.equal(PACKAGE_JSON.version, '157.0.0');
+    assert.equal(app.get('APP_VERSION'), 158);
+    assert.equal(VERSION_JSON.version, 158);
+    assert.equal(PACKAGE_JSON.version, '158.0.0');
   });
 
-  it('sw.js cache is school-saathi-v157 with ?v=153 assets', () => {
-    assert.match(SW_SRC, /CACHE_NAME = 'school-saathi-v157'/);
-    assert.ok(SW_SRC.includes('app.js?v=157'), 'app.js?v=157 missing from sw.js precache');
+  it('sw.js cache is school-saathi-v158 with ?v=153 assets', () => {
+    assert.match(SW_SRC, /CACHE_NAME = 'school-saathi-v158'/);
+    assert.ok(SW_SRC.includes('app.js?v=158'), 'app.js?v=158 missing from sw.js precache');
   });
 });
 

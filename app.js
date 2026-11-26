@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 157;
+var APP_VERSION = 158;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -8570,6 +8570,32 @@ function doSignup(e) {
   return false;
 }
 var SB_LOGOUT_FLUSH_TIMEOUT_MS = 5000; // B3 (M-4): longest a logout ever waits for the outbox flush
+var THEME_KEY = 'schoolSaathiTheme';
+function applyTheme(mode) {
+  var dark = mode === 'dark';
+  try {
+    if (document && document.documentElement && document.documentElement.setAttribute) {
+      document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+    }
+    var btn = $('themeBtn');
+    if (btn) btn.textContent = dark ? 'Light' : 'Dark';
+  } catch (e) {}
+  return dark ? 'dark' : 'light';
+}
+function toggleTheme() {
+  var cur = 'light';
+  try { cur = localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light'; } catch (e) {}
+  var next = cur === 'dark' ? 'light' : 'dark';
+  try { localStorage.setItem(THEME_KEY, next); } catch (e2) {}
+  return applyTheme(next);
+}
+function initTheme() {
+  var saved = 'light';
+  try { saved = localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light'; } catch (e) {}
+  return applyTheme(saved);
+}
+try { initTheme(); } catch (eTh) {}
+
 var sbLoggingOut = false; // B3: a second logout tap while one is in flight is ignored
 function logout(opts) {
   // B3 (M-4): best-effort outbox flush BEFORE any state is cleared — a

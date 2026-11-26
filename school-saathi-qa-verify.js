@@ -4539,7 +4539,7 @@ const test = `
   eq(pullUrl78.photoUrl, 'https://x.supabase.co/storage/v1/object/public/student-photos/s1/stu-p78.jpg', 'v78: sbRowToStudent keeps the server photo URL');
   eq(pullUrl78.photo, 'https://x.supabase.co/storage/v1/object/public/student-photos/s1/stu-p78.jpg', 'v78: sbRowToStudent displays the URL when no data URL exists');
   var pullBoth78 = sbRowToStudent({ id: 'stu-b78', local_id: 'stu-b78', name: 'Pull Both', cls: '6th-A', admission_no: 'ADM-2025-981', enr: 'ENR-981', roll: '1', guardian: 'G', phone: '9000000000', dob: '', gender: '', blood_group: '', category: '', session: '', adm_date: '', status: 'Active', parent_pin: null, aadhaar: '', photo_data_url: 'data:image/jpeg;base64,/9j/4AAQ', photo_url: 'https://x.supabase.co/storage/v1/object/public/student-photos/s1/stu-b78.jpg' });
-  eq(pullBoth78.photo, 'data:image/jpeg;base64,/9j/4AAQ', 'v78: sbRowToStudent prefers the data URL for display when both exist');
+  eq(pullBoth78.photo, 'https://x.supabase.co/storage/v1/object/public/student-photos/s1/stu-b78.jpg', 'v78: sbRowToStudent prefers the Storage URL for display when both exist (F3 fixed)');
   eq(pullBoth78.photoUrl, 'https://x.supabase.co/storage/v1/object/public/student-photos/s1/stu-b78.jpg', 'v78: sbRowToStudent still keeps the URL when both exist');
   // ---- v79 (Phase 3): the pull must not wipe an un-synced school logo ----
   // Live v78: a logo saved at 12:38 UTC was wiped by the pull before the
@@ -7244,12 +7244,12 @@ console.log(sess147ok
   : 'FAIL v147: session-expiry gaps fix missing (SESSION_CLOCK_SKEW_MS / future-dated check / toast)');
 if (!sess147ok) process.exitCode = 1;
 // ---- v148: live-check bug fixes (24 Nov 2026, Test Sunrise School) ----
-// (0) Version markers: version.json says 157 (APP_VERSION / sw.js /
+// (0) Version markers: version.json says 158 (APP_VERSION / sw.js /
 // ?v= are pinned generically against EXPECTED_VERSION above).
-console.log(EXPECTED_VERSION === 157
-  ? 'PASS v157: version.json says 157'
-  : 'FAIL v157: version.json does not say 157 (got ' + EXPECTED_VERSION + ')');
-if (EXPECTED_VERSION !== 157) process.exitCode = 1;
+console.log(EXPECTED_VERSION === 158
+  ? 'PASS v158: version.json says 158'
+  : 'FAIL v158: version.json does not say 158 (got ' + EXPECTED_VERSION + ')');
+if (EXPECTED_VERSION !== 158) process.exitCode = 1;
 // (1) Nav presses queue on mousedown and the next render applies them.
 var q148ok = src.includes('function queueNav(view)') && src.includes('onmousedown="queueNav(') && src.includes('if (pendingNav) { var pv148 = pendingNav;');
 console.log(q148ok
