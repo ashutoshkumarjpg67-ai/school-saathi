@@ -465,7 +465,7 @@ function sbRefreshSignedPhotos() {
 function sbPrefetchCloudPhoto(payload, serverId, adm, pin) {
   try {
     var stu = payload && payload.student;
-    if (!stu || !stu.id || !sbIsSbPhotoUrl(stu.photo_url) || stu.photo_data_url) return;
+    if (!stu || !stu.id || !sbIsSbPhotoUrl(stu.photo_url)) return;
     sbPhotoSignRequest({ action: 'student', student_id: stu.id, school_id: serverId, admission_no: adm, pin: pin }).then(function (d) {
       if (d && d.url) { sbCacheSignedPhoto(stu.photo_url, d.url, d.expires_in); sbReMintRender(); } // v139: renderApp so the sidebar avatar picks up the signed URL too
     });
@@ -2548,7 +2548,7 @@ function sbRowToStudent(row) {
     session: row.session || '', status: row.status || 'Active', result: (row.result === undefined || row.result === null) ? null : row.result,
     parentPin: undefined, // Phase 1 (H-3): a server PIN is NEVER stored as plaintext locally. A missing PIN leaves the field unset (v55: never null — a null used to land here and migrateV12 only refilled `undefined`, the live V21/2108 loss, v54).
     parentPinHash: (!row.parent_pin ? undefined : ((String(row.parent_pin).indexOf('s256$') === 0 || String(row.parent_pin).indexOf('bcrypt$') === 0) ? String(row.parent_pin) : hashPin(row.parent_pin))), // Phase 1 (H-3): a hash arrives as-is; a legacy PLAINTEXT server PIN is hashed immediately on pull (hashPin is sync, so this is safe in the pull path). The hash uploads on the next sync and heals the server row; until then one pull may re-hash with a fresh salt, exactly like the old migrateV54 flow. Dropping the value instead would have locked those students out until an admin reset each PIN.
-    photo: row.photo_data_url || row.photo_url || null, photoUrl: row.photo_url || null, // Phase 3 (v78): Storage URL first-class; the data URL still displays when present (offline-safe)
+    photo: row.photo_url || row.photo_data_url || null, photoUrl: row.photo_url || null, // Phase 3/7 F3: Storage URL preferred over heavy data URL; data URL stays as offline fallback
     documents: row.documents || { birthCert: false, tc: false, tcNumber: '', other: '' },
     aadhaar: aadhaarLast4(row.aadhaar) }; // v36: a full number from an old server row is reduced on pull too
 }
@@ -2621,7 +2621,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
   if (schoolRow) {
     if (!keepProfile113 || !d.profile) {
       d.profile = { name: schoolRow.name || (d.profile && d.profile.name) || '', city: schoolRow.city || '', principal: schoolRow.principal || '', phone: schoolRow.phone || '', email: schoolRow.email || '', session: schoolRow.session || '2025–26', address: schoolRow.address || '' };
-      if (schoolRow.logo_data_url || schoolRow.logo_url) d.profile.logo = schoolRow.logo_data_url || schoolRow.logo_url;
+      if (schoolRow.logo_url || schoolRow.logo_data_url) d.profile.logo = schoolRow.logo_url || schoolRow.logo_data_url;
       d.profile.logoUrl = schoolRow.logo_url || null; // Phase 3 (v78)
       d.feeExtras = { admissionFee: schoolRow.admission_fee || 0, cautionMoney: schoolRow.caution_money || 0, annualCharges: schoolRow.annual_charges || 0, transportFee: schoolRow.transport_fee || 0 };
     }
@@ -2890,7 +2890,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
     var srvPhotoById = {};
     (byTable.ss_students || []).forEach(function (row) {
       var id = row.local_id || ('srv-' + row.id);
-      var ph = row.photo_data_url || row.photo_url || null;
+      var ph = row.photo_url || row.photo_data_url || null;
       if (ph) srvPhotoById[id] = { photo: ph, photoUrl: row.photo_url || null };
     });
     d.students.forEach(function (s) {
@@ -7852,7 +7852,7 @@ function sbTeacherStudentPhoto(token, studentServerId) {
   _photoBody.p_token = token;
   _photoBody.p_student_id = studentServerId;
   return sbRest('POST', 'rpc/ss_teacher_student_photo', SB_ANON_KEY, _photoBody).then(function (r) {
-    var got = (r && r.ok && r.data && typeof r.data === 'object' && r.data.ok) ? (r.data.photo_data_url || r.data.photo_url || null) : null;
+    var got = (r && r.ok && r.data && typeof r.data === 'object' && r.data.ok) ? (r.data.photo_url || r.data.photo_data_url || null) : null;
     // v137: a Storage URL is exchanged for a role-verified signed URL
     // (the edge function re-checks the teacher token and class scope).
     if (!got || !sbIsSbPhotoUrl(got)) return got;

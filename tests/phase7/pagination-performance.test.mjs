@@ -176,13 +176,11 @@ describe('Storage images instead of Data URLs — current state (v78, partial)',
     assert.equal(row.photoUrl, null);
   });
 
-  it('GAP (pinned, not hidden): display still prefers the data URL when both exist', () => {
-    // sbRowToStudent: photo: row.photo_data_url || row.photo_url. Until
-    // Phase 3 backfills old rows to Storage-only, a device keeps
-    // downloading the heavier data URL even where a Storage URL exists.
+  it('DISPLAY (sbRowToStudent, F3 fixed): prefers Storage URL over data URL when both exist', () => {
     const app = createAppContext();
     const row = JSON.parse(app.run(`JSON.stringify(sbRowToStudent({ local_id: 'l1', name: 'Asha', cls: '6th-A', photo_url: 'https://example.test/p.jpg', photo_data_url: 'data:image/jpeg;base64,AAAA' }))`));
-    assert.equal(row.photo, 'data:image/jpeg;base64,AAAA');
+    assert.equal(row.photo, 'https://example.test/p.jpg');
+    assert.equal(row.photoUrl, 'https://example.test/p.jpg');
   });
 
   it('PULL (sbRowToStudent): a full Aadhaar from an old server row is reduced to last-4 on pull', () => {
