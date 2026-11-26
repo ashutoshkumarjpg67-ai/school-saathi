@@ -33,6 +33,7 @@ const vaultSrc = readRel('js/modules/vault.js'); // v147: at-rest encryption —
 const storageSrc = readRel('js/modules/storage.js'); // v157: IndexedDB overflow & hydration
 const realtimeSrc = readRel('js/modules/realtime.js'); // v157: Supabase Realtime live sync
 const turnstileSrc = readRel('js/modules/turnstile.js'); // v159: Cloudflare Turnstile bot protection
+const pushSrc = readRel('js/modules/push.js'); // v161: Firebase FCM push notifications
 const i18nSrc = readRel('js/modules/i18n.js');
 const bcryptSrc = readRel('js/bcrypt.js');
 // Phase 1: the demo-seed fixtures moved out of app.js at v67 into
@@ -7020,7 +7021,7 @@ const test = `
   if (fails.length) { console.log('FAILED: ' + fails.join(' | ')); process.exitCode = 1; }
 })();
 `;
-vm.runInContext(qrgenSrc + '\n;' + bcryptSrc + '\n;' + cryptoSrc + '\n;' + vaultSrc + '\n;' + storageSrc + '\n;' + realtimeSrc + '\n;' + turnstileSrc + '\n;' + i18nSrc + '\n;' + src + '\n;' + seedFixturesSrc + '\n;' + test, ctx);
+vm.runInContext(qrgenSrc + '\n;' + bcryptSrc + '\n;' + cryptoSrc + '\n;' + vaultSrc + '\n;' + storageSrc + '\n;' + realtimeSrc + '\n;' + turnstileSrc + '\n;' + pushSrc + '\n;' + i18nSrc + '\n;' + src + '\n;' + seedFixturesSrc + '\n;' + test, ctx);
 
 // ---- Node-side checks: i18n t() key coverage + greps ----
 const tKeys = new Set();

@@ -92,6 +92,7 @@ const CHILD_TABLES = [
   'ss_timetable',
   'ss_classes',
   'ss_parent_sessions',
+  'ss_push_tokens',
 ]
 
 // Storage buckets holding per-school objects, always under the

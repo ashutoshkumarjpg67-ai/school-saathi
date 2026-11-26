@@ -1,3 +1,10 @@
+## v161 — Firebase FCM Push Notifications (Android + Web)
+
+- **Database (`supabase/60_push_tokens.sql`):** Created `public.ss_push_tokens` with `(school_id)` and `(school_id, cls)` indexes, owner-scoped RLS policy using `(select auth.uid())`, and `authenticated`/`service_role` CRUD grants. Updated `delete-account` Edge Function (`CHILD_TABLES`) to clean up `ss_push_tokens` on school deletion.
+- **Backend (`supabase/functions/send-push/index.ts`):** Deployed JWT-authenticated `send-push` Edge Function implementing Firebase Cloud Messaging HTTP v1 with zero external dependencies (native WebCrypto RS256 Google OAuth2 JWT), automatic stale-token pruning, and fail-closed `503 fcm-not-configured` until `FCM_SERVICE_ACCOUNT_JSON` is added to Supabase Secrets.
+- **Frontend & Service Worker (`js/modules/push.js`, `sw.js`, `app.js`, `index.html`):** Added `sbPushRegister()` (Capacitor Android PushNotifications FCM token sync), `sbPushSend()` (best-effort push dispatch when notices are published), and `sw.js` `push` + `notificationclick` listeners.
+- **Tests:** new `tests/phase8/v161-push-notifications.test.mjs` (3 tests); version markers 160 → 161.
+
 ## v160 — Bilingual English + Hindi UI restored (933/933 keys)
 
 - **Full Hindi dictionary (`js/modules/i18n.js`):** Restored all 871 pre-v147 Hindi strings and translated all 63 newer keys (Timetable, Report Card, Super Admin, Danger Zone, Legal, v155 strong passwords) for 100% EN/HI key parity (933 keys).

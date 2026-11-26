@@ -6,21 +6,22 @@
    an icon not yet uploaded) must not fail the whole app shell.
    v37: version.json is network-first too — the in-app update check must see the
    LIVE version, never a cached marker. */
-var CACHE_NAME = 'school-saathi-v160';
+var CACHE_NAME = 'school-saathi-v161';
 var APP_SHELL = [
   './',
   'index.html',
   'landing.html',
-  'styles.css?v=160',
-  'app.js?v=160',
-  'js/modules/crypto.js?v=160',
-  'js/modules/vault.js?v=160',
-  'js/modules/storage.js?v=160',
-  'js/modules/realtime.js?v=160',
-  'js/modules/turnstile.js?v=160',
-  'js/modules/i18n.js?v=160',
-  'js/bcrypt.js?v=160',
-  'qrgen.js?v=160',
+  'styles.css?v=161',
+  'app.js?v=161',
+  'js/modules/crypto.js?v=161',
+  'js/modules/vault.js?v=161',
+  'js/modules/storage.js?v=161',
+  'js/modules/realtime.js?v=161',
+  'js/modules/turnstile.js?v=161',
+  'js/modules/push.js?v=161',
+  'js/modules/i18n.js?v=161',
+  'js/bcrypt.js?v=161',
+  'qrgen.js?v=161',
   'version.json',
   'manifest.json',
   'icons/icon-192.png',
@@ -103,6 +104,34 @@ self.addEventListener('fetch', function (event) {
         return res;
       }).catch(function () { return hit; });
       return hit || net;
+    })
+  );
+});
+
+// v161: Web Push notification display & click-to-open handler.
+self.addEventListener('push', function (event) {
+  var data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (e) {
+    try { data = { body: event.data ? event.data.text() : '' }; } catch (e2) {}
+  }
+  var title = data.title || 'School Saathi';
+  var opts = {
+    body: data.body || '',
+    icon: 'icons/icon-192.png',
+    badge: 'icons/icon-192.png',
+    data: data
+  };
+  event.waitUntil(self.registration.showNotification(title, opts));
+});
+
+self.addEventListener('notificationclick', function (event) {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
+      for (var i = 0; i < list.length; i++) {
+        if ('focus' in list[i]) return list[i].focus();
+      }
+      if (self.clients.openWindow) return self.clients.openWindow('./');
     })
   );
 });
