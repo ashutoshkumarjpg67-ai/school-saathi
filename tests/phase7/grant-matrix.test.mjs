@@ -87,8 +87,8 @@ const EXPECTED_PUBLIC = [
 ];
 
 describe('grant matrix (from repo SQL 01-39)', () => {
-  it('38 RPCs exist in the repo (roadmap Appendix C listed 20 at v67)', () => {
-    assert.equal(MATRIX.size, 38, [...MATRIX.keys()].sort().join(', ')); // v141: + ss_parent_session_open, ss_parent_revoke_session, ss_parent_sessions_pin_wipe (SQL 52); v146: SQL 54 drops ss_parent_pin_reset_by_dob + the 4-arg ss_parent_pin_ok and adds ss_admin_reset_parent_pin + the 3-arg ss_parent_pin_ok — net 0, still 37; SQL 56 (+1, ss_super_admin_school_stats)
+  it('41 RPCs exist in the repo (roadmap Appendix C listed 20 at v67)', () => {
+    assert.equal(MATRIX.size, 41, [...MATRIX.keys()].sort().join(', ')); // v141: +3 (SQL 52); v146: SQL 54 net 0; SQL 56 (+1); SQL 61 (+3: ss_gen_school_code, ss_schools_assign_code, ss_resolve_school_code)
   });
 
   it('PUBLIC execute remains only on the trigger function (SQL 39 closed the other 7)', () => {
@@ -133,6 +133,7 @@ describe('grant matrix (from repo SQL 01-39)', () => {
       'ss_parent_pin_ok(uuid,text,text)',
       'ss_parent_pin_precheck(uuid,text)',
       'ss_public_schools()',
+      'ss_resolve_school_code(text)',
       'ss_school_login_failed(text)',
       'ss_school_login_precheck(text)',
       'ss_staff_cloud_login(uuid,text,text)',
@@ -178,7 +179,7 @@ describe('SECURITY DEFINER hygiene (static)', () => {
 
   it('every SECURITY DEFINER function sets search_path (no search_path-hijack hole)', () => {
     const blocks = fnBlocks();
-    assert.equal(blocks.length, 65, 'expected 65 CREATE FUNCTION blocks in SQL 01-58'); // v130: SQL 44 redefines ss_staff_cloud_login; v135: SQL 46 (+2), 47 (+1), 48 (+2); v141: SQL 52 (+3); SQL 53 (+1, ss_public_schools redefined); v146: SQL 54 (+2, ss_admin_reset_parent_pin + the 3-arg ss_parent_pin_ok); SQL 56 (+1, ss_super_admin_school_stats); SQL 58 (+1, ss_wipe_school redefined)
+    assert.equal(blocks.length, 68, 'expected 68 CREATE FUNCTION blocks in SQL 01-61'); // +3 in SQL 61 (ss_gen_school_code, ss_schools_assign_code, ss_resolve_school_code)
     for (const { name, head } of blocks) {
       if (/security definer/i.test(head)) {
         assert.match(head, /set search_path/i, `${name}: SECURITY DEFINER without search_path`);

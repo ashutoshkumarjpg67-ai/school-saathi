@@ -1,3 +1,10 @@
+## v166 — Private School Code Login (Student, Parent, Teacher & Staff)
+
+- **Database (`supabase/61_school_code.sql`):** Added unique `school_code` column (format `SS-XXXX`) to `public.ss_schools` with automatic generation trigger on insert, backfilled all existing schools, and added secure `public.ss_resolve_school_code(p_code)` RPC (`SECURITY DEFINER`) that resolves a single school by exact code without ever listing other customer schools.
+- **Private Login UI (`index.html`, `app.js`, `js/modules/i18n.js`):** Replaced the public school `<select>` dropdowns on Student, Parent, Teacher, and Staff login tabs with uppercase **School Code** text inputs (`#studentSchool`, `#parentSchool`, `#teacherSchool`, `#staffSchool`). Added `sbFindLocalSchoolByCode()` + `sbResolveSchoolCode()` + bilingual EN/HI labels & errors.
+- **Settings (`app.js`):** Displayed each school's unique **School Code** in **Settings → School Profile** with a one-click **Copy Code** button so admins can share it privately with their students, parents, teachers, and staff.
+- **Tests:** new `tests/phase8/v166-school-code-login.test.mjs`; version markers 165 → 166.
+
 ## v165 — Modern SaaS Bento UI Redesign (Light & Dark Mode)
 
 - **Modern SaaS Bento design system (`styles.css`):** Upgraded palette (`#F8FAFC` slate canvas, `#4F46E5` indigo accent, `#0B1120` obsidian sidebar, hairline borders, soft layered shadows), tabular numerals on KPIs & tables, sleek Bento quick-action tiles with colored top accent strips & tinted icon badges, frosted translucent topbar, segmented role switcher on login, pill-styled active sidebar nav, frosted modal backdrops, and matching obsidian Dark Mode (`#090D16` / `#111827`).
