@@ -1,3 +1,9 @@
+## v168 — Executive Fee Receipt & Modern Bento Admission Form Redesign
+
+- **Fee Receipt (`styles.css`):** Upgraded `.rcpt*` to a crisp print-ready executive receipt with obsidian-navy header ribbon, elevated school logo tile, tinted student meta band, rounded tabular fee table, indigo payment section band, highlighted grand-total bar, bordered QR container, clean signature block, and Dark Mode paper-white preservation.
+- **Admission Form (`styles.css`):** Upgraded `.modal.wide`, `.sec-title` (indigo-accented section header pills), `.photo-row` (dashed dropzone-style container), and `.check` (interactive bordered document checkboxes) with full Dark Mode parity.
+- **Version markers:** 167 → 168.
+
 ## v167 — Super Admin Permanent School Delete (Dummy/Test Account Cleanup)
 
 - **Edge Function (`supabase/functions/admin-delete-school/index.ts`):** Deployed JWT-authenticated `admin-delete-school` function that verifies `public.ss_platform_admins`, refuses self-deletion (`cannot-delete-own-admin`), and permanently wipes a target school's Storage objects, all 26 child tables, `ss_schools` row, login attempts, and non-admin owner Auth user.
