@@ -366,11 +366,14 @@ tbody tr:hover{background:#F8FAFC}
 .print-head{display:flex;gap:var(--space-md);align-items:center}
 .print-logo{width:54px;height:54px;object-fit:contain}
 
-/* ---- Phase 1: Student Management (v9) ---- */
-.modal.wide{max-width:760px}
-.sec-title{font-size:13px;font-weight:800;color:var(--navy);text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid var(--blue-soft);padding-bottom:6px;margin:6px 0 2px}
-.check{display:flex!important;align-items:center;gap:var(--space-sm);font-weight:600;margin:0}
-.check input[type=checkbox]{width:auto!important;margin:0}
+/* ---- Phase 1: Student Management / Admission Form (v168 Bento polish) ---- */
+.modal.wide{max-width:780px}
+.modal.wide .form-grid{gap:16px 18px}
+.sec-title{font-size:12px;font-weight:700;color:var(--blue-dark);text-transform:uppercase;letter-spacing:.06em;background:var(--blue-50);border:1px solid var(--blue-soft);border-left:3px solid var(--blue);border-radius:8px;padding:8px 12px;margin:10px 0 2px}
+.photo-row{display:flex;gap:var(--space-md);align-items:center;flex-wrap:wrap;background:var(--bg-soft);border:1.5px dashed var(--border-2);border-radius:12px;padding:12px 14px}
+.check{display:flex!important;align-items:center;gap:10px;font-weight:600;margin:0;padding:10px 12px;background:var(--bg-soft);border:1px solid var(--border);border-radius:10px;cursor:pointer;transition:border-color .15s,background .15s}
+.check:hover{border-color:var(--blue);background:var(--blue-50)}
+.check input[type=checkbox]{width:18px!important;height:18px;margin:0;accent-color:var(--blue);flex:none}
 .tabs{display:flex;gap:var(--space-sm);flex-wrap:wrap;margin-bottom:4px}
 .tab-btn{border:1px solid var(--border);background:#fff;border-radius:20px;min-height:44px;padding:10px 16px;font-size:var(--text-sm);font-weight:600;color:var(--muted);cursor:pointer;font-family:inherit}
 .tab-btn.on{background:var(--navy);color:#fff;border-color:var(--navy)}
@@ -428,45 +431,46 @@ tbody tr:hover{background:#F8FAFC}
   .id-qr-missing{width:120px;height:120px}
 }
 
-/* ---- Phase 5: Fee collection receipt (v13) ---- */
-.rcpt{border:1px solid var(--muted-2);background:#fff;max-width:720px;margin:0 auto;color:#000;font-size:var(--text-sm)}
-.rcpt-head{display:flex;gap:var(--space-md);align-items:center;padding:12px 14px}
-.rcpt-logo{width:64px;height:64px;object-fit:contain;flex:none;background:#fff;border:1px solid var(--border);border-radius:var(--radius-md)}
+/* ---- Phase 5: Fee collection receipt (v168 executive print-ready redesign) ---- */
+.rcpt{border:1px solid var(--border-2);border-top:4px solid var(--navy);border-radius:16px;overflow:hidden;background:#fff;max-width:740px;margin:0 auto;color:#0F172A;font-size:var(--text-sm);box-shadow:0 10px 30px rgba(15,23,42,.08);font-variant-numeric:tabular-nums}
+.rcpt-head{display:flex;gap:16px;align-items:center;padding:18px 20px;background:#fff}
+.rcpt-logo{width:64px;height:64px;object-fit:contain;flex:none;background:#fff;border:1px solid var(--border);border-radius:12px;padding:4px;box-shadow:0 2px 8px rgba(15,23,42,.06)}
 .rcpt-logo-cap{font-size:44px;line-height:1;flex:none}
-.rcpt-school{font-size:22px;font-weight:800;color:#000}
-.rcpt-addr{font-size:13px;color:var(--text-2)}
-.rcpt-title{background:var(--border);text-align:center;font-weight:800;font-size:var(--text-base);letter-spacing:.5px;padding:7px 10px;border-top:1px solid var(--muted-2);border-bottom:1px solid var(--muted-2);-webkit-print-color-adjust:exact;print-color-adjust:exact}
-.rcpt-meta{display:flex;gap:14px;align-items:flex-start;padding:12px 14px}
-.rcpt-meta-grid{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:4px 18px;font-size:var(--text-sm);min-width:0}
-.rcpt-meta-grid b{display:inline-block;min-width:96px}
-.rcpt-meta-grid select,.rcpt-meta-grid input{padding:5px 7px;font-size:13px;max-width:150px}
-.rcpt-photo{width:64px;height:64px;border-radius:50%;background:var(--navy);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:24px;flex:none;overflow:hidden}
+.rcpt-school{font-size:21px;font-weight:800;color:#0B1120;letter-spacing:-.02em;line-height:1.2}
+.rcpt-addr{font-size:13px;color:#475569;margin-top:3px}
+.rcpt-title{background:#0B1120;color:#fff;text-align:center;font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:1.4px;padding:9px 14px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.rcpt-meta{display:flex;gap:16px;align-items:center;padding:16px 20px;background:#F8FAFC;border-bottom:1px solid var(--border)}
+.rcpt-meta-grid{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:13.5px;min-width:0}
+.rcpt-meta-grid b{display:inline-block;min-width:96px;color:#475569;font-weight:600}
+.rcpt-meta-grid select,.rcpt-meta-grid input{padding:6px 8px;font-size:13px;max-width:160px;min-height:36px}
+.rcpt-photo{width:66px;height:66px;border-radius:50%;background:#0B1120;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:24px;flex:none;overflow:hidden;box-shadow:0 0 0 2px #fff,0 0 0 3px var(--border-2)}
 .rcpt-photo img{width:100%;height:100%;object-fit:cover;display:block}
-.rcpt-lines{padding:0 14px}
-.rcpt-tbl{border:1px solid var(--muted-2);border-radius:0;overflow-x:auto}
+.rcpt-lines{padding:16px 20px 0}
+.rcpt-tbl{border:1px solid var(--border-2);border-radius:10px;overflow:hidden;overflow-x:auto}
 .rcpt-tbl table{width:100%;min-width:480px;border-collapse:collapse}
-.rcpt-tbl th,.rcpt-tbl td{border:1px solid var(--muted-2);padding:6px 8px;text-align:left;font-size:13px}
-.rcpt-tbl th{background:var(--bg)}
+.rcpt-tbl th,.rcpt-tbl td{border-bottom:1px solid var(--border);padding:9px 12px;text-align:left;font-size:13.5px}
+.rcpt-tbl tr:last-child td{border-bottom:0}
+.rcpt-tbl th{background:#F1F5F9;color:#334155;font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
 .rcpt-tbl td:nth-child(3),.rcpt-tbl td:nth-child(4),.rcpt-tbl td:nth-child(5),.rcpt-tbl th:nth-child(3),.rcpt-tbl th:nth-child(4),.rcpt-tbl th:nth-child(5){text-align:right}
-.rcpt-tbl input{width:96px;text-align:right;padding:5px 7px;font-size:13px}
-.rcpt-bus{margin:10px 14px 0}
-.rcpt-band{background:var(--border);text-align:center;font-weight:800;font-size:var(--text-sm);letter-spacing:.4px;padding:6px 10px;margin:14px 14px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-.rcpt-pay-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 18px;padding:10px 14px;font-size:var(--text-sm)}
-.rcpt-pay-grid b{display:inline-block;min-width:80px}
-.rcpt-pay-grid select,.rcpt-pay-grid input{padding:5px 7px;font-size:13px;max-width:170px}
-.rcpt-total{display:flex;justify-content:space-between;padding:10px 14px;border-top:1px solid var(--muted-2);font-size:var(--text-base)}
-.rcpt-words{padding:0 14px 10px;font-size:var(--text-sm)}
-.rcpt-foot{display:flex;gap:14px;align-items:flex-end;padding:12px 14px}
-.rcpt-qr{flex:none;line-height:0}
-.rcpt-qr svg{width:120px;height:120px}
-.rcpt-note{flex:1;font-size:var(--text-xs);color:var(--text-2)}
-.rcpt-sign{flex:none;width:210px;text-align:center;font-size:13px}
-.rcpt-sign-line{border-top:1px solid #000;margin:30px 0 5px}
-.rcpt-copy{text-align:center;color:var(--muted);font-size:12px;padding:8px 0 12px;letter-spacing:1px}
+.rcpt-tbl input{width:96px;text-align:right;padding:6px 8px;font-size:13px;min-height:36px}
+.rcpt-bus{margin:12px 20px 0}
+.rcpt-band{background:#EEF2FF;color:#1E1B4B;border:1px solid #C7D2FE;border-radius:8px;text-align:center;font-weight:700;font-size:12.5px;text-transform:uppercase;letter-spacing:.8px;padding:7px 12px;margin:16px 20px 0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.rcpt-pay-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;padding:12px 20px;font-size:13.5px}
+.rcpt-pay-grid b{display:inline-block;min-width:86px;color:#475569;font-weight:600}
+.rcpt-pay-grid select,.rcpt-pay-grid input{padding:6px 8px;font-size:13px;max-width:175px;min-height:36px}
+.rcpt-total{display:flex;justify-content:space-between;align-items:center;margin:6px 20px 0;padding:12px 16px;background:#F8FAFC;border:1px solid var(--border-2);border-radius:10px;font-size:17px;font-weight:800;color:#0B1120}
+.rcpt-words{padding:8px 20px 10px;font-size:13px;font-style:italic;color:#475569}
+.rcpt-foot{display:flex;gap:16px;align-items:flex-end;padding:14px 20px;border-top:1px dashed var(--border-2);margin-top:6px}
+.rcpt-qr{flex:none;line-height:0;padding:6px;background:#fff;border:1px solid var(--border);border-radius:10px}
+.rcpt-qr svg{width:112px;height:112px}
+.rcpt-note{flex:1;font-size:12.5px;color:#475569;line-height:1.5}
+.rcpt-sign{flex:none;width:210px;text-align:center;font-size:13px;color:#334155;font-weight:600}
+.rcpt-sign-line{border-top:1.5px solid #0F172A;margin:34px 0 6px}
+.rcpt-copy{text-align:center;color:#64748B;font-size:11.5px;font-weight:600;padding:10px 0 14px;letter-spacing:1.4px;text-transform:uppercase;background:#F8FAFC;border-top:1px solid var(--border)}
 .rcpt-ex h4{margin:14px 0 2px;font-size:var(--text-md);color:var(--navy)}
 @media print{
-  #printArea .rcpt{border-color:#000;max-width:100%}
-  #printArea .rcpt-tbl th{background:var(--border)}
+  #printArea .rcpt{border-color:#0F172A;border-radius:0;box-shadow:none;max-width:100%}
+  #printArea .rcpt-tbl th{background:#F1F5F9}
 }
 @media (max-width:760px){
   .rcpt-meta-grid{grid-template-columns:1fr}
@@ -552,4 +556,10 @@ body.landing{-webkit-user-select:text;user-select:text;-webkit-touch-callout:def
 [data-theme="dark"] .auth-tabs{background:#161F30;border-color:var(--border)}
 [data-theme="dark"] .auth-tab.on{background:#1E293B;color:#fff}
 [data-theme="dark"] .login-card,[data-theme="dark"] .pw-wrap,[data-theme="dark"] .hw-item{background:var(--card);border-color:var(--border)}
+[data-theme="dark"] .sec-title{background:rgba(99,102,241,.16);color:#A5B4FC;border-color:rgba(129,140,248,.28);border-left-color:#818CF8}
+[data-theme="dark"] .photo-row,[data-theme="dark"] .check{background:#161F30;border-color:var(--border-2);color:var(--text)}
+[data-theme="dark"] .rcpt{color:#0F172A;background:#fff}
+[data-theme="dark"] .rcpt table th{background:#F1F5F9;color:#334155}
+[data-theme="dark"] .rcpt table td{color:#0F172A;border-color:#E2E8F0}
+[data-theme="dark"] .rcpt input,[data-theme="dark"] .rcpt select{background:#fff;color:#0F172A;border-color:#CBD5E1}
 .card .btn+.btn{margin-left:8px}
