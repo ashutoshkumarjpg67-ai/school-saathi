@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 166;
+var APP_VERSION = 167;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -1063,7 +1063,7 @@ function sbLoadSuperSchools(token) {
   // (is_ss_admin), so this is one plain PostgREST select. The result is
   // cached on state; the page re-renders when it lands.
   var tk = token || (state.sb && state.sbToken) || SB_ANON_KEY;
-  return sbRest('GET', 'ss_schools?select=id,name,city,session,owner_id,created_at,is_demo&order=name.asc', tk).then(function (res) {
+  return sbRest('GET', 'ss_schools?select=id,name,city,session,owner_id,created_at,is_demo,school_code&order=name.asc', tk).then(function (res) {
     if (res && res.ok && Array.isArray(res.data)) {
       state.superSchools = res.data;
       if (state.role === 'superadmin' && (state.view === 'schools' || state.view === 'dashboard')) renderPage();
@@ -1140,19 +1140,18 @@ function superAdminDashboard() {
     '<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn ghost" onclick="go(\'schools\')">' + esc(t('schools')) + '</button></div></div>';
 }
 function schoolsPage() {
-  // Super Admin schools list (read-only inspection). Same role guard
-  // as the dashboard: only a super admin ever reaches this page, and
-  // there are no edit / login-as / delete actions on it by design.
   if (state.role !== 'superadmin') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
   var rows = mergeSuperSchoolStats(state.superSchools, state.superStats);
   var num = function (v) { return v == null ? '—' : String(v); };
   var body = rows.map(function (s) {
-    return '<tr><td><b>' + esc(s.name || '—') + '</b></td><td>' + esc(s.city || '—') + '</td><td>' + esc(s.session || '—') + '</td><td>' + num(s.students) + '</td><td>' + num(s.teachers) + '</td><td>' + num(s.staff) + '</td><td>' + esc(s.owner_id || '—') + '</td><td>' + esc(s.created_at ? String(s.created_at).slice(0, 10) : '—') + '</td></tr>';
+    var delBtn = '<button type="button" class="btn ghost sm danger" onclick="superDeleteSchoolModal(' + jsAttr(s.id || '') + ',' + jsAttr(s.name || '') + ')">' + esc(t('deleteBtn')) + '</button>';
+    var codeSub = s.school_code ? '<br><span class="muted" style="font-size:12px">' + esc(s.school_code) + '</span>' : '';
+    return '<tr><td><b>' + esc(s.name || '—') + '</b>' + codeSub + '</td><td>' + esc(s.city || '—') + '</td><td>' + esc(s.session || '—') + '</td><td>' + num(s.students) + '</td><td>' + num(s.teachers) + '</td><td>' + num(s.staff) + '</td><td>' + esc(s.owner_id || '—') + '</td><td>' + esc(s.created_at ? String(s.created_at).slice(0, 10) : '—') + '</td><td>' + delBtn + '</td></tr>';
   }).join('');
   var statsNote = (state.superSchools && !state.superStats) ? '<p class="card-sub">' + t('saStatsPending') + '</p>' : '';
   return '<div class="page-head"><div><h2>' + t('schools') + '</h2><p>' + t('schoolsSub') + '</p></div></div>' +
-    '<div class="card">' + statsNote + '<div class="tbl-wrap"><table><thead><tr><th>' + t('thSchool') + '</th><th>' + t('thCity') + '</th><th>' + t('thSession') + '</th><th>' + t('thStudents') + '</th><th>' + t('thTeachers') + '</th><th>' + t('thStaff') + '</th><th>' + t('thOwner') + '</th><th>' + t('thCreated') + '</th></tr></thead><tbody>' +
-    (body || '<tr><td colspan="8"><div class="empty">' + (state.superSchools ? t('tNoSchools') : t('loading')) + '</div></td></tr>') + '</tbody></table></div></div>';
+    '<div class="card">' + statsNote + '<div class="tbl-wrap"><table><thead><tr><th>' + t('thSchool') + '</th><th>' + t('thCity') + '</th><th>' + t('thSession') + '</th><th>' + t('thStudents') + '</th><th>' + t('thTeachers') + '</th><th>' + t('thStaff') + '</th><th>' + t('thOwner') + '</th><th>' + t('thCreated') + '</th><th>' + t('thAction') + '</th></tr></thead><tbody>' +
+    (body || '<tr><td colspan="9"><div class="empty">' + (state.superSchools ? t('tNoSchools') : t('loading')) + '</div></td></tr>') + '</tbody></table></div></div>';
 }
 function sbShowNoSchool() {
   // v28: a Supabase account with no school tied to it (no local school

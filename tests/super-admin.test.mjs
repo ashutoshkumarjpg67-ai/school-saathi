@@ -140,7 +140,7 @@ describe('super admin dashboard + schools page rendering', () => {
     assert.match(app.run('superAdminDashboard()'), /Your login cannot open this section\./);
   });
 
-  it('schools page lists schools with counts, read-only (no Edit/Delete)', () => {
+  it('schools page lists schools with counts, no Edit, and Super Admin Delete button', () => {
     const app = superAdminContext();
     app.run('state.view = "schools";');
     const html = app.run('schoolsPage()');
@@ -151,7 +151,7 @@ describe('super admin dashboard + schools page rendering', () => {
     assert.match(html, /Teachers/);
     assert.match(html, /Staff/);
     assert.doesNotMatch(html, /Edit/);
-    assert.doesNotMatch(html, /Delete/);
+    assert.match(html, /superDeleteSchoolModal/);
   });
 
   it('schools page shows dashes + the SQL 56 note while stats are unavailable', () => {
