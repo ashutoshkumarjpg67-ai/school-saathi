@@ -1,3 +1,9 @@
+## v165 — Modern SaaS Bento UI Redesign (Light & Dark Mode)
+
+- **Modern SaaS Bento design system (`styles.css`):** Upgraded palette (`#F8FAFC` slate canvas, `#4F46E5` indigo accent, `#0B1120` obsidian sidebar, hairline borders, soft layered shadows), tabular numerals on KPIs & tables, sleek Bento quick-action tiles with colored top accent strips & tinted icon badges, frosted translucent topbar, segmented role switcher on login, pill-styled active sidebar nav, frosted modal backdrops, and matching obsidian Dark Mode (`#090D16` / `#111827`).
+- **Zero logic regression:** Pure CSS upgrade preserving all 424 automated tests, offline PWA shell, Capacitor Android build, and bilingual EN/HI UI.
+- **Version markers:** 164 → 165.
+
 ## v164 — Fix screen flicker, up-down jump animation, and logo disappearing on sync
 
 - **Root cause fix (`app.js`, `styles.css`):** Every background sync pull called `sbRefreshSignedPhotos()`, which minted a fresh `photo-url` signed token and unconditionally called `renderApp()` — causing `.page` to replay `animation: fadeUp .3s ease` (white flash + 8px vertical jump) and forcing `<img class="dash-logo">` to re-download on every sync tick. Now `sbRefreshSignedPhotos()` skips re-minting and re-rendering while cached signed URLs are still fresh (>90s left), and `.page` no longer replays `fadeUp` on re-render.
