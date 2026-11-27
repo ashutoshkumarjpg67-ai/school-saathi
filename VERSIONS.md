@@ -1,3 +1,9 @@
+## v167 — Super Admin Permanent School Delete (Dummy/Test Account Cleanup)
+
+- **Edge Function (`supabase/functions/admin-delete-school/index.ts`):** Deployed JWT-authenticated `admin-delete-school` function that verifies `public.ss_platform_admins`, refuses self-deletion (`cannot-delete-own-admin`), and permanently wipes a target school's Storage objects, all 26 child tables, `ss_schools` row, login attempts, and non-admin owner Auth user.
+- **Super Admin UI (`app.js`, `js/modules/turnstile.js`):** Added a **Delete** button (with typed school-name confirmation modal) and visible `school_code` on each row of **Super Admin → Schools**.
+- **Tests:** Updated `tests/super-admin.test.mjs` and added `tests/phase8/v167-super-admin-delete-school.test.mjs`; version markers 166 → 167.
+
 ## v166 — Private School Code Login (Student, Parent, Teacher & Staff)
 
 - **Database (`supabase/61_school_code.sql`):** Added unique `school_code` column (format `SS-XXXX`) to `public.ss_schools` with automatic generation trigger on insert, backfilled all existing schools, and added secure `public.ss_resolve_school_code(p_code)` RPC (`SECURITY DEFINER`) that resolves a single school by exact code without ever listing other customer schools.

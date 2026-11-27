@@ -128,3 +128,60 @@ function copySchoolCode() {
   } catch (e) {}
   toast(code);
 }
+
+// v167: Super Admin permanent school deletion (dummy/test school cleanup).
+function superDeleteSchoolModal(schoolId, schoolName) {
+  if (!state || state.role !== 'superadmin' || !schoolId) return;
+  var name = String(schoolName || '').trim();
+  openModal('<h3>Delete School Permanently</h3>' +
+    '<p class="muted mb-12">This will permanently delete <b>' + esc(name || schoolId) + '</b> — all students, fees, attendance, photos, and its login account. This cannot be undone.</p>' +
+    '<div id="saDelErr" class="err hidden"></div>' +
+    '<form onsubmit="return doSuperDeleteSchool(event,' + jsAttr(schoolId) + ',' + jsAttr(name) + ')">' +
+    '<div class="field"><label>Type the school name to confirm: <b>' + esc(name) + '</b></label><input id="saDelName" type="text" placeholder="' + esc(name) + '" autocomplete="off"></div>' +
+    '<div class="actions"><button type="button" class="btn ghost" onclick="closeModal()">' + esc(t('cancel')) + '</button>' +
+    '<button type="submit" class="btn danger" id="saDelBtn">Delete Permanently</button></div></form>');
+}
+function doSuperDeleteSchool(e, schoolId, expectedName) {
+  if (e && e.preventDefault) e.preventDefault();
+  if (!state || state.role !== 'superadmin' || !schoolId) return false;
+  var err = $('saDelErr');
+  var typed = ($('saDelName') ? $('saDelName').value : '').trim();
+  if (expectedName && typed.toLowerCase() !== String(expectedName).trim().toLowerCase()) {
+    if (err) { err.textContent = 'School name does not match.'; err.classList.remove('hidden'); }
+    return false;
+  }
+  var sess = (typeof sbLoadSession === 'function') ? sbLoadSession() : null;
+  var tok = sess && sess.access_token;
+  if (!tok || typeof sbFetch !== 'function') {
+    if (err) { err.textContent = 'Session expired. Please log in again.'; err.classList.remove('hidden'); }
+    return false;
+  }
+  if (err) err.classList.add('hidden');
+  var btn = $('saDelBtn');
+  if (btn) btn.disabled = true;
+  sbFetch(SB_URL + '/functions/v1/admin-delete-school', {
+    method: 'POST',
+    headers: { 'apikey': SB_ANON_KEY, 'Authorization': 'Bearer ' + tok, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ school_id: schoolId })
+  }).then(function (r) {
+    if (btn) btn.disabled = false;
+    if (!r || !r.ok || !r.data || !r.data.deleted) {
+      var msg = (r && r.data && r.data.error) ? ('Delete failed: ' + r.data.error) : 'Delete failed. Please try again.';
+      if (err) { err.textContent = msg; err.classList.remove('hidden'); }
+      return;
+    }
+    if (Array.isArray(state.superSchools)) {
+      state.superSchools = state.superSchools.filter(function (s) { return s.id !== schoolId; });
+    }
+    if (Array.isArray(state.superStats)) {
+      state.superStats = state.superStats.filter(function (s) { return s.school_id !== schoolId; });
+    }
+    closeModal();
+    renderApp();
+    toast('Deleted: ' + (expectedName || schoolId));
+  }).catch(function () {
+    if (btn) btn.disabled = false;
+    if (err) { err.textContent = 'Network error. Please try again.'; err.classList.remove('hidden'); }
+  });
+  return false;
+}
