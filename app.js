@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 165;
+var APP_VERSION = 166;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -2661,6 +2661,7 @@ function sbApplyServerRows(d, schoolRow, byTable, account, sid) {
       d.profile.logoUrl = schoolRow.logo_url || null; // Phase 3 (v78)
       d.feeExtras = { admissionFee: schoolRow.admission_fee || 0, cautionMoney: schoolRow.caution_money || 0, annualCharges: schoolRow.annual_charges || 0, transportFee: schoolRow.transport_fee || 0 };
     }
+    if (schoolRow.school_code && d.profile) d.profile.schoolCode = schoolRow.school_code; // v166: unique private school code
     // v148 (bug 5): a renamed demo seed carries the seed's contact
     // email (info@stxavierpatna.edu.in) even though the school is now
     // a live school under its own login — the live Settings page
@@ -7442,6 +7443,9 @@ function togglePw(id, btn) {
 function fillSchoolPicker(selId, opts) {
   var sel = $(selId);
   if (!sel) return;
+  // v166: Student/Parent/Teacher/Staff login uses a private School Code <input>,
+  // never a public dropdown exposing all customer schools.
+  if (sel.tagName && sel.tagName.toUpperCase() === 'INPUT') return;
   var schools = loadAccounts().filter(function (a) { return a.role === 'school'; }).filter(function (a) { return !!readDbByKey(dbKeyFor(a)); });
   var cur = sel.value;
   // v62: the teacher picker is optional (the old flow had no school
@@ -7561,14 +7565,8 @@ function doStudentLogin(e) {
   var adm = $('studentAdmNo').value.trim();
   var pin = $('studentPin').value.trim();
   var err = $('studentErr');
-  var schoolUid = $('studentSchool') ? $('studentSchool').value : '';
-  // v61: a "cloud:<server-uuid>" school is not on this device — the PIN
-  // is verified on the server. The async call returns nothing to the
-  // form (a Promise return would submit it), so return false here.
-  if (schoolUid && schoolUid.indexOf('cloud:') === 0) {
-    doStudentCloudLogin(schoolUid.slice(6), adm, pin, err);
-    return false;
-  }
+  var schoolUid = sbResolveLoginSchool($('studentSchool') ? $('studentSchool').value : '', err, true, function (sid) { doStudentCloudLogin(sid, adm, pin, err); });
+  if (schoolUid === null) return false;
   var found = schoolUid ? findStudentByAdmNoInSchool(adm, schoolUid) : null;
   // One generic error: never reveal whether the number or the PIN was wrong.
   var stu = found ? found.student : null;
@@ -7819,11 +7817,8 @@ function doParentLogin(e) {
   var adm = $('parentAdmNo').value.trim();
   var pin = $('parentPin').value.trim();
   var err = $('parentErr');
-  var schoolUid = $('parentSchool') ? $('parentSchool').value : '';
-  if (schoolUid && schoolUid.indexOf('cloud:') === 0) {
-    doParentCloudLogin(schoolUid.slice(6), adm, pin, err);
-    return false;
-  }
+  var schoolUid = sbResolveLoginSchool($('parentSchool') ? $('parentSchool').value : '', err, true, function (sid) { doParentCloudLogin(sid, adm, pin, err); });
+  if (schoolUid === null) return false;
   // v99: when online and the school is server-linked, consult the
   // server lock before the PIN is tried. Fail-open: a failed precheck
   // still runs the local login.
@@ -8134,14 +8129,8 @@ function doTeacherLogin(e) {
   e.preventDefault();
   var id = $('teacherEmail').value.trim().toLowerCase(), pw = $('teacherPw').value;
   var err = $('teacherErr');
-  var schoolSel = $('teacherSchool') ? $('teacherSchool').value : '';
-  // v62: a "cloud:<server-uuid>" school is not on this device — the
-  // password is verified on the server, and the teacher works through
-  // token-authenticated RPCs.
-  if (schoolSel && schoolSel.indexOf('cloud:') === 0) {
-    doTeacherCloudLogin(schoolSel.slice(6), id, pw, err);
-    return false;
-  }
+  var schoolSel = sbResolveLoginSchool($('teacherSchool') ? $('teacherSchool').value : '', err, false, function (sid) { doTeacherCloudLogin(sid, id, pw, err); });
+  if (schoolSel === null) return false;
   // Local-only login (v35): teacher accounts live in schoolSaathiAccounts
   // on this device, with no server account — no Supabase attempt.
   var a = findAccount(id);
@@ -8295,14 +8284,8 @@ function doStaffLogin(e) {
   e.preventDefault();
   var id = $('staffEmail').value.trim().toLowerCase(), pw = $('staffPw').value;
   var err = $('staffErr');
-  var schoolSel = $('staffSchool') ? $('staffSchool').value : '';
-  // v88: a "cloud:<server-uuid>" school is not on this device — the
-  // password is verified on the server (SQL 30), and the staff member
-  // works from the role-scoped payload.
-  if (schoolSel && schoolSel.indexOf('cloud:') === 0) {
-    doStaffCloudLogin(schoolSel.slice(6), id, pw, err);
-    return false;
-  }
+  var schoolSel = sbResolveLoginSchool($('staffSchool') ? $('staffSchool').value : '', err, false, function (sid) { doStaffCloudLogin(sid, id, pw, err); });
+  if (schoolSel === null) return false;
   // Local-only login: staff accounts live in schoolSaathiAccounts on
   // this device, with no server account — no Supabase attempt.
   var a = findAccount(id);
@@ -13078,8 +13061,11 @@ function settingsPage() {
   var logoPrev = pendingLogo !== null
     ? (pendingLogo ? '<img class="photo-prev" src="' + esc(pendingLogo) + '" alt="">' : '<span class="photo-prev">🎓</span>')
     : (p.logo ? '<img class="photo-prev" src="' + esc(p.logo) + '" alt="">' : '<span class="photo-prev">🎓</span>');
+  var schoolCodeBox = p.schoolCode
+    ? '<div class="notice mb-12"><div class="head-row"><div><b>' + t('schoolCodeLbl') + ': <code style="font-size:16px;letter-spacing:1px">' + esc(p.schoolCode) + '</code></b><span>' + t('schoolCodeHint') + '</span></div><button type="button" class="btn ghost sm" onclick="copySchoolCode()">' + t('copyCodeBtn') + '</button></div></div>'
+    : '';
   return '<div class="page-head"><div><h2>' + t('settings') + '</h2><p>' + t('subSettingsS') + '</p></div></div>' +
-  '<div class="card" style="max-width:680px"><h3>' + esc(p.name) + '</h3><p class="card-sub">' + t('settingsSub') + '</p>' +
+  '<div class="card" style="max-width:680px"><h3>' + esc(p.name) + '</h3><p class="card-sub">' + t('settingsSub') + '</p>' + schoolCodeBox +
   '<form onsubmit="return saveSettings(event)"><div class="form-grid">' +
   '<div><label>' + t('fSchoolName') + '</label><input id="fPfName" value="' + esc(p.name) + '"></div>' +
   '<div><label>' + t('fCity') + '</label><input id="fPfCity" value="' + esc(p.city) + '"></div>' +

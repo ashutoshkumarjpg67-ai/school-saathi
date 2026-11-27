@@ -72,3 +72,59 @@ function sbTurnstileReset(surface) {
     }
   } catch (e) {}
 }
+
+// v166: Private School Code resolution (replaces public school list on Student/Parent/Teacher/Staff login).
+function sbFindLocalSchoolByCode(rawVal) {
+  var raw = String(rawVal || '').trim();
+  if (!raw) return null;
+  var upper = raw.toUpperCase();
+  var schools = loadAccounts().filter(function (a) { return a.role === 'school'; });
+  for (var i = 0; i < schools.length; i++) {
+    var a = schools[i];
+    if (a.uid === raw) return { localUid: a.uid };
+    var d = readDbByKey(dbKeyFor(a));
+    if (d && d.profile && d.profile.schoolCode && String(d.profile.schoolCode).trim().toUpperCase() === upper) {
+      return { localUid: a.uid };
+    }
+  }
+  return null;
+}
+function sbResolveSchoolCode(code) {
+  var clean = String(code || '').trim().toUpperCase();
+  if (!clean || typeof sbFetch !== 'function') return Promise.resolve({ ok: false });
+  return sbFetch(SB_URL + '/rest/v1/rpc/ss_resolve_school_code', {
+    method: 'POST',
+    headers: { 'apikey': SB_ANON_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ p_code: clean })
+  }).then(function (r) {
+    if (!r || !r.ok || !r.data || !r.data.ok || !r.data.id) return { ok: false };
+    return { ok: true, id: r.data.id, name: r.data.name || '', school_code: r.data.school_code || clean };
+  }).catch(function () { return { ok: false, netfail: true }; });
+}
+function sbResolveLoginSchool(rawVal, err, required, onCloud) {
+  var raw = String(rawVal || '').trim();
+  if (raw.indexOf('cloud:') === 0) { onCloud(raw.slice(6)); return null; }
+  var hit = sbFindLocalSchoolByCode(raw);
+  if (hit) return hit.localUid;
+  if (!raw) {
+    if (!required) return '';
+    err.textContent = t('tEnterSchoolCode'); err.classList.remove('hidden'); return null;
+  }
+  if (!sbIsOnline()) { err.textContent = t('tInvalidSchoolCode'); err.classList.remove('hidden'); return null; }
+  sbResolveSchoolCode(raw).then(function (res) {
+    if (!res || !res.ok || !res.id) { err.textContent = t('tInvalidSchoolCode'); err.classList.remove('hidden'); return; }
+    onCloud(res.id);
+  });
+  return null;
+}
+function copySchoolCode() {
+  var code = (db && db.profile && db.profile.schoolCode) ? String(db.profile.schoolCode).trim() : '';
+  if (!code) return;
+  try {
+    if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(code).then(function () { toast(t('tCodeCopied') + ': ' + code); }).catch(function () { toast(code); });
+      return;
+    }
+  } catch (e) {}
+  toast(code);
+}
