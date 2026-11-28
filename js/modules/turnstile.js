@@ -315,3 +315,15 @@ function sbDisplayPrefsCard() {
   '</div>';
 }
 try { initDisplayPrefs(); } catch (ePref) {}
+
+/* ---------- Lightweight Page-Enter Transition (v173) ---------- */
+function sbPageEnterAnim() {
+  try {
+    var pg = typeof $ === 'function' ? $('page') : (document && document.getElementById ? document.getElementById('page') : null);
+    if (!pg || !pg.classList) return false;
+    pg.classList.remove('page-enter');
+    void pg.offsetWidth;
+    pg.classList.add('page-enter');
+    return true;
+  } catch (e) { return false; }
+}

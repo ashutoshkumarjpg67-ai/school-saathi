@@ -1,3 +1,8 @@
+## v173 — Lightweight 60fps GPU Micro-Animations & Page Transitions
+- Added silky 180ms GPU-only page-enter slide-fade (`sbPageEnterAnim`) triggered strictly on `go()` tab navigation (never during background sync).
+- Added 150ms smooth modal pop-in (zero `backdrop-filter` blur so modal scrolling stays 60fps).
+- Added tactile button press micro-scale, sidebar icon hover nudge, card hover lift, smooth progress bar fill transitions, and reduced-motion safety.
+
 ## v172 — Refined Dark Mode, High Contrast, Scalable Fonts & Scroll Performance
 - Polished Dark Mode contrast across topbar, links, notices, school-code badges, key-value rows, chips, and dropdowns.
 - Added High Contrast mode (`[data-contrast="high"]`, works in both Light & Dark themes) with crisper borders and focus outlines.
