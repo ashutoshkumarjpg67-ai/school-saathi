@@ -185,3 +185,54 @@ function doSuperDeleteSchool(e, schoolId, expectedName) {
   });
   return false;
 }
+
+// v170: EduNova color-coded Timetable tone + Dashboard Top Performers & Recent Admissions widgets.
+function ttSubjectTone(subj) {
+  var s = String(subj || '').toLowerCase(), h = 0;
+  for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 6;
+  return 'tt-c' + Math.abs(h);
+}
+function sbEduNovaDashWidgets() {
+  try {
+    if (typeof db === 'undefined' || !db) return '';
+    var stus = (db.students || []).filter(function (s) { return s && !s.deleted; });
+    var recent = stus.slice().sort(function (a, b) {
+      var da = a.admDate || a.createdAt || '', db2 = b.admDate || b.createdAt || '';
+      return da < db2 ? 1 : (da > db2 ? -1 : 0);
+    }).slice(0, 4);
+    var recHtml = recent.length
+      ? '<div class="tbl-wrap"><table><thead><tr><th>' + esc(t('thStudent')) + '</th><th>' + esc(t('thClass')) + '</th><th>' + esc(t('thDate')) + '</th></tr></thead><tbody>' +
+        recent.map(function (s) {
+          return '<tr><td><b>' + esc(s.name || '—') + '</b></td><td>' + esc(s.cls || '—') + '</td><td>' + esc((s.admDate || '—').slice(0, 10)) + '</td></tr>';
+        }).join('') + '</tbody></table></div>'
+      : '<p class="muted">No admissions recorded yet.</p>';
+
+    var examTotals = {};
+    (db.exams || []).forEach(function (ex) { if (ex && !ex.deleted && ex.id) examTotals[ex.id] = Number(ex.total) || 100; });
+    var stuScores = {};
+    (db.marks || []).forEach(function (m) {
+      if (!m || !m.studentId || examTotals[m.examId] === undefined) return;
+      var val = Number(m.marks);
+      if (!isFinite(val)) return;
+      if (!stuScores[m.studentId]) stuScores[m.studentId] = { got: 0, max: 0 };
+      stuScores[m.studentId].got += val;
+      stuScores[m.studentId].max += examTotals[m.examId];
+    });
+    var topList = stus.map(function (s) {
+      var sc = stuScores[s.id];
+      if (!sc || !sc.max) return null;
+      return { name: s.name, cls: s.cls, pct: Math.round((sc.got / sc.max) * 1000) / 10 };
+    }).filter(Boolean).sort(function (a, b) { return b.pct - a.pct; }).slice(0, 4);
+    var topHtml = topList.length
+      ? '<div class="tbl-wrap"><table><thead><tr><th>' + esc(t('thStudent')) + '</th><th>' + esc(t('thClass')) + '</th><th>Score</th></tr></thead><tbody>' +
+        topList.map(function (r) {
+          return '<tr><td><b>' + esc(r.name || '—') + '</b></td><td>' + esc(r.cls || '—') + '</td><td><span class="badge green">' + r.pct + '%</span></td></tr>';
+        }).join('') + '</tbody></table></div>'
+      : '<p class="muted">Enter exam marks to see top performers.</p>';
+
+    return '<div class="grid2e">' +
+      '<div class="card"><div class="head-row"><div><h3>🏆 Top Performers</h3></div><a href="#" onclick="go(\'exams\');return false">' + esc(t('viewAll')) + '</a></div>' + topHtml + '</div>' +
+      '<div class="card"><div class="head-row"><div><h3>🎓 Recent Admissions</h3></div><a href="#" onclick="go(\'students\');return false">' + esc(t('viewAll')) + '</a></div>' + recHtml + '</div>' +
+    '</div>';
+  } catch (e) { return ''; }
+}

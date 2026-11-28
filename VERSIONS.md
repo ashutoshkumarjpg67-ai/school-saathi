@@ -1,3 +1,10 @@
+## v170 — EduNova-Inspired Royal Indigo Theme & Layout Upgrades (Phase 1 + Phase 2)
+
+- **EduNova Royal Indigo Theme (`styles.css`):** Upgraded sidebar to deep Royal Indigo (`#2B2D7B`) with iconic solid-white active pill navigation, soft `#F4F6FA` canvas, bold Teal/Coral/Amber Attendance `P`/`A`/`L` toggle pills, and matching Dark Mode overrides.
+- **Teachers 4-Column Card Grid (`app.js`, `styles.css`):** Upgraded Teachers directory to responsive 4-column profile cards with circular avatar badges, subject pills, class lists, and clean action buttons (preserving Principal read-only mode).
+- **Color-Coded Timetable & Dashboard Widgets (`app.js`, `js/modules/turnstile.js`, `styles.css`):** Added pastel color-coded subject blocks across the Weekly Timetable (`tt-c0`..`tt-c5`) and added **Top Performers** + **Recent Admissions** Bento cards on the School Dashboard.
+- **Zero core regressions:** All 432 automated tests pass; `app.js` stays under 850 KB. Version markers 169 → 170.
+
 ## v169 — Fix random auto-logout (refresh-token race, cross-tab staleness & transient 5xx guard)
 
 - **Root cause fix (`app.js`):** Live Supabase Auth logs showed concurrent duplicate `POST /token?grant_type=refresh_token` requests firing in the same millisecond after the 1-hour JWT TTL, triggering Supabase refresh-token reuse revocation (`400 refresh_token_not_found`) and wiping the stored session.

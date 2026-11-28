@@ -1,21 +1,21 @@
-/* School Saathi — static build (v165: Modern SaaS Bento UI). No external dependencies; system font stack. */
+/* School Saathi — static build (v170: EduNova Royal Indigo Bento UI). No external dependencies; system font stack. */
 :root{
-  --navy:#0B1120; --navy2:#111827; --navy3:#1E293B;
-  --blue:#4F46E5; --blue-dark:#4338CA; --blue-soft:#EEF2FF;
-  --bg:#F8FAFC; --card:#FFFFFF; --text:#09090B; --muted:#64748B;
-  --green:#16A34A; --green-soft:#ECFDF5;
-  --orange:#D97706; --orange-soft:#FFFBEB;
+  --navy:#2B2D7B; --navy2:#212366; --navy3:#373A96;
+  --blue:#2B2D7B; --blue-dark:#212366; --blue-soft:#EEF0FF;
+  --bg:#F4F6FA; --card:#FFFFFF; --text:#111827; --muted:#64748B;
+  --green:#1F9D8B; --green-soft:#E6F7F4;
+  --orange:#E6A23C; --orange-soft:#FEF6E7;
   --gold:#F59E0B;
-  --red:#DC2626; --red-soft:#FEF2F2;
-  --border:#E2E8F0; --shadow:0 1px 2px rgba(15,23,42,.04),0 4px 16px rgba(15,23,42,.04);
+  --red:#E86A58; --red-soft:#FDECE9;
+  --border:#E5E7EB; --shadow:0 1px 3px rgba(15,23,42,.05),0 6px 18px rgba(43,45,123,.05);
   --radius:16px;
   --bg-soft:#F8FAFC; --text-2:#334155; --text-3:#475569; --muted-2:#94A3B8;
   --border-2:#CBD5E1; --border-strong:#94A3B8; --gold-2:#FBBF24; --lavender:#C7D2FE;
-  --blue-50:#F5F7FF; --green-dark:#15803D; --orange-dark:#92400E; --amber-dark:#854D0E;
-  --red-dark:#B91C1C; --purple:#7C3AED; --purple-soft:#F5F3FF; --yellow-soft:#FEFCE8;
-  --navy-rgb:11,17,32; --blue-rgb:79,70,229; --gold-rgb:245,158,11; --ink-rgb:15,23,42;
-  --red-rgb:220,38,38; --green-rgb:22,163,74; --white-rgb:255,255,255; --black-rgb:0,0,0;
-  --violet-rgb:99,102,241; --royal-rgb:79,70,229;
+  --blue-50:#F5F6FF; --green-dark:#147A6C; --orange-dark:#9A6211; --amber-dark:#854D0E;
+  --red-dark:#C2412F; --purple:#7C3AED; --purple-soft:#F3E8FF; --yellow-soft:#FEFCE8;
+  --navy-rgb:43,45,123; --blue-rgb:43,45,123; --gold-rgb:245,158,11; --ink-rgb:15,23,42;
+  --red-rgb:232,106,88; --green-rgb:31,157,139; --white-rgb:255,255,255; --black-rgb:0,0,0;
+  --violet-rgb:99,102,241; --royal-rgb:43,45,123;
   --radius-sm:10px; --radius-md:12px; --radius-lg:18px; --radius-xl:22px;
   --font-sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans",sans-serif;
   --text-2xs:12px; --text-xs:13px; --text-sm:14px; --text-md:15px; --text-base:15.5px; --text-lg:18px;
@@ -87,20 +87,20 @@ label{font-size:13.5px;font-weight:600;color:var(--text-2);display:block;margin-
 .chip{font-size:12.5px;font-weight:600;color:var(--text-2);background:var(--bg-soft);border:1px solid var(--border);border-radius:999px;padding:6px 12px}
 .err{background:var(--red-soft);color:var(--red-dark);border:1px solid rgba(var(--red-rgb),.2);font-size:13.5px;font-weight:500;padding:10px 13px;border-radius:var(--radius-sm);margin-bottom:14px}
 
-/* ---------- app shell (Modern SaaS Bento) ---------- */
+/* ---------- app shell (v170 EduNova Royal Indigo) ---------- */
 .app{display:flex;min-height:100vh}
-.sidebar{width:252px;background:#0B1120;color:#CBD5E1;flex:none;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;z-index:40;border-right:1px solid rgba(255,255,255,.06)}
-.side-brand{display:flex;align-items:center;gap:12px;padding:calc(18px + env(safe-area-inset-top, 0px)) 18px 16px;border-bottom:1px solid rgba(255,255,255,.07)}
-.side-brand .cap{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,rgba(99,102,241,.28),rgba(99,102,241,.10));border:1px solid rgba(129,140,248,.25);display:flex;align-items:center;justify-content:center;font-size:19px;flex:none}
-.side-brand b{color:#F8FAFC;font-size:16.5px;font-weight:700;letter-spacing:-.02em;display:block;line-height:1.15}
-.side-brand small{font-size:11.5px;color:#94A3B8;font-weight:500}
-.side-nav{flex:1;overflow-y:auto;padding:12px 10px;display:flex;flex-direction:column;gap:2px}
-.side-nav button{display:flex;align-items:center;gap:11px;width:100%;background:transparent;border:1px solid transparent;color:#94A3B8;padding:11px 12px;min-height:46px;border-radius:10px;font-size:14px;font-weight:500;text-align:left;transition:background .15s,color .15s,border-color .15s}
-.side-nav button:hover{background:rgba(255,255,255,.06);color:#F1F5F9}
-.side-nav button.active{background:linear-gradient(90deg,rgba(99,102,241,.24),rgba(99,102,241,.10));color:#FFFFFF;font-weight:600;border-color:rgba(129,140,248,.32);box-shadow:0 2px 10px rgba(0,0,0,.22)}
-.side-nav button .ic{font-size:17px;width:22px;text-align:center;flex:none;opacity:.9}
-.side-foot{padding:14px 16px;border-top:1px solid rgba(255,255,255,.07);font-size:12px;color:#64748B}
-.side-foot select{background:#111827;color:#E2E8F0;border:1px solid rgba(255,255,255,.12);margin-top:8px}
+.sidebar{width:248px;background:linear-gradient(180deg,#2B2D7B 0%,#232568 100%);color:#E0E7FF;flex:none;display:flex;flex-direction:column;position:sticky;top:0;height:100vh;z-index:40;box-shadow:4px 0 20px rgba(43,45,123,.12)}
+.side-brand{display:flex;align-items:center;gap:12px;padding:calc(18px + env(safe-area-inset-top, 0px)) 18px 16px;border-bottom:1px solid rgba(255,255,255,.10)}
+.side-brand .cap{width:38px;height:38px;border-radius:11px;background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.22);display:flex;align-items:center;justify-content:center;font-size:19px;flex:none}
+.side-brand b{color:#FFFFFF;font-size:17px;font-weight:800;letter-spacing:-.02em;display:block;line-height:1.15}
+.side-brand small{font-size:11.5px;color:#C7D2FE;font-weight:500}
+.side-nav{flex:1;overflow-y:auto;padding:14px 12px;display:flex;flex-direction:column;gap:4px}
+.side-nav button{display:flex;align-items:center;gap:11px;width:100%;background:transparent;border:0;color:rgba(255,255,255,.82);padding:11px 14px;min-height:46px;border-radius:11px;font-size:14px;font-weight:500;text-align:left;transition:background .15s,color .15s,box-shadow .15s}
+.side-nav button:hover{background:rgba(255,255,255,.12);color:#FFFFFF}
+.side-nav button.active{background:#FFFFFF;color:#2B2D7B;font-weight:700;box-shadow:0 4px 14px rgba(15,23,42,.18)}
+.side-nav button .ic{font-size:17px;width:22px;text-align:center;flex:none}
+.side-foot{padding:14px 16px;border-top:1px solid rgba(255,255,255,.10);font-size:12px;color:#C7D2FE}
+.side-foot select{background:rgba(255,255,255,.12);color:#FFFFFF;border:1px solid rgba(255,255,255,.22);margin-top:8px}
 .main{flex:1;min-width:0;display:flex;flex-direction:column;background:radial-gradient(900px 320px at 50% -80px,rgba(79,70,229,.06),transparent 65%),var(--bg)}
 .topbar{position:sticky;top:0;z-index:30;background:rgba(255,255,255,.86);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border-bottom:1px solid var(--border);box-shadow:0 1px 2px rgba(15,23,42,.03);display:flex;align-items:center;gap:12px;padding:calc(12px + env(safe-area-inset-top, 0px)) 24px 12px}
 .topbar h1{font-size:18px;font-weight:700;color:var(--text);letter-spacing:-.025em}
@@ -188,12 +188,28 @@ tbody tr:hover{background:#F8FAFC}
 .modal h3{font-size:18px;font-weight:700;letter-spacing:-.02em;color:var(--text);margin-bottom:16px}
 .modal .actions{display:flex;gap:10px;justify-content:flex-end;margin-top:20px}
 
-/* attendance mark buttons */
+/* attendance mark buttons (v170 EduNova Teal / Coral / Amber pills) */
 .mark-btns{display:flex;gap:6px}
-.mark-btns button{border:1px solid var(--border);background:#fff;border-radius:8px;min-width:44px;min-height:44px;padding:10px 12px;font-size:var(--text-sm);font-weight:700;color:var(--muted)}
-.mark-btns button.p.on{background:var(--green-soft);border-color:var(--green);color:var(--green-dark)}
-.mark-btns button.a.on{background:var(--red-soft);border-color:var(--red);color:var(--red-dark)}
-.mark-btns button.l.on{background:var(--orange-soft);border-color:var(--orange);color:var(--orange-dark)}
+.mark-btns button{border:1px solid var(--border);background:#fff;border-radius:9px;min-width:44px;min-height:44px;padding:10px 12px;font-size:var(--text-sm);font-weight:700;color:var(--muted);transition:background .14s,color .14s,border-color .14s}
+.mark-btns button.p.on{background:#1F9D8B;border-color:#1F9D8B;color:#fff}
+.mark-btns button.a.on{background:#E86A58;border-color:#E86A58;color:#fff}
+.mark-btns button.l.on{background:#E6A23C;border-color:#E6A23C;color:#fff}
+
+/* v170 EduNova Teachers 4-column card grid + Color-coded Timetable pills */
+.tchr-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+.tchr-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:20px 16px 16px;text-align:center;box-shadow:var(--shadow);display:flex;flex-direction:column;align-items:center;gap:8px;transition:transform .16s ease,box-shadow .16s ease,border-color .16s ease}
+.tchr-card:hover{transform:translateY(-2px);border-color:var(--border-2);box-shadow:0 10px 24px rgba(43,45,123,.08)}
+.tchr-av{width:64px;height:64px;border-radius:50%;background:linear-gradient(135deg,#2B2D7B,#5B5FC7);color:#fff;font-size:22px;font-weight:800;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 12px rgba(43,45,123,.2)}
+.tchr-name{font-size:15.5px;font-weight:700;color:var(--text);line-height:1.25}
+.tchr-subj{display:inline-block;padding:3px 11px;border-radius:999px;font-size:12px;font-weight:600;background:var(--blue-soft);color:var(--blue)}
+.tchr-meta{font-size:12.5px;color:var(--muted);line-height:1.4;word-break:break-word}
+.tchr-acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;width:100%;margin-top:auto;padding-top:8px;border-top:1px solid var(--border)}
+.tt-pill{padding:9px 10px;border-radius:10px;line-height:1.35;min-width:110px}
+.tt-c0{background:#DBEAFE;color:#1E3A8A}.tt-c1{background:#D1FAE5;color:#065F46}.tt-c2{background:#EDE9FE;color:#4C1D95}
+.tt-c3{background:#FFEDD5;color:#9A3412}.tt-c4{background:#FCE7F3;color:#831843}.tt-c5{background:#FEF3C7;color:#92400E}
+.tt-pill .muted{color:inherit;opacity:.78;font-size:12px}
+@media (max-width:1100px){.tchr-grid{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:600px){.tchr-grid{grid-template-columns:1fr}}
 
 /* charts */
 .chart-box{position:relative}
@@ -562,4 +578,14 @@ body.landing{-webkit-user-select:text;user-select:text;-webkit-touch-callout:def
 [data-theme="dark"] .rcpt table th{background:#F1F5F9;color:#334155}
 [data-theme="dark"] .rcpt table td{color:#0F172A;border-color:#E2E8F0}
 [data-theme="dark"] .rcpt input,[data-theme="dark"] .rcpt select{background:#fff;color:#0F172A;border-color:#CBD5E1}
+[data-theme="dark"] .tchr-card{background:var(--card);border-color:var(--border)}
+[data-theme="dark"] .tchr-name{color:var(--text)}
+[data-theme="dark"] .sidebar{background:linear-gradient(180deg,#161842 0%,#0F1230 100%)}
+[data-theme="dark"] .side-nav button.active{background:#FFFFFF;color:#2B2D7B}
+[data-theme="dark"] .tt-c0{background:rgba(59,130,246,.22);color:#BFDBFE}
+[data-theme="dark"] .tt-c1{background:rgba(16,185,129,.22);color:#A7F3D0}
+[data-theme="dark"] .tt-c2{background:rgba(139,92,246,.22);color:#DDD6FE}
+[data-theme="dark"] .tt-c3{background:rgba(249,115,22,.22);color:#FED7AA}
+[data-theme="dark"] .tt-c4{background:rgba(236,72,153,.22);color:#FBCFE8}
+[data-theme="dark"] .tt-c5{background:rgba(245,158,11,.22);color:#FDE68A}
 .card .btn+.btn{margin-left:8px}
