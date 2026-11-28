@@ -1,3 +1,12 @@
+## v169 — Fix random auto-logout (refresh-token race, cross-tab staleness & transient 5xx guard)
+
+- **Root cause fix (`app.js`):** Live Supabase Auth logs showed concurrent duplicate `POST /token?grant_type=refresh_token` requests firing in the same millisecond after the 1-hour JWT TTL, triggering Supabase refresh-token reuse revocation (`400 refresh_token_not_found`) and wiping the stored session.
+- **Fixes:**
+  1. Deduplicated concurrent token refreshes via `sbRefreshInFlight` in `sbGetValidToken()` so multiple timers/calls share a single refresh request.
+  2. Updated `sbLoadSession()` to always select the freshest token (`expires_at`) between `localStorage` and `sessionStorage`, preventing multi-tab stale refresh tokens.
+  3. Prevented `sbGetValidToken()` from clearing the session on transient `5xx`/`429`/network failures or when another tab has already rotated a newer refresh token.
+- **Tests:** new `tests/phase8/v169-session-refresh-race.test.mjs` (3 tests); version markers 168 → 169.
+
 ## v168 — Executive Fee Receipt & Modern Bento Admission Form Redesign
 
 - **Fee Receipt (`styles.css`):** Upgraded `.rcpt*` to a crisp print-ready executive receipt with obsidian-navy header ribbon, elevated school logo tile, tinted student meta band, rounded tabular fee table, indigo payment section band, highlighted grand-total bar, bordered QR container, clean signature block, and Dark Mode paper-white preservation.

@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 168;
+var APP_VERSION = 169;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -600,26 +600,46 @@ function sbStoreSession(d) {
   } catch (e) { return null; }
 }
 function sbLoadSession() {
-  try { var r = sessGet(SB_SESSION_KEY); return r ? JSON.parse(r) : null; } catch (e) { return null; }
+  // v169: always pick the freshest token between localStorage and sessionStorage
+  // so a refresh rotated in another tab never leaves this tab using a stale refresh_token.
+  var a = null, b = null;
+  try { var rl = localStorage.getItem(SB_SESSION_KEY); if (rl) a = JSON.parse(vaultDecode(rl) || 'null'); } catch (e1) {}
+  try { var rs = sessionStorage.getItem(SB_SESSION_KEY); if (rs) b = JSON.parse(vaultDecode(rs) || 'null'); } catch (e2) {}
+  if (a && b) {
+    var best = ((a.expires_at || 0) >= (b.expires_at || 0)) ? a : b;
+    if (best === a) { try { sessionStorage.setItem(SB_SESSION_KEY, vaultEncode(JSON.stringify(a))); } catch (e3) {} }
+    return best;
+  }
+  if (a) { try { sessionStorage.setItem(SB_SESSION_KEY, vaultEncode(JSON.stringify(a))); } catch (e4) {} return a; }
+  return b;
 }
-function sbClearSession() { try { sessRemove(SB_SESSION_KEY); } catch (e) {} }
+function sbClearSession() { sbRefreshInFlight = null; try { sessRemove(SB_SESSION_KEY); } catch (e) {} }
+var sbRefreshInFlight = null;
 function sbGetValidToken() {
   var s = sbLoadSession();
   if (!s || !s.access_token) return Promise.resolve(null);
-  if (s.expires_at && s.expires_at - Date.now() > 60000) return Promise.resolve(s.access_token);
+  if (s.expires_at && s.expires_at - Date.now() > 300000) return Promise.resolve(s.access_token);
   if (!s.refresh_token) return Promise.resolve(null);
-  return sbRefresh(s.refresh_token).then(function (r) {
-    if (!r.ok || !r.data || !r.data.access_token) {
-      // v34 (P1-3): the SERVER rejected the refresh (expired / revoked
-      // token). That is not "offline" — the user must log in again.
-      // A network failure lands in the .catch below and stays offline.
-      sbSessionExpired = true;
-      sbClearSession();
-      return null;
+  if (sbRefreshInFlight) return sbRefreshInFlight;
+  var usedRefresh = s.refresh_token;
+  sbRefreshInFlight = sbRefresh(usedRefresh).then(function (r) {
+    sbRefreshInFlight = null;
+    if (r && r.ok && r.data && r.data.access_token) {
+      var s2 = sbStoreSession(r.data);
+      return s2 ? s2.access_token : null;
     }
-    var s2 = sbStoreSession(r.data);
-    return s2 ? s2.access_token : null;
-  }).catch(function () { return null; });
+    // v169: never log out on transient 5xx/429/network hiccups.
+    if (!r || !r.status || r.status === 429 || r.status >= 500) return null;
+    // v169: if another tab rotated the refresh token while we were in flight, adopt it.
+    var latest = sbLoadSession();
+    if (latest && latest.access_token && latest.refresh_token && latest.refresh_token !== usedRefresh) {
+      return latest.access_token;
+    }
+    sbSessionExpired = true;
+    sbClearSession();
+    return null;
+  }).catch(function () { sbRefreshInFlight = null; return null; });
+  return sbRefreshInFlight;
 }
 // Phase 1 (CR-1/H-1): boot-time server validation for a server-linked
 // school session. Returns Promise<boolean>. true = the server still
