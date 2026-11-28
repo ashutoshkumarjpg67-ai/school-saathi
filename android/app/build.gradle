@@ -13,7 +13,7 @@ android {
         applicationId "in.schoolsaathi.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 170
+        versionCode 171
         versionName "1.60"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
