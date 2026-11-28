@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 176;
+var APP_VERSION = 177;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -4237,7 +4237,7 @@ function sbSyncPushEntry(entry, token, schoolId, maps, uid, batch) {
       // find path (findCols105 = id,updated_at) has no created_at, so the
       // guard is skipped there. Same v128 no-op shape. Skipped for an
       // audit-proven delete (attAllowed134, v134 above).
-      if (row.created_at && entry.at && !attAllowed134) { var created131 = Date.parse(row.created_at); var queued131 = Date.parse(entry.at); if (!isNaN(created131) && !isNaN(queued131) && created131 > queued131) return { pushed: true, noOpDelete128: true }; }
+      if (row.created_at && entry.at && !attAllowed134 && !entry.directDelete) { var created131 = Date.parse(row.created_at); var queued131 = Date.parse(entry.at); if (!isNaN(created131) && !isNaN(queued131) && created131 > queued131) return { pushed: true, noOpDelete128: true }; }
       // v133: an attendance delete fires only for a deliberate clear
       // (sbSyncAttendanceDeleteAllowed) — a mark that is locally missing
       // for any other reason must not delete the live server row. Same

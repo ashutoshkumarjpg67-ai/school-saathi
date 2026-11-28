@@ -747,6 +747,13 @@ function deleteNotice(id) {
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
   confirmModal(t('delNtMsg') + ' — ' + n.title + '?', function () {
     db.notices = db.notices.filter(function (x) { return x.id !== id; });
+    try {
+      var actDel = typeof sbSyncActive === 'function' ? sbSyncActive() : null;
+      if (actDel && actDel.uid) {
+        if (typeof sbOutboxAdd === 'function') sbOutboxAdd(actDel.uid, { table: 'ss_notices', key: id, op: 'delete', directDelete: true, at: new Date().toISOString() });
+        if (typeof sbTombAdd === 'function') sbTombAdd(actDel.uid, 'ss_notices', id);
+      }
+    } catch (eDelN) {}
     logAudit('Notice deleted', n.title + ' • ' + n.date);
     saveDB(db); renderApp();
     toast(t('tNtDeleted'));
