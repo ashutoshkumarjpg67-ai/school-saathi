@@ -648,8 +648,13 @@ function studentProfilePage(id) {
   var toolbar = state.role === 'school'
     ? '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">← ' + t('backDir') + '</button>' +
     '<button class="btn" onclick="studentForm(\'' + s.id + '\')">' + t('editStudent') + '</button>' +
-    '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button>' + waChatBtn(s.id) +
+    '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button>' +
+    '<button class="btn ghost" onclick="openCertModal(\'' + s.id + '\')">📜 TC / Certificate</button>' + waChatBtn(s.id) +
     ((stt === 'Active' || stt === 'Inactive') ? '<button class="btn ghost" onclick="promoteSingle(\'' + s.id + '\')">⬆️ ' + t('promoSingle') + '</button>' : '') + '</div>'
+    : state.role === 'principal'
+    ? '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">← ' + t('backDir') + '</button>' +
+    '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button>' +
+    '<button class="btn ghost" onclick="openCertModal(\'' + s.id + '\')">📜 TC / Certificate</button></div>'
     : state.role === 'teacher'
     ? '<div class="toolbar"><button class="btn ghost" onclick="backFromProfile()">← ' + t('backDir') + '</button>' +
     '<button class="btn ghost" onclick="printIdCard(\'' + s.id + '\')">🪪 ' + t('actIdCard') + '</button>' + waChatBtn(s.id) + '</div>'

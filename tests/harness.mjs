@@ -41,6 +41,7 @@ const LOAD_ORDER = [
   'js/modules/fees-ui.js',
   'js/modules/academics-ui.js',
   'js/modules/people-ui.js',
+  'js/modules/certificates.js',
   'scripts/seed-fixtures.js',
 ];
 
