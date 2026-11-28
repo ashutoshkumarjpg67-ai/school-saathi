@@ -1,3 +1,11 @@
+## v175 — Modular Split of app.js into Feature Modules
+- Split ~278 KB (4,500+ lines) out of monolithic `app.js` into 4 dedicated, maintainable modules under `js/modules/`:
+  - `js/modules/fees-ui.js` (Fees, Receipts, Structure, Print & ID Cards)
+  - `js/modules/students-ops.js` (Bulk CSV Import, Promotion, Student Profile, WhatsApp & Attendance)
+  - `js/modules/academics-ui.js` (Exams, Homework, Timetable, Notices, Reports & Marksheets)
+  - `js/modules/people-ui.js` (Admissions, Teachers, Staff, Classes & Student Portal)
+- Wired all 4 modules into `index.html`, `sw.js` precache, Capacitor `build-www.sh`, and `tests/harness.mjs`.
+
 ## v174 — Cloudflare Security Headers, Shared-Device Auto-Logout & Direct School Login Link
 - Added Cloudflare Pages `_headers` enforcing HTTP CSP (`frame-ancestors 'none'`), HSTS, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, and `Permissions-Policy`.
 - Added configurable Inactivity Auto-Logout (Off / 15m / 30m / 60m) in Settings for shared school office computers.

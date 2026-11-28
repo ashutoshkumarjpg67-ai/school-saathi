@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const app = readFileSync(join(ROOT, 'app.js'), 'utf8');
+const app = ['app.js', 'js/modules/fees-ui.js', 'js/modules/students-ops.js', 'js/modules/academics-ui.js', 'js/modules/people-ui.js'].map(f => readFileSync(join(ROOT, f), 'utf8')).join('\n');
 const i18n = readFileSync(join(ROOT, 'js', 'modules', 'i18n.js'), 'utf8');
 
 const start = app.indexOf('var PW_COMMON');

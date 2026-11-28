@@ -37,6 +37,10 @@ const LOAD_ORDER = [
   'js/modules/push.js',
   'js/modules/i18n.js',
   'app.js',
+  'js/modules/students-ops.js',
+  'js/modules/fees-ui.js',
+  'js/modules/academics-ui.js',
+  'js/modules/people-ui.js',
   'scripts/seed-fixtures.js',
 ];
 

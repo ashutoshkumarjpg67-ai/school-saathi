@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { createAppContext } from '../harness.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const APP = readFileSync(join(ROOT, 'app.js'), 'utf8');
+const APP = ['app.js', 'js/modules/fees-ui.js', 'js/modules/students-ops.js', 'js/modules/academics-ui.js', 'js/modules/people-ui.js'].map(f => readFileSync(join(ROOT, f), 'utf8')).join('\n');
 
 describe('public Apply picker requires a deliberate school choice', () => {
   it('options start with a disabled empty-value placeholder', () => {

@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { createAppContext } from '../harness.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const APP_SRC = readFileSync(join(ROOT, 'app.js'), 'utf8');
+const APP_SRC = ['app.js', 'js/modules/fees-ui.js', 'js/modules/students-ops.js', 'js/modules/academics-ui.js', 'js/modules/people-ui.js'].map(f => readFileSync(join(ROOT, f), 'utf8')).join('\n');
 const I18N_SRC = readFileSync(join(ROOT, 'js', 'modules', 'i18n.js'), 'utf8');
 const STYLES_SRC = readFileSync(join(ROOT, 'styles.css'), 'utf8');
 
