@@ -1,3 +1,8 @@
+## v174 — Cloudflare Security Headers, Shared-Device Auto-Logout & Direct School Login Link
+- Added Cloudflare Pages `_headers` enforcing HTTP CSP (`frame-ancestors 'none'`), HSTS, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, and `Permissions-Policy`.
+- Added configurable Inactivity Auto-Logout (Off / 15m / 30m / 60m) in Settings for shared school office computers.
+- Added 1-click "Share Link" beside School Code in Settings and `?code=SS-XXXX&role=...` URL auto-prefill on login.
+
 ## v173 — Lightweight 60fps GPU Micro-Animations & Page Transitions
 - Added silky 180ms GPU-only page-enter slide-fade (`sbPageEnterAnim`) triggered strictly on `go()` tab navigation (never during background sync).
 - Added 150ms smooth modal pop-in (zero `backdrop-filter` blur so modal scrolling stays 60fps).
