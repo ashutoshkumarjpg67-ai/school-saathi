@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 169;
+var APP_VERSION = 170;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -9540,6 +9540,7 @@ function schoolDashboard() {
     '<div class="row"><span class="dot" style="background:' + ORANGE + '"></span>' + t('lateBtn') + '<b>' + num(ta.late) + '</b></div></div>' +
   '</div></div>' +
   '<div class="card"><h3>' + t('feeTrend') + '</h3><p class="card-sub">' + feeRangeLabel() + ' (' + t('collectedW') + ' / ' + t('pendingW') + ')</p><div class="chart-box">' + barChartSVG(feeChartData()) + '</div><p class="muted mt-8"><span style="color:' + BLUE + '">■</span> ' + t('collectedW') + ' &nbsp; <span style="color:' + ORANGE + '">■</span> ' + t('pendingW') + '</p></div></div>' +
+  (typeof sbEduNovaDashWidgets === 'function' ? sbEduNovaDashWidgets() : '') +
   '<div class="card"><div class="head-row"><div><h3>' + t('recentAct') + '</h3></div><a href="#" onclick="go(\'activityLog\');return false">' + t('viewAll') + '</a></div><div class="act-list">' + (acts || '<p class="muted">No recent activity yet.</p>') + '</div></div>');
 }
 /* ================= Activity / Audit Log (v24, v129) =================
@@ -12676,8 +12677,9 @@ function timetablePage() {
     TT_DAYS.forEach(function (d) {
       var e = grid[d][p];
       if (e) {
-        cells += '<td><b>' + esc(e.subject) + '</b>' + (e.teacher ? '<br><span class="muted">' + esc(e.teacher) + '</span>' : '') +
-          (canEdit ? '<br><button class="btn ghost sm" onclick="editTimetable(\'' + e.id + '\')">✎</button> <button class="btn ghost sm" onclick="deleteTimetable(\'' + e.id + '\')">🗑</button>' : '') + '</td>';
+        var tone = (typeof ttSubjectTone === 'function') ? ttSubjectTone(e.subject) : 'tt-c0';
+        cells += '<td><div class="tt-pill ' + tone + '"><b>' + esc(e.subject) + '</b>' + (e.teacher ? '<br><span class="muted">' + esc(e.teacher) + '</span>' : '') +
+          (canEdit ? '<br><button class="btn ghost sm" onclick="editTimetable(\'' + e.id + '\')">✎</button> <button class="btn ghost sm" onclick="deleteTimetable(\'' + e.id + '\')">🗑</button>' : '') + '</div></td>';
       } else {
         cells += '<td>' + (canEdit ? '<button class="btn ghost sm" onclick="timetableForm(null, \'' + esc(cls) + '\', ' + d + ', ' + p + ')">+</button>' : '—') + '</td>';
       }
@@ -13186,18 +13188,22 @@ function viewTeacher(id) {
     '</div>');
 }
 function teachersPage() {
-  // v88: a principal may view the teachers list (read-only) — no Add
-  // button, no Edit button. Other non-school roles still see nothing.
   if (state.role !== 'school' && state.role !== 'principal') return '<div class="card"><div class="empty">' + t('tNotAllowed') + '</div></div>';
   var isPrincipal = state.role === 'principal';
-  var rows = (db.teachers || []).filter(function (te) { return !te.deleted; }).map(function (te) {
+  var cards = (db.teachers || []).filter(function (te) { return !te.deleted; }).map(function (te) {
     var acct = loadAccounts().find(function (a) { return a.role === 'teacher' && a.teacherId === te.id; });
     var clsList = Array.isArray(te.classes) && te.classes.length ? te.classes : (te.cls ? [te.cls] : []);
-    return '<tr><td><button class="linklike" onclick="viewTeacher(\'' + te.id + '\')">' + esc(te.name) + '</button></td><td>' + esc(te.subject || '—') + '</td><td>' + esc(clsList.join(', ') || '—') + '</td><td>' + (acct ? esc(acct.email) : '<span class="muted">' + t('tchrNoLogin') + '</span>') + '</td><td><button class="btn ghost sm" onclick="viewTeacher(\'' + te.id + '\')">' + t('admReqView') + '</button> ' + (isPrincipal ? '' : '<button class="btn ghost sm" onclick="teacherForm(\'' + te.id + '\')">' + t('editBtn') + '</button> <button class="btn ghost sm danger" onclick="deleteTeacher(\'' + te.id + '\')">' + t('deleteBtn') + '</button>') + '</td></tr>';
+    var ini = String(te.name || 'T').trim().slice(0, 1).toUpperCase();
+    return '<div class="tchr-card"><div class="tchr-av">' + esc(ini) + '</div>' +
+      '<button class="linklike tchr-name" onclick="viewTeacher(\'' + te.id + '\')">' + esc(te.name) + '</button>' +
+      '<span class="tchr-subj">' + esc(te.subject || '—') + '</span>' +
+      '<div class="tchr-meta">' + esc(clsList.join(', ') || '—') + '<br>' + (acct ? esc(acct.email) : esc(t('tchrNoLogin'))) + '</div>' +
+      '<div class="tchr-acts"><button class="btn ghost sm" onclick="viewTeacher(\'' + te.id + '\')">' + t('admReqView') + '</button>' +
+      (isPrincipal ? '' : '<button class="btn ghost sm" onclick="teacherForm(\'' + te.id + '\')">' + t('editBtn') + '</button><button class="btn ghost sm danger" onclick="deleteTeacher(\'' + te.id + '\')">' + t('deleteBtn') + '</button>') + '</div></div>';
   }).join('');
   return '<div class="page-head"><div><h2>' + t('teachers') + '</h2><p>' + t('teachersSub') + '</p></div>' +
-    (isPrincipal ? '' : '<div class="toolbar"><button class="btn" onclick="teacherForm()">+ ' + t('tchrAdd') + '</button></div>') + '</div>' +
-    '<div class="card"><div class="tbl-wrap"><table><thead><tr><th>' + t('thName') + '</th><th>' + t('tchrSubject') + '</th><th>' + t('tchrClasses') + '</th><th>' + t('tchrEmail') + '</th><th></th></tr></thead><tbody>' + (rows || '<tr><td colspan="5"><div class="empty">' + t('tNoTeachers') + '</div></td></tr>') + '</tbody></table></div></div>';
+    (isPrincipal ? '' : '<div class="toolbar"><button class="btn green" onclick="teacherForm()">+ ' + t('tchrAdd') + '</button></div>') + '</div>' +
+    (cards ? '<div class="tchr-grid">' + cards + '</div>' : '<div class="card"><div class="empty">' + t('tNoTeachers') + '</div></div>');
 }
 function teacherForm(id) {
   if (state.role !== 'school') { toast(t('tNotAllowed')); return; }
