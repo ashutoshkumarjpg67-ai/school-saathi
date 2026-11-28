@@ -236,3 +236,82 @@ function sbEduNovaDashWidgets() {
     '</div>';
   } catch (e) { return ''; }
 }
+
+/* ---------- Display & Accessibility Preferences (v172) ---------- */
+var CONTRAST_KEY = 'schoolSaathiContrast';
+var FONT_KEY = 'schoolSaathiFontSize';
+function getContrastMode() {
+  try { return localStorage.getItem(CONTRAST_KEY) === 'high' ? 'high' : 'normal'; } catch (e) { return 'normal'; }
+}
+function applyContrastMode(mode) {
+  var high = mode === 'high';
+  try {
+    if (document && document.documentElement && document.documentElement.setAttribute) {
+      document.documentElement.setAttribute('data-contrast', high ? 'high' : 'normal');
+    }
+  } catch (e) {}
+  return high ? 'high' : 'normal';
+}
+function setContrastMode(mode) {
+  var next = mode === 'high' ? 'high' : 'normal';
+  try { localStorage.setItem(CONTRAST_KEY, next); } catch (e) {}
+  applyContrastMode(next);
+  if (typeof state !== 'undefined' && state.view === 'settings' && typeof renderApp === 'function') renderApp();
+  return next;
+}
+function toggleHighContrast() {
+  return setContrastMode(getContrastMode() === 'high' ? 'normal' : 'high');
+}
+function getFontScale() {
+  try {
+    var v = localStorage.getItem(FONT_KEY);
+    return (v === 'sm' || v === 'lg') ? v : 'md';
+  } catch (e) { return 'md'; }
+}
+function applyFontScale(sz) {
+  var v = (sz === 'sm' || sz === 'lg') ? sz : 'md';
+  try {
+    if (document && document.documentElement && document.documentElement.setAttribute) {
+      document.documentElement.setAttribute('data-font', v);
+    }
+  } catch (e) {}
+  return v;
+}
+function setFontScale(sz) {
+  var v = (sz === 'sm' || sz === 'lg') ? sz : 'md';
+  try { localStorage.setItem(FONT_KEY, v); } catch (e) {}
+  applyFontScale(v);
+  if (typeof state !== 'undefined' && state.view === 'settings' && typeof renderApp === 'function') renderApp();
+  return v;
+}
+function initDisplayPrefs() {
+  applyContrastMode(getContrastMode());
+  applyFontScale(getFontScale());
+}
+function sbDisplayPrefsCard() {
+  var hi = typeof state !== 'undefined' && state.lang === 'hi';
+  var dark = false;
+  try { dark = localStorage.getItem('schoolSaathiTheme') === 'dark'; } catch (e) {}
+  var contrast = getContrastMode();
+  var font = getFontScale();
+  return '<div class="card maxw-680 mt-16"><h3>' + (hi ? 'डिस्प्ले और एक्सेसिबिलिटी' : 'Display & Accessibility') + '</h3>' +
+    '<p class="card-sub">' + (hi ? 'आरामदायक रीडिंग के लिए डार्क मोड, हाई कंट्रास्ट और टेक्स्ट साइज़ चुनें।' : 'Customize dark mode, high contrast, and readable text size for this device.') + '</p>' +
+    '<div class="pref-row"><div class="pref-lbl"><b>' + (hi ? 'थीम (Theme)' : 'Theme') + '</b><span>' + (hi ? 'लाइट या सुगम डार्क मोड' : 'Switch between Light and Dark mode') + '</span></div>' +
+    '<div class="pref-seg">' +
+      '<button type="button" class="' + (!dark ? 'on' : '') + '" onclick="if(localStorage.getItem(\'schoolSaathiTheme\')===\'dark\')toggleTheme();renderApp()">' + (hi ? '☀️ लाइट' : '☀️ Light') + '</button>' +
+      '<button type="button" class="' + (dark ? 'on' : '') + '" onclick="if(localStorage.getItem(\'schoolSaathiTheme\')!==\'dark\')toggleTheme();renderApp()">' + (hi ? '🌙 डार्क' : '🌙 Dark') + '</button>' +
+    '</div></div>' +
+    '<div class="pref-row"><div class="pref-lbl"><b>' + (hi ? 'हाई कंट्रास्ट (High Contrast)' : 'High Contrast') + '</b><span>' + (hi ? 'ज्यादा स्पष्ट बॉर्डर और गहरा टेक्स्ट' : 'Sharper borders, deeper text, and clearer focus rings') + '</span></div>' +
+    '<div class="pref-seg">' +
+      '<button type="button" class="' + (contrast === 'normal' ? 'on' : '') + '" onclick="setContrastMode(\'normal\')">' + (hi ? 'सामान्य' : 'Normal') + '</button>' +
+      '<button type="button" class="' + (contrast === 'high' ? 'on' : '') + '" onclick="setContrastMode(\'high\')">' + (hi ? 'हाई कंट्रास्ट' : 'High') + '</button>' +
+    '</div></div>' +
+    '<div class="pref-row"><div class="pref-lbl"><b>' + (hi ? 'फ़ॉन्ट साइज़ (Text Size)' : 'Text Size') + '</b><span>' + (hi ? 'पढ़ने में आसान स्केलेबल फ़ॉन्ट' : 'Scale text across tables, forms, and menus') + '</span></div>' +
+    '<div class="pref-seg">' +
+      '<button type="button" class="' + (font === 'sm' ? 'on' : '') + '" onclick="setFontScale(\'sm\')">' + (hi ? 'छोटा (A-)' : 'Small (A-)') + '</button>' +
+      '<button type="button" class="' + (font === 'md' ? 'on' : '') + '" onclick="setFontScale(\'md\')">' + (hi ? 'सामान्य (A)' : 'Normal (A)') + '</button>' +
+      '<button type="button" class="' + (font === 'lg' ? 'on' : '') + '" onclick="setFontScale(\'lg\')">' + (hi ? 'बड़ा (A+)' : 'Large (A+)') + '</button>' +
+    '</div></div>' +
+  '</div>';
+}
+try { initDisplayPrefs(); } catch (ePref) {}

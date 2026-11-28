@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 171;
+var APP_VERSION = 172;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -13110,6 +13110,7 @@ function settingsPage() {
   '<button type="button" class="btn danger" onclick="deleteAccount()">' + t('delAccount') + '</button></div></div>' +
   '<div class="card maxw-680 mt-16"><h3>' + t('sbTitle') + '</h3><p class="card-sub" id="sbStatusLine">' + sbStatusText() + '</p><div id="sbSyncDetails">' + sbSyncDetailsHtml() + '</div><div id="sbSyncConflicts">' + sbSyncConflictsHtml() + '</div><div class="actions toolbar-start"><button type="button" class="btn" onclick="sbRetryMigration(this)">' + t('sbBackupNow') + '</button><button type="button" class="btn ghost" onclick="sbRetryDownload(this)">' + t('sbDownloadNow') + '</button>' + (state.user && state.user.role === 'school' && !state.user.sbUid ? '<button type="button" class="btn ghost" onclick="openLinkServerModal()">' + t('sbLinkServer') + '</button>' : '') + (sbSessionExpired ? '<button type="button" class="btn ghost" onclick="logout()">' + t('authLogin') + '</button>' : '') + '</div></div>' +
   '<div class="card maxw-680 mt-16"><h3>' + t('fullBackup') + '</h3><p class="card-sub">' + t('fullBackupSub') + '</p><div class="actions toolbar-start"><button type="button" class="btn" onclick="exportFullBackup()">' + t('backupExport') + '</button><label class="btn ghost pointer">' + t('backupImport') + '<input type="file" accept="application/json,.json" style="display:none" onchange="onBackupFileChosen(this)"></label></div></div>' +
+  (typeof sbDisplayPrefsCard === 'function' ? sbDisplayPrefsCard() : '') +
   '<div class="card maxw-680 mt-16"><h3>' + t('raiseSupport') + '</h3><p class="card-sub">' + t('contactSub') + '</p><div class="actions toolbar-start"><button type="button" class="btn" onclick="openSupportForm()">' + t('raiseSupport') + '</button></div></div>' +
   '<div class="card maxw-680 mt-16"><h3>' + t('legalTitle') + '</h3><p class="card-sub"><a href="privacy-policy.html" target="_blank" rel="noopener">' + t('privacyPolicy') + '</a> · <a href="terms-of-service.html" target="_blank" rel="noopener">' + t('termsOfService') + '</a></p></div>';
 }

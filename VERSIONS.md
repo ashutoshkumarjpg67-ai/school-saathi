@@ -1,3 +1,10 @@
+## v172 — Refined Dark Mode, High Contrast, Scalable Fonts & Scroll Performance
+- Polished Dark Mode contrast across topbar, links, notices, school-code badges, key-value rows, chips, and dropdowns.
+- Added High Contrast mode (`[data-contrast="high"]`, works in both Light & Dark themes) with crisper borders and focus outlines.
+- Added Scalable Font Size (`Small A-`, `Normal A`, `Large A+`) via `html[data-font]` persisted in `localStorage`.
+- Added bilingual Display & Accessibility preferences card in Settings.
+- Added GPU-composited sticky topbar and CSS containment / smooth touch scrolling across tables and cards.
+
 ## v171 — Instant 60fps Modal & Form Scrolling (Fix Lag in Add Student / Add Teacher Forms)
 
 - **Root cause fix (`styles.css`):** Full-screen `backdrop-filter: blur(6px)` on `.modal-back` and `backdrop-filter: blur(16px)` on `.topbar` caused GPU re-blurring on every scroll frame inside tall form modals (Add Student, Add Teacher, Settings). Removed `backdrop-filter` blur, removed open-delay animation on `.modal`, and added GPU-accelerated native scrolling (`-webkit-overflow-scrolling: touch`, `overscroll-behavior: contain`, `contain: layout style`, `transform: translateZ(0)`).
