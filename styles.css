@@ -589,3 +589,65 @@ body.landing{-webkit-user-select:text;user-select:text;-webkit-touch-callout:def
 [data-theme="dark"] .tt-c4{background:rgba(236,72,153,.22);color:#FBCFE8}
 [data-theme="dark"] .tt-c5{background:rgba(245,158,11,.22);color:#FDE68A}
 .card .btn+.btn{margin-left:8px}
+
+/* v172: Refined Dark Mode polish, High Contrast mode, Scalable Fonts & 60fps scroll performance */
+.side-nav,.tbl-wrap,.imp-scroll{-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain}
+.card,.tbl-wrap,.tchr-card,.stat{contain:layout style}
+.topbar{transform:translateZ(0);will-change:transform}
+[data-theme="dark"] .topbar{background:#0F172A;border-bottom-color:rgba(255,255,255,.10)}
+[data-theme="dark"] a{color:#93C5FD}
+[data-theme="dark"] .notice{background:rgba(99,102,241,.14);border-color:rgba(129,140,248,.30);color:var(--text)}
+[data-theme="dark"] .notice code,[data-theme="dark"] code{background:#1E293B;color:#E0E7FF;padding:2px 6px;border-radius:6px}
+[data-theme="dark"] .kv{border-color:var(--border)}
+[data-theme="dark"] .kv b{color:var(--muted)}
+[data-theme="dark"] .kv span{color:var(--text)}
+[data-theme="dark"] .chip{background:#161F30;color:#E2E8F0;border-color:var(--border-2)}
+[data-theme="dark"] .hamburger{background:#161F30;color:var(--text);border-color:var(--border-2)}
+[data-theme="dark"] .promo-row{border-color:var(--border-2);background:#111827}
+[data-theme="dark"] .promo-row:hover{background:#1E293B}
+[data-theme="dark"] .class-bar .bar-track{background:#1E293B}
+[data-theme="dark"] .side-foot select option{background:#111827;color:#F8FAFC}
+[data-theme="dark"] .id-card{background:#fff;color:#0F172A}
+
+/* High Contrast mode (works in both Light & Dark themes) */
+[data-contrast="high"]{
+  --text:#000000; --text-2:#0F172A; --text-3:#1E293B; --muted:#1E293B; --muted-2:#334155;
+  --border:#475569; --border-2:#334155; --border-strong:#0F172A;
+  --blue:#1D1F6E; --blue-dark:#12134A;
+}
+[data-contrast="high"][data-theme="dark"]{
+  --bg:#000000; --card:#0B0F1A; --bg-soft:#111827;
+  --text:#FFFFFF; --text-2:#F8FAFC; --text-3:#E2E8F0; --muted:#E2E8F0; --muted-2:#CBD5E1;
+  --border:rgba(255,255,255,.42); --border-2:rgba(255,255,255,.58); --border-strong:#FFFFFF;
+  --blue:#818CF8; --blue-dark:#A5B4FC;
+}
+[data-contrast="high"] .card,[data-contrast="high"] .stat,[data-contrast="high"] .tbl-wrap,[data-contrast="high"] .modal,[data-contrast="high"] input,[data-contrast="high"] select,[data-contrast="high"] textarea,[data-contrast="high"] .btn.ghost{border-width:2px}
+[data-contrast="high"] :focus-visible{outline:3px solid var(--gold)!important;outline-offset:2px}
+[data-contrast="high"] .badge{border:1.5px solid currentColor;font-weight:700}
+[data-contrast="high"] table th,[data-contrast="high"] table td{border-bottom-width:1.5px}
+
+/* Scalable Font Sizes (sm / md / lg) */
+html[data-font="sm"]{
+  font-size:90%;
+  --text-2xs:11px; --text-xs:12px; --text-sm:13px; --text-md:13.5px; --text-base:14px; --text-lg:16px;
+}
+html[data-font="md"]{
+  font-size:100%;
+}
+html[data-font="lg"]{
+  font-size:114%;
+  --text-2xs:13.5px; --text-xs:14.5px; --text-sm:16px; --text-md:17px; --text-base:18px; --text-lg:21px;
+}
+html[data-font="lg"] table th,html[data-font="lg"] table td,html[data-font="lg"] label,html[data-font="lg"] .side-nav button{font-size:var(--text-sm)}
+html[data-font="sm"] table th,html[data-font="sm"] table td,html[data-font="sm"] label,html[data-font="sm"] .side-nav button{font-size:var(--text-xs)}
+
+/* Display preferences toggle pills */
+.pref-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 0;border-bottom:1px solid var(--border)}
+.pref-row:last-child{border-bottom:0;padding-bottom:0}
+.pref-lbl b{display:block;font-size:var(--text-md);color:var(--text)}
+.pref-lbl span{font-size:var(--text-xs);color:var(--muted)}
+.pref-seg{display:inline-flex;gap:6px;flex-wrap:wrap}
+.pref-seg button{min-height:38px;padding:6px 14px;border-radius:10px;border:1px solid var(--border-2);background:var(--bg-soft);color:var(--text-2);font-size:var(--text-xs);font-weight:600}
+.pref-seg button.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+[data-theme="dark"] .pref-seg button{background:#161F30;color:#CBD5E1;border-color:var(--border-2)}
+[data-theme="dark"] .pref-seg button.on{background:var(--blue);color:#fff;border-color:var(--blue)}
