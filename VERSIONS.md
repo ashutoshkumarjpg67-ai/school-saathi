@@ -1,3 +1,7 @@
+## v176 — Print-Ready Transfer Certificate (TC) & Character Certificate Generator
+- Added `js/modules/certificates.js` for 100% free, offline-capable, print-ready A4 Transfer Certificates (स्थानांतरण प्रमाण-पत्र) and Character Certificates (चरित्र प्रमाण-पत्र).
+- Added "📜 TC / Certificate" action button in Student Profile for School Admin & Principal with live preview, auto-filled student/school/dues details, audit logging, and zero Aadhaar exposure.
+
 ## v175 — Modular Split of app.js into Feature Modules
 - Split ~278 KB (4,500+ lines) out of monolithic `app.js` into 4 dedicated, maintainable modules under `js/modules/`:
   - `js/modules/fees-ui.js` (Fees, Receipts, Structure, Print & ID Cards)
