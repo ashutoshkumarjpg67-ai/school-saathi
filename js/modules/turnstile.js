@@ -312,6 +312,13 @@ function sbDisplayPrefsCard() {
       '<button type="button" class="' + (font === 'md' ? 'on' : '') + '" onclick="setFontScale(\'md\')">' + (hi ? 'सामान्य (A)' : 'Normal (A)') + '</button>' +
       '<button type="button" class="' + (font === 'lg' ? 'on' : '') + '" onclick="setFontScale(\'lg\')">' + (hi ? 'बड़ा (A+)' : 'Large (A+)') + '</button>' +
     '</div></div>' +
+    '<div class="pref-row"><div class="pref-lbl"><b>' + (hi ? 'ऑटो लॉगआउट (Shared Device)' : 'Inactivity Auto-Logout') + '</b><span>' + (hi ? 'साझा कंप्यूटर पर निष्क्रिय रहने पर ऑटो लॉगआउट' : 'Automatically log out after inactivity on shared office PCs') + '</span></div>' +
+    '<div class="pref-seg">' +
+      '<button type="button" class="' + (getIdleLogoutMin() === 0 ? 'on' : '') + '" onclick="setIdleLogoutMin(0)">' + (hi ? 'बंद' : 'Off') + '</button>' +
+      '<button type="button" class="' + (getIdleLogoutMin() === 15 ? 'on' : '') + '" onclick="setIdleLogoutMin(15)">15m</button>' +
+      '<button type="button" class="' + (getIdleLogoutMin() === 30 ? 'on' : '') + '" onclick="setIdleLogoutMin(30)">30m</button>' +
+      '<button type="button" class="' + (getIdleLogoutMin() === 60 ? 'on' : '') + '" onclick="setIdleLogoutMin(60)">60m</button>' +
+    '</div></div>' +
   '</div>';
 }
 try { initDisplayPrefs(); } catch (ePref) {}
@@ -327,3 +334,77 @@ function sbPageEnterAnim() {
     return true;
   } catch (e) { return false; }
 }
+
+/* ---------- Shared-Device Inactivity Auto-Logout & Direct School Link (v174) ---------- */
+var IDLE_LOGOUT_KEY = 'schoolSaathiIdleLogoutMin';
+var idleLogoutTimer = null;
+function getIdleLogoutMin() {
+  try {
+    var n = parseInt(localStorage.getItem(IDLE_LOGOUT_KEY) || '0', 10);
+    return (n === 15 || n === 30 || n === 60) ? n : 0;
+  } catch (e) { return 0; }
+}
+function resetIdleLogoutTimer() {
+  if (idleLogoutTimer) { clearTimeout(idleLogoutTimer); idleLogoutTimer = null; }
+  var mins = getIdleLogoutMin();
+  if (!mins) return;
+  idleLogoutTimer = setTimeout(function () {
+    try {
+      if (typeof state !== 'undefined' && state.user && typeof logout === 'function') {
+        logout();
+        if (typeof toast === 'function') toast('Logged out due to inactivity');
+      }
+    } catch (e) {}
+  }, mins * 60000);
+}
+function setIdleLogoutMin(mins) {
+  var v = (mins === 15 || mins === 30 || mins === 60) ? mins : 0;
+  try { localStorage.setItem(IDLE_LOGOUT_KEY, String(v)); } catch (e) {}
+  resetIdleLogoutTimer();
+  if (typeof state !== 'undefined' && state.view === 'settings' && typeof renderApp === 'function') renderApp();
+  return v;
+}
+function copySchoolLoginLink() {
+  try {
+    var code = (typeof db !== 'undefined' && db && db.profile && db.profile.schoolCode) || '';
+    if (!code) return false;
+    var base = (typeof location !== 'undefined' && location.origin && location.origin !== 'null')
+      ? (location.origin + location.pathname)
+      : 'https://school-saathi.pages.dev/';
+    var url = base + '?code=' + encodeURIComponent(code) + '&role=parent';
+    if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(function () {
+        if (typeof toast === 'function') toast('✓ Login link copied');
+      }).catch(function () {});
+    }
+    return url;
+  } catch (e) { return false; }
+}
+function applyUrlSchoolCodePrefill() {
+  try {
+    if (typeof location === 'undefined' || !location.search) return false;
+    var params = new URLSearchParams(location.search);
+    var code = (params.get('code') || '').trim().toUpperCase();
+    var role = (params.get('role') || '').trim().toLowerCase();
+    if (!code) return false;
+    ['studentSchool', 'parentSchool', 'teacherSchool', 'staffSchool'].forEach(function (id) {
+      var el = typeof $ === 'function' ? $(id) : (document && document.getElementById ? document.getElementById(id) : null);
+      if (el && !el.value) el.value = code;
+    });
+    if ((role === 'student' || role === 'parent' || role === 'teacher' || role === 'staff') && typeof switchAuth === 'function') {
+      switchAuth(role);
+    }
+    return code;
+  } catch (e) { return false; }
+}
+try {
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    ['pointerdown', 'keydown', 'scroll'].forEach(function (ev) {
+      window.addEventListener(ev, resetIdleLogoutTimer, { passive: true });
+    });
+    window.addEventListener('DOMContentLoaded', function () {
+      resetIdleLogoutTimer();
+      setTimeout(applyUrlSchoolCodePrefill, 120);
+    });
+  }
+} catch (eIdle) {}

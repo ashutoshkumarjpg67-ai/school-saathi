@@ -35,7 +35,7 @@
 'use strict';
 
 /* ================= constants ================= */
-var APP_VERSION = 173;
+var APP_VERSION = 174;
 var DB_KEY = 'schoolSaathiDBv1';
 var SESSION_KEY = 'schoolSaathiSession';
 var SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000; // Phase 1 (CR-1/H-1): absolute max age of a local session — 30 days from the interactive login.
@@ -13084,7 +13084,7 @@ function settingsPage() {
     ? (pendingLogo ? '<img class="photo-prev" src="' + esc(pendingLogo) + '" alt="">' : '<span class="photo-prev">🎓</span>')
     : (p.logo ? '<img class="photo-prev" src="' + esc(p.logo) + '" alt="">' : '<span class="photo-prev">🎓</span>');
   var schoolCodeBox = p.schoolCode
-    ? '<div class="notice mb-12"><div class="head-row"><div><b>' + t('schoolCodeLbl') + ': <code style="font-size:16px;letter-spacing:1px">' + esc(p.schoolCode) + '</code></b><span>' + t('schoolCodeHint') + '</span></div><button type="button" class="btn ghost sm" onclick="copySchoolCode()">' + t('copyCodeBtn') + '</button></div></div>'
+    ? '<div class="notice mb-12"><div class="head-row"><div><b>' + t('schoolCodeLbl') + ': <code style="font-size:16px;letter-spacing:1px">' + esc(p.schoolCode) + '</code></b><span>' + t('schoolCodeHint') + '</span></div><div class="toolbar"><button type="button" class="btn ghost sm" onclick="copySchoolCode()">' + t('copyCodeBtn') + '</button><button type="button" class="btn ghost sm" onclick="copySchoolLoginLink()">🔗 Link</button></div></div></div>'
     : '';
   return '<div class="page-head"><div><h2>' + t('settings') + '</h2><p>' + t('subSettingsS') + '</p></div></div>' +
   '<div class="card" style="max-width:680px"><h3>' + esc(p.name) + '</h3><p class="card-sub">' + t('settingsSub') + '</p>' + schoolCodeBox +
