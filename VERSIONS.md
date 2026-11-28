@@ -1,3 +1,8 @@
+## v171 — Instant 60fps Modal & Form Scrolling (Fix Lag in Add Student / Add Teacher Forms)
+
+- **Root cause fix (`styles.css`):** Full-screen `backdrop-filter: blur(6px)` on `.modal-back` and `backdrop-filter: blur(16px)` on `.topbar` caused GPU re-blurring on every scroll frame inside tall form modals (Add Student, Add Teacher, Settings). Removed `backdrop-filter` blur, removed open-delay animation on `.modal`, and added GPU-accelerated native scrolling (`-webkit-overflow-scrolling: touch`, `overscroll-behavior: contain`, `contain: layout style`, `transform: translateZ(0)`).
+- **Version markers:** 170 → 171.
+
 ## v170 — EduNova-Inspired Royal Indigo Theme & Layout Upgrades (Phase 1 + Phase 2)
 
 - **EduNova Royal Indigo Theme (`styles.css`):** Upgraded sidebar to deep Royal Indigo (`#2B2D7B`) with iconic solid-white active pill navigation, soft `#F4F6FA` canvas, bold Teal/Coral/Amber Attendance `P`/`A`/`L` toggle pills, and matching Dark Mode overrides.
