@@ -1,3 +1,7 @@
+## v177 — Fix Deleted Notices Reappearing on Sync
+- Updated `deleteNotice()` in `js/modules/academics-ui.js` to immediately queue an explicit `op: 'delete', directDelete: true` outbox entry and tombstone (`sbTombAdd`) so background pulls and Realtime sync never resurrect a deleted notice.
+- Exempted explicit `directDelete` entries in `sbSyncPushEntry()` from the `created_at > entry.at` clock-skew veto.
+
 ## v176 — Print-Ready Transfer Certificate (TC) & Character Certificate Generator
 - Added `js/modules/certificates.js` for 100% free, offline-capable, print-ready A4 Transfer Certificates (स्थानांतरण प्रमाण-पत्र) and Character Certificates (चरित्र प्रमाण-पत्र).
 - Added "📜 TC / Certificate" action button in Student Profile for School Admin & Principal with live preview, auto-filled student/school/dues details, audit logging, and zero Aadhaar exposure.
